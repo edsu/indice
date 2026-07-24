@@ -275,6 +275,15 @@ is untrusted. Curator/importer edits merge with a *fill gaps, curator wins* poli
 re-sync. A legacy `index/collections.json`, or an earlier flat `collections/<slug>.md`, is
 migrated to the `collections/<slug>/README.md` form on open/save.
 
+The DACS front-matter fields are **scaffolded as empty blanks** rather than omitted when unset —
+a freshly-created finding aid writes `creator: ''`, `dates: ''`, `rights: ''`, `description: ''`,
+`subjects: []` — so a curator opening the file sees exactly what to fill in (fill-in-the-blank,
+not a guess-the-schema). The blanks are a *display scaffold only*: `parse_finding_aid` maps a
+blank back to unset, so ingest still seeds it (fill-gaps) and the collection page's "Still needed"
+prompt still fires. `curator` (the instance/repository operator, not a per-collection gap) stays
+omitted when unset, and the narrative body is left un-templated so the Scope & Content nudge isn't
+fooled by placeholder prose.
+
 Per-crawl notes live in `collections/<slug>/crawls/<id>.md` (plain Markdown), for documenting a
 single crawl's context or absences without repeating the collection-level description (DACS
 multilevel inheritance). Curator-pinned crawl thumbnails sit alongside as

@@ -655,20 +655,27 @@ struct FrontMatter {
     // missing `created` is tolerated rather than failing the whole manifest load.
     #[serde(default)]
     name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    curator: Option<String>,
     #[serde(default)]
     created: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    creator: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    dates: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rights: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // The DACS/EAD curatorial fields are written as `String`/`Vec` (not skipped
+    // when empty) so an unset field appears as a blank the curator can fill in —
+    // `creator: ''`, `subjects: []`. On read, blanks map back to `None`/empty in
+    // `parse_finding_aid`, so ingest still seeds them and the "still needed"
+    // nudge still fires; the blanks are a display scaffold, not real values.
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    creator: String,
+    #[serde(default)]
+    dates: String,
+    #[serde(default)]
+    rights: String,
+    #[serde(default)]
     subjects: Vec<String>,
+    // `curator` is the instance/repository operator (often set once, not a
+    // per-collection gap), so it stays optional and is omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    curator: Option<String>,
 }
 
 /// The committable directory for a collection: `<home>/collections/<slug>/`,
@@ -759,6 +766,12 @@ fn parse_finding_aid(id: &str, text: &str) -> Result<Collection> {
         let b = body.trim();
         (!b.is_empty()).then(|| b.to_string())
     };
+    // A blank scaffold field (`creator: ''`) reads back as unset, so ingest
+    // still seeds it and the "still needed" nudge still fires.
+    let blank_none = |s: String| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
     Ok(Collection {
         id: id.to_string(),
         name: if fm.name.is_empty() {
@@ -766,12 +779,12 @@ fn parse_finding_aid(id: &str, text: &str) -> Result<Collection> {
         } else {
             fm.name
         },
-        description: fm.description,
+        description: blank_none(fm.description),
         created: fm.created,
         curator: fm.curator,
-        creator: fm.creator,
-        dates: fm.dates,
-        rights: fm.rights,
+        creator: blank_none(fm.creator),
+        dates: blank_none(fm.dates),
+        rights: blank_none(fm.rights),
         subjects: fm.subjects,
         narrative,
     })
@@ -807,13 +820,14 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let fm = FrontMatter {
         name: c.name.clone(),
-        description: c.description.clone(),
-        curator: c.curator.clone(),
         created: c.created.clone(),
-        creator: c.creator.clone(),
-        dates: c.dates.clone(),
-        rights: c.rights.clone(),
+        // Unset curatorial fields become empty blanks in the file (scaffold).
+        description: c.description.clone().unwrap_or_default(),
+        creator: c.creator.clone().unwrap_or_default(),
+        dates: c.dates.clone().unwrap_or_default(),
+        rights: c.rights.clone().unwrap_or_default(),
         subjects: c.subjects.clone(),
+        curator: c.curator.clone(),
     };
     let yaml = serde_yaml_ng::to_string(&fm).context("serializing YAML front-matter")?;
     let mut out = String::from("---\n");
@@ -1276,6 +1290,45 @@ mod tests {
             Some("SUCHO team"),
             "empty field seeded"
         );
+    }
+
+    #[test]
+    fn finding_aid_scaffolds_empty_curatorial_fields() {
+        let tmp = TempDir::new().unwrap();
+        // A collection with nothing filled in but its name/created.
+        let c = Collection {
+            id: "news".into(),
+            name: "News".into(),
+            created: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        write_finding_aid(tmp.path(), &c).unwrap();
+        let text = std::fs::read_to_string(tmp.path().join("collections/news/README.md")).unwrap();
+
+        // The DACS front-matter fields appear as blanks for the curator to fill.
+        for blank in ["creator: ''", "dates: ''", "rights: ''", "description: ''"] {
+            assert!(
+                text.contains(blank),
+                "expected scaffold {blank:?} in:\n{text}"
+            );
+        }
+        assert!(text.contains("subjects: []"), "subjects scaffold:\n{text}");
+
+        // Reading it back, the blanks are unset — so ingest still seeds them and
+        // the "still needed" nudge still fires (they're a display scaffold only).
+        let back = parse_finding_aid("news", &text).unwrap();
+        assert_eq!(back.creator, None);
+        assert_eq!(back.dates, None);
+        assert_eq!(back.rights, None);
+        assert_eq!(back.description, None);
+        assert!(back.subjects.is_empty());
+
+        // A blank field is still fillable by a fill-gaps seed.
+        assert!(CollectionFields {
+            creator: Some("Acme".into()),
+            ..Default::default()
+        }
+        .apply_to_empty(&mut { back }));
     }
 
     #[test]
