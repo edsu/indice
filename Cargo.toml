@@ -16,7 +16,7 @@ maud = { version = "0.27", features = ["axum"] }
 
 # Curator finding-aid prose: Markdown rendering (safe subset) + YAML front-matter.
 # serde_yaml_ng is the maintained fork of the archived serde_yaml.
-pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 serde_yaml_ng = "0.10"
 
 # CLI
