@@ -5,15 +5,19 @@
 //! actually renders an archived page from a WACZ we serve. It drives real
 //! Chrome via WebDriver, so it's `#[ignore]`d by default.
 //!
-//! To run it:
+//! To run it, first get a version-matched Chrome + chromedriver
+//! (`./scripts/fetch-browser.sh` installs a Chrome for Testing / chromedriver
+//! pair and prints the exact commands), then:
 //!
 //! ```sh
-//! chromedriver --port=9515 &          # or any WebDriver server
-//! cargo test -p rustyweb-lib --test browser -- --ignored
+//! "<path>/chromedriver" --port=9515 &          # or any WebDriver server
+//! CHROME_BIN="<path>/Google Chrome for Testing" WEBDRIVER_URL=http://localhost:9515 \
+//!   cargo test -p rustyweb-lib --test browser -- --ignored
 //! ```
 //!
-//! Override the WebDriver endpoint with `WEBDRIVER_URL` (default
-//! `http://localhost:9515`).
+//! `WEBDRIVER_URL` overrides the WebDriver endpoint (default
+//! `http://localhost:9515`); `CHROME_BIN` selects the Chrome binary (omit to use
+//! whatever chromedriver finds). See `scripts/fetch-browser.sh`.
 
 use std::net::SocketAddr;
 use std::path::Path;

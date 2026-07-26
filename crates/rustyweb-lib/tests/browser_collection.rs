@@ -6,9 +6,13 @@
 //! WACZs* within one collection — i.e. genuine multi-WACZ replay, not just one
 //! WACZ loaded. `#[ignore]`d by default (needs a WebDriver + browser).
 //!
+//! Get a version-matched Chrome + chromedriver with
+//! `./scripts/fetch-browser.sh` (it prints the exact commands), then:
+//!
 //! ```sh
-//! chromedriver --port=9515 &
-//! cargo test -p rustyweb-lib --test browser_collection -- --ignored
+//! "<path>/chromedriver" --port=9515 &
+//! CHROME_BIN="<path>/Google Chrome for Testing" WEBDRIVER_URL=http://localhost:9515 \
+//!   cargo test -p rustyweb-lib --test browser_collection -- --ignored
 //! ```
 
 use std::net::SocketAddr;
