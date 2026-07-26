@@ -250,6 +250,33 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
 
 // ── Search results ─────────────────────────────────────────────────────────
 
+/// A human label for an HTTP status code, for the result badge's `title`
+/// tooltip. Common archived-error codes get a phrase; anything else falls back
+/// to the bare code.
+fn http_status_label(code: u16) -> String {
+    let reason = match code {
+        301 => "Moved Permanently",
+        302 => "Found (redirect)",
+        307 | 308 => "Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        410 => "Gone",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    };
+    if reason.is_empty() {
+        format!("Archived HTTP {code}")
+    } else {
+        format!("Archived HTTP {code} {reason}")
+    }
+}
+
 /// One row of the search results table. The handler computes the replay `href`,
 /// display strings, and the (pre-escaped) snippet HTML; the view just lays it out.
 pub struct SearchResultRow {
@@ -268,6 +295,9 @@ pub struct SearchResultRow {
     pub coll_display: String,
     /// How many captures of this URL matched (>1 shows a "captured N times" note).
     pub capture_count: usize,
+    /// HTTP status of the capture, when recorded. A badge is shown only for
+    /// non-200 (archived error pages); 200 is the norm and stays unmarked.
+    pub status: Option<u16>,
 }
 
 /// Pagination state for the results page: the current 1-based page, the total
@@ -408,6 +438,12 @@ pub fn search_results(
                                                     @if r.capture_count > 1 {
                                                         span.capture-count { " · captured " (r.capture_count) " times" }
                                                     }
+                                                }
+                                            }
+                                            // Flag archived non-200 captures (404/500/…); 200 stays unmarked.
+                                            @if let Some(code) = r.status {
+                                                @if code != 200 {
+                                                    span.result-status title=(http_status_label(code)) { "HTTP " (code) }
                                                 }
                                             }
                                         }
