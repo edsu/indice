@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use tantivy::aggregation::agg_req::Aggregations;
 use tantivy::aggregation::{AggContextParams, AggregationCollector};
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
 use tantivy::schema::{
     IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, FAST, INDEXED, STORED,
     STRING, TEXT,
@@ -494,6 +494,119 @@ impl SearchIndex {
             timeline: timeline_from_aggregations(&agg_json),
         })
     }
+
+    /// Page documents within one collection, for the wabac `pagesQueryUrl`
+    /// endpoint that backs multi-WACZ collection replay (the pages sidebar and
+    /// on-demand URL→WACZ resolution). Three modes:
+    /// - `url = Some(u)`: exact-match resolution — which member(s) hold that URL
+    ///   (a direct term query on the raw `url` field; robust, no grouping/cap).
+    /// - `search = Some(q)`: free-text page search within the collection.
+    /// - both `None`: the collection's page list.
+    ///
+    /// Returns `(total_matches, one page of hits)`. Unlike `search_faceted`, this
+    /// is not URL-collapsed or candidate-capped, so `total` is exact and deep
+    /// pagination is complete — a page listing needs every page, not the top N.
+    pub fn collection_pages(
+        &self,
+        collection_id: &str,
+        url: Option<&str>,
+        search: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(usize, Vec<PageHit>)> {
+        let schema = self.index.schema();
+        let collection_f = schema.get_field(FIELD_COLLECTION).unwrap();
+        let doc_type_f = schema.get_field(FIELD_DOC_TYPE).unwrap();
+        let url_f = schema.get_field(FIELD_URL).unwrap();
+        let ts_f = schema.get_field(FIELD_TS).unwrap();
+        let title_f = schema.get_field(FIELD_TITLE).unwrap();
+        let crawl_id_f = schema.get_field(FIELD_CRAWL_ID).unwrap();
+
+        let reader = self.index.reader()?;
+        let searcher = reader.searcher();
+
+        // Always scope to page docs in this collection.
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(collection_f, collection_id),
+                    IndexRecordOption::Basic,
+                )),
+            ),
+            (
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(doc_type_f, "page"),
+                    IndexRecordOption::Basic,
+                )),
+            ),
+        ];
+        // Exact-URL resolution: a term query on the raw (STRING) url field.
+        if let Some(u) = url {
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(url_f, u),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+        // Free-text page search: parse over the same text fields as the main
+        // search, leniently (a stray character never 500s the sidebar).
+        if let Some(q) = search.map(str::trim).filter(|q| !q.is_empty()) {
+            let body_f = schema.get_field(FIELD_BODY).unwrap();
+            let headings_f = schema.get_field(FIELD_HEADINGS).unwrap();
+            let description_f = schema.get_field(FIELD_DESCRIPTION).unwrap();
+            let keywords_f = schema.get_field(FIELD_KEYWORDS).unwrap();
+            let author_f = schema.get_field(FIELD_AUTHOR).unwrap();
+            let url_tokens_f = schema.get_field(FIELD_URL_TOKENS).unwrap();
+            let mut qp = QueryParser::for_index(
+                &self.index,
+                vec![
+                    title_f,
+                    headings_f,
+                    body_f,
+                    description_f,
+                    keywords_f,
+                    author_f,
+                    url_tokens_f,
+                ],
+            );
+            qp.set_conjunction_by_default();
+            let (text_query, _errors) = qp.parse_query_lenient(q);
+            clauses.push((Occur::Must, text_query));
+        }
+
+        let query = BooleanQuery::new(clauses);
+        let want = offset.saturating_add(limit).max(1);
+        let (total, top) =
+            searcher.search(&query, &(Count, TopDocs::with_limit(want).order_by_score()))?;
+
+        let mut hits = Vec::new();
+        for (_score, addr) in top.into_iter().skip(offset).take(limit) {
+            let doc: TantivyDocument = searcher.doc(addr)?;
+            hits.push(PageHit {
+                url: get_text(&doc, url_f),
+                timestamp: get_text(&doc, ts_f),
+                title: get_text(&doc, title_f),
+                crawl_id: get_text(&doc, crawl_id_f),
+            });
+        }
+        Ok((total, hits))
+    }
+}
+
+/// One page from [`SearchIndex::collection_pages`]. `crawl_id` is the WACZ id
+/// (`Wacz.id`), which the collection replay manifest emits as `resources[].name`
+/// — so it maps directly onto wabac's `item.filename`.
+#[derive(Debug, Clone)]
+pub struct PageHit {
+    pub url: String,
+    /// 14-digit capture timestamp as stored (caller converts for wabac).
+    pub timestamp: String,
+    pub title: String,
+    pub crawl_id: String,
 }
 
 /// The indexable fields of one page. Borrowed string slices so callers can pass

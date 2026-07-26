@@ -101,6 +101,8 @@ it still resolves.
 | `GET /api/search?q=...` | Full-text search → JSON (results, `total`, `capped`, `facets`) |
 | `GET /thumb/{id}` | A crawl's cached representative-image thumbnail (small JPEG); 404 when it has none |
 | `GET /files/{id}` | Stream a registered WACZ file with byte-range support |
+| `GET /collection/{id}/replay.json` | wabac multi-WACZ manifest for replaying a whole collection |
+| `GET /collection/{id}/pages` | Collection page list + exact-URL→WACZ resolution (wabac `pagesQueryUrl`), from the index |
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
 | `GET /replay/viewer` | Viewer shell (reads `?source=&url=&ts=&name=&collection=` params) |
 | `GET /replay/*` | Embedded ReplayWebPage static assets (JS, CSS, WASM, sw.js) |
@@ -503,6 +505,14 @@ results it yields.
 The `<replay-web-page>` component fires a `rwp-url-change` event as the user navigates within the archive; the banner listens for this event and updates the displayed URL in real time.
 
 In WACZ-direct mode the component reads the WACZ from `/files/{id}` via byte-range requests, loads the internal CDX into browser IndexedDB, and serves all resources from WARC bytes without making per-resource calls to rustyweb. All URL rewriting, wombat.js injection, fuzzy matching, and redirect handling are performed client-side by wabac.js.
+
+### Collection (multi-WACZ) replay
+
+A whole collection can be replayed at once (the "Replay collection" affordance on the homepage card and the collection page), not just a single crawl. The viewer points wabac.js at `GET /collection/{id}/replay.json` — a wabac multi-WACZ manifest (`{ resources: [{ name, path, hash, crawlId }], metadata }`) listing every member crawl, each `path` reusing the same `/files/{id}` byte-serving as single-WACZ replay (so File/Browsertrix members work identically, remote-URL members point at their URL). A generic whole-collection entry opens on a default landing page (the first member's first seed page); a specific-context entry (a crawl's Replay button, a search result) carries its own `url`/`ts` instead.
+
+To keep the **replay-client footprint flat** as a collection grows (a laptop→institutional concern; see *Scale*), the manifest sets `metadata.pagesQueryUrl` to `GET /collection/{id}/pages`, answered from the Tantivy index (`SearchIndex::collection_pages`). wabac then queries that endpoint for the page-list sidebar and for on-demand URL→WACZ resolution, instead of loading every member's page index into the browser. The response is wabac's shape (`{ total, items: [{ url, ts, title, filename }] }`), where `filename` is the member WACZ id (`== resources[].name`) and `ts` is ISO 8601 (the index stores a 14-digit timestamp). The exact-URL mode is a direct term query on the raw `url` field — no URL-collapsing or candidate cap, so totals are exact and pagination is complete (unlike the ranked, grouped main search).
+
+**Resolution is scoped to the collection** — a deliberate decision (`rustyweb-cross-wacz-replay-dk4`, closed won't-fix). A link from one member crawl to a page archived in *another member of the same collection* resolves and lands on that crawl's capture. This is *within-collection* only: there is no archive-wide or cross-collection resolution, and no explicit "open in another crawl" prompt — within-collection resolution is accepted as-is. Page **sub-resources** (images/CSS/JS) always come from the page's own crawl: wabac's per-URL `pagesQueryUrl` lookup is gated to top-level page navigations (`document`/`iframe` destinations), so a page is never stitched together from resources captured at different times — preserving per-page temporal coherence (the ODU/WS-DL temporal-violation concern).
 
 ---
 

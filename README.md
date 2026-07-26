@@ -106,6 +106,8 @@ job to the well-tested [wabac.js] service worker running in the browser:
         └── datapackage ─► collections GET /api/search   search results as JSON
                              .json      GET /files/{id}   the WACZ, with byte-range
                                         GET /replay/…     ReplayWeb.page assets + viewer
+                                        GET /collection/{id}/replay.json  collection replay manifest
+                                        GET /collection/{id}/pages        page list + URL resolution
 ```
 
 When you open a page for replay, the browser fetches the WACZ directly from
@@ -114,6 +116,16 @@ the WACZ, and serves every resource from the WARC records - all client-side.
 rustyweb's job during replay is simply to serve bytes efficiently. Everything
 else (search, metadata, the collection homepage) is what rustyweb is actually
 good at.
+
+You can also **replay a whole collection** at once (from the homepage card or the
+collection page): `GET /collection/{id}/replay.json` hands wabac.js a multi-WACZ
+manifest listing every member crawl, so a link from one crawl to a page archived
+in another crawl *of the same collection* resolves on demand. That resolution is
+answered from the search index via `GET /collection/{id}/pages` - which also feeds
+the viewer's page-list sidebar - so the browser never has to load every member's
+index, and it scales from a handful of WACZs to institutional collections.
+Resolution is scoped to the collection, and page sub-resources always come from
+the page's own crawl, preserving per-page temporal coherence.
 
 See [DESIGN.md](DESIGN.md) for the full architecture.
 
