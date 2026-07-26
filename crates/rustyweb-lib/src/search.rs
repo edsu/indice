@@ -523,6 +523,7 @@ impl SearchIndex {
         let ts_f = schema.get_field(FIELD_TS).unwrap();
         let title_f = schema.get_field(FIELD_TITLE).unwrap();
         let crawl_id_f = schema.get_field(FIELD_CRAWL_ID).unwrap();
+        let status_f = schema.get_field(FIELD_STATUS).unwrap();
 
         let reader = self.index.reader()?;
         let searcher = reader.searcher();
@@ -585,16 +586,33 @@ impl SearchIndex {
         let (total, top) =
             searcher.search(&query, &(Count, TopDocs::with_limit(want).order_by_score()))?;
 
-        let mut hits = Vec::new();
+        // Prefer good captures: rank HTTP 2xx ahead of everything else
+        // (errors/redirects/no-recorded-status). This matters for URL→WACZ
+        // resolution — when several crawls captured the same URL and one holds a
+        // real 200 while another holds an archived 404, wabac must land on the
+        // 200. wabac's resolve call carries no timestamp, so we can't pick by
+        // time; a stable 2xx-first sort keeps the index's relevance order within
+        // each rank. (For a paginated page-list this orders within the page,
+        // which is harmless.)
+        let mut ranked: Vec<(u8, PageHit)> = Vec::new();
         for (_score, addr) in top.into_iter().skip(offset).take(limit) {
             let doc: TantivyDocument = searcher.doc(addr)?;
-            hits.push(PageHit {
-                url: get_text(&doc, url_f),
-                timestamp: get_text(&doc, ts_f),
-                title: get_text(&doc, title_f),
-                crawl_id: get_text(&doc, crawl_id_f),
-            });
+            let rank = match get_u64(&doc, status_f) {
+                Some(s) if (200..300).contains(&s) => 0,
+                _ => 1,
+            };
+            ranked.push((
+                rank,
+                PageHit {
+                    url: get_text(&doc, url_f),
+                    timestamp: get_text(&doc, ts_f),
+                    title: get_text(&doc, title_f),
+                    crawl_id: get_text(&doc, crawl_id_f),
+                },
+            ));
         }
+        ranked.sort_by_key(|(rank, _)| *rank);
+        let hits = ranked.into_iter().map(|(_, h)| h).collect();
         Ok((total, hits))
     }
 }
@@ -1475,6 +1493,46 @@ mod tests {
             None,
             "a page with no recorded status stays None"
         );
+    }
+
+    #[test]
+    fn collection_pages_url_prefers_2xx_capture() {
+        // The same URL captured by two crawls: an archived 404 (indexed first,
+        // so it would win on relevance/doc order) and the real 200 page. URL
+        // resolution must surface the 200 crawl first so wabac lands on it.
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/lgbt/",
+            title: "404 Not Found",
+            timestamp: "20250201000000",
+            status: None, // an archived error capture (no clean 2xx)
+            crawl_id: "badcrawl",
+            collection: "c",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/lgbt/",
+            title: "The Real Page",
+            timestamp: "20250107000000",
+            status: Some(200),
+            crawl_id: "goodcrawl",
+            collection: "c",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        let (total, hits) = idx
+            .collection_pages("c", Some("https://ex.com/lgbt/"), None, 0, 25)
+            .unwrap();
+        assert_eq!(total, 2, "both captures matched");
+        assert_eq!(
+            hits[0].crawl_id, "goodcrawl",
+            "the 200 capture resolves first, ahead of the archived 404"
+        );
+        assert_eq!(hits[1].crawl_id, "badcrawl");
     }
 
     #[test]
