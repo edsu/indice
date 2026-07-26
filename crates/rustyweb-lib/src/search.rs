@@ -387,6 +387,7 @@ impl SearchIndex {
         let author_f = schema.get_field(FIELD_AUTHOR).unwrap();
         let url_tokens_f = schema.get_field(FIELD_URL_TOKENS).unwrap();
         let collection_f = schema.get_field(FIELD_COLLECTION).unwrap();
+        let status_f = schema.get_field(FIELD_STATUS).unwrap();
 
         // Bare words search the title, headings, body, description, keywords,
         // author, and URL words. Other fields (domain:, url:, title:, author:)
@@ -476,6 +477,7 @@ impl SearchIndex {
                 description: get_text(&doc, description_f),
                 snippet: snippet.to_html(),
                 capture_count: g.captures,
+                status: get_u64(&doc, status_f).map(|s| s as u16),
             });
         }
 
@@ -659,6 +661,9 @@ pub struct SearchResult {
     /// How many captures of this URL matched (1 when there are no repeats). The
     /// result shown is the best-ranked capture; the rest are collapsed into it.
     pub capture_count: usize,
+    /// HTTP response status of the capture, when recorded. Mostly `200`; the
+    /// value is in flagging the exceptions (archived 404/500/… pages).
+    pub status: Option<u16>,
 }
 
 /// One page of search results plus the facet counts and total match count for
@@ -1115,6 +1120,10 @@ fn get_text(doc: &TantivyDocument, field: tantivy::schema::Field) -> String {
         .to_string()
 }
 
+fn get_u64(doc: &TantivyDocument, field: tantivy::schema::Field) -> Option<u64> {
+    doc.get_first(field).and_then(|v| v.as_u64())
+}
+
 /// Text extracted from an HTML page for indexing.
 #[derive(Debug, Default, PartialEq)]
 pub struct HtmlText {
@@ -1426,6 +1435,45 @@ mod tests {
             idx.search("author:Lovelace", 10).unwrap().len(),
             1,
             "author: field query"
+        );
+    }
+
+    #[test]
+    fn search_results_carry_http_status() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/ok",
+            title: "ok page",
+            status: Some(200),
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/missing",
+            title: "gone page",
+            status: Some(404),
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/unknown",
+            title: "statusless page",
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        let by_url = |q: &str| idx.search(q, 10).unwrap().into_iter().next().unwrap();
+        assert_eq!(by_url("ok").status, Some(200));
+        assert_eq!(by_url("gone").status, Some(404), "non-200 flows through");
+        assert_eq!(
+            by_url("statusless").status,
+            None,
+            "a page with no recorded status stays None"
         );
     }
 

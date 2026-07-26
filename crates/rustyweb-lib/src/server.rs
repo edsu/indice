@@ -400,6 +400,7 @@ async fn search_page(
                 coll_href,
                 coll_display,
                 capture_count: r.capture_count,
+                status: r.status,
             }
         })
         .collect();
@@ -1063,6 +1064,7 @@ async fn search_api(
                     "collection": r.collection,
                     "snippet": r.snippet,
                     "capture_count": r.capture_count,
+                    "status": r.status,
                 })).collect::<Vec<_>>(),
                 "facets": response.facets.iter().map(|g| serde_json::json!({
                     "field": g.field,
