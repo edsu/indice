@@ -125,11 +125,13 @@
       const rp = document.createElement('replay-web-page');
       rp.setAttribute('source', source);
       rp.setAttribute('coll', collId);
-      // Single WACZ: chrome-free replay (replayonly). A collection (multi-WACZ
-      // .json source) shows ReplayWeb.page's Pages sidebar (the "left pane"),
-      // which is fed by our pagesQueryUrl endpoint — a server-side page list and
-      // URL→WACZ resolution, so the browser never loads every member's index.
-      rp.setAttribute('embed', source.endsWith('/replay.json') ? 'replay' : 'replayonly');
+      // Chrome-free inline replay for both single-WACZ and multi-WACZ collection
+      // sources. (ReplayWeb.page's `embed=replay` full-app mode would show a Pages
+      // sidebar, but it loads its own app shell and doesn't deep-link to a
+      // specific url/ts the way `replayonly` does — so it can't replay a chosen
+      // page. Cross-member resolution still happens in the service worker via the
+      // collection's pagesQueryUrl regardless of embed mode.)
+      rp.setAttribute('embed', 'replayonly');
       // Absolute base so the SW resolves to /replay/sw.js regardless of the
       // page path. The default "./replay/" would resolve relative to
       // /replay/viewer → /replay/replay/sw.js (404).

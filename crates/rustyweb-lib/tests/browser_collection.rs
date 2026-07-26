@@ -53,20 +53,86 @@ async fn browser_renders_multi_wacz_collection() {
     });
 
     // 3. Headless Chrome via WebDriver.
-    let wd = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".into());
-    let mut caps = DesiredCapabilities::chrome();
-    caps.add_arg("--headless=new").unwrap();
-    caps.add_arg("--no-sandbox").unwrap();
-    caps.add_arg("--disable-gpu").unwrap();
-    caps.add_arg("--disable-dev-shm-usage").unwrap();
-    let driver = WebDriver::new(&wd, caps)
-        .await
-        .expect("connect to WebDriver - is `chromedriver --port=9515` running?");
+    let driver = connect_driver().await;
 
     let result = drive_and_check(&driver, addr, &id).await;
     let _ = driver.quit().await;
     server.abort();
     result.unwrap();
+}
+
+/// A collection whose members have no whole-file `sha256` (as streamed remote
+/// WACZs do — e.g. Browsertrix without `--download`) must still replay. Earlier
+/// the manifest gave every hashless member the same empty `"sha256:"` hash, which
+/// collapsed them in wabac's loader so *no* members loaded ("Archived Page Not
+/// Found", no `/files/…` requests). Regression guard: blank the members' sha256
+/// and confirm the collection still replays a page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn browser_renders_collection_with_hashless_members() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let coll = "Test Collection";
+    rustyweb_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
+    rustyweb_lib::index::index_path(
+        &fixture("github-bitcoin-mining.wacz"),
+        tmp.path(),
+        None,
+        coll,
+    )
+    .unwrap();
+
+    // Blank every member's sha256, as a streamed source has none.
+    let waczs = tmp.path().join("index").join("waczs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    for w in v.as_array_mut().unwrap() {
+        w["sha256"] = serde_json::Value::String(String::new());
+    }
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+
+    let id = rustyweb_lib::collections::slugify(coll);
+    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let driver = connect_driver().await;
+    let result = render_check(
+        &driver,
+        addr,
+        &format!("/collection/{id}/replay.json"),
+        "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179",
+        "20260609213407",
+        "2Tone",
+    )
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+}
+
+/// Connect to a headless Chrome via WebDriver. `WEBDRIVER_URL` overrides the
+/// chromedriver endpoint; `CHROME_BIN` selects a specific Chrome binary (e.g. a
+/// matched Chrome for Testing from @puppeteer/browsers).
+async fn connect_driver() -> WebDriver {
+    let wd = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".into());
+    let mut caps = DesiredCapabilities::chrome();
+    if let Ok(bin) = std::env::var("CHROME_BIN") {
+        caps.set_binary(&bin).unwrap();
+    }
+    caps.add_arg("--headless=new").unwrap();
+    caps.add_arg("--no-sandbox").unwrap();
+    caps.add_arg("--disable-gpu").unwrap();
+    caps.add_arg("--disable-dev-shm-usage").unwrap();
+    WebDriver::new(&wd, caps)
+        .await
+        .expect("connect to WebDriver - is chromedriver running?")
 }
 
 async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {

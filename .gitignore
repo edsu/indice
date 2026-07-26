@@ -32,3 +32,7 @@
 /images/*.pdf
 
 .DS_Store
+
+# Chrome for Testing + chromedriver (local browser testing, via @puppeteer/browsers)
+/chrome/
+/chromedriver/
