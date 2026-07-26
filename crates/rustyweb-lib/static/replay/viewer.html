@@ -126,11 +126,12 @@
       rp.setAttribute('source', source);
       rp.setAttribute('coll', collId);
       // Chrome-free inline replay for both single-WACZ and multi-WACZ collection
-      // sources. (ReplayWeb.page's `embed=replay` full-app mode would show a Pages
-      // sidebar, but it loads its own app shell and doesn't deep-link to a
-      // specific url/ts the way `replayonly` does — so it can't replay a chosen
-      // page. Cross-member resolution still happens in the service worker via the
-      // collection's pagesQueryUrl regardless of embed mode.)
+      // sources. A collection is a native multi-WACZ source: wabac loads each
+      // member's CDX and resolves URLs across them itself. (ReplayWeb.page's
+      // `embed=replay` full-app mode would add a Pages sidebar, but it loads its
+      // own app shell and doesn't deep-link to a specific url/ts the way
+      // `replayonly` does — so it can't open a chosen page. Deferred with the
+      // pagesQueryUrl scale valve; see rustyweb-scale-footprint-qw5.10.)
       rp.setAttribute('embed', 'replayonly');
       // Absolute base so the SW resolves to /replay/sw.js regardless of the
       // page path. The default "./replay/" would resolve relative to

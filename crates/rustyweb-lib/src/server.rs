@@ -648,14 +648,13 @@ async fn collection_replay_json(
         "metadata": {
             "title": c.name,
             "desc": c.description,
-            // NOTE: no `pagesQueryUrl`. wabac replays this as a native multi-WACZ
-            // collection, loading each member's CDX and resolving URLs (and
-            // redirects) with its own fuzzy matching — the same reliable path
-            // single-WACZ replay uses. Setting pagesQueryUrl would defer
-            // resolution to our index endpoint (`collection_pages`) for a flatter
-            // client footprint on huge collections, but that resolver can't match
-            // wabac's fuzzy/redirect handling, so it's left off until it can be
-            // made reliable. See rustyweb-scale-footprint-qw5.10.
+            // No `pagesQueryUrl` yet: wabac replays this as a native multi-WACZ
+            // collection, loading each member's CDX and resolving URLs itself.
+            // Deferring the pagesQueryUrl scale valve (server-side resolution via
+            // `collection_pages`) until its lazy-loading + resolution-completeness
+            // are browser-verified — the hash fix unblocked it, but proving the
+            // flat-footprint win needs more than a render check. See
+            // rustyweb-scale-footprint-qw5.10.
         },
     });
     (StatusCode::OK, axum::Json(body)).into_response()
