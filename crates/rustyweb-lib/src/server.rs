@@ -73,6 +73,8 @@ pub fn router_with_resolver(
         .route("/", get(homepage))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
+        .route("/collection/{id}/replay.json", get(collection_replay_json))
+        .route("/collection/{id}/pages", get(collection_pages))
         .route("/crawl/{id}", get(crawl_page))
         .route("/thumb/{id}", get(thumb_handler))
         .route("/collection-thumb/{id}", get(collection_thumb_handler))
@@ -162,6 +164,11 @@ async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 name: c.name.clone(),
                 count: members.len(),
                 description: c.description.clone(),
+                replay_href: collection_replay_href(
+                    &c.id,
+                    &c.name,
+                    collection_default_page(&members),
+                ),
                 // Capture date range (temporal span is meaningful at the
                 // collection level; per-tool software lives on the WACZ page).
                 date_range: members_capture_range(&members),
@@ -563,8 +570,114 @@ async fn collection_page(
         meta,
         facets,
         members: member_items,
+        replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
     };
     views::collection(&page).into_response()
+}
+
+/// A wabac (ReplayWeb.page) multi-WACZ collection manifest for a collection: the
+/// JSON that `<replay-web-page source="…/replay.json">` loads to replay every
+/// member crawl as one collection. Each member maps to a resource pointing at the
+/// same byte-serving endpoint single-WACZ replay already uses (`viewer_source`):
+/// `/files/{id}` for local/Browsertrix sources, the remote URL for a plain URL.
+///
+/// `name`/`crawlId` are the WACZ id (kept identical so a future server-side pages
+/// endpoint can return the same id as `filename` — see the scale-valve phase of
+/// rustyweb-homepage-replay-bukh / rustyweb-cross-wacz-replay-dk4). `hash` carries
+/// the `sha256:` prefix wabac expects.
+async fn collection_replay_json(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e),
+    };
+    let Some(c) = manifest.collection_by_id(&id) else {
+        return (StatusCode::NOT_FOUND, "collection not found").into_response();
+    };
+    let resources: Vec<serde_json::Value> = manifest
+        .members_of(&id)
+        .map(|w| {
+            serde_json::json!({
+                "name": w.id,
+                "path": viewer_source(w),
+                "hash": format!("sha256:{}", w.sha256),
+                "crawlId": w.id,
+            })
+        })
+        .collect();
+    if resources.is_empty() {
+        return (StatusCode::NOT_FOUND, "collection has no crawls to replay").into_response();
+    }
+    let body = serde_json::json!({
+        "resources": resources,
+        "metadata": {
+            "title": c.name,
+            "desc": c.description,
+            // Have wabac resolve the page list and URL→WACZ lookups against our
+            // index endpoint instead of loading every member's page index into
+            // the browser — so the replay-client footprint stays flat no matter
+            // how large the collection is (see `collection_pages`).
+            "pagesQueryUrl": format!("/collection/{id}/pages"),
+        },
+    });
+    (StatusCode::OK, axum::Json(body)).into_response()
+}
+
+#[derive(Deserialize)]
+struct PagesParams {
+    /// Exact-URL resolution (wabac's on-demand URL→WACZ lookup).
+    url: Option<String>,
+    /// Free-text page-list search (the viewer's Pages sidebar search box).
+    search: Option<String>,
+    /// 1-based page number.
+    page: Option<usize>,
+    #[serde(rename = "pageSize")]
+    page_size: Option<usize>,
+}
+
+/// wabac `pagesQueryUrl` endpoint for a collection: the page list / search and
+/// on-demand URL→WACZ resolution that back multi-WACZ replay, answered from the
+/// Tantivy index. Response shape is wabac's: `{ total, items: [{ url, ts, title,
+/// filename }] }`, where `filename` is the member WACZ id (== the manifest's
+/// `resources[].name`). `ts` is emitted as ISO 8601 so wabac's `new Date(ts)`
+/// parses it (the index stores a 14-digit timestamp).
+async fn collection_pages(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(params): Query<PagesParams>,
+) -> Response {
+    let page = params.page.unwrap_or(1).max(1);
+    let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
+    let offset = (page - 1) * page_size;
+    match state.search.collection_pages(
+        &id,
+        params.url.as_deref(),
+        params.search.as_deref(),
+        offset,
+        page_size,
+    ) {
+        Ok((total, hits)) => {
+            let items: Vec<serde_json::Value> = hits
+                .iter()
+                .map(|h| {
+                    serde_json::json!({
+                        "url": h.url,
+                        "ts": ts_to_iso(&h.timestamp),
+                        "title": h.title,
+                        "filename": h.crawl_id,
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({ "total": total, "items": items })),
+            )
+                .into_response()
+        }
+        Err(e) => error_response(e),
+    }
 }
 
 /// Build the scoped facet sections for a detail page. Each dimension becomes a
@@ -1160,6 +1273,41 @@ fn viewer_source(col: &Wacz) -> String {
     }
 }
 
+/// The viewer URL that replays a whole collection (multi-WACZ): wabac loads the
+/// collection's `replay.json` manifest (see `collection_replay_json`) as one
+/// merged collection. Passes an explicit `coll` namespace plus breadcrumb params.
+///
+/// A whole-collection entry has no page in mind, so it opens on a sensible
+/// default landing page (`default_page`) when one is known — otherwise wabac
+/// lands on its collection root. (Specific-context replay — a crawl's Replay
+/// button, a search result — carries its own `url`/`ts` and doesn't come through
+/// here.)
+fn collection_replay_href(id: &str, name: &str, default_page: Option<(String, String)>) -> String {
+    let source = format!("/collection/{id}/replay.json");
+    let mut href = format!(
+        "/replay/viewer?source={}&coll={}&name={}&collection={}&collection_id={}",
+        url_encode(&source),
+        url_encode(id),
+        url_encode(name),
+        url_encode(name),
+        url_encode(id),
+    );
+    if let Some((url, ts)) = default_page {
+        href.push_str(&format!("&url={}&ts={}", url_encode(&url), url_encode(&ts)));
+    }
+    href
+}
+
+/// A sensible landing page for whole-collection replay: the first member (in
+/// manifest order) that has a seed page, with that page's url and wabac
+/// timestamp. `None` when no member has a seed page.
+fn collection_default_page(members: &[&Wacz]) -> Option<(String, String)> {
+    members
+        .iter()
+        .find_map(|w| w.seed_pages.first())
+        .map(|p| (p.url.clone(), ts_to_14digit(&p.ts)))
+}
+
 fn error_response(e: anyhow::Error) -> Response {
     tracing::error!("{e:#}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -1329,6 +1477,26 @@ fn url_encode(s: &str) -> String {
 /// wants `20260609213406`. Extract the digits and take the first 14.
 fn ts_to_14digit(ts: &str) -> String {
     ts.chars().filter(|c| c.is_ascii_digit()).take(14).collect()
+}
+
+/// Convert a 14-digit capture timestamp (`YYYYMMDDHHMMSS`) to ISO 8601
+/// (`YYYY-MM-DDTHH:MM:SSZ`) so wabac's `new Date(ts)` in the pages list parses
+/// it (the index stores the 14-digit form). Anything not 14 digits is returned
+/// unchanged (already ISO, or empty).
+fn ts_to_iso(ts: &str) -> String {
+    if ts.len() == 14 && ts.bytes().all(|b| b.is_ascii_digit()) {
+        format!(
+            "{}-{}-{}T{}:{}:{}Z",
+            &ts[0..4],
+            &ts[4..6],
+            &ts[6..8],
+            &ts[8..10],
+            &ts[10..12],
+            &ts[12..14],
+        )
+    } else {
+        ts.to_string()
+    }
 }
 
 fn format_timestamp(ts: &str) -> String {

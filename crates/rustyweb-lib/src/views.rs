@@ -91,6 +91,8 @@ pub struct CollectionCard {
     pub count: usize,
     pub description: Option<String>,
     pub date_range: Option<String>,
+    /// Viewer URL that replays the whole collection (multi-WACZ).
+    pub replay_href: String,
     /// `/thumb/{id}` for a representative member crawl, if any has one.
     pub thumb: Option<String>,
     /// Whether the collection has any locally-stored / any remote member — both
@@ -229,8 +231,15 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
                     @if let Some(d) = &c.description {
                         p.desc { (d) }
                     }
-                    @if let Some(r) = &c.date_range {
-                        div.prov { (r) }
+                    @if c.date_range.is_some() || c.count > 0 {
+                        div.card-footer {
+                            @if let Some(r) = &c.date_range {
+                                div.prov { (r) }
+                            }
+                            @if c.count > 0 {
+                                a.replay-btn href=(c.replay_href) { "Replay →" }
+                            }
+                        }
                     }
                 }
             }
@@ -536,6 +545,8 @@ pub struct CollectionPage {
     pub meta: Vec<MetaRow>,
     pub facets: Vec<FacetSection>,
     pub members: Vec<MemberItem>,
+    /// Viewer URL that replays the whole collection (multi-WACZ).
+    pub replay_href: String,
 }
 
 impl CollectionPage {
@@ -599,6 +610,9 @@ pub fn collection(p: &CollectionPage) -> Markup {
         (top_bar(None))
         h1.page-title { (p.name) }
         @if let Some(d) = &p.description { p.desc { (d) } }
+        @if !p.members.is_empty() {
+            a.replay-btn href=(p.replay_href) { "Replay collection →" }
+        }
 
         section.about {
             h2 { "About this collection" }
