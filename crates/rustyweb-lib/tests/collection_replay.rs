@@ -126,15 +126,19 @@ async fn replay_json_404s_for_unknown_collection() {
 }
 
 #[tokio::test]
-async fn replay_json_metadata_carries_pages_query_url() {
+async fn replay_json_metadata_has_no_pages_query_url() {
     let (tmp, id) = home_with_collection();
     let app = rustyweb_lib::server::router(tmp.path()).unwrap();
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
-    // wabac defers page-list/URL resolution to this endpoint (the scale valve).
-    assert_eq!(
-        json["metadata"]["pagesQueryUrl"],
-        format!("/collection/{id}/pages")
+    // The manifest intentionally omits pagesQueryUrl: wabac replays natively,
+    // loading each member's CDX and resolving URLs itself (reliable). The
+    // pagesQueryUrl scale valve is deferred until it can be made reliable
+    // (rustyweb-scale-footprint-qw5.10).
+    assert!(
+        json["metadata"].get("pagesQueryUrl").is_none(),
+        "pagesQueryUrl should be omitted, got {:?}",
+        json["metadata"]["pagesQueryUrl"]
     );
 }
 
@@ -166,6 +170,44 @@ async fn pages_endpoint_lists_pages_in_wabac_shape() {
             "ts not ISO 8601: {ts}"
         );
     }
+}
+
+#[tokio::test]
+async fn replay_json_uses_browsertrix_hash_for_streamed_members() {
+    // A streamed member has no locally-computed sha256, but a Browsertrix import
+    // kept the file hash from replay.json. The manifest must surface it
+    // (sha256:-prefixed) so members keep distinct, verifiable hashes instead of a
+    // shared empty "sha256:" that collapses them in wabac. See the multi-WACZ
+    // collection replay fix.
+    let (tmp, id) = home_with_collection();
+
+    // Rewrite the first member: blank its sha256 and give it a Browsertrix
+    // provenance carrying a (bare-hex) resource hash, as a streamed import does.
+    let waczs = tmp.path().join("index").join("waczs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    let members = v.as_array_mut().unwrap();
+    let target = members[0]["id"].as_str().unwrap().to_string();
+    members[0]["sha256"] = serde_json::json!("");
+    members[0]["browsertrix"] = serde_json::json!({
+        "host": "https://example.browsertrix.com",
+        "item_id": "item-1",
+        "resource_hash": "deadbeef00",
+    });
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+
+    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
+    assert_eq!(status, StatusCode::OK);
+    let r = json["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == target)
+        .expect("target member present");
+    assert_eq!(
+        r["hash"], "sha256:deadbeef00",
+        "streamed member uses its Browsertrix hash, sha256:-prefixed"
+    );
 }
 
 #[tokio::test]

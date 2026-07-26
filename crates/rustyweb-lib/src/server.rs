@@ -600,12 +600,44 @@ async fn collection_replay_json(
     let resources: Vec<serde_json::Value> = manifest
         .members_of(&id)
         .map(|w| {
-            serde_json::json!({
+            let mut res = serde_json::json!({
                 "name": w.id,
                 "path": viewer_source(w),
-                "hash": format!("sha256:{}", w.sha256),
                 "crawlId": w.id,
-            })
+            });
+            // The member hash. wabac uses it as the member's identity, so every
+            // member MUST have a distinct one (or none) — giving several members
+            // the same hash collapses them in wabac's loader and breaks
+            // multi-WACZ replay ("Archived Page Not Found", no member requests).
+            //   - Local/downloaded WACZ: our computed whole-file sha256.
+            //   - Streamed remote WACZ: no locally-computed sha256, but a
+            //     Browsertrix import kept the file hash from its replay.json
+            //     (already `sha256:…`) — use it, so streamed members keep
+            //     distinct, real, verifiable hashes.
+            //   - Otherwise (e.g. a plain remote URL): omit it; wabac then treats
+            //     the member as unverified. See rustyweb-streamed-wacz-fixity-zle5.
+            let hash = if !w.sha256.is_empty() {
+                Some(format!("sha256:{}", w.sha256))
+            } else {
+                w.browsertrix
+                    .as_ref()
+                    .map(|b| b.resource_hash.trim())
+                    .filter(|h| !h.is_empty())
+                    // Normalize to the `algo:hash` form wabac expects. Browsertrix
+                    // hashes are stored bare (64-hex sha256); older/test data may
+                    // already carry a `sha256:` prefix.
+                    .map(|h| {
+                        if h.contains(':') {
+                            h.to_string()
+                        } else {
+                            format!("sha256:{h}")
+                        }
+                    })
+            };
+            if let Some(h) = hash {
+                res["hash"] = serde_json::Value::String(h);
+            }
+            res
         })
         .collect();
     if resources.is_empty() {
@@ -616,11 +648,13 @@ async fn collection_replay_json(
         "metadata": {
             "title": c.name,
             "desc": c.description,
-            // Have wabac resolve the page list and URL→WACZ lookups against our
-            // index endpoint instead of loading every member's page index into
-            // the browser — so the replay-client footprint stays flat no matter
-            // how large the collection is (see `collection_pages`).
-            "pagesQueryUrl": format!("/collection/{id}/pages"),
+            // No `pagesQueryUrl` yet: wabac replays this as a native multi-WACZ
+            // collection, loading each member's CDX and resolving URLs itself.
+            // Deferring the pagesQueryUrl scale valve (server-side resolution via
+            // `collection_pages`) until its lazy-loading + resolution-completeness
+            // are browser-verified — the hash fix unblocked it, but proving the
+            // flat-footprint win needs more than a render check. See
+            // rustyweb-scale-footprint-qw5.10.
         },
     });
     (StatusCode::OK, axum::Json(body)).into_response()
