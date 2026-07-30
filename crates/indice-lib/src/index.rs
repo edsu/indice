@@ -12,7 +12,7 @@ use crate::search::{extract_html_text, SearchIndex};
 use crate::wacz::{extract_warc_from_wacz, iter_warc_paths, read_datapackage};
 use crate::warc::{iter_records, WarcRecord, Warcinfo};
 
-/// Paths derived from a rustyweb home directory.
+/// Paths derived from a indice home directory.
 pub fn index_dir(home: &Path) -> PathBuf {
     home.join("index")
 }
@@ -216,7 +216,7 @@ pub fn optimize(
     let full_text = index_dir(home).join("full_text");
     if !full_text.join("meta.json").exists() {
         anyhow::bail!(
-            "no search index at {} — nothing to optimize (run `rustyweb index` first)",
+            "no search index at {} — nothing to optimize (run `indice index` first)",
             full_text.display()
         );
     }
@@ -287,7 +287,7 @@ pub fn reindex(
     let mut skipped = 0usize;
     for (source, name, collection_id, collection_name) in &targets {
         // Skip local files that no longer exist rather than failing the run;
-        // their manifest entry is preserved (see `rustyweb verify`).
+        // their manifest entry is preserved (see `indice verify`).
         if !source.is_url() {
             match source.resolve(home) {
                 Some(p) if p.exists() => {}
@@ -352,7 +352,7 @@ pub fn reindex(
         anyhow::bail!(
             "reindex finished but {skipped} of {total} source(s) were skipped \
              (indexed {done}); the search index is missing them — fix the cause \
-             and run `rustyweb reindex` again to include them"
+             and run `indice reindex` again to include them"
         );
     }
     info!(reindexed = done, total, "reindex complete");
@@ -492,7 +492,7 @@ pub fn set_browsertrix_provenance_by_id(
 /// Turn one `index` argument into a source to index, filing local WACZs into the
 /// collection's archive folder. An `http(s)://` URL yields a URL source. A local
 /// `.wacz` file may live anywhere: it's brought into `<home>/archive/<slug>/` —
-/// **moved** if it already sits under `archive/` (reorganized within rustyweb's
+/// **moved** if it already sits under `archive/` (reorganized within indice's
 /// own space), **copied** otherwise (the original is left intact) — so the home
 /// directory stays self-contained and portable and the archive is browsable by
 /// collection. Directories and non-`.wacz` paths are errors with guidance.
@@ -559,7 +559,7 @@ fn place_local_wacz(
     if path.is_dir() {
         anyhow::bail!(
             "{} is a directory; pass individual .wacz files instead \
-             (e.g. `rustyweb index archive/*.wacz`)",
+             (e.g. `indice index archive/*.wacz`)",
             path.display()
         );
     }
@@ -1775,7 +1775,7 @@ const MAX_CONCURRENCY: usize = 64;
 /// `--concurrency` isn't given.
 ///
 /// Remote defaults to a deliberately gentle 4: a single WACZ's requests all hit
-/// one host, and rustyweb is meant to be pointed at arbitrary (often small)
+/// one host, and indice is meant to be pointed at arbitrary (often small)
 /// servers, so it's polite by default while still ~4x faster than serial. Users
 /// hitting an object store (e.g. S3) can raise it with `--concurrency`.
 ///
@@ -2545,7 +2545,7 @@ mod tests {
         );
 
         // ...and the skipped source's manifest entry is preserved (not dropped),
-        // so `rustyweb reindex` can pick it up again once the cause is fixed.
+        // so `indice reindex` can pick it up again once the cause is fixed.
         let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
         assert_eq!(
             manifest.waczs.len(),

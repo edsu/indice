@@ -1623,6 +1623,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "indice"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "gag",
+ "indicatif",
+ "indice-lib",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "indice-lib"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "flate2",
+ "image",
+ "maud",
+ "pdf-extract",
+ "psl",
+ "pulldown-cmark",
+ "rayon",
+ "rust-embed",
+ "scraper",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tantivy",
+ "tempfile",
+ "thirtyfour",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "ureq",
+ "url",
+ "warc",
+ "whatlang",
+ "zip",
+]
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2822,59 +2875,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "rustyweb"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "gag",
- "indicatif",
- "rustyweb-lib",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "rustyweb-lib"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "flate2",
- "image",
- "maud",
- "pdf-extract",
- "psl",
- "pulldown-cmark",
- "rayon",
- "rust-embed",
- "scraper",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2 0.11.0",
- "tantivy",
- "tempfile",
- "thirtyfour",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http 0.7.0",
- "tracing",
- "ureq",
- "url",
- "warc",
- "whatlang",
- "zip",
-]
 
 [[package]]
 name = "ryu"

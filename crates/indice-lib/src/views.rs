@@ -71,7 +71,7 @@ pub fn search_tips() -> Markup {
 fn top_bar(query: Option<&str>) -> Markup {
     html! {
         div.top {
-            a.home href="/" { "rustyweb" }
+            a.home href="/" { "indice" }
             form.search-form action="/search" method="get" {
                 @if let Some(q) = query {
                     input type="search" name="q" value=(q);
@@ -170,7 +170,7 @@ fn facet_browse(facets: &[FacetSection]) -> Markup {
 /// collection.
 pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
     let body = html! {
-        h1 { "rustyweb" }
+        h1 { "indice" }
         p.tagline { "Web archive search and replay" }
         form.search-form.home action="/search" method="get" {
             input type="search" name="q" placeholder="Search archived pages…" autofocus;
@@ -209,7 +209,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
         @if cards.is_empty() {
             p.muted {
                 "No collections indexed yet. Run "
-                code { "rustyweb index archive/*.wacz" } " to get started."
+                code { "indice index archive/*.wacz" } " to get started."
             }
         }
         div.cards {
@@ -245,7 +245,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
             }
         }
     };
-    layout("rustyweb", body)
+    layout("indice", body)
 }
 
 // ── Search results ─────────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ pub fn search_results(
             }
         }
     };
-    layout(&format!("{query} - rustyweb"), body)
+    layout(&format!("{query} - indice"), body)
 }
 
 // ── Shared metadata / provenance rows ────────────────────────────────────────
@@ -547,7 +547,7 @@ fn source_badge(remote: bool) -> Markup {
     if remote {
         html! {
             span.source-badge.remote role="img" aria-label="Remote"
-                title="Hosted remotely — rustyweb streams this at replay time and doesn't keep a local copy" {
+                title="Hosted remotely — indice streams this at replay time and doesn't keep a local copy" {
                 "🌐"
             }
         }
@@ -662,7 +662,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                     p.muted.nudge {
                         "Still needed: " (missing.join(", "))
                         " (the finding-aid minimum). Add with "
-                        code { "rustyweb collection set \"" (p.name) "\" …" }
+                        code { "indice collection set \"" (p.name) "\" …" }
                         " or edit "
                         code { "collections/" (slug) "/README.md" }
                         "."
@@ -675,7 +675,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                     "No finding-aid description yet. Add the essentials a reader needs — "
                     "who gathered it (Creator), why it was archived (Scope & Content), and "
                     "who may use it (Access): "
-                    code { "rustyweb collection set \"" (p.name) "\" --creator \"…\"" }
+                    code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
                     " — or edit "
                     code { "collections/" (slug) "/README.md" }
                     "."
@@ -712,7 +712,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
             }
         }
     };
-    layout(&format!("{} - rustyweb", p.name), body)
+    layout(&format!("{} - indice", p.name), body)
 }
 
 // ── Crawl detail ─────────────────────────────────────────────────────────────
@@ -811,5 +811,5 @@ pub fn crawl(p: &CrawlPage) -> Markup {
             }
         }
     };
-    layout(&format!("{} - rustyweb", p.name), body)
+    layout(&format!("{} - indice", p.name), body)
 }

@@ -425,7 +425,7 @@ pub(crate) fn ensure_warcs_stored<R: std::io::Read + std::io::Seek>(
     } else {
         anyhow::bail!(
             "WACZ stores its WARC entries compressed (deflate); CDX-guided \
-             extraction needs uncompressed (stored) WARCs. rustyweb falls back to \
+             extraction needs uncompressed (stored) WARCs. indice falls back to \
              a full WARC scan for such files automatically."
         )
     }

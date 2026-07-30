@@ -1,6 +1,6 @@
-//! End-to-end test of `rustyweb import browsertrix` against a local mock
+//! End-to-end test of `indice import browsertrix` against a local mock
 //! Browsertrix API. Spawns the built binary (Cargo exposes its path as
-//! `CARGO_BIN_EXE_rustyweb`) pointed at an in-process axum server that serves
+//! `CARGO_BIN_EXE_indice`) pointed at an in-process axum server that serves
 //! canned JSON plus a fixture WACZ, then checks the whole path: auth → org →
 //! collection resolution → item listing → QA filter → resources → download →
 //! index → provenance, and that a re-run skips what's already imported.
@@ -16,7 +16,7 @@ use tempfile::TempDir;
 fn fixture(name: &str) -> PathBuf {
     Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../rustyweb-lib/tests/fixtures"
+        "/../indice-lib/tests/fixtures"
     ))
     .join(name)
 }
@@ -170,7 +170,7 @@ fn import_a_collection_then_skip_on_rerun() {
     let home = TempDir::new().unwrap();
 
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_rustyweb"))
+        Command::new(env!("CARGO_BIN_EXE_indice"))
             .args(["import", "browsertrix"])
             .args(["--host", &base])
             .args(["--org", "demo"])
@@ -205,7 +205,7 @@ fn import_a_collection_then_skip_on_rerun() {
     assert_eq!(waczs[0]["browsertrix"]["item_id"], "item1");
     assert_eq!(waczs[0]["browsertrix"]["resource_hash"], "sha256:deadbeef");
     // No --into was passed, so importing the Browsertrix "News" collection
-    // should auto-create a matching rustyweb finding aid (not scatter singletons).
+    // should auto-create a matching indice finding aid (not scatter singletons).
     let news_md = home.path().join("collections/news/README.md");
     assert!(
         news_md.exists(),
@@ -262,7 +262,7 @@ fn public_import_needs_no_credentials() {
     // --public uses the unauthenticated API: no BROWSERTRIX_* env vars at all.
     let base = start_mock();
     let home = TempDir::new().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_rustyweb"))
+    let out = Command::new(env!("CARGO_BIN_EXE_indice"))
         .args(["import", "browsertrix", "--public"])
         .args(["--host", &base])
         .args(["--org", "demo"])
@@ -317,7 +317,7 @@ fn whole_org_import_defaults_the_collection_to_the_org_name() {
     // than scattering singletons.
     let base = start_mock();
     let home = TempDir::new().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_rustyweb"))
+    let out = Command::new(env!("CARGO_BIN_EXE_indice"))
         .args(["import", "browsertrix"])
         .args(["--host", &base])
         .args(["--org", "demo"])

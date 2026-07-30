@@ -1,5 +1,5 @@
-//! CLI-surface tests that spawn the built `rustyweb` binary (Cargo exposes its
-//! path as `CARGO_BIN_EXE_rustyweb`).
+//! CLI-surface tests that spawn the built `indice` binary (Cargo exposes its
+//! path as `CARGO_BIN_EXE_indice`).
 
 use std::process::Command;
 
@@ -8,7 +8,7 @@ use std::process::Command;
 #[test]
 fn index_requires_a_collection() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_rustyweb"))
+    let out = Command::new(env!("CARGO_BIN_EXE_indice"))
         .args(["index", "some.wacz"])
         .arg("--home")
         .arg(tmp.path())

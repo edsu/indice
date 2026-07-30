@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/rustyweb-lib",
-    "crates/rustyweb-bin",
+    "crates/indice-lib",
+    "crates/indice-bin",
 ]
 resolver = "2"
 

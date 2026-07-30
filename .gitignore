@@ -1,7 +1,7 @@
 # Rust build output
 /target
 
-# Local search index created by `rustyweb index`
+# Local search index created by `indice index`
 /index
 
 # Curator finding aids / per-crawl notes when the repo root is used as a test

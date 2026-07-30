@@ -9,7 +9,7 @@
 //! Everything here is **best-effort**: a crawl with no usable image produces no
 //! thumbnail and the UI falls back to a CSS placeholder.
 //!
-//! A curator can also pin a thumbnail explicitly (`rustyweb crawl set <id>
+//! A curator can also pin a thumbnail explicitly (`indice crawl set <id>
 //! --image <file>`); a pinned thumbnail is never overwritten by (re)indexing.
 
 use std::collections::HashMap;

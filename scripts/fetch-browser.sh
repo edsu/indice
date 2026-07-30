@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install a version-matched Chrome for Testing + chromedriver for the headless
-# browser tests (crates/rustyweb-lib/tests/browser.rs and browser_collection.rs,
+# browser tests (crates/indice-lib/tests/browser.rs and browser_collection.rs,
 # both #[ignore]d).
 #
 # Why this script exists: those tests drive a real browser via WebDriver, and
@@ -57,7 +57,7 @@ Run the headless browser tests:
   # 2) point the tests at that Chrome + WebDriver and run the #[ignore]d tests:
   CHROME_BIN="${chrome_bin}" \\
   WEBDRIVER_URL=http://localhost:9515 \\
-    cargo test -p rustyweb-lib --test browser_collection -- --ignored
+    cargo test -p indice-lib --test browser_collection -- --ignored
 
   # (browser.rs is the single-WACZ smoke test; same env, --test browser)
 EOF

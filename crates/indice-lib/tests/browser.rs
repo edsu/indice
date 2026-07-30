@@ -1,6 +1,6 @@
 //! Headless-browser replay smoke test.
 //!
-//! This is the only test that exercises the part of rustyweb that truly matters
+//! This is the only test that exercises the part of indice that truly matters
 //! but can't be checked without a browser: whether ReplayWeb.page / wabac.js
 //! actually renders an archived page from a WACZ we serve. It drives real
 //! Chrome via WebDriver, so it's `#[ignore]`d by default.
@@ -12,7 +12,7 @@
 //! ```sh
 //! "<path>/chromedriver" --port=9515 &          # or any WebDriver server
 //! CHROME_BIN="<path>/Google Chrome for Testing" WEBDRIVER_URL=http://localhost:9515 \
-//!   cargo test -p rustyweb-lib --test browser -- --ignored
+//!   cargo test -p indice-lib --test browser -- --ignored
 //! ```
 //!
 //! `WEBDRIVER_URL` overrides the WebDriver endpoint (default
@@ -39,13 +39,13 @@ async fn browser_renders_archived_page() {
     //    fixture, because wabac.js requires a standard CDXJ index; the minimal
     //    simple.wacz fixture uses a non-standard CDX that wabac can't read.
     let tmp = tempfile::TempDir::new().unwrap();
-    rustyweb_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "test").unwrap();
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "test").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
 
     // 2. Serve it on an ephemeral port (localhost is a secure context, so the
     //    service worker is allowed to register).
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {

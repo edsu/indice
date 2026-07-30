@@ -33,7 +33,7 @@ struct SiteAssets;
 
 struct AppState {
     search: SearchIndex,
-    /// rustyweb home directory; local WACZ sources resolve against it.
+    /// indice home directory; local WACZ sources resolve against it.
     home: PathBuf,
     /// `<home>/index`, where the manifest and full-text index live.
     index_dir: PathBuf,
@@ -59,7 +59,7 @@ pub fn router_with_resolver(
 ) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never writes, so it must not hold the write lock,
-    // which would block `rustyweb index` from running while serving.
+    // which would block `indice index` from running while serving.
     let search = SearchIndex::open_read_only(index_dir.join("full_text").as_path())?;
     let state = Arc::new(AppState {
         search,
@@ -816,7 +816,7 @@ async fn crawl_page(
     // Provenance panel: how this crawl was produced. Only rows with data show.
     let mut provenance = Vec::new();
     if let Some(bt) = &c.browsertrix {
-        // Attribution for content pulled in via `rustyweb import browsertrix`.
+        // Attribution for content pulled in via `indice import browsertrix`.
         let host = bt
             .host
             .trim_start_matches("https://")

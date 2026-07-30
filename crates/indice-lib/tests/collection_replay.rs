@@ -17,15 +17,15 @@ fn fixture(name: &str) -> std::path::PathBuf {
 fn home_with_collection() -> (tempfile::TempDir, String) {
     let tmp = tempfile::TempDir::new().unwrap();
     let coll = "Test Collection";
-    rustyweb_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
-    rustyweb_lib::index::index_path(
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
+    indice_lib::index::index_path(
         &fixture("github-bitcoin-mining.wacz"),
         tmp.path(),
         None,
         coll,
     )
     .unwrap();
-    (tmp, rustyweb_lib::collections::slugify(coll))
+    (tmp, indice_lib::collections::slugify(coll))
 }
 
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
@@ -58,7 +58,7 @@ async fn replay_json_lists_every_member_in_wabac_shape() {
     let (tmp, id) = home_with_collection();
 
     // The member ids the manifest recorded, to check the resource paths.
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let member_ids: Vec<String> = manifest.members_of(&id).map(|w| w.id.clone()).collect();
     assert_eq!(
         member_ids.len(),
@@ -66,7 +66,7 @@ async fn replay_json_lists_every_member_in_wabac_shape() {
         "both fixtures should be in the collection"
     );
 
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -97,7 +97,7 @@ async fn replay_json_lists_every_member_in_wabac_shape() {
 #[tokio::test]
 async fn collection_replay_button_opens_on_a_default_landing_page() {
     let (tmp, id) = home_with_collection();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let (status, html) = get_text(app, &format!("/collection/{id}")).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -120,7 +120,7 @@ async fn collection_replay_button_opens_on_a_default_landing_page() {
 #[tokio::test]
 async fn replay_json_404s_for_unknown_collection() {
     let (tmp, _id) = home_with_collection();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let (status, _json) = get_json(app, "/collection/does-not-exist/replay.json").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -128,7 +128,7 @@ async fn replay_json_404s_for_unknown_collection() {
 #[tokio::test]
 async fn replay_json_metadata_has_no_pages_query_url() {
     let (tmp, id) = home_with_collection();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
     // The manifest intentionally omits pagesQueryUrl: wabac replays natively,
@@ -145,10 +145,10 @@ async fn replay_json_metadata_has_no_pages_query_url() {
 #[tokio::test]
 async fn pages_endpoint_lists_pages_in_wabac_shape() {
     let (tmp, id) = home_with_collection();
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let member_ids: Vec<String> = manifest.members_of(&id).map(|w| w.id.clone()).collect();
 
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let (status, json) = get_json(app, &format!("/collection/{id}/pages?pageSize=100")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(json["total"].as_u64().unwrap() > 0, "collection has pages");
@@ -195,7 +195,7 @@ async fn replay_json_uses_browsertrix_hash_for_streamed_members() {
     });
     std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
 
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
     let r = json["resources"]
@@ -213,7 +213,7 @@ async fn replay_json_uses_browsertrix_hash_for_streamed_members() {
 #[tokio::test]
 async fn pages_endpoint_resolves_exact_url_to_its_member() {
     let (tmp, id) = home_with_collection();
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     // The github-bitcoin-mining fixture is the member holding this URL.
     let gh = manifest
         .members_of(&id)
@@ -222,7 +222,7 @@ async fn pages_endpoint_resolves_exact_url_to_its_member() {
         .id
         .clone();
 
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let target = "https://github.com/DocNow/hydrator/pull/78/files";
     let (status, json) = get_json(app, &format!("/collection/{id}/pages?url={target}")).await;
     assert_eq!(status, StatusCode::OK);
