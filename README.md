@@ -1,6 +1,6 @@
 # indice
 
-[![CI](https://github.com/edsu/rustyweb/actions/workflows/ci.yml/badge.svg)](https://github.com/edsu/rustyweb/actions/workflows/ci.yml)
+[![CI](https://github.com/edsu/indice/actions/workflows/ci.yml/badge.svg)](https://github.com/edsu/indice/actions/workflows/ci.yml)
 
 **Note bene**: *indice is alpha software and has been written extensively
 with the support of Claude Code. Like any piece of software it may contain
@@ -68,7 +68,7 @@ indice is a single self-contained binary. You need a
 ### With cargo (recommended)
 
 ```sh
-cargo install --git https://github.com/edsu/rustyweb --locked indice
+cargo install --git https://github.com/edsu/indice --locked indice
 ```
 
 This builds and installs the `indice` command into `~/.cargo/bin`. The
@@ -78,8 +78,8 @@ fetch or configure.
 ### From a clone (for development)
 
 ```sh
-git clone https://github.com/edsu/rustyweb
-cd rustyweb
+git clone https://github.com/edsu/indice
+cd indice
 cargo build --release
 # binary at ./target/release/indice
 ```

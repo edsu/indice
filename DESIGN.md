@@ -35,7 +35,7 @@ Replay is handled entirely by the wabac.js service worker running in the browser
 ## Cargo Workspace Layout
 
 ```
-rustyweb/
+indice/
 ├── Cargo.toml               (workspace root with [workspace.dependencies])
 ├── crates/
 │   ├── indice-lib/        (all logic - importable in tests)
