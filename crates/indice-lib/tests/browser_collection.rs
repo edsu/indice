@@ -12,7 +12,7 @@
 //! ```sh
 //! "<path>/chromedriver" --port=9515 &
 //! CHROME_BIN="<path>/Google Chrome for Testing" WEBDRIVER_URL=http://localhost:9515 \
-//!   cargo test -p rustyweb-lib --test browser_collection -- --ignored
+//!   cargo test -p indice-lib --test browser_collection -- --ignored
 //! ```
 
 use std::net::SocketAddr;
@@ -33,18 +33,18 @@ async fn browser_renders_multi_wacz_collection() {
     // 1. Index two different real WACZs into ONE collection.
     let tmp = tempfile::TempDir::new().unwrap();
     let coll = "Test Collection";
-    rustyweb_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
-    rustyweb_lib::index::index_path(
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
+    indice_lib::index::index_path(
         &fixture("github-bitcoin-mining.wacz"),
         tmp.path(),
         None,
         coll,
     )
     .unwrap();
-    let id = rustyweb_lib::collections::slugify(coll);
+    let id = indice_lib::collections::slugify(coll);
 
     // 2. Serve on an ephemeral port (localhost is a secure context for the SW).
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -76,8 +76,8 @@ async fn browser_renders_multi_wacz_collection() {
 async fn browser_renders_collection_with_hashless_members() {
     let tmp = tempfile::TempDir::new().unwrap();
     let coll = "Test Collection";
-    rustyweb_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
-    rustyweb_lib::index::index_path(
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
+    indice_lib::index::index_path(
         &fixture("github-bitcoin-mining.wacz"),
         tmp.path(),
         None,
@@ -93,8 +93,8 @@ async fn browser_renders_collection_with_hashless_members() {
     }
     std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
 
-    let id = rustyweb_lib::collections::slugify(coll);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let id = indice_lib::collections::slugify(coll);
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {

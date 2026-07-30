@@ -1,5 +1,5 @@
 [package]
-name = "rustyweb-lib"
+name = "indice-lib"
 version = "0.1.0"
 edition = "2021"
 description = "Library for indexing and serving WACZ web archives with full-text search and WACZ-direct replay."

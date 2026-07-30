@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Guidance for AI agents (and humans) working on rustyweb. Keep this file current as
+Guidance for AI agents (and humans) working on indice. Keep this file current as
 our conventions evolve.
 
-rustyweb is a small, fast, **single-binary** web-archive server: it indexes WACZ
+indice is a small, fast, **single-binary** web-archive server: it indexes WACZ
 files into a Tantivy full-text index and replays them in the browser via
 ReplayWeb.page / wabac.js. See [README.md](README.md) for user-facing docs and
 [DESIGN.md](DESIGN.md) for the architecture (a **living document** — update it as
@@ -36,7 +36,7 @@ codebase is rustfmt-formatted and warning-clean — keep it that way so CI (and 
 badge) stay green. If you add a dependency, commit the updated `Cargo.lock` (CI
 builds `--locked`).
 
-Fixtures for tests live in `crates/rustyweb-lib/tests/fixtures/`. Prefer adding a
+Fixtures for tests live in `crates/indice-lib/tests/fixtures/`. Prefer adding a
 focused test alongside the code it covers.
 
 ## Git & PR workflow
@@ -102,11 +102,11 @@ Also worth checking:
 ## Conventions & ethos
 
 - **Single binary, pure Rust.** Favor dependencies that compile into one
-  self-contained binary (no runtime services, no C toolchain surprises). rustyweb
+  self-contained binary (no runtime services, no C toolchain surprises). indice
   aims to serve both small/local/private use *and* institutional scale from the
   same binary.
-- **Keep the library UI- and dependency-free.** `rustyweb-lib` reports data and
-  facts; `rustyweb-bin` owns user-facing concerns (CLI via `clap`, progress via
+- **Keep the library UI- and dependency-free.** `indice-lib` reports data and
+  facts; `indice-bin` owns user-facing concerns (CLI via `clap`, progress via
   `indicatif`, stdout gagging via `gag`). New UI deps belong in the binary. See the
   `IndexProgress` trait for the pattern (library emits counts; binary renders).
 - **Comments explain *why*.** Match the surrounding code's style, naming, and
@@ -117,6 +117,6 @@ Also worth checking:
   and `sw.js` are committed, pinned copies of the `replaywebpage` npm release (see
   `scripts/fetch-replay.sh`). They are *not* a Cargo dependency, so Dependabot
   won't bump them - upgrade deliberately: bump `VERSION` in the script, re-run it,
-  rebuild, re-test replay in a browser (`cargo test -p rustyweb-lib --test
+  rebuild, re-test replay in a browser (`cargo test -p indice-lib --test
   browser`), then commit the refreshed assets. Do this periodically to pick up
   wabac.js fixes (details in DESIGN → *ReplayWebPage Assets*).

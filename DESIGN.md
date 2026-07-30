@@ -1,8 +1,8 @@
-# rustyweb - Design Document
+# indice - Design Document
 
-rustyweb is a minimal, high-performance web archive server written in Rust. It provides full-text search over WACZ collections and serves them for in-browser replay via the ReplayWebPage/wabac.js service worker in **WACZ-direct mode** - the mode where the browser reads the archive directly, without a server-side proxy interpreting individual resource requests.
+indice is a minimal, high-performance web archive server written in Rust. It provides full-text search over WACZ collections and serves them for in-browser replay via the ReplayWebPage/wabac.js service worker in **WACZ-direct mode** - the mode where the browser reads the archive directly, without a server-side proxy interpreting individual resource requests.
 
-A guiding design goal is **range**: rustyweb should serve small, local, and private use - an individual indexing a handful of their own WACZ files on a laptop, with nothing sent to a hosted service - and use the same model to scale up toward institutional collections. Peer tools like SHINE and SolrWayback assume the infrastructure of a large web archive (a Solr cluster); rustyweb deliberately does not, so it fits both ends of that range. This is why it ships as one binary with an embedded index, and why the two-level collection model (below) is built to serve both a solo curator and an institution reorganizing TBs of WARC.
+A guiding design goal is **range**: indice should serve small, local, and private use - an individual indexing a handful of their own WACZ files on a laptop, with nothing sent to a hosted service - and use the same model to scale up toward institutional collections. Peer tools like SHINE and SolrWayback assume the infrastructure of a large web archive (a Solr cluster); indice deliberately does not, so it fits both ends of that range. This is why it ships as one binary with an embedded index, and why the two-level collection model (below) is built to serve both a solo curator and an institution reorganizing TBs of WARC.
 
 Scope:
 - Index WACZ files into a local full-text search index
@@ -16,7 +16,7 @@ Scope:
 ## Architecture Overview
 
 ```
-rustyweb index <files>                  rustyweb serve
+indice index <files>                  indice serve
        │                                       │
        ▼                                       ▼
   [Indexing pipeline]               [Axum HTTP server]
@@ -28,7 +28,7 @@ rustyweb index <files>                  rustyweb serve
                                               └── GET /replay/viewer → viewer shell
 ```
 
-Replay is handled entirely by the wabac.js service worker running in the browser. The service worker reads the WACZ file from `GET /files/{id}` using HTTP byte-range requests, extracts the CDX index from `indexes/index.cdx.gz` inside the ZIP, loads it into browser IndexedDB, and fetches individual WARC records by offset - all without making per-resource requests back to the rustyweb server. rustyweb's job during replay is purely to serve bytes efficiently.
+Replay is handled entirely by the wabac.js service worker running in the browser. The service worker reads the WACZ file from `GET /files/{id}` using HTTP byte-range requests, extracts the CDX index from `indexes/index.cdx.gz` inside the ZIP, loads it into browser IndexedDB, and fetches individual WARC records by offset - all without making per-resource requests back to the indice server. indice's job during replay is purely to serve bytes efficiently.
 
 ---
 
@@ -38,7 +38,7 @@ Replay is handled entirely by the wabac.js service worker running in the browser
 rustyweb/
 ├── Cargo.toml               (workspace root with [workspace.dependencies])
 ├── crates/
-│   ├── rustyweb-lib/        (all logic - importable in tests)
+│   ├── indice-lib/        (all logic - importable in tests)
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── index.rs     - Indexing pipeline orchestration
@@ -49,7 +49,7 @@ rustyweb/
 │   │       ├── wacz.rs      - WACZ ZIP handling, datapackage.json, CDX reader
 │   │       ├── thumbnail.rs - Representative-image thumbnails (og:image → cached JPEG)
 │   │       └── http_range.rs - Read+Seek over HTTP range requests (remote streaming)
-│   └── rustyweb-bin/        (thin CLI entry point)
+│   └── indice-bin/        (thin CLI entry point)
 │       └── src/main.rs      - Clap CLI, subcommand dispatch, tokio::main
 └── static/replay/           (ReplayWebPage assets - embedded at compile time)
 ```
@@ -59,16 +59,16 @@ rustyweb/
 ## CLI Interface
 
 ```
-rustyweb index          [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
-rustyweb reindex        [--home <DIR>] [--concurrency <N>] [-v|--verbose]
-rustyweb optimize       [--home <DIR>] [--max-segments <N>] [-v|--verbose]
-rustyweb serve          [--home <DIR>] [--bind <ADDR>]
-rustyweb collection set [--home <DIR>] <NAME> [--description <TEXT>] [--curator <TEXT>] [--creator <TEXT>] [--dates <TEXT>] [--rights <TEXT>] [--subject <SUBJECT>]... [--narrative <MD> | --narrative-file <FILE>] [--thumbnail <FILE>]
-rustyweb collection list[--home <DIR>]
-rustyweb crawl set      [--home <DIR>] <CRAWL_ID> [--image <FILE>] [--note <MD> | --note-file <FILE>]
-rustyweb search-url     [--home <DIR>] <URL>
-rustyweb verify         [--home <DIR>]
-rustyweb import browsertrix [--home <DIR>] [--host <URL>] [--org <SLUG>] [--public] [--collection <ID|SLUG>] [--crawl <ID>] [--into <NAME>] [--include-unreviewed] [--min-review <N>] [--limit <N>] [--concurrency <N>] [--dry-run] [--stream] [--force] [-v]
+indice index          [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
+indice reindex        [--home <DIR>] [--concurrency <N>] [-v|--verbose]
+indice optimize       [--home <DIR>] [--max-segments <N>] [-v|--verbose]
+indice serve          [--home <DIR>] [--bind <ADDR>]
+indice collection set [--home <DIR>] <NAME> [--description <TEXT>] [--curator <TEXT>] [--creator <TEXT>] [--dates <TEXT>] [--rights <TEXT>] [--subject <SUBJECT>]... [--narrative <MD> | --narrative-file <FILE>] [--thumbnail <FILE>]
+indice collection list[--home <DIR>]
+indice crawl set      [--home <DIR>] <CRAWL_ID> [--image <FILE>] [--note <MD> | --note-file <FILE>]
+indice search-url     [--home <DIR>] <URL>
+indice verify         [--home <DIR>]
+indice import browsertrix [--home <DIR>] [--host <URL>] [--org <SLUG>] [--public] [--collection <ID|SLUG>] [--crawl <ID>] [--into <NAME>] [--include-unreviewed] [--min-review <N>] [--limit <N>] [--concurrency <N>] [--dry-run] [--stream] [--force] [-v]
 ```
 
 Every command takes `--home <DIR>` (default `.`). The home directory holds
@@ -78,7 +78,7 @@ and `<home>/crawls/` finding aids (see *Collection Management*). Keeping them
 together makes a home folder portable - move it to another disk or machine and
 it still resolves.
 
-- `index`: indexes one or more `.wacz` files or `http(s)://` URLs - at least one argument is required. **CDX-guided extraction is the default** for every WACZ (local or remote), reading only the records the CDX lists; a remote URL is read over HTTP range requests with no download, a local file straight from disk (see *Indexing Pipeline*). It falls back to a full WARC scan only when a WACZ can't be CDX-guided (deflated WARCs, or no readable CDX). `--download` fetches a remote WACZ into `<home>/archive/<collection-slug>/` for a durable local copy instead of streaming it in place. A local WACZ may live anywhere: rustyweb files it into `<home>/archive/<collection-slug>/` — **moving** it if it already sits under `archive/` (reorganizing within its own space), **copying** it otherwise (leaving the original intact) — and stores the source relative to home, so the home directory stays self-contained and the archive is browsable by collection. A directory or a non-`.wacz` file is an error with guidance; index several at once with a shell glob. Extracts searchable page text (HTML, rendered `urn:text` or `pages/*.jsonl` text, PDFs), reads `datapackage.json` + `warcinfo` for provenance, records the SHA-256 of each local WACZ, and updates the manifest. **`--collection <NAME>` is required** — every crawl belongs to a curated collection (created if new); there are no auto singletons. Indexing a glob into one collection (`rustyweb index archive/*.wacz --collection "…"`) makes that a decide-once cost. `--from-file <FILE>` (or `-f -` for stdin) reads a newline-delimited list of files/URLs, ignoring blank lines and `#` comments, and combines with any positional args. Progress is shown as a bar on an interactive terminal; `-v`/`--verbose` replaces it with `DEBUG` logs (see *Indexing Pipeline → Progress reporting*). (A bare `index` with no arguments prints guidance pointing to `index archive/*.wacz` and `reindex`.)
+- `index`: indexes one or more `.wacz` files or `http(s)://` URLs - at least one argument is required. **CDX-guided extraction is the default** for every WACZ (local or remote), reading only the records the CDX lists; a remote URL is read over HTTP range requests with no download, a local file straight from disk (see *Indexing Pipeline*). It falls back to a full WARC scan only when a WACZ can't be CDX-guided (deflated WARCs, or no readable CDX). `--download` fetches a remote WACZ into `<home>/archive/<collection-slug>/` for a durable local copy instead of streaming it in place. A local WACZ may live anywhere: indice files it into `<home>/archive/<collection-slug>/` — **moving** it if it already sits under `archive/` (reorganizing within its own space), **copying** it otherwise (leaving the original intact) — and stores the source relative to home, so the home directory stays self-contained and the archive is browsable by collection. A directory or a non-`.wacz` file is an error with guidance; index several at once with a shell glob. Extracts searchable page text (HTML, rendered `urn:text` or `pages/*.jsonl` text, PDFs), reads `datapackage.json` + `warcinfo` for provenance, records the SHA-256 of each local WACZ, and updates the manifest. **`--collection <NAME>` is required** — every crawl belongs to a curated collection (created if new); there are no auto singletons. Indexing a glob into one collection (`indice index archive/*.wacz --collection "…"`) makes that a decide-once cost. `--from-file <FILE>` (or `-f -` for stdin) reads a newline-delimited list of files/URLs, ignoring blank lines and `#` comments, and combines with any positional args. Progress is shown as a bar on an interactive terminal; `-v`/`--verbose` replaces it with `DEBUG` logs (see *Indexing Pipeline → Progress reporting*). (A bare `index` with no arguments prints guidance pointing to `index archive/*.wacz` and `reindex`.)
 - `reindex`: rebuild the full-text index from the sources already recorded in the manifest, preserving collection membership and metadata. Unlike `index`, this re-indexes every registered source - including remote URLs, which are re-fetched - and recreates the Tantivy index from scratch, so a schema change is picked up. It is *resilient*: a source that can't be indexed - a missing local file, or a remote source still failing after the retry budget - is skipped with a warning rather than aborting the whole rebuild, so one bad source can't torch a long reindex over many. The skipped source's manifest entry is preserved, the mostly-rebuilt index is still committed (usable), and if anything was skipped the command exits non-zero with a summary count - so a partial rebuild is visible to a human *and* to cron/CI, and re-running once the cause is fixed picks the skipped sources back up. Like `index`, it takes `--concurrency <N>` (records fetched at once per source) and shows the same per-WACZ progress bar on an interactive terminal (`-v`/`--verbose` swaps it for `DEBUG` logs) - welcome here since a full reindex re-streams every source. This is the intended way to migrate the index after a schema change (see below).
 - `optimize`: compacts the full-text index in place by **merging Tantivy segments** down toward `--max-segments` (default 8), **without re-reading any sources** — far cheaper than `reindex`. Every query (and `facet_overview`, and URL-grouping) fans out across *all* segments, so an index that has fragmented into hundreds/thousands of tiny segments — which happens when Tantivy's background merges fail (classically, on a full disk, since a merge needs transient ~2× space) — makes every search slow. `optimize` merges smallest-first in bounded batches, waiting for each merge before the next, so peak transient disk stays ~one batch rather than a second copy of the whole index; a smaller `--max-segments` compacts more but raises that peak (~index size / target). Needs a writer (takes the write lock) and some free disk; reports `before → after` segment counts. (`SearchIndex::segment_count()` exposes the health signal.) The deeper fix — not letting ingest merges fail silently, and throttling segment creation during large streamed imports — is tracked in `rustyweb-scale-footprint-qw5`.
 - `serve`: opens Tantivy read-only (so `index` can run concurrently), starts Axum. Defaults: `127.0.0.1:8080`.
@@ -86,7 +86,7 @@ it still resolves.
 - `crawl set`: set curator-controlled crawl properties — `--image` pins a representative thumbnail (`collections/<slug>/crawls/<id>.jpg`), `--note[-file]` writes a committable Markdown note to `collections/<slug>/crawls/<id>.md`.
 - `search-url`: opens each indexed WACZ, reads its internal `indexes/index.cdx.gz`, and prints all CDX records matching the given URL. Useful for debugging - does not require the CDX to be separately indexed.
 - `verify`: re-hashes every WACZ in the manifest and compares against the stored SHA-256, reporting each as `OK`, `MODIFIED`, or `MISSING`. Exits non-zero on any failure so it can run unattended (cron/CI). This is the fixity check for the archive.
-- `import <source>`: a group of importers that pull content from external web-archiving services (each source is its own subcommand, since their auth and selection differ; grouped so future sources — Archive-It, a WARC→WACZ builder — are siblings rather than new top-level verbs). `import browsertrix` authenticates to a [Browsertrix](https://browsertrix.com/) instance (credentials from `BROWSERTRIX_USER`/`BROWSERTRIX_PASSWORD` or `BROWSERTRIX_TOKEN` in the environment, never argv), resolves the org, and for each selected archived item **downloads** the WACZ into `<home>/archive/<item-id>/` (a per-item subfolder, so two items can't clash on a shared resource filename) via its presigned `replay.json` URL and indexes it as a durable local (File) source. Downloading (rather than streaming in place) is the default because Browsertrix presigned URLs expire in ~48h, so a naive streamed source would break replay. **`--stream`** opts into an index-only footprint instead: the manifest stores a `Source::Browsertrix { host, org, item, resource }` (stable identity, encoded `browsertrix|…`), not a URL, and a fresh presigned URL is re-resolved on demand — at index/reindex time, and at replay time by the server (`serve_file` 302-redirects to a freshly-resolved URL, cached under its expiry). Resolution is done by a bin-provided `index::SourceResolver` (the library never touches credentials); `serve` builds one from the same `BROWSERTRIX_*` env vars, so streamed crawls replay only when the server has credentials (503 otherwise). Selection: `--collection <ID|SLUG|NAME>` (resolved to the collection UUID the API requires) or `--crawl <ID>`; default is the whole org. **QA filter:** by default only crawls a reviewer has QA'd in Browsertrix (`reviewStatus` set) are imported; `--include-unreviewed` / `--min-review <1-5>` adjust this, and a single named `--crawl` is always included. **Incremental:** provenance recorded on each crawl (`browsertrix` field in the manifest: host, item id, resource hash) lets a re-run skip already-imported items unless `--force`. Importing a `--collection` groups its crawls into a rustyweb collection of the same name (`--into <NAME>` overrides, and groups org-wide/single-crawl imports); `--dry-run` lists without downloading. **`--public`** imports a collection an org has published openly, with **no credentials at all**: it uses Browsertrix's unauthenticated public API (`/api/public/orgs/{slug}/collections`, then each collection's `/api/orgs/{oid}/collections/{id}/public/replay.json`) rather than login → org → items. It needs `--org <slug>` (the public org slug); `--collection` picks one, else all the org's public collections are imported. Public streaming stores a `Source::BrowsertrixPublic { host, org, collection, resource }` (encoded `browsertrix-public|…`), re-resolved via the *collection*-scoped public replay.json — so replay needs no server credentials either. (`--crawl` isn't supported in public mode; the public API is collection-scoped.) The HTTP client (`browsertrix.rs`) is transport-abstracted for testing (mirrors `http_range::RangeFetch`). See *Indexing Pipeline*.
+- `import <source>`: a group of importers that pull content from external web-archiving services (each source is its own subcommand, since their auth and selection differ; grouped so future sources — Archive-It, a WARC→WACZ builder — are siblings rather than new top-level verbs). `import browsertrix` authenticates to a [Browsertrix](https://browsertrix.com/) instance (credentials from `BROWSERTRIX_USER`/`BROWSERTRIX_PASSWORD` or `BROWSERTRIX_TOKEN` in the environment, never argv), resolves the org, and for each selected archived item **downloads** the WACZ into `<home>/archive/<item-id>/` (a per-item subfolder, so two items can't clash on a shared resource filename) via its presigned `replay.json` URL and indexes it as a durable local (File) source. Downloading (rather than streaming in place) is the default because Browsertrix presigned URLs expire in ~48h, so a naive streamed source would break replay. **`--stream`** opts into an index-only footprint instead: the manifest stores a `Source::Browsertrix { host, org, item, resource }` (stable identity, encoded `browsertrix|…`), not a URL, and a fresh presigned URL is re-resolved on demand — at index/reindex time, and at replay time by the server (`serve_file` 302-redirects to a freshly-resolved URL, cached under its expiry). Resolution is done by a bin-provided `index::SourceResolver` (the library never touches credentials); `serve` builds one from the same `BROWSERTRIX_*` env vars, so streamed crawls replay only when the server has credentials (503 otherwise). Selection: `--collection <ID|SLUG|NAME>` (resolved to the collection UUID the API requires) or `--crawl <ID>`; default is the whole org. **QA filter:** by default only crawls a reviewer has QA'd in Browsertrix (`reviewStatus` set) are imported; `--include-unreviewed` / `--min-review <1-5>` adjust this, and a single named `--crawl` is always included. **Incremental:** provenance recorded on each crawl (`browsertrix` field in the manifest: host, item id, resource hash) lets a re-run skip already-imported items unless `--force`. Importing a `--collection` groups its crawls into a indice collection of the same name (`--into <NAME>` overrides, and groups org-wide/single-crawl imports); `--dry-run` lists without downloading. **`--public`** imports a collection an org has published openly, with **no credentials at all**: it uses Browsertrix's unauthenticated public API (`/api/public/orgs/{slug}/collections`, then each collection's `/api/orgs/{oid}/collections/{id}/public/replay.json`) rather than login → org → items. It needs `--org <slug>` (the public org slug); `--collection` picks one, else all the org's public collections are imported. Public streaming stores a `Source::BrowsertrixPublic { host, org, collection, resource }` (encoded `browsertrix-public|…`), re-resolved via the *collection*-scoped public replay.json — so replay needs no server credentials either. (`--crawl` isn't supported in public mode; the public API is collection-scoped.) The HTTP client (`browsertrix.rs`) is transport-abstracted for testing (mirrors `http_range::RangeFetch`). See *Indexing Pipeline*.
 
 ---
 
@@ -166,13 +166,13 @@ The `<details>` "Search tips" panel on the homepage and results page documents t
 
 ### Schema changes and migration
 
-Tantivy persists the schema inside the index directory (`index/full_text/meta.json`) and reuses it when the index is opened. Changing the schema — adding a searchable field (as `domain`, `year`, `type`, `month` did) or making fields *fast* for faceting — therefore makes an index built by an older binary *stale*. To avoid writing/querying against a mismatched schema, `SearchIndex::open` compares the stored schema to the current one and, if they differ, returns an error telling the user to run `rustyweb reindex` rather than proceeding (which would otherwise panic on a missing field).
+Tantivy persists the schema inside the index directory (`index/full_text/meta.json`) and reuses it when the index is opened. Changing the schema — adding a searchable field (as `domain`, `year`, `type`, `month` did) or making fields *fast* for faceting — therefore makes an index built by an older binary *stale*. To avoid writing/querying against a mismatched schema, `SearchIndex::open` compares the stored schema to the current one and, if they differ, returns an error telling the user to run `indice reindex` rather than proceeding (which would otherwise panic on a missing field).
 
-`rustyweb reindex` performs the migration: it reads `collections.json`, deletes the old `index/full_text`, recreates it with the current schema, and re-indexes every registered source (files and remote URLs). The manifest and collection names are preserved.
+`indice reindex` performs the migration: it reads `collections.json`, deletes the old `index/full_text`, recreates it with the current schema, and re-indexes every registered source (files and remote URLs). The manifest and collection names are preserved.
 
 ### Collection documents
 
-One document per WACZ is indexed at `rustyweb index` time. Its `body` concatenates the collection description and seed page titles and URLs from `datapackage.json`. This makes the collection itself searchable: a query for "attar" returns both individual pages from that site and the collection whose metadata mentions it.
+One document per WACZ is indexed at `indice index` time. Its `body` concatenates the collection description and seed page titles and URLs from `datapackage.json`. This makes the collection itself searchable: a query for "attar" returns both individual pages from that site and the collection whose metadata mentions it.
 
 ### Page documents
 
@@ -247,7 +247,7 @@ supplies it; hand-`index` requires `--collection` (see *Two-level collection mod
 
 Each collection's descriptive metadata is a Markdown file with YAML **front-matter** (the short
 structured fields) and a Markdown **body** (the narrative). The file is the source of truth:
-`rustyweb collection set …` writes it, and a curator can equally hand-edit and commit it; the id
+`indice collection set …` writes it, and a curator can equally hand-edit and commit it; the id
 is the collection **directory** name.
 
 ```markdown
@@ -323,13 +323,13 @@ hand-edited; `reindex` rebuilds the extracted fields from the registered sources
 - Re-indexing the same source upserts its WACZ entry. Every crawl belongs to an explicitly named collection (no singletons).
 - Collection descriptive metadata lives in `collections/<slug>/README.md` (above), not in the index. An older single-file `collections.json` (flat, per-WACZ with a `source` key), a `collections.json` groups file, or a flat `collections/<slug>.md` is detected and **migrated** on open/save.
 - For a **file** source, `GET /files/{id}` streams the registered file with byte-range support; only registered files are served, so arbitrary filesystem access is not possible.
-- For a **URL** source, replay points wabac.js directly at the remote URL (the host must provide range + CORS); `GET /files/{id}` just redirects there. rustyweb never proxies remote bytes.
+- For a **URL** source, replay points wabac.js directly at the remote URL (the host must provide range + CORS); `GET /files/{id}` just redirects there. indice never proxies remote bytes.
 
 ---
 
 ## Discovery, Provenance & Collections
 
-Discovery in rustyweb is search-first and faceted, over a two-level collection model, with
+Discovery in indice is search-first and faceted, over a two-level collection model, with
 provenance surfaced rather than buried. This section explains that design and the reasoning
 behind it; the *Planned* subsection at the end lists what is deliberately not built yet.
 
@@ -343,7 +343,7 @@ behind it; the *Planned* subsection at the end lists what is deliberately not bu
 - **Faceted "slice and dice" scales navigation better than clever ranking.** SHINE (UK Web
   Archive) and SolrWayback (Royal Danish Library), both built on the UK Web Archive's
   warc-indexer, offer facets for content-type, domain, crawl year, links, and public suffix.
-  Facets are the established answer to a growing, unwieldy list. rustyweb follows this
+  Facets are the established answer to a growing, unwieldy list. indice follows this
   lineage directly — SolrWayback pairs the same faceted full-text search with in-browser
   replay — but swaps their Solr backend for a single embedded Tantivy index, so the same
   faceted search fits a private laptop archive as readily as an institutional one.
@@ -354,7 +354,7 @@ behind it; the *Planned* subsection at the end lists what is deliberately not bu
 
 ### Two-level collection model
 
-rustyweb uses a **two-level model** (see *Collection Management* above for the on-disk form):
+indice uses a **two-level model** (see *Collection Management* above for the on-disk form):
 
 - **Collection** - a curated grouping with *curatorial* provenance (the finding aid: scope,
   creator, dates, rights, subjects). The primary unit users browse and facet by; its
@@ -365,14 +365,14 @@ rustyweb uses a **two-level model** (see *Collection Management* above for the o
 
 **Every crawl belongs to a collection — no singletons.** Import supplies the collection
 automatically (the Browsertrix collection name, else the org name); hand-`index` **requires
-`--collection <NAME>`**. That requirement is deliberate friction, not an oversight: rustyweb's
+`--collection <NAME>`**. That requirement is deliberate friction, not an oversight: indice's
 Maemura-grounded thesis (below) is that curatorial context is worth the small cost of pausing to
 ask "what is this a part of, and why keep it?" — so the tool asks at ingest, the same way the
 empty-state nudge asks on the collection page (index a glob into one collection to decide once).
 Membership lives in the manifest (`waczs.json`), not the filesystem, because remote/streamed
 crawls have no local file; `archive/<slug>/` is a browsable *placement* convention for the WACZs
-rustyweb downloads, not the source of truth. **Nesting** (collections of collections, à la
-EAD/DACS fonds→series) is intentionally deferred: rustyweb ships flat, single-level collections,
+indice downloads, not the source of truth. **Nesting** (collections of collections, à la
+EAD/DACS fonds→series) is intentionally deferred: indice ships flat, single-level collections,
 with the slug/on-disk form kept so an optional `parent` can be added later without a migration.
 
 This model serves both audiences: an **individual** self-hosting WACZs made with wget
@@ -392,7 +392,7 @@ item's actual type.)
 
 ### Provenance
 
-rustyweb distinguishes **curatorial** provenance (who/why/scope, at the collection level) from
+indice distinguishes **curatorial** provenance (who/why/scope, at the collection level) from
 **technical/derived** provenance (how it was captured, at the crawl level), and presents both
 **prominently** rather than tucking them away.
 
@@ -431,7 +431,7 @@ provenance panel plus a compact line on collection member listings. Sources used
   Browsertrix QA `reviewStatus` (1–5, Excellent→Bad) carried onto imported crawls — the machine
   and human sides of "documenting absences".
 
-Fixity is verifiable with `rustyweb verify` (re-hashing each WACZ against the stored
+Fixity is verifiable with `indice verify` (re-hashing each WACZ against the stored
 SHA-256). Signature-based authenticity (`datapackage-digest.json`, the WACZ auth spec) is
 *Planned* (below).
 
@@ -495,7 +495,7 @@ results it yields.
 
 ```html
 <div id="banner">
-  <a href="/">rustyweb</a>
+  <a href="/">indice</a>
   <span id="collection-name"></span>
   <span id="current-url"></span>
 </div>
@@ -504,7 +504,7 @@ results it yields.
 
 The `<replay-web-page>` component fires a `rwp-url-change` event as the user navigates within the archive; the banner listens for this event and updates the displayed URL in real time.
 
-In WACZ-direct mode the component reads the WACZ from `/files/{id}` via byte-range requests, loads the internal CDX into browser IndexedDB, and serves all resources from WARC bytes without making per-resource calls to rustyweb. All URL rewriting, wombat.js injection, fuzzy matching, and redirect handling are performed client-side by wabac.js.
+In WACZ-direct mode the component reads the WACZ from `/files/{id}` via byte-range requests, loads the internal CDX into browser IndexedDB, and serves all resources from WARC bytes without making per-resource calls to indice. All URL rewriting, wombat.js injection, fuzzy matching, and redirect handling are performed client-side by wabac.js.
 
 ### Collection (multi-WACZ) replay
 
@@ -518,14 +518,14 @@ To keep the **replay-client footprint flat** as a collection grows (a laptop→i
 
 ## WACZ CDX Reader (`wacz.rs`)
 
-`rustyweb search-url` reads WACZ CDX files on-the-fly without a separate CDX store. The implementation:
+`indice search-url` reads WACZ CDX files on-the-fly without a separate CDX store. The implementation:
 
 1. Opens the WACZ as a ZIP
 2. Reads and decompresses `indexes/index.cdx.gz`
 3. Parses each CDXJ line (space-separated SURT + timestamp + JSON fields)
 4. Matches lines by URL equality or SURT prefix
 
-This is intentionally lazy - no persistent CDX index is maintained by rustyweb. The WACZ's built-in CDX is authoritative; rustyweb simply reads it when asked.
+This is intentionally lazy - no persistent CDX index is maintained by indice. The WACZ's built-in CDX is authoritative; indice simply reads it when asked.
 
 ---
 
@@ -604,7 +604,7 @@ Requirements and caveats, grounded in the WACZ spec:
   multi-member gzip (ZipNum blocks), so it's read with `MultiGzDecoder`.
 - **Automatic fallback to scan.** `local_warcs_streamable` / `remote_warcs_streamable`
   probe the central directory: if the WARCs aren't Stored (a WACZ deflates them,
-  violating the SHOULD) or there's no readable CDX, rustyweb scans instead. For a
+  violating the SHOULD) or there's no readable CDX, indice scans instead. For a
   remote host without range support, the fallback downloads a temp copy and scans
   it, keeping the URL as the source. No user flag selects the mode; it's decided
   per WACZ.
@@ -707,7 +707,7 @@ downscales it (the `image` crate; longest edge 400px), and writes
 isn't captured or won't decode - just means no thumbnail (the UI shows a
 placeholder; a curator can pin one).
 
-A curator can **pin a specific image** with `rustyweb crawl set <id> --image
+A curator can **pin a specific image** with `indice crawl set <id> --image
 <file>` (any local PNG/JPEG/WebP/GIF): it's downscaled and written to the
 committable `collections/<slug>/crawls/<id>.jpg`. Its *presence* is the pin
 marker — a pinned image lives with the finding aid and a later (re)index (which
@@ -748,7 +748,7 @@ and shows no bar, so logs aren't lost.
 
 ## ReplayWebPage Assets
 
-`static/replay/` holds the [ReplayWeb.page][rwp] JS bundle (`ui.js` + `sw.js`), embedded in the binary at compile time via `rust-embed` and served under `/replay/`. Replay runs in WACZ-direct mode: the `<replay-web-page>` component reads the WACZ over byte-range from our `/files/{id}` endpoint and serves every resource client-side through its service worker (`sw.js`); rustyweb does no server-side rewriting (see *viewer.html* / `server.rs`).
+`static/replay/` holds the [ReplayWeb.page][rwp] JS bundle (`ui.js` + `sw.js`), embedded in the binary at compile time via `rust-embed` and served under `/replay/`. Replay runs in WACZ-direct mode: the `<replay-web-page>` component reads the WACZ over byte-range from our `/files/{id}` endpoint and serves every resource client-side through its service worker (`sw.js`); indice does no server-side rewriting (see *viewer.html* / `server.rs`).
 
 These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.4.6**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
 
@@ -757,7 +757,7 @@ These two files **are committed**, **pinned** to a specific `replaywebpage` npm 
 ./scripts/fetch-replay.sh 2.4.7    # fetch a specific version (one-off)
 ```
 
-To upgrade: pick a version from <https://www.npmjs.com/package/replaywebpage>, bump `VERSION` in `scripts/fetch-replay.sh`, re-run it (downloads `ui.js`/`sw.js` from the jsDelivr npm CDN), rebuild, **re-test replay in a browser** (`cargo test -p rustyweb-lib --test browser` needs Chrome + chromedriver), then commit the refreshed assets. Do this periodically so replay keeps up with wabac.js fixes.
+To upgrade: pick a version from <https://www.npmjs.com/package/replaywebpage>, bump `VERSION` in `scripts/fetch-replay.sh`, re-run it (downloads `ui.js`/`sw.js` from the jsDelivr npm CDN), rebuild, **re-test replay in a browser** (`cargo test -p indice-lib --test browser` needs Chrome + chromedriver), then commit the refreshed assets. Do this periodically so replay keeps up with wabac.js fixes.
 
 [rwp]: https://replayweb.page
 

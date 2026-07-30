@@ -1,5 +1,5 @@
 [package]
-name = "rustyweb"
+name = "indice"
 version = "0.1.0"
 edition = "2021"
 description = "A small, fast web archive server: full-text search and in-browser replay of WACZ files."
@@ -7,7 +7,7 @@ authors = ["Ed Summers <ehs@pobox.com>"]
 license = "AGPL-3.0-or-later"
 
 [dependencies]
-rustyweb-lib = { path = "../rustyweb-lib" }
+indice-lib = { path = "../indice-lib" }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

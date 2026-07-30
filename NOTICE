@@ -1,4 +1,4 @@
-rustyweb
+indice
 Copyright (C) 2026 Ed Summers
 
 This program is free software: you can redistribute it and/or modify it under
@@ -10,13 +10,13 @@ later version. See the LICENSE file for the full text.
 THIRD-PARTY COMPONENTS
 ======================
 
-rustyweb bundles and serves software from the Webrecorder project. Webrecorder
-did the hard part - the actual web archive replay - and rustyweb would not exist
+indice bundles and serves software from the Webrecorder project. Webrecorder
+did the hard part - the actual web archive replay - and indice would not exist
 without it. These components are included unmodified and remain under their own
 license:
 
-  ReplayWeb.page  (crates/rustyweb-lib/static/replay/ui.js)
-  wabac.js + wombat (crates/rustyweb-lib/static/replay/sw.js)
+  ReplayWeb.page  (crates/indice-lib/static/replay/ui.js)
+  wabac.js + wombat (crates/indice-lib/static/replay/sw.js)
 
     Copyright (C) 2020-2026, Webrecorder Software
     Licensed under the GNU Affero General Public License v3.0 or later
@@ -25,7 +25,7 @@ license:
     Bundled version: ReplayWeb.page 2.4.6 (wabac.js 2.26.4)
 
 These files are fetched from the pinned upstream release by
-scripts/fetch-replay.sh and are not modified by rustyweb. Their corresponding
+scripts/fetch-replay.sh and are not modified by indice. Their corresponding
 source is available at the URLs above.
 
 The ReplayWeb.page/wabac.js bundles themselves incorporate additional

@@ -8,7 +8,7 @@ header-includes:
 \centering
 \vspace*{3cm}
 
-{\Huge\bfseries rustyweb\par}
+{\Huge\bfseries indice\par}
 \vspace{0.4cm}
 {\LARGE A Rust Primer\par}
 
@@ -25,12 +25,12 @@ header-includes:
 \end{titlepage}
 ```
 
-# rustyweb - A Rust Primer
+# indice - A Rust Primer
 
 This document has two jobs at once:
 
-1. Explain **how rustyweb works** as a program.
-2. Use rustyweb's own source code to **teach Rust**, with a focus on the three
+1. Explain **how indice works** as a program.
+2. Use indice's own source code to **teach Rust**, with a focus on the three
    things you asked about: **types**, **control flow**, and **error handling**
    (what other languages call "exceptions").
 
@@ -47,12 +47,12 @@ design decision shapes almost everything else, so we'll keep coming back to it.
 
 ## 1. The shape of the project
 
-rustyweb is a **Cargo workspace** - a repo containing multiple related packages
+indice is a **Cargo workspace** - a repo containing multiple related packages
 ("crates"). There are two:
 
 ```
 crates/
-├── rustyweb-lib/    all the actual logic (a library crate)
+├── indice-lib/    all the actual logic (a library crate)
 │   └── src/
 │       ├── lib.rs          declares the modules
 │       ├── collections.rs  the manifest of indexed WACZ files
@@ -62,13 +62,13 @@ crates/
 │       ├── search.rs       Tantivy full-text index wrapper
 │       ├── pdf.rs          PDF text extraction
 │       └── server.rs       the Axum web server
-└── rustyweb-bin/    a thin command-line front-end (a binary crate)
+└── indice-bin/    a thin command-line front-end (a binary crate)
     └── src/main.rs         argument parsing + dispatch
 ```
 
 Why split it this way? Because a **library crate can be imported by tests and by
 the binary**, but a binary crate cannot be imported. Putting the logic in
-`rustyweb-lib` means the integration tests in `crates/rustyweb-lib/tests/` can
+`indice-lib` means the integration tests in `crates/indice-lib/tests/` can
 call the real functions directly. The binary just parses arguments and calls the
 library.
 
@@ -78,7 +78,7 @@ library.
 library:
 
 ```rust
-// crates/rustyweb-lib/src/lib.rs:1
+// crates/indice-lib/src/lib.rs:1
 pub mod collections;
 pub mod index;
 pub mod pdf;
@@ -92,7 +92,7 @@ pub mod wacz;
 `collections.rs`." `pub` means it's visible outside the crate. Inside the code
 you then reach items with paths like `crate::collections::Collection` (the
 `crate::` root refers to this library) or, from the binary,
-`rustyweb_lib::collections::Collection`.
+`indice_lib::collections::Collection`.
 
 **Visibility is opt-in.** Everything is private by default; you write `pub` to
 export. You'll see this everywhere - `pub fn`, `pub struct`, `pub enum`. A
@@ -112,7 +112,7 @@ this codebase uses constantly.
 A `struct` groups related data. Here's the record type the WARC parser produces:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:6
+// crates/indice-lib/src/warc.rs:6
 #[derive(Debug, Clone)]
 pub struct WarcRecord {
     pub record_id: String,
@@ -169,7 +169,7 @@ boilerplate. The ones this codebase leans on:
 You'll see combinations like this on the manifest types:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:92
+// crates/indice-lib/src/collections.rs:92
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Collection {
     pub id: String,
@@ -199,7 +199,7 @@ This is where Rust really differs from Python or Go. An `enum` is a type that is
 data**. The cleanest example in the codebase is `Source`:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:16
+// crates/indice-lib/src/collections.rs:16
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Source {
@@ -217,7 +217,7 @@ The payoff is that you handle a `Source` with a **`match`**, and the compiler
 checks that you covered every variant:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:65
+// crates/indice-lib/src/collections.rs:65
 pub fn resolve(&self, home: &Path) -> Option<PathBuf> {
     match self {
         Source::File(p) if p.is_absolute() => Some(p.clone()),
@@ -241,7 +241,7 @@ There's another enum worth studying - `RawRecord` in the indexer - because it
 shows an enum used as a small tagged workflow value:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:200
+// crates/indice-lib/src/index.rs:200
 enum RawRecord {
     Html {
         url: String,
@@ -310,7 +310,7 @@ success value without first acknowledging the error case.
 Look at almost any fallible function in this codebase:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:168
+// crates/indice-lib/src/collections.rs:168
 pub fn file_sha256(path: &Path) -> Result<String> { ... }
 ```
 
@@ -326,7 +326,7 @@ Writing a `match` on every fallible call would be unbearable. The `?` operator
 is the ergonomic shortcut. Here's the full `file_sha256`:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:168
+// crates/indice-lib/src/collections.rs:168
 pub fn file_sha256(path: &Path) -> Result<String> {
     use sha2::Digest;
     use std::io::Read;
@@ -375,7 +375,7 @@ for application-level error handling. It gives you:
   either. In `CollectionManifest::open` you can see both in one function:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:127
+// crates/indice-lib/src/collections.rs:127
 pub fn open(index_dir: &Path) -> Result<Self> {
     let manifest_path = index_dir.join("collections.json");
     let collections = if manifest_path.exists() {
@@ -393,7 +393,7 @@ pub fn open(index_dir: &Path) -> Result<Self> {
   not found." This is used pervasively:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:41
+// crates/indice-lib/src/index.rs:41
 std::fs::create_dir_all(&index_dir)
     .with_context(|| format!("creating index dir {}", index_dir.display()))?;
 ```
@@ -407,7 +407,7 @@ error, so you don't pay to build the string on the happy path.
   errors. In the WARC reader:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:191
+// crates/indice-lib/src/warc.rs:191
 if n == 0 {
     return Err(anyhow!("unexpected EOF"));
 }
@@ -422,7 +422,7 @@ A slick idiom appears repeatedly: turning an iterator of `Result`s into a single
 `Result<Vec<_>>` that is `Ok` only if *every* element was `Ok`:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:238
+// crates/indice-lib/src/index.rs:238
 let warc_paths: Vec<_> = iter_warc_paths(wacz_path)?
     .collect::<Result<Vec<_>>>()
     .with_context(|| format!("listing WARC entries in {}", wacz_path.display()))?;
@@ -441,7 +441,7 @@ is best-effort - a WACZ with no title isn't broken, it just needs a fallback.
 So the code uses `Option` and its combinators instead of `Result`:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:117
+// crates/indice-lib/src/index.rs:117
 let meta = read_datapackage(&local).unwrap_or_default();
 let display_name = name
     .map(|n| n.to_string())
@@ -483,7 +483,7 @@ The interesting question for a learner is *when the authors judged a panic
 acceptable*. A representative example:
 
 ```rust
-// crates/rustyweb-lib/src/search.rs:84
+// crates/indice-lib/src/search.rs:84
 doc.add_text(schema.get_field(FIELD_DOC_TYPE).unwrap(), "page");
 ```
 
@@ -496,7 +496,7 @@ response. The `.unwrap()` documents "this cannot fail unless I broke the schema.
 Contrast that with a deliberately *descriptive* panic:
 
 ```rust
-// crates/rustyweb-lib/src/search.rs:54
+// crates/indice-lib/src/search.rs:54
 fn writer_mut(&mut self) -> &mut IndexWriter {
     self.writer
         .as_mut()
@@ -506,7 +506,7 @@ fn writer_mut(&mut self) -> &mut IndexWriter {
 
 The `SearchIndex` type holds an `Option<IndexWriter>` (`search.rs:23`): a writer
 is present when opened for indexing, absent when opened read-only for serving.
-Calling a write method on a read-only index is a logic error in *rustyweb's own
+Calling a write method on a read-only index is a logic error in *indice's own
 code*, never something a user can trigger, so `expect` with a clear message is
 the right tool. This is a nice example of using `Option` in a field to encode a
 mode, then panicking only on genuine misuse.
@@ -517,7 +517,7 @@ There is exactly one place the code *does* treat a panic like a catchable
 exception, and the reason is instructive:
 
 ```rust
-// crates/rustyweb-lib/src/pdf.rs:9
+// crates/indice-lib/src/pdf.rs:9
 pub fn extract_pdf_text(bytes: &[u8]) -> Option<String> {
     let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         pdf_extract::extract_text_from_mem(bytes)
@@ -532,7 +532,7 @@ pub fn extract_pdf_text(bytes: &[u8]) -> Option<String> {
 
 The third-party `pdf-extract` crate can *panic* on malformed PDFs instead of
 returning an error. If that panic propagated, one bad PDF would abort the whole
-`rustyweb index` run. `catch_unwind` runs the risky call and converts a panic
+`indice index` run. `catch_unwind` runs the risky call and converts a panic
 into an `Err`, which this function flattens into `None`. Note the *nested*
 `match`: the outer `Ok`/`Err` is "did it panic?", and the inner `Ok`/`Err` is
 "did extraction succeed?". This is the exception to the rule - and the comment in
@@ -553,7 +553,7 @@ You've seen `match` on enums already. Two things make it powerful: it's
 bound to a variable:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:223
+// crates/indice-lib/src/wacz.rs:223
 let status = match &obj.status {
     Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0) as u16,
     Some(serde_json::Value::String(s)) => s.parse().unwrap_or(0),
@@ -574,7 +574,7 @@ When you only care about *one* variant, a full `match` is overkill. `if let` is
 the shorthand:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:344
+// crates/indice-lib/src/index.rs:344
 if let Some(text) = crate::pdf::extract_pdf_text(&record.payload) {
     out.push(RawRecord::Html { ... });
 } else {
@@ -594,7 +594,7 @@ continue without it, `let else` unwraps in the happy path and forces you to
 diverge (return/break/continue) otherwise:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:397
+// crates/indice-lib/src/server.rs:397
 let Some(c) = collections.iter().find(|c| c.id == id) else {
     return (StatusCode::NOT_FOUND, "collection not found").into_response();
 };
@@ -619,7 +619,7 @@ But the *idiomatic* style for transforming collections is **iterator chains**.
 Here's the homepage building HTML cards from collections:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:111
+// crates/indice-lib/src/server.rs:111
 let cards: String = collections
     .iter()                       // borrow each Collection in turn
     .map(|c| {                    // transform each into an HTML string
@@ -641,7 +641,7 @@ Iterators are lazy: nothing happens until a "consuming" method like `.collect()`
 the CDX parser:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:333
+// crates/indice-lib/src/warc.rs:333
 fn iso_to_14digit(s: &str) -> String {
     s.chars()                          // iterate over characters
         .filter(|c| c.is_ascii_digit()) // keep only digits
@@ -659,7 +659,7 @@ Because blocks yield values, you routinely assign the result of an `if` or a
 scoped block to a variable:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:333
+// crates/indice-lib/src/server.rs:333
 let table = if rows.is_empty() {
     String::new()
 } else {
@@ -674,7 +674,7 @@ A subtler use is a bare `{ ... }` block to **scope a lock** - we'll return to
 this in the concurrency section, but here's the shape:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:276
+// crates/indice-lib/src/index.rs:276
 let mut count = 0u64;
 {
     let mut s = search.lock().unwrap();   // acquire lock
@@ -708,7 +708,7 @@ no garbage collector.
 Look at how functions take arguments:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:65
+// crates/indice-lib/src/collections.rs:65
 pub fn resolve(&self, home: &Path) -> Option<PathBuf> { ... }
 ```
 
@@ -721,7 +721,7 @@ pub fn resolve(&self, home: &Path) -> Option<PathBuf> { ... }
 Compare with methods that need to mutate:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:141
+// crates/indice-lib/src/collections.rs:141
 pub fn upsert(&mut self, collection: Collection) {
     if let Some(pos) = self.collections.iter().position(|c| c.id == collection.id) {
         self.collections[pos] = collection;
@@ -742,7 +742,7 @@ original is borrowed or owned elsewhere), it explicitly clones. For example in
 `index_one`:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:143
+// crates/indice-lib/src/index.rs:143
 manifest.upsert(Collection {
     id,
     source: source.clone(),   // we only have &Source here, so clone to own it
@@ -761,7 +761,7 @@ deliberate "I need my own copy here" - Rust never copies heap data implicitly.
 Here's a beautiful, real example of ownership *as control flow*:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:103
+// crates/indice-lib/src/index.rs:103
 let (local, _tmp): (PathBuf, Option<tempfile::NamedTempFile>) = match source {
     Source::File(_) => (source.resolve(home).unwrap(), None),
     Source::Url(u) => {
@@ -785,9 +785,9 @@ You saw the same principle with the scoped lock block in §4, and again in
 `main.rs`:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:139
+// crates/indice-bin/src/main.rs:139
 let quiet = gag::Gag::stdout().ok();     // start suppressing stdout
-let result = rustyweb_lib::index::index_location(location, &home, name.as_deref());
+let result = indice_lib::index::index_location(location, &home, name.as_deref());
 drop(quiet);                              // stop suppressing (explicit drop)
 result?;
 ```
@@ -810,7 +810,7 @@ traits for everything from `==` to iteration to serialization. This codebase bot
 `Source` implements `Display` so it can be formatted with `{}`:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:86
+// crates/indice-lib/src/collections.rs:86
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.location())
@@ -825,7 +825,7 @@ type.
 `Source` also implements conversions via the `From` trait:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:74
+// crates/indice-lib/src/collections.rs:74
 impl From<String> for Source {
     fn from(s: String) -> Self {
         Source::parse(&s)
@@ -852,7 +852,7 @@ and ERROR lines. It implements the `tracing_subscriber` library's `FormatEvent`
 trait for a local wrapper type:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:22
+// crates/indice-bin/src/main.rs:22
 impl<S, N> FormatEvent<S, N> for ColorLineFormat
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -876,7 +876,7 @@ The WARC parser needs a reader that also *counts bytes consumed* (to record file
 offsets). It defines a wrapper and implements the standard I/O traits on it:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:387
+// crates/indice-lib/src/warc.rs:387
 struct CountingBufReader<R: Read> {
     inner: BufReader<R>,
     count: u64,
@@ -903,7 +903,7 @@ without giving up compile-time checking.
 Several functions return `impl Iterator<...>` rather than a concrete type:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:28
+// crates/indice-lib/src/warc.rs:28
 pub fn iter_records(path: &Path) -> Result<impl Iterator<Item = Result<WarcRecord>>> {
     ...
     Ok(records.into_iter())
@@ -919,7 +919,7 @@ iterators and closures.
 
 ## 7. Concurrency - three flavors, all in this codebase
 
-rustyweb touches three different concurrency tools, and they illustrate how
+indice touches three different concurrency tools, and they illustrate how
 Rust's ownership rules make concurrency safer.
 
 ### 7a. Data parallelism with Rayon
@@ -929,7 +929,7 @@ Rayon turns a sequential iterator into a parallel one by changing `.iter()` to
 `.par_iter()`:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:242
+// crates/indice-lib/src/index.rs:242
 let per_warc: Vec<Vec<RawRecord>> = warc_paths
     .par_iter()                       // parallel iterator - runs across threads
     .map(|entry_name| {
@@ -953,7 +953,7 @@ tasks need to write into one index. That's what a `Mutex` (mutual exclusion lock
 is for:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:44
+// crates/indice-lib/src/index.rs:44
 let search = Mutex::new(
     SearchIndex::open(index_dir.join("full_text").as_path())?
 );
@@ -963,7 +963,7 @@ To touch the index, you `.lock()` it, which returns a guard giving exclusive
 access until the guard drops:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:125
+// crates/indice-lib/src/index.rs:125
 search.lock().unwrap().delete_collection(&id);
 ```
 
@@ -989,7 +989,7 @@ many connections by suspending tasks at their `.await` points.
 You spot async code by two keywords: `async fn` to define, `.await` to call.
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:94
+// crates/indice-lib/src/server.rs:94
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
     let app = router(home)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;   // await
@@ -1012,9 +1012,9 @@ and proceeds as soon as *any one* completes, which is how graceful shutdown
 works:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:167
+// crates/indice-bin/src/main.rs:167
 tokio::select! {
-    result = rustyweb_lib::server::serve(&bind, &home) => { result?; }
+    result = indice_lib::server::serve(&bind, &home) => { result?; }
     _ = ctrl_c => {}
     _ = terminate => {}
 }
@@ -1027,14 +1027,14 @@ dir) is wrapped in an `Arc` - an **A**tomically **R**eference-**C**ounted pointe
 that lets many tasks share ownership of one value safely:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:43
+// crates/indice-lib/src/server.rs:43
 let state = Arc::new(AppState { search, home: ..., index_dir: ... });
 ```
 
 Handlers then receive it through Axum's `State` extractor:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:108
+// crates/indice-lib/src/server.rs:108
 async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse { ... }
 ```
 
@@ -1057,7 +1057,7 @@ The WACZ metadata reader shows this vividly, including *local* structs defined
 right inside a function just to parse one thing:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:43
+// crates/indice-lib/src/wacz.rs:43
 #[derive(Deserialize, Default)]
 struct Metadata {
     title: Option<String>,
@@ -1081,7 +1081,7 @@ be absent - that's fine, you'll get `None`." Because these are declared *inside*
 pollute the module. Parsing is then one line:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:65
+// crates/indice-lib/src/wacz.rs:65
 if let Ok(dp) = serde_json::from_str::<DataPackage>(&buf) {
     let nested = dp.metadata.unwrap_or_default();
     meta.title = clean(dp.title.or(nested.title));
@@ -1100,7 +1100,7 @@ JSON value and the code coerces it manually - a good example of dropping to a
 lower level when the data is messy:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:184
+// crates/indice-lib/src/wacz.rs:184
 #[derive(Deserialize)]
 struct CdxJson {
     url: Option<String>,
@@ -1120,7 +1120,7 @@ these fields aren't consistently typed in real WACZ files (`coerce_u64` at
 ## 9. Putting it together: one full trip through `index`
 
 To see how the pieces connect, follow what happens when you run
-`rustyweb index archive/site.wacz`:
+`indice index archive/site.wacz`:
 
 1. **`main`** (`main.rs:105`) is an `async fn` under `#[tokio::main]`. It
    initializes logging, then `Cli::parse()` (from `clap`) turns argv into the
@@ -1219,7 +1219,7 @@ way to understand both the code and the Rust patterns it uses.
 Part I gave you the working vocabulary. This part goes deeper on the two
 concepts that are genuinely unique to Rust and trip up most newcomers -
 **lifetimes** and **async** - and then tours the smaller Rust-specific features
-that appear throughout rustyweb. These two topics are connected: async forces
+that appear throughout indice. These two topics are connected: async forces
 lifetime questions into the open, which is why they belong together.
 
 ---
@@ -1245,7 +1245,7 @@ the compiler infers them. But they're always there.
 Look at this function from the binary:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:249
+// crates/indice-bin/src/main.rs:249
 /// First 8 characters of a hex hash for compact display.
 fn short_hash(hash: &str) -> &str {
     hash.get(..8).unwrap_or(hash)
@@ -1274,7 +1274,7 @@ The other elision rule: if a method takes `&self`, any returned reference is
 assumed to borrow from `self`. `Source::as_file` is a clean example:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:38
+// crates/indice-lib/src/collections.rs:38
 pub fn as_file(&self) -> Option<&Path> {
     match self {
         Source::File(p) => Some(p.as_path()),
@@ -1297,7 +1297,7 @@ reference is valid for the entire duration of the program." String literals are
 `'static` because they're baked into the compiled binary. See:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:718
+// crates/indice-lib/src/server.rs:718
 fn mime_guess_from_path(path: &str) -> &'static str {
     if path.ends_with(".html") {
         "text/html; charset=utf-8"
@@ -1326,7 +1326,7 @@ references" - a requirement we'll see again with async.
 Throughout the code you'll see `<'_>`:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:86
+// crates/indice-lib/src/collections.rs:86
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.location())
@@ -1342,7 +1342,7 @@ lifetime equivalent of the `_` you've seen in patterns.
 
 ### The insight: this codebase mostly *avoids* lifetimes on purpose
 
-Here's something worth noticing. Look at the long-lived data types in rustyweb -
+Here's something worth noticing. Look at the long-lived data types in indice -
 `WarcRecord` (`warc.rs:6`), `Collection` (`collections.rs:92`), `AppState`
 (`server.rs:28`). **None of them has a lifetime parameter.** They store `String`,
 `PathBuf`, `Vec<u8>` - *owned* data - never `&str`, `&Path`, or `&[u8]`.
@@ -1360,7 +1360,7 @@ struct WarcRecord<'a> {
 But then the struct carries a lifetime parameter `<'a>` that infects every
 function touching it, and the record can't outlive the buffer it points into. For
 data that's parsed once and then passed around, merged into hash maps, sent
-across threads, and stored in a manifest, that's a straitjacket. So rustyweb pays
+across threads, and stored in a manifest, that's a straitjacket. So indice pays
 for owned `String`s (a heap allocation each) and buys freedom: the records are
 *self-contained* and lifetime-free.
 
@@ -1368,7 +1368,7 @@ The takeaway for a learner: **lifetimes appear mostly at function boundaries tha
 return borrows, not on your data structures.** When you own your data, the borrow
 checker mostly gets out of your way. Reaching for a lifetime parameter on a struct
 is a real technique, but it's an optimization you adopt deliberately, not a
-default. rustyweb shows the pragmatic default.
+default. indice shows the pragmatic default.
 
 ### Advanced sighting: higher-ranked trait bounds
 
@@ -1376,7 +1376,7 @@ One genuinely advanced piece of lifetime syntax appears in `main.rs`, in the
 custom log formatter's `where` clause:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:22
+// crates/indice-bin/src/main.rs:22
 impl<S, N> FormatEvent<S, N> for ColorLineFormat
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -1410,7 +1410,7 @@ This is visible in the shutdown code, where two futures are *defined* but not ye
 run:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:148
+// crates/indice-bin/src/main.rs:148
 let ctrl_c = async {
     tokio::signal::ctrl_c()
         .await
@@ -1424,9 +1424,9 @@ point *no signal handler is listening yet* - the code inside hasn't executed. It
 only runs when it's polled, which happens here:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:167
+// crates/indice-bin/src/main.rs:167
 tokio::select! {
-    result = rustyweb_lib::server::serve(&bind, &home) => { result?; }
+    result = indice_lib::server::serve(&bind, &home) => { result?; }
     _ = ctrl_c => {}
     _ = terminate => {}
 }
@@ -1446,7 +1446,7 @@ can't be `async` - something has to bootstrap the async world from the synchrono
 one. That's what the attribute does:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:105
+// crates/indice-bin/src/main.rs:105
 #[tokio::main]
 async fn main() -> Result<()> { ... }
 ```
@@ -1477,7 +1477,7 @@ waits on `.await` for disk or network, the thread is off serving connections B, 
 D. Between `.await` points, code runs normally and synchronously.
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:94
+// crates/indice-lib/src/server.rs:94
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
     let app = router(home)?;                                      // sync
     let listener = tokio::net::TcpListener::bind(bind).await?;    // may suspend
@@ -1506,12 +1506,12 @@ because in general it won't. The solution is shared *ownership* instead of
 borrowing:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:43
+// crates/indice-lib/src/server.rs:43
 let state = Arc::new(AppState { search, home: ..., index_dir: ... });
 ```
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:108
+// crates/indice-lib/src/server.rs:108
 async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse { ... }
 ```
 
@@ -1549,7 +1549,7 @@ loading it into memory to answer a range request would be a disaster. Instead th
 server turns the file into an async *stream* of chunks:
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:576
+// crates/indice-lib/src/server.rs:576
 let length = end - start + 1;
 let limited = tokio::io::AsyncReadExt::take(file, length);   // async reader, capped at `length`
 let body = Body::from_stream(ReaderStream::new(limited));    // reader -> stream of chunks -> HTTP body
@@ -1564,7 +1564,7 @@ same idea, "stop after N," applied to an async byte reader.
 
 ### Two kinds of concurrency, both in one program
 
-It's worth stepping back: rustyweb uses **two completely different concurrency
+It's worth stepping back: indice uses **two completely different concurrency
 tools for two different problems**, which is a great illustration of how Rust
 thinks about this.
 
@@ -1583,7 +1583,7 @@ codebase is a good way to internalize the distinction.
 
 ## 14. Other things that are distinctly Rust
 
-A tour of the smaller Rust-specific features woven through rustyweb that don't get
+A tour of the smaller Rust-specific features woven through indice that don't get
 their own section but are worth recognizing.
 
 ### Tuple structs and the newtype pattern
@@ -1592,7 +1592,7 @@ The custom log formatter is a **tuple struct** - a struct whose fields are
 positional (accessed by `.0`, `.1`, ...) rather than named:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:14
+// crates/indice-bin/src/main.rs:14
 struct ColorLineFormat(Format);
 ```
 
@@ -1600,7 +1600,7 @@ struct ColorLineFormat(Format);
 `.0`:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:49
+// crates/indice-bin/src/main.rs:49
 self.0.format_event(ctx, Writer::new(&mut buf), event)?;
 ```
 
@@ -1622,7 +1622,7 @@ take a variable number of arguments, accept custom syntax, and generate code.
   **capturing variables by name from the surrounding scope**:
 
   ```rust
-  // crates/rustyweb-bin/src/main.rs:51
+  // crates/indice-bin/src/main.rs:51
   write!(writer, "{start}{line}\x1b[0m\n")
   ```
 
@@ -1634,7 +1634,7 @@ take a variable number of arguments, accept custom syntax, and generate code.
   Rust and get a `serde_json::Value`:
 
   ```rust
-  // crates/rustyweb-lib/src/server.rs:639
+  // crates/indice-lib/src/server.rs:639
   let body = serde_json::json!({
       "results": results.iter().map(|r| serde_json::json!({
           "url": r.url,
@@ -1657,12 +1657,12 @@ from Part I. You mostly *use* macros rather than write them, but recognizing the
 When the compiler can't infer a type, you spell it out with the "turbofish":
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:239
+// crates/indice-lib/src/index.rs:239
 .collect::<Result<Vec<_>>>()
 ```
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:65
+// crates/indice-lib/src/wacz.rs:65
 serde_json::from_str::<DataPackage>(&buf)
 ```
 
@@ -1681,7 +1681,7 @@ length, borrowing data owned elsewhere, with no copying. `&str` is a slice of a
 (`fn extract_pdf_text(bytes: &[u8])`) and as sub-ranges:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:180
+// crates/indice-lib/src/collections.rs:180
 hasher.update(&buf[..n]);
 ```
 
@@ -1694,12 +1694,12 @@ idea, returning a slice of the first 8 chars.)
 ### Conditional compilation with `#[cfg(...)]`
 
 Attributes starting with `cfg` include or exclude code *at compile time* based on
-configuration. Two uses appear in rustyweb.
+configuration. Two uses appear in indice.
 
 Test code is compiled only during `cargo test`, never into the shipped binary:
 
 ```rust
-// e.g. crates/rustyweb-lib/src/collections.rs:196
+// e.g. crates/indice-lib/src/collections.rs:196
 #[cfg(test)]
 mod tests { ... }
 ```
@@ -1708,7 +1708,7 @@ And platform-specific code is selected per target OS - the SIGTERM handler exist
 only on Unix, with a do-nothing fallback elsewhere:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:155
+// crates/indice-bin/src/main.rs:155
 #[cfg(unix)]
 let terminate = async { ... install SIGTERM handler ... };
 
@@ -1794,7 +1794,7 @@ is why you almost never leak a file handle, lock, or temp file, and why there's 
 
 Part I introduced traits as "like interfaces" and showed `impl Trait` in return
 position. This section goes to the core of how Rust does abstraction - and a
-notable fact about rustyweb: it uses **only static dispatch**. There is not a
+notable fact about indice: it uses **only static dispatch**. There is not a
 single `dyn` or `Box<dyn Trait>` in the codebase. Understanding why is a good way
 to understand the whole system.
 
@@ -1805,7 +1805,7 @@ more meaningful letter) that stands in for "some type the caller chooses." The
 WARC parser is generic over its reader:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:232
+// crates/indice-lib/src/warc.rs:232
 fn parse_one_warc_record<R: BufRead>(
     mut r: R,
     offset: u64,
@@ -1832,7 +1832,7 @@ Bounds can be written inline (`<R: BufRead>`) or, when they get long, in a `wher
 clause - which is exactly why the log formatter uses one:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:22
+// crates/indice-bin/src/main.rs:22
 impl<S, N> FormatEvent<S, N> for ColorLineFormat
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -1849,7 +1849,7 @@ all into the angle brackets.
 Types can be generic too. `CountingBufReader` wraps *any* reader:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:387
+// crates/indice-lib/src/warc.rs:387
 struct CountingBufReader<R: Read> {
     inner: BufReader<R>,
     count: u64,
@@ -1887,7 +1887,7 @@ implementing a trait":
   lookup) at runtime. Slightly slower, but lets you mix different concrete types
   in one collection (e.g. a `Vec<Box<dyn Trait>>`) and shrinks code size.
 
-rustyweb chooses **static dispatch everywhere**. `iter_records` returns
+indice chooses **static dispatch everywhere**. `iter_records` returns
 `impl Iterator<...>` rather than `Box<dyn Iterator<...>>`; the WARC parser is
 `<R: BufRead>` rather than `&mut dyn BufRead`. The payoff is the zero-cost story
 from §14 - the iterator chains and generic readers compile down to code as tight
@@ -1902,7 +1902,7 @@ Some traits carry a type *inside* them, called an **associated type**. The two
 you meet immediately are `Iterator` and `Future`:
 
 ```rust
-// crates/rustyweb-lib/src/warc.rs:28
+// crates/indice-lib/src/warc.rs:28
 pub fn iter_records(path: &Path) -> Result<impl Iterator<Item = Result<WarcRecord>>>
 ```
 
@@ -1916,13 +1916,13 @@ iterator has exactly one `Item` type, decided by how it's built.
 
 ### Extension traits: methods live in traits you must bring into scope
 
-This one surprises newcomers and appears several times in rustyweb. In Rust, a
+This one surprises newcomers and appears several times in indice. In Rust, a
 method is only callable if the trait that defines it is **in scope** (imported).
 So you sometimes `use` a trait purely to unlock methods, even though you never
 name the trait again. Three real examples:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:169
+// crates/indice-lib/src/collections.rs:169
 use sha2::Digest;                    // brings .update() and .finalize() into scope
 ...
 let mut hasher = sha2::Sha256::new();
@@ -1930,12 +1930,12 @@ hasher.update(&buf[..n]);            // <-- only works because Digest is importe
 ```
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:6
+// crates/indice-lib/src/index.rs:6
 use rayon::prelude::*;               // brings .par_iter() onto standard collections
 ```
 
 ```rust
-// crates/rustyweb-lib/src/server.rs:572
+// crates/indice-lib/src/server.rs:572
 use tokio::io::AsyncSeekExt;         // brings async .seek() onto the file
 if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await { ... }
 ```
@@ -1968,10 +1968,10 @@ language's control-flow operators.
 ### `Default` - the "empty value" trait
 
 `Default` provides `T::default()`, a canonical zero/empty value, and it's usually
-derived. rustyweb leans on it for best-effort parsing:
+derived. indice leans on it for best-effort parsing:
 
 ```rust
-// crates/rustyweb-lib/src/index.rs:218
+// crates/indice-lib/src/index.rs:218
 #[derive(Default)]
 struct MergedPage {
     timestamp: String,
@@ -2002,9 +2002,9 @@ log formatter's situation: both `FormatEvent` (from `tracing-subscriber`) and
 foreign type in a *local* newtype and implement the foreign trait on that:
 
 ```rust
-// crates/rustyweb-bin/src/main.rs:14
+// crates/indice-bin/src/main.rs:14
 struct ColorLineFormat(Format);           // local wrapper around a foreign type
-// crates/rustyweb-bin/src/main.rs:22
+// crates/indice-bin/src/main.rs:22
 impl<S, N> FormatEvent<S, N> for ColorLineFormat { ... }   // now allowed
 ```
 
@@ -2017,7 +2017,7 @@ standard escape hatch around the orphan rule.
 ## 17. Serde derives, in depth
 
 `serde` (**ser**ialize/**de**serialize) is the backbone of every JSON boundary in
-rustyweb - the manifest, WACZ metadata, CDX records, the search API. Part I said
+indice - the manifest, WACZ metadata, CDX records, the search API. Part I said
 "the struct definition *is* the schema." Here's how that actually works.
 
 ### What `#[derive(Serialize, Deserialize)]` generates
@@ -2027,7 +2027,7 @@ rustyweb - the manifest, WACZ metadata, CDX records, the search API. Part I said
 `serde_json` that map that model to a concrete syntax. When you write:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:6
+// crates/indice-lib/src/collections.rs:6
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SeedPage {
     pub url: String,
@@ -2053,7 +2053,7 @@ becomes `Some(value)`. This is why the WACZ metadata parser can tolerate wildly
 varying files:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:43
+// crates/indice-lib/src/wacz.rs:43
 #[derive(Deserialize, Default)]
 struct Metadata {
     title: Option<String>,
@@ -2069,10 +2069,10 @@ A WACZ with none of these keys still deserializes fine - you just get four
 ### Field attributes fine-tune the mapping
 
 The `#[serde(...)]` attributes are how you adjust the generated code without
-hand-writing it. Three appear in rustyweb, all on `Collection`:
+hand-writing it. Three appear in indice, all on `Collection`:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:92
+// crates/indice-lib/src/collections.rs:92
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Collection {
     pub id: String,
@@ -2107,7 +2107,7 @@ tagging** - `Source::File(path)` would become `{"File": "archive/x.wacz"}`. That
 ugly in a hand-editable manifest. So the enum carries a *container* attribute:
 
 ```rust
-// crates/rustyweb-lib/src/collections.rs:16
+// crates/indice-lib/src/collections.rs:16
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Source {
@@ -2131,10 +2131,10 @@ This is a clean demonstration of composing two features - derive plus a manual
 ### Local throwaway structs as parsers
 
 You don't need a top-level type for every JSON shape. serde structs are cheap, so
-rustyweb defines them *inside functions*, scoped to a single parse:
+indice defines them *inside functions*, scoped to a single parse:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:87
+// crates/indice-lib/src/wacz.rs:87
 #[derive(Deserialize)]
 struct PageEntry {
     url: Option<String>,
@@ -2163,7 +2163,7 @@ those fields as `serde_json::Value` ("any JSON value, I'll sort it out later") a
 coerce manually:
 
 ```rust
-// crates/rustyweb-lib/src/wacz.rs:184
+// crates/indice-lib/src/wacz.rs:184
 #[derive(Deserialize)]
 struct CdxJson {
     url: Option<String>,
@@ -2173,7 +2173,7 @@ struct CdxJson {
     ...
 }
 
-// crates/rustyweb-lib/src/wacz.rs:195
+// crates/indice-lib/src/wacz.rs:195
 fn coerce_u64(v: &Option<serde_json::Value>) -> u64 {
     match v {
         Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
@@ -2203,7 +2203,7 @@ Across the codebase, serde_json shows up as just three calls:
   (`server.rs:639`) without defining a response struct.
 
 That's the whole surface. Between typed structs for known shapes, `Value` for
-messy ones, and these three calls, serde covers every JSON boundary in rustyweb -
+messy ones, and these three calls, serde covers every JSON boundary in indice -
 and in almost any Rust program you'll write.
 
 ---
@@ -2233,7 +2233,7 @@ If you internalize just a few connected ideas, the rest of Rust follows:
    derives generate `Serialize`/`Deserialize` impls so your types *are* your JSON
    schema (§17).
 
-Everything in rustyweb is an application of these. When a piece of code looks
+Everything in indice is an application of these. When a piece of code looks
 strange, ask which of the six it's serving - usually it's ownership (1/2) or
 error handling (3), and the "weird" syntax is just the compiler being made to
 prove something it would otherwise have to trust.

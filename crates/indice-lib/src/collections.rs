@@ -220,7 +220,7 @@ pub struct Wacz {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_end: Option<String>,
 
-    /// Where this WACZ was imported from, when it came via `rustyweb
+    /// Where this WACZ was imported from, when it came via `indice
     /// browsertrix`. Drives incremental re-sync (skip already-imported items)
     /// and attributes provenance. Absent for hand-indexed WACZs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,7 +267,7 @@ impl Wacz {
     }
 }
 
-/// Provenance for a WACZ imported from a Browsertrix instance (`rustyweb
+/// Provenance for a WACZ imported from a Browsertrix instance (`indice
 /// browsertrix`). The `(host, item_id, resource_hash)` triple lets a re-run skip
 /// an item that's already indexed without re-downloading it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -306,7 +306,7 @@ pub struct Collection {
     pub description: Option<String>,
     /// When the collection was first created (RFC 3339).
     pub created: String,
-    /// Who runs this rustyweb instance / holds the collection (EAD
+    /// Who runs this indice instance / holds the collection (EAD
     /// `<repository>`), distinct from `creator`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curator: Option<String>,
@@ -1113,7 +1113,7 @@ mod tests {
 
     #[test]
     fn file_sha256_detects_content_change() {
-        // The fixity primitive behind `rustyweb verify`: the same bytes hash to
+        // The fixity primitive behind `indice verify`: the same bytes hash to
         // the same digest, and a single changed byte changes the digest.
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("data.bin");
@@ -1414,7 +1414,7 @@ mod tests {
 
     #[test]
     fn hand_edited_finding_aid_loads() {
-        // A curator can author the Markdown by hand; rustyweb reads it verbatim.
+        // A curator can author the Markdown by hand; indice reads it verbatim.
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("collections/my-coll");
         std::fs::create_dir_all(&dir).unwrap();

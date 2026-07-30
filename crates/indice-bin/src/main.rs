@@ -49,7 +49,7 @@ where
 }
 
 #[derive(Parser)]
-#[command(name = "rustyweb", about = "Web archive player", version)]
+#[command(name = "indice", about = "Web archive player", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -69,7 +69,7 @@ enum Commands {
         #[arg(short = 'f', long = "from-file", value_name = "FILE")]
         from_file: Option<String>,
 
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
 
@@ -106,13 +106,13 @@ enum Commands {
         #[arg(short, long, default_value = "127.0.0.1:8080")]
         bind: String,
 
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
     /// Rebuild the search index from collections.json (re-fetches remote sources).
     Reindex {
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
 
@@ -135,7 +135,7 @@ enum Commands {
     /// than `reindex`. Needs some free disk (a merge writes the new segment
     /// before freeing the inputs).
     Optimize {
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
 
@@ -154,13 +154,13 @@ enum Commands {
         /// URL to search for (exact match against archived URLs).
         url: String,
 
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
     /// Verify the fixity of indexed WACZ files by re-hashing each one.
     Verify {
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
@@ -174,7 +174,7 @@ enum Commands {
         #[command(subcommand)]
         action: CrawlCmd,
     },
-    /// Import content into rustyweb from an external web-archiving service.
+    /// Import content into indice from an external web-archiving service.
     Import {
         #[command(subcommand)]
         action: ImportCmd,
@@ -191,7 +191,7 @@ enum ImportCmd {
     /// of the command line so secrets don't appear in the process list.
     Browsertrix {
         /// Browsertrix host (use this for a self-hosted instance).
-        #[arg(long, default_value = rustyweb_lib::browsertrix::DEFAULT_HOST)]
+        #[arg(long, default_value = indice_lib::browsertrix::DEFAULT_HOST)]
         host: String,
 
         /// Organization to import from (its slug or id). Defaults to your only
@@ -199,7 +199,7 @@ enum ImportCmd {
         #[arg(long)]
         org: Option<String>,
 
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
 
@@ -220,7 +220,7 @@ enum ImportCmd {
         #[arg(long)]
         crawl: Option<String>,
 
-        /// Group the imported crawls into this rustyweb collection (created if
+        /// Group the imported crawls into this indice collection (created if
         /// new). Without it, each crawl is its own collection.
         #[arg(long)]
         into: Option<String>,
@@ -297,7 +297,7 @@ enum CrawlCmd {
         #[arg(long, value_name = "FILE")]
         note_file: Option<PathBuf>,
 
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
@@ -320,7 +320,7 @@ enum CollectionCmd {
         #[arg(long)]
         description: Option<String>,
 
-        /// Repository / owner running this rustyweb instance (EAD <repository>).
+        /// Repository / owner running this indice instance (EAD <repository>).
         #[arg(long)]
         curator: Option<String>,
 
@@ -355,13 +355,13 @@ enum CollectionCmd {
         #[arg(long, value_name = "FILE")]
         narrative_file: Option<PathBuf>,
 
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
     /// List collections and their WACZ counts.
     List {
-        /// rustyweb home directory (holds archive/ and index/).
+        /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
@@ -477,7 +477,7 @@ fn short_label(label: &str) -> String {
         .to_string()
 }
 
-impl rustyweb_lib::index::IndexProgress for BarProgress {
+impl indice_lib::index::IndexProgress for BarProgress {
     fn begin(&self, label: &str) {
         // Indeterminate spinner: the record total isn't known until the CDX is
         // read. steady_tick animates it during the blocking network setup. The
@@ -633,14 +633,14 @@ async fn main() -> Result<()> {
                     "index needs at least one WACZ file (kept in <home>/archive) or an\n\
                      http(s) URL. For example:\n\
                      \n\
-                     \x20 rustyweb index archive/site.wacz          index a local WACZ (must be in archive/)\n\
-                     \x20 rustyweb index archive/*.wacz             index several at once\n\
-                     \x20 rustyweb index https://ex.org/b.wacz      index a remote WACZ\n\
-                     \x20 rustyweb index --from-file urls.txt       index a list from a file\n\
-                     \x20 cat urls.txt | rustyweb index -f -        index a list from stdin\n\
+                     \x20 indice index archive/site.wacz          index a local WACZ (must be in archive/)\n\
+                     \x20 indice index archive/*.wacz             index several at once\n\
+                     \x20 indice index https://ex.org/b.wacz      index a remote WACZ\n\
+                     \x20 indice index --from-file urls.txt       index a list from a file\n\
+                     \x20 cat urls.txt | indice index -f -        index a list from stdin\n\
                      \n\
                      To rebuild the existing index from the manifest (including\n\
-                     remote sources), use: rustyweb reindex"
+                     remote sources), use: indice reindex"
                 );
                 std::process::exit(2);
             }
@@ -655,10 +655,10 @@ async fn main() -> Result<()> {
                     "index needs --collection <NAME>: every crawl belongs to a curated\n\
                      collection. For example:\n\
                      \n\
-                     \x20 rustyweb index archive/*.wacz --collection \"Ukraine Cultural Heritage\"\n\
+                     \x20 indice index archive/*.wacz --collection \"Ukraine Cultural Heritage\"\n\
                      \n\
                      Pick a name that says what these crawls are a part of and why you're\n\
-                     keeping them; you can describe it further with: rustyweb collection set"
+                     keeping them; you can describe it further with: indice collection set"
                 );
                 std::process::exit(2);
             };
@@ -669,7 +669,7 @@ async fn main() -> Result<()> {
             let bar = show_bar.then(BarProgress::new);
             let progress = bar
                 .as_ref()
-                .map(|b| b as &dyn rustyweb_lib::index::IndexProgress);
+                .map(|b| b as &dyn indice_lib::index::IndexProgress);
 
             let total = locations.len();
             for (i, location) in locations.iter().enumerate() {
@@ -685,7 +685,7 @@ async fn main() -> Result<()> {
                 // filtered by log level. Silence stdout while indexing runs;
                 // our logs are on stderr and are unaffected.
                 let quiet = gag::Gag::stdout().ok();
-                let result = rustyweb_lib::index::index_location(
+                let result = indice_lib::index::index_location(
                     location,
                     &home,
                     name.as_deref(),
@@ -730,11 +730,11 @@ async fn main() -> Result<()> {
             // Resolver so Browsertrix-sourced crawls can be replayed (fresh
             // presigned URLs on demand). Logs in lazily with the env credentials,
             // so a server with no Browsertrix sources never needs them.
-            let resolver: std::sync::Arc<dyn rustyweb_lib::index::SourceResolver> =
+            let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> =
                 std::sync::Arc::new(BrowsertrixResolver::new());
 
             tokio::select! {
-                result = rustyweb_lib::server::serve_with_resolver(&bind, &home, Some(resolver)) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver)) => {
                     result?;
                 }
                 _ = ctrl_c => {}
@@ -752,15 +752,14 @@ async fn main() -> Result<()> {
             let bar = show_bar.then(BarProgress::new);
             let progress = bar
                 .as_ref()
-                .map(|b| b as &dyn rustyweb_lib::index::IndexProgress);
+                .map(|b| b as &dyn indice_lib::index::IndexProgress);
             // Like `index`, silence stdout to hide third-party PDF extraction
             // noise; our logs are on stderr.
             let quiet = gag::Gag::stdout().ok();
             // Resolver for any Browsertrix sources in the manifest (logs in
             // lazily, so a manifest without them needs no credentials).
             let resolver = BrowsertrixResolver::new();
-            let result =
-                rustyweb_lib::index::reindex(&home, concurrency, Some(&resolver), progress);
+            let result = indice_lib::index::reindex(&home, concurrency, Some(&resolver), progress);
             drop(quiet);
             if result.is_err() {
                 // Clear any spinner/bar left up before the error propagates.
@@ -782,8 +781,8 @@ async fn main() -> Result<()> {
             let bar = show_bar.then(BarProgress::new);
             let progress = bar
                 .as_ref()
-                .map(|b| b as &dyn rustyweb_lib::index::IndexProgress);
-            let result = rustyweb_lib::index::optimize(&home, max_segments, progress);
+                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let result = indice_lib::index::optimize(&home, max_segments, progress);
             match result {
                 Ok((before, after)) => {
                     eprintln!("compacted index: {before} → {after} segment(s)");
@@ -826,7 +825,7 @@ async fn main() -> Result<()> {
                     Some(path) => Some(read_text_arg(&path)?),
                     None => narrative,
                 };
-                let fields = rustyweb_lib::collections::CollectionFields {
+                let fields = indice_lib::collections::CollectionFields {
                     description,
                     curator,
                     creator,
@@ -837,9 +836,9 @@ async fn main() -> Result<()> {
                     subjects: (!subjects.is_empty()).then_some(subjects),
                     narrative,
                 };
-                let id = rustyweb_lib::index::set_collection(&home, &name, &fields)?;
+                let id = indice_lib::index::set_collection(&home, &name, &fields)?;
                 if let Some(file) = &thumbnail {
-                    rustyweb_lib::index::set_collection_thumbnail(&home, &name, file)?;
+                    indice_lib::index::set_collection_thumbnail(&home, &name, file)?;
                 }
                 let readme = home.join("collections").join(&id).join("README.md");
                 println!("collection \"{name}\" ({id}) updated");
@@ -862,7 +861,7 @@ async fn main() -> Result<()> {
             } => {
                 let mut did = false;
                 if let Some(file) = &image {
-                    rustyweb_lib::index::set_crawl_thumbnail(&home, &id, file)?;
+                    indice_lib::index::set_crawl_thumbnail(&home, &id, file)?;
                     println!("pinned thumbnail for crawl {id} from {}", file.display());
                     did = true;
                 }
@@ -871,7 +870,7 @@ async fn main() -> Result<()> {
                     None => note,
                 };
                 if let Some(note) = note {
-                    rustyweb_lib::index::set_crawl_note(&home, &id, &note)?;
+                    indice_lib::index::set_crawl_note(&home, &id, &note)?;
                     println!("note updated for crawl {id}");
                     did = true;
                 }
@@ -903,7 +902,7 @@ async fn main() -> Result<()> {
                 let bar = show_bar.then(BarProgress::new);
                 let progress = bar
                     .as_ref()
-                    .map(|b| b as &dyn rustyweb_lib::index::IndexProgress);
+                    .map(|b| b as &dyn indice_lib::index::IndexProgress);
                 let opts = ImportOpts {
                     public,
                     collection: collection.as_deref(),
@@ -933,9 +932,9 @@ async fn main() -> Result<()> {
 
 /// Print each collection with its WACZ count and description.
 fn run_collection_list(home: &std::path::Path) -> Result<()> {
-    use rustyweb_lib::collections::Manifest;
+    use indice_lib::collections::Manifest;
 
-    let index_dir = rustyweb_lib::index::index_dir(home);
+    let index_dir = indice_lib::index::index_dir(home);
     let manifest = Manifest::open(&index_dir)?;
     if manifest.collections.is_empty() {
         println!("No collections registered in {}", index_dir.display());
@@ -953,9 +952,9 @@ fn run_collection_list(home: &std::path::Path) -> Result<()> {
 /// recorded at index time. Reports each collection as OK / MODIFIED / MISSING
 /// and returns `false` if any collection failed its fixity check.
 fn run_verify(home: &std::path::Path) -> Result<bool> {
-    use rustyweb_lib::collections::{file_sha256, Manifest, Source};
+    use indice_lib::collections::{file_sha256, Manifest, Source};
 
-    let index_dir = rustyweb_lib::index::index_dir(home);
+    let index_dir = indice_lib::index::index_dir(home);
     let manifest = Manifest::open(&index_dir)?;
     if manifest.waczs.is_empty() {
         println!("No collections registered in {}", index_dir.display());
@@ -1012,10 +1011,10 @@ fn short_hash(hash: &str) -> &str {
 }
 
 fn run_search_url(url: &str, home: &std::path::Path) -> Result<()> {
-    use rustyweb_lib::collections::{Manifest, Source};
-    use rustyweb_lib::wacz::search_cdx;
+    use indice_lib::collections::{Manifest, Source};
+    use indice_lib::wacz::search_cdx;
 
-    let index_dir = rustyweb_lib::index::index_dir(home);
+    let index_dir = indice_lib::index::index_dir(home);
     let manifest = Manifest::open(&index_dir)?;
     if manifest.waczs.is_empty() {
         println!("No collections registered in {}", index_dir.display());
@@ -1082,7 +1081,7 @@ struct ImportOpts<'a> {
     collection: Option<&'a str>,
     /// Import only this archived item by id; `None` = all selected.
     crawl: Option<&'a str>,
-    /// Group imports into this rustyweb collection; `None` = one per crawl.
+    /// Group imports into this indice collection; `None` = one per crawl.
     into: Option<&'a str>,
     /// Import crawls that haven't been QA'd too (default: reviewed-only).
     include_unreviewed: bool,
@@ -1117,9 +1116,9 @@ fn run_browsertrix(
     org: Option<&str>,
     home: &std::path::Path,
     opts: &ImportOpts,
-    progress: Option<&dyn rustyweb_lib::index::IndexProgress>,
+    progress: Option<&dyn indice_lib::index::IndexProgress>,
 ) -> Result<()> {
-    use rustyweb_lib::browsertrix::ItemQuery;
+    use indice_lib::browsertrix::ItemQuery;
 
     if opts.public {
         return run_browsertrix_public(host, org, home, opts, progress);
@@ -1141,9 +1140,9 @@ fn run_browsertrix(
         None => None,
     };
 
-    // Where imports land as a rustyweb collection (every crawl belongs to one):
+    // Where imports land as a indice collection (every crawl belongs to one):
     // an explicit --into wins; otherwise importing a Browsertrix collection
-    // yields a rustyweb collection of the same name; otherwise (a whole-org or
+    // yields a indice collection of the same name; otherwise (a whole-org or
     // single-crawl import) fall back to the org name — a meaningful collecting
     // body — rather than scattering singletons.
     let into: &str = opts
@@ -1164,7 +1163,7 @@ fn run_browsertrix(
     // A single named --crawl is an explicit choice, so import it regardless of
     // its review status.
     let include_unreviewed = opts.include_unreviewed || opts.crawl.is_some();
-    let reviewed: Vec<&rustyweb_lib::browsertrix::Item> = items
+    let reviewed: Vec<&indice_lib::browsertrix::Item> = items
         .iter()
         .filter(|it| passes_review(it, include_unreviewed, opts.min_review))
         .collect();
@@ -1196,7 +1195,7 @@ fn run_browsertrix(
             println!(
                 "  {:<6} {:>10}  {:>4}  {}  {}",
                 if item.is_upload() { "upload" } else { "crawl" },
-                rustyweb_lib::server::human_size(item.file_size),
+                indice_lib::server::human_size(item.file_size),
                 item.review_status
                     .map_or("—".to_string(), |s| format!("QA{s}")),
                 item.id,
@@ -1224,8 +1223,7 @@ fn run_browsertrix(
 
     // Downloads land under the collection's archive subdir so the filesystem is
     // browsable by collection (archive/<slug>/<item-id>/…).
-    let archive =
-        rustyweb_lib::index::archive_dir(home).join(rustyweb_lib::collections::slugify(into));
+    let archive = indice_lib::index::archive_dir(home).join(indice_lib::collections::slugify(into));
     std::fs::create_dir_all(&archive)
         .with_context(|| format!("creating archive dir {}", archive.display()))?;
 
@@ -1267,7 +1265,7 @@ fn run_browsertrix(
             }
 
             let size = if res.size > 0 {
-                format!(" ({})", rustyweb_lib::server::human_size(res.size))
+                format!(" ({})", indice_lib::server::human_size(res.size))
             } else {
                 String::new()
             };
@@ -1277,7 +1275,7 @@ fn run_browsertrix(
             let crawl_id = if opts.stream {
                 // Index-only: record a Browsertrix source (stable identity) and
                 // stream it in place; replay/reindex re-resolve a fresh URL.
-                let source = rustyweb_lib::collections::Source::Browsertrix {
+                let source = indice_lib::collections::Source::Browsertrix {
                     host: host.clone(),
                     org: org.id.clone(),
                     item: item.id.clone(),
@@ -1285,7 +1283,7 @@ fn run_browsertrix(
                 };
                 eprintln!("↻ streaming {}{size}", res.name);
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = rustyweb_lib::index::index_location_with_resolver(
+                let indexed = indice_lib::index::index_location_with_resolver(
                     &source.location(),
                     home,
                     Some(&item.name),
@@ -1297,7 +1295,7 @@ fn run_browsertrix(
                 );
                 drop(quiet);
                 indexed.with_context(|| format!("streaming {}", res.name))?;
-                rustyweb_lib::collections::wacz_id(&source)
+                indice_lib::collections::wacz_id(&source)
             } else {
                 // Download a durable local copy and index it as a File source.
                 let filename = safe_wacz_filename(&res.name, &format!("resource-{i}"));
@@ -1305,7 +1303,7 @@ fn run_browsertrix(
                 eprintln!("↓ downloading {filename}{size}");
                 download_wacz(&res.path, &dest)?;
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = rustyweb_lib::index::index_location(
+                let indexed = indice_lib::index::index_location(
                     &dest.to_string_lossy(),
                     home,
                     Some(&item.name),
@@ -1317,14 +1315,14 @@ fn run_browsertrix(
                 drop(quiet);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
-                rustyweb_lib::collections::wacz_id(&rustyweb_lib::collections::Source::for_file(
+                indice_lib::collections::wacz_id(&indice_lib::collections::Source::for_file(
                     &abs, home,
                 ))
             };
 
             // Record provenance so a later run can skip this resource, and carry
             // the QA review rating (DACS Appraisal signal) onto the crawl.
-            rustyweb_lib::index::set_browsertrix_provenance_by_id(
+            indice_lib::index::set_browsertrix_provenance_by_id(
                 home,
                 &crawl_id,
                 &host,
@@ -1338,11 +1336,11 @@ fn run_browsertrix(
         }
     }
 
-    // Seed the rustyweb collection's finding aid from the Browsertrix metadata
+    // Seed the indice collection's finding aid from the Browsertrix metadata
     // (fill-gaps: only empty fields, so re-syncing never clobbers curator edits).
     let fields = browsertrix_collection_fields(&org, selected_collection.as_ref());
     if !fields.is_empty() {
-        rustyweb_lib::index::seed_collection(home, into, &fields)
+        indice_lib::index::seed_collection(home, into, &fields)
             .context("seeding collection metadata")?;
     }
 
@@ -1368,9 +1366,9 @@ fn run_browsertrix_public(
     org: Option<&str>,
     home: &std::path::Path,
     opts: &ImportOpts,
-    progress: Option<&dyn rustyweb_lib::index::IndexProgress>,
+    progress: Option<&dyn indice_lib::index::IndexProgress>,
 ) -> Result<()> {
-    use rustyweb_lib::browsertrix::Client;
+    use indice_lib::browsertrix::Client;
 
     let Some(org_slug) = org else {
         anyhow::bail!("--public needs --org <slug> (the public org's slug, e.g. `usgov-archive`)");
@@ -1390,7 +1388,7 @@ fn run_browsertrix_public(
     }
 
     // A specific --collection, else every public collection in the org.
-    let selected: Vec<rustyweb_lib::browsertrix::Collection> = match opts.collection {
+    let selected: Vec<indice_lib::browsertrix::Collection> = match opts.collection {
         Some(sel) => vec![resolve_collection(&colls, sel)?],
         None => colls,
     };
@@ -1414,7 +1412,7 @@ fn run_browsertrix_public(
     let resolver = BrowsertrixResolver::new();
 
     'collections: for coll in &selected {
-        // Each Browsertrix collection becomes a rustyweb collection. --into only
+        // Each Browsertrix collection becomes a indice collection. --into only
         // makes sense when importing a single collection; otherwise use each
         // collection's own name.
         let into: &str = opts
@@ -1440,7 +1438,7 @@ fn run_browsertrix_public(
         }
 
         let archive =
-            rustyweb_lib::index::archive_dir(home).join(rustyweb_lib::collections::slugify(into));
+            indice_lib::index::archive_dir(home).join(indice_lib::collections::slugify(into));
         std::fs::create_dir_all(&archive)
             .with_context(|| format!("creating archive dir {}", archive.display()))?;
         eprintln!(
@@ -1470,7 +1468,7 @@ fn run_browsertrix_public(
             }
 
             let size = if res.size > 0 {
-                format!(" ({})", rustyweb_lib::server::human_size(res.size))
+                format!(" ({})", indice_lib::server::human_size(res.size))
             } else {
                 String::new()
             };
@@ -1479,7 +1477,7 @@ fn run_browsertrix_public(
             let crawl_id = if opts.stream {
                 // Index-only: record a public Browsertrix source (stable identity)
                 // and stream it; replay/reindex re-resolve a fresh public URL.
-                let source = rustyweb_lib::collections::Source::BrowsertrixPublic {
+                let source = indice_lib::collections::Source::BrowsertrixPublic {
                     host: host.clone(),
                     org: oid.to_string(),
                     collection: coll.id.clone(),
@@ -1487,7 +1485,7 @@ fn run_browsertrix_public(
                 };
                 eprintln!("↻ streaming {}{size}", res.name);
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = rustyweb_lib::index::index_location_with_resolver(
+                let indexed = indice_lib::index::index_location_with_resolver(
                     &source.location(),
                     home,
                     Some(display),
@@ -1499,7 +1497,7 @@ fn run_browsertrix_public(
                 );
                 drop(quiet);
                 indexed.with_context(|| format!("streaming {}", res.name))?;
-                rustyweb_lib::collections::wacz_id(&source)
+                indice_lib::collections::wacz_id(&source)
             } else {
                 // Each crawl's WACZ lands in its own subdir so shared filenames
                 // can't collide (mirrors the authenticated path).
@@ -1511,7 +1509,7 @@ fn run_browsertrix_public(
                 eprintln!("↓ downloading {filename}{size}");
                 download_wacz(&res.path, &dest)?;
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = rustyweb_lib::index::index_location(
+                let indexed = indice_lib::index::index_location(
                     &dest.to_string_lossy(),
                     home,
                     Some(display),
@@ -1523,14 +1521,14 @@ fn run_browsertrix_public(
                 drop(quiet);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
-                rustyweb_lib::collections::wacz_id(&rustyweb_lib::collections::Source::for_file(
+                indice_lib::collections::wacz_id(&indice_lib::collections::Source::for_file(
                     &abs, home,
                 ))
             };
 
             // Public replay.json carries no QA rating, so provenance records the
             // Browsertrix identity without a review status.
-            rustyweb_lib::index::set_browsertrix_provenance_by_id(
+            indice_lib::index::set_browsertrix_provenance_by_id(
                 home, &crawl_id, &host, &item_id, &res.hash, None,
             )
             .context("recording provenance")?;
@@ -1542,7 +1540,7 @@ fn run_browsertrix_public(
         // (fill-gaps, so a re-sync never clobbers curator edits).
         let fields = browsertrix_collection_fields(&org_meta, Some(coll));
         if !fields.is_empty() {
-            rustyweb_lib::index::seed_collection(home, into, &fields)
+            indice_lib::index::seed_collection(home, into, &fields)
                 .context("seeding collection metadata")?;
         }
     }
@@ -1558,15 +1556,15 @@ fn run_browsertrix_public(
     Ok(())
 }
 
-/// Build the finding-aid seed for the rustyweb collection from Browsertrix
+/// Build the finding-aid seed for the indice collection from Browsertrix
 /// metadata: the org is the collecting body (→ `creator`), and the selected
 /// Browsertrix collection (when one was chosen) supplies scope/abstract/subjects/
 /// dates. `access` is deliberately *not* mapped to rights (visibility ≠ reuse
 /// license). All fill-gaps via [`index::seed_collection`].
 fn browsertrix_collection_fields(
-    org: &rustyweb_lib::browsertrix::Org,
-    coll: Option<&rustyweb_lib::browsertrix::Collection>,
-) -> rustyweb_lib::collections::CollectionFields {
+    org: &indice_lib::browsertrix::Org,
+    coll: Option<&indice_lib::browsertrix::Collection>,
+) -> indice_lib::collections::CollectionFields {
     let nonblank = |o: &Option<String>| {
         o.as_deref()
             .map(str::trim)
@@ -1583,7 +1581,7 @@ fn browsertrix_collection_fields(
         })
     };
 
-    let mut fields = rustyweb_lib::collections::CollectionFields {
+    let mut fields = indice_lib::collections::CollectionFields {
         creator,
         ..Default::default()
     };
@@ -1599,7 +1597,7 @@ fn browsertrix_collection_fields(
 /// A human coverage-date string from a Browsertrix collection's ISO date range:
 /// the years, e.g. `2022–2023` (or just `2022` when they match / only one is set).
 fn date_range(earliest: Option<&str>, latest: Option<&str>) -> Option<String> {
-    let year = |d: Option<&str>| d.and_then(rustyweb_lib::index::year_prefix);
+    let year = |d: Option<&str>| d.and_then(indice_lib::index::year_prefix);
     match (year(earliest), year(latest)) {
         (Some(a), Some(b)) if a == b => Some(a),
         (Some(a), Some(b)) => Some(format!("{a}\u{2013}{b}")),
@@ -1610,11 +1608,11 @@ fn date_range(earliest: Option<&str>, latest: Option<&str>) -> Option<String> {
 
 /// Resolve a `--collection` value (a Browsertrix collection id, slug, or name)
 /// to the collection — we need its UUID for the API's item filter and its name
-/// to default the rustyweb target collection. Mirrors [`resolve_org`].
+/// to default the indice target collection. Mirrors [`resolve_org`].
 fn resolve_collection(
-    colls: &[rustyweb_lib::browsertrix::Collection],
+    colls: &[indice_lib::browsertrix::Collection],
     want: &str,
-) -> Result<rustyweb_lib::browsertrix::Collection> {
+) -> Result<indice_lib::browsertrix::Collection> {
     colls
         .iter()
         .find(|c| c.id == want || c.slug == want || c.name == want)
@@ -1633,7 +1631,7 @@ fn resolve_collection(
 /// `include_unreviewed` lets everything through, and `min_review` (which implies
 /// reviewed-only) requires at least that rating.
 fn passes_review(
-    item: &rustyweb_lib::browsertrix::Item,
+    item: &indice_lib::browsertrix::Item,
     include_unreviewed: bool,
     min_review: Option<u8>,
 ) -> bool {
@@ -1650,9 +1648,9 @@ fn passes_review(
 /// resource_hash)` — from the manifest, for incremental-sync skip checks.
 /// Returns empty when there's no manifest yet.
 fn load_imported(home: &std::path::Path) -> std::collections::HashSet<(String, String, String)> {
-    use rustyweb_lib::collections::Manifest;
+    use indice_lib::collections::Manifest;
 
-    let index_dir = rustyweb_lib::index::index_dir(home);
+    let index_dir = indice_lib::index::index_dir(home);
     Manifest::open(&index_dir)
         .map(|m| {
             m.waczs
@@ -1675,7 +1673,7 @@ fn download_wacz(url: &str, dest: &std::path::Path) -> Result<u64> {
     let tmp = PathBuf::from(tmp);
 
     let mut reader =
-        rustyweb_lib::http_range::get_reader(url).with_context(|| format!("fetching {url}"))?;
+        indice_lib::http_range::get_reader(url).with_context(|| format!("fetching {url}"))?;
     let mut file =
         std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let mut buf = [0u8; 64 * 1024];
@@ -1717,8 +1715,8 @@ fn safe_wacz_filename(name: &str, fallback: &str) -> String {
 /// Build a Browsertrix client from environment credentials, so secrets never
 /// appear in argv. A `BROWSERTRIX_TOKEN` (an existing JWT) short-circuits login;
 /// otherwise `BROWSERTRIX_USER` + `BROWSERTRIX_PASSWORD` are used.
-fn connect(host: &str) -> Result<rustyweb_lib::browsertrix::Client> {
-    use rustyweb_lib::browsertrix::Client;
+fn connect(host: &str) -> Result<indice_lib::browsertrix::Client> {
+    use indice_lib::browsertrix::Client;
 
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     if let Some(token) = env("BROWSERTRIX_TOKEN") {
@@ -1742,7 +1740,7 @@ fn connect(host: &str) -> Result<rustyweb_lib::browsertrix::Client> {
 /// caches the client, so no login happens unless a Browsertrix source is
 /// actually encountered.
 struct BrowsertrixResolver {
-    clients: std::sync::Mutex<std::collections::HashMap<String, rustyweb_lib::browsertrix::Client>>,
+    clients: std::sync::Mutex<std::collections::HashMap<String, indice_lib::browsertrix::Client>>,
 }
 
 impl BrowsertrixResolver {
@@ -1781,7 +1779,7 @@ impl BrowsertrixResolver {
         collection: &str,
         resource: &str,
     ) -> Result<String> {
-        let client = rustyweb_lib::browsertrix::Client::public(host);
+        let client = indice_lib::browsertrix::Client::public(host);
         let resources = client.public_collection_resources(org, collection)?;
         resources
             .into_iter()
@@ -1795,9 +1793,9 @@ impl BrowsertrixResolver {
     }
 }
 
-impl rustyweb_lib::index::SourceResolver for BrowsertrixResolver {
-    fn resolve(&self, source: &rustyweb_lib::collections::Source) -> Result<String> {
-        use rustyweb_lib::collections::Source;
+impl indice_lib::index::SourceResolver for BrowsertrixResolver {
+    fn resolve(&self, source: &indice_lib::collections::Source) -> Result<String> {
+        use indice_lib::collections::Source;
         match source {
             Source::Browsertrix {
                 host,
@@ -1835,9 +1833,9 @@ impl rustyweb_lib::index::SourceResolver for BrowsertrixResolver {
 /// Choose the org to import from. With `want` (a slug or id), match it exactly;
 /// otherwise use the sole org, erroring if there are none or several.
 fn resolve_org(
-    orgs: &[rustyweb_lib::browsertrix::Org],
+    orgs: &[indice_lib::browsertrix::Org],
     want: Option<&str>,
-) -> Result<rustyweb_lib::browsertrix::Org> {
+) -> Result<indice_lib::browsertrix::Org> {
     let slugs = || {
         orgs.iter()
             .map(|o| o.slug.as_str())
@@ -1887,7 +1885,7 @@ mod tests {
     use super::{
         passes_review, resolve_collection, resolve_org, safe_component, safe_wacz_filename,
     };
-    use rustyweb_lib::browsertrix::{Collection, Item, Org};
+    use indice_lib::browsertrix::{Collection, Item, Org};
 
     #[test]
     fn date_range_years() {

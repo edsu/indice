@@ -106,7 +106,7 @@ impl SearchIndex {
             if index.schema() != schema {
                 anyhow::bail!(
                     "the search index at {} was built with an older schema; \
-                     run `rustyweb reindex` to rebuild it",
+                     run `indice reindex` to rebuild it",
                     index_dir.display()
                 );
             }

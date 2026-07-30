@@ -26,7 +26,7 @@ fn index_into(home: &Path, name: &str) {
     std::fs::create_dir_all(&archive).unwrap();
     let dest = archive.join(name);
     std::fs::copy(fixture(name), &dest).unwrap();
-    rustyweb_lib::index::index_path(&dest, home, None, "test").unwrap();
+    indice_lib::index::index_path(&dest, home, None, "test").unwrap();
 }
 
 // ── Indexing ──────────────────────────────────────────────────────────────────
@@ -34,10 +34,9 @@ fn index_into(home: &Path, name: &str) {
 #[test]
 fn index_wacz_html_response_indexed() {
     let tmp = make_index(&["simple.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     let results = idx.search("example", 10).unwrap();
     assert!(
         !results.is_empty(),
@@ -48,10 +47,9 @@ fn index_wacz_html_response_indexed() {
 #[test]
 fn index_wacz_collection_document_indexed() {
     let tmp = make_index(&["simple.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     // The seed page URL ends with "example.com" so searching example.com finds the collection doc.
     let results = idx.search("example.com", 10).unwrap();
     assert!(
@@ -63,10 +61,9 @@ fn index_wacz_collection_document_indexed() {
 #[test]
 fn index_wacz_result_has_crawl_fields() {
     let tmp = make_index(&["simple.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     let results = idx.search("example", 10).unwrap();
     let page = results.iter().find(|r| r.doc_type == "page").unwrap();
     assert!(!page.crawl_id.is_empty(), "page should have crawl_id");
@@ -76,7 +73,7 @@ fn index_wacz_result_has_crawl_fields() {
 #[test]
 fn index_wacz_writes_manifest_with_metadata() {
     let tmp = make_index(&["simple.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     assert_eq!(manifest.waczs.len(), 1);
     let col = &manifest.waczs[0];
     assert_eq!(col.name, "simple");
@@ -93,15 +90,15 @@ fn index_wacz_writes_manifest_with_metadata() {
 fn optimize_compacts_in_place_and_keeps_search_working() {
     let tmp = make_index(&["simple.wacz"]);
     // Compact the existing index — no sources are re-read.
-    let (before, after) = rustyweb_lib::index::optimize(tmp.path(), 8, None).unwrap();
+    let (before, after) = indice_lib::index::optimize(tmp.path(), 8, None).unwrap();
     assert!(
         after >= 1 && after <= before,
         "before={before} after={after}"
     );
     // The manifest is untouched (no source re-read) and the index still answers.
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     assert_eq!(manifest.waczs.len(), 1);
-    let idx = rustyweb_lib::search::SearchIndex::open_read_only(
+    let idx = indice_lib::search::SearchIndex::open_read_only(
         tmp.path().join("index").join("full_text").as_path(),
     )
     .unwrap();
@@ -111,7 +108,7 @@ fn optimize_compacts_in_place_and_keeps_search_working() {
 #[test]
 fn optimize_errors_clearly_when_there_is_no_index() {
     let tmp = TempDir::new().unwrap();
-    let err = rustyweb_lib::index::optimize(tmp.path(), 8, None)
+    let err = indice_lib::index::optimize(tmp.path(), 8, None)
         .unwrap_err()
         .to_string();
     assert!(err.contains("no search index"), "unexpected error: {err}");
@@ -122,7 +119,7 @@ fn optimize_errors_clearly_when_there_is_no_index() {
 #[tokio::test]
 async fn search_api_returns_results() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/api/search?q=example")
         .body(Body::empty())
         .unwrap();
@@ -142,7 +139,7 @@ async fn search_api_returns_results() {
 #[tokio::test]
 async fn search_api_result_includes_crawl_fields() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/api/search?q=example")
         .body(Body::empty())
         .unwrap();
@@ -164,7 +161,7 @@ async fn search_api_result_includes_crawl_fields() {
 #[tokio::test]
 async fn search_api_no_results() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/api/search?q=zzz_nonexistent_zzz")
         .body(Body::empty())
         .unwrap();
@@ -184,9 +181,9 @@ async fn search_api_no_results() {
 #[tokio::test]
 async fn files_route_serves_registered_wacz() {
     let tmp = make_index(&["simple.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = &manifest.waczs[0].id;
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let req = Request::get(format!("/files/{id}"))
         .body(Body::empty())
@@ -198,9 +195,9 @@ async fn files_route_serves_registered_wacz() {
 #[tokio::test]
 async fn files_route_range_request() {
     let tmp = make_index(&["simple.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = &manifest.waczs[0].id;
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let req = Request::get(format!("/files/{id}"))
         .header("range", "bytes=0-99")
@@ -219,7 +216,7 @@ async fn files_route_range_request() {
 #[tokio::test]
 async fn files_route_unknown_id_404() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/files/deadbeef").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -237,9 +234,9 @@ async fn files_route_unknown_id_404() {
 #[tokio::test]
 async fn served_wacz_is_byte_identical_to_disk() {
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let req = Request::get(format!("/files/{id}"))
         .body(Body::empty())
@@ -264,9 +261,9 @@ async fn served_wacz_is_byte_identical_to_disk() {
 #[tokio::test]
 async fn served_range_matches_the_file_slice() {
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     // Request an interior slice and verify the exact bytes, not just the length.
     let req = Request::get(format!("/files/{id}"))
@@ -295,9 +292,9 @@ async fn served_range_matches_the_file_slice() {
 #[tokio::test]
 async fn served_wacz_cdx_resolves_a_replayable_page() {
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     // Pull the whole WACZ through the HTTP endpoint the browser would use...
     let req = Request::get(format!("/files/{id}"))
@@ -311,7 +308,7 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
     let served_path = tmp.path().join("served.wacz");
     std::fs::write(&served_path, &served).unwrap();
 
-    let records = rustyweb_lib::wacz::search_cdx(&served_path, REAL_URL).unwrap();
+    let records = indice_lib::wacz::search_cdx(&served_path, REAL_URL).unwrap();
     let page = records
         .iter()
         .find(|r| r.status == 200 && r.mime.contains("html"));
@@ -324,7 +321,7 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
 #[tokio::test]
 async fn viewer_wires_up_replay_web_page() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
@@ -352,7 +349,7 @@ async fn viewer_wires_up_replay_web_page() {
 #[tokio::test]
 async fn replay_viewer_served() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -361,7 +358,7 @@ async fn replay_viewer_served() {
 #[tokio::test]
 async fn replay_asset_has_etag_and_no_cache() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -379,7 +376,7 @@ async fn replay_asset_has_etag_and_no_cache() {
 #[tokio::test]
 async fn replay_asset_returns_304_when_etag_matches() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     // First request to learn the ETag.
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
@@ -406,7 +403,7 @@ async fn replay_asset_returns_304_when_etag_matches() {
 #[tokio::test]
 async fn replay_root_redirects() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/replay/").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     // /replay/ now redirects to homepage
@@ -422,13 +419,13 @@ async fn replay_root_redirects() {
 #[tokio::test]
 async fn homepage_shows_collection_name() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let cname = manifest.collections[0].name.clone();
     assert!(
         text.contains(&cname),
@@ -443,9 +440,9 @@ async fn homepage_shows_collection_name() {
 #[tokio::test]
 async fn homepage_card_links_to_collection_page() {
     let tmp = make_index(&["simple.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let cid = manifest.collections[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
         .await
@@ -461,9 +458,9 @@ async fn homepage_card_links_to_collection_page() {
 #[tokio::test]
 async fn crawl_page_shows_metadata_and_pages() {
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -496,7 +493,7 @@ async fn crawl_page_shows_metadata_and_pages() {
 async fn crawl_page_shows_browsertrix_provenance() {
     let tmp = make_index(&["a.wacz"]);
     // Mark the crawl as imported from Browsertrix, as `import browsertrix` does.
-    rustyweb_lib::index::set_browsertrix_provenance(
+    indice_lib::index::set_browsertrix_provenance(
         tmp.path(),
         &tmp.path().join("archive/test/a.wacz"),
         "https://app.browsertrix.com",
@@ -505,9 +502,9 @@ async fn crawl_page_shows_browsertrix_provenance() {
         Some(5),
     )
     .unwrap();
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -537,11 +534,11 @@ async fn crawl_page_shows_multi_wacz_provenance() {
     // Mark the entry as a multi-WACZ, as index_nested does for a nested file
     // (set on the manifest directly so the test needn't build a nested WACZ).
     let index_dir = tmp.path().join("index");
-    let mut m = rustyweb_lib::collections::Manifest::open(&index_dir).unwrap();
+    let mut m = indice_lib::collections::Manifest::open(&index_dir).unwrap();
     m.waczs[0].nested_waczs = Some(3);
     m.save().unwrap();
     let id = m.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -567,8 +564,8 @@ async fn crawl_page_shows_multi_wacz_provenance() {
 
 /// A stand-in resolver that always returns a canned presigned URL.
 struct FakeResolver(String);
-impl rustyweb_lib::index::SourceResolver for FakeResolver {
-    fn resolve(&self, _source: &rustyweb_lib::collections::Source) -> anyhow::Result<String> {
+impl indice_lib::index::SourceResolver for FakeResolver {
+    fn resolve(&self, _source: &indice_lib::collections::Source) -> anyhow::Result<String> {
         Ok(self.0.clone())
     }
 }
@@ -577,8 +574,8 @@ impl rustyweb_lib::index::SourceResolver for FakeResolver {
 /// --stream` would record it) and return its id.
 fn make_browsertrix_source(tmp: &TempDir) -> String {
     let index_dir = tmp.path().join("index");
-    let mut m = rustyweb_lib::collections::Manifest::open(&index_dir).unwrap();
-    m.waczs[0].source = rustyweb_lib::collections::Source::Browsertrix {
+    let mut m = indice_lib::collections::Manifest::open(&index_dir).unwrap();
+    m.waczs[0].source = indice_lib::collections::Source::Browsertrix {
         host: "https://app.browsertrix.com".into(),
         org: "o1".into(),
         item: "item-1".into(),
@@ -593,10 +590,10 @@ fn make_browsertrix_source(tmp: &TempDir) -> String {
 async fn browsertrix_replay_redirects_to_a_freshly_resolved_url() {
     let tmp = make_index(&["a.wacz"]);
     let id = make_browsertrix_source(&tmp);
-    let resolver: std::sync::Arc<dyn rustyweb_lib::index::SourceResolver> = std::sync::Arc::new(
+    let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> = std::sync::Arc::new(
         FakeResolver("https://files.example/a.wacz?sig=fresh".into()),
     );
-    let app = rustyweb_lib::server::router_with_resolver(tmp.path(), Some(resolver)).unwrap();
+    let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver)).unwrap();
 
     let resp = app
         .oneshot(
@@ -620,8 +617,8 @@ async fn public_browsertrix_replay_redirects_via_resolver() {
     let tmp = make_index(&["a.wacz"]);
     let id = {
         let index_dir = tmp.path().join("index");
-        let mut m = rustyweb_lib::collections::Manifest::open(&index_dir).unwrap();
-        m.waczs[0].source = rustyweb_lib::collections::Source::BrowsertrixPublic {
+        let mut m = indice_lib::collections::Manifest::open(&index_dir).unwrap();
+        m.waczs[0].source = indice_lib::collections::Source::BrowsertrixPublic {
             host: "https://app.browsertrix.com".into(),
             org: "o1".into(),
             collection: "col-uuid".into(),
@@ -631,10 +628,10 @@ async fn public_browsertrix_replay_redirects_via_resolver() {
         m.save().unwrap();
         id
     };
-    let resolver: std::sync::Arc<dyn rustyweb_lib::index::SourceResolver> = std::sync::Arc::new(
+    let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> = std::sync::Arc::new(
         FakeResolver("https://files.example/pub.wacz?sig=fresh".into()),
     );
-    let app = rustyweb_lib::server::router_with_resolver(tmp.path(), Some(resolver)).unwrap();
+    let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver)).unwrap();
 
     let resp = app
         .oneshot(
@@ -655,7 +652,7 @@ async fn public_browsertrix_replay_redirects_via_resolver() {
 async fn browsertrix_crawl_page_flags_remote_hosting() {
     let tmp = make_index(&["a.wacz"]);
     let id = make_browsertrix_source(&tmp);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -679,7 +676,7 @@ async fn browsertrix_replay_without_credentials_is_unavailable() {
     let tmp = make_index(&["a.wacz"]);
     let id = make_browsertrix_source(&tmp);
     // Default router has no resolver (no credentials).
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -695,10 +692,10 @@ async fn browsertrix_replay_without_credentials_is_unavailable() {
 #[tokio::test]
 async fn collection_page_lists_members() {
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let coll_id = manifest.collections[0].id.clone();
     let wacz_id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -733,9 +730,9 @@ async fn collection_page_flags_missing_minimum_fields() {
     // Scope & Content, Creator, Access & Use — is still missing and prompted,
     // even though the collection isn't wholly empty.
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let coll_id = manifest.collections[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app
         .oneshot(
             Request::get(format!("/collection/{coll_id}"))
@@ -763,16 +760,16 @@ async fn collection_page_nudge_lists_only_still_missing_minimum() {
     // With a creator supplied, the "still needed" prompt names only the remaining
     // DACS-minimum gaps (Scope & Content, Access & Use) — not Creator.
     let tmp = make_index(&["a.wacz"]); // collection "test"
-    rustyweb_lib::index::set_collection(
+    indice_lib::index::set_collection(
         tmp.path(),
         "test",
-        &rustyweb_lib::collections::CollectionFields {
+        &indice_lib::collections::CollectionFields {
             creator: Some("Someone".into()),
             ..Default::default()
         },
     )
     .unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app
         .oneshot(
             Request::get("/collection/test")
@@ -796,9 +793,9 @@ async fn collection_page_shows_scoped_facets() {
     // a search restricted to this collection (`collection:<id>`), turning the page
     // into a faceted entry point rather than just a member list.
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let coll_id = manifest.collections[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -829,9 +826,9 @@ async fn crawl_page_shows_scoped_facets() {
     // The crawl detail page carries the same scoped facet overview as a
     // collection, scoped to the single crawl (`crawl:<id>`).
     let tmp = make_index(&["a.wacz"]);
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
 
     let resp = app
         .oneshot(
@@ -858,7 +855,7 @@ async fn crawl_page_shows_scoped_facets() {
 #[tokio::test]
 async fn collection_page_unknown_id_404() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app
         .oneshot(
             Request::get("/collection/deadbeef")
@@ -873,7 +870,7 @@ async fn collection_page_unknown_id_404() {
 #[tokio::test]
 async fn thumb_route_unknown_id_404() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app
         .oneshot(Request::get("/thumb/deadbeef").body(Body::empty()).unwrap())
         .await
@@ -889,12 +886,12 @@ async fn collection_thumbnail_is_set_served_and_preferred() {
     image::RgbImage::from_pixel(8, 8, image::Rgb([10, 20, 30]))
         .save(&pic)
         .unwrap();
-    rustyweb_lib::index::set_collection_thumbnail(tmp.path(), "test", &pic).unwrap();
+    indice_lib::index::set_collection_thumbnail(tmp.path(), "test", &pic).unwrap();
 
     // Committed under the collection dir (git-trackable).
     assert!(tmp.path().join("collections/test/thumbnail.jpg").is_file());
 
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     // Served at /collection-thumb/<slug>.
     let resp = app
         .clone()
@@ -929,7 +926,7 @@ async fn collection_thumbnail_is_set_served_and_preferred() {
 #[tokio::test]
 async fn collection_thumb_rejects_traversal_ids() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     for bad in ["..", "a%2Fb", "a.b"] {
         let resp = app
             .clone()
@@ -953,7 +950,7 @@ async fn collection_card_shows_placeholder_without_image() {
     // simple.wacz deflates its WARCs (scan path), so no thumbnail is generated —
     // the card should render the image area as a CSS placeholder, not an <img>.
     let tmp = make_index(&["simple.wacz"]);
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
         .await
@@ -973,7 +970,7 @@ async fn collection_card_shows_placeholder_without_image() {
 
 #[tokio::test]
 async fn home_directory_is_portable() {
-    use rustyweb_lib::collections::{Manifest, Source};
+    use indice_lib::collections::{Manifest, Source};
 
     // Build a home dir with the WACZ under <home>/archive, then index it.
     let base = TempDir::new().unwrap();
@@ -981,7 +978,7 @@ async fn home_directory_is_portable() {
     let archive = home_a.join("archive");
     std::fs::create_dir_all(&archive).unwrap();
     std::fs::copy(fixture("simple.wacz"), archive.join("simple.wacz")).unwrap();
-    rustyweb_lib::index::index_path(&archive.join("simple.wacz"), &home_a, None, "test").unwrap();
+    indice_lib::index::index_path(&archive.join("simple.wacz"), &home_a, None, "test").unwrap();
 
     // The source is stored relative to home (portable), filed under its
     // collection folder, not absolute.
@@ -997,7 +994,7 @@ async fn home_directory_is_portable() {
     let home_b = base.path().join("home-b");
     std::fs::rename(&home_a, &home_b).unwrap();
 
-    let app = rustyweb_lib::server::router(&home_b).unwrap();
+    let app = indice_lib::server::router(&home_b).unwrap();
     let resp = app
         .oneshot(
             Request::get(format!("/files/{id}"))
@@ -1018,13 +1015,13 @@ async fn can_index_while_server_holds_the_index() {
     // A running server opens the index read-only (no write lock), so indexing
     // must be able to proceed concurrently.
     let tmp = make_index(&["simple.wacz"]);
-    let _app = rustyweb_lib::server::router(tmp.path()).unwrap(); // held, like a live server
+    let _app = indice_lib::server::router(tmp.path()).unwrap(); // held, like a live server
 
     // This previously failed with a Tantivy LockBusy error.
     index_into(tmp.path(), "pdf-doc.wacz");
 
     // The newly indexed content is searchable.
-    let idx = rustyweb_lib::search::SearchIndex::open_read_only(
+    let idx = indice_lib::search::SearchIndex::open_read_only(
         tmp.path().join("index").join("full_text").as_path(),
     )
     .unwrap();
@@ -1034,7 +1031,7 @@ async fn can_index_while_server_holds_the_index() {
 #[tokio::test]
 async fn homepage_empty_collections() {
     let tmp = TempDir::new().unwrap();
-    let app = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app = indice_lib::server::router(tmp.path()).unwrap();
     let req = Request::get("/").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1075,26 +1072,25 @@ async fn index_from_http_url_and_link_directly() {
     // index_location uses a blocking HTTP client; run it off the async runtime.
     let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
     tokio::task::spawn_blocking(move || {
-        rustyweb_lib::index::index_location(&url_c, &dir_c, None, "test", false, None, None)
-            .unwrap();
+        indice_lib::index::index_location(&url_c, &dir_c, None, "test", false, None, None).unwrap();
     })
     .await
     .unwrap();
     server.abort();
 
     // The manifest records the URL as the source (not a local path).
-    let manifest = rustyweb_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     assert_eq!(manifest.waczs.len(), 1);
     let col = &manifest.waczs[0];
     assert_eq!(
         col.source,
-        rustyweb_lib::collections::Source::Url(url.clone())
+        indice_lib::collections::Source::Url(url.clone())
     );
 
     // The downloaded WACZ was indexed and is searchable. Scope the index so its
     // writer lock is released before the router opens its own SearchIndex.
     {
-        let idx = rustyweb_lib::search::SearchIndex::open(
+        let idx = indice_lib::search::SearchIndex::open(
             tmp.path().join("index").join("full_text").as_path(),
         )
         .unwrap();
@@ -1102,7 +1098,7 @@ async fn index_from_http_url_and_link_directly() {
     }
 
     // The crawl page links wabac directly at the remote URL, not through /files/{id}.
-    let app2 = rustyweb_lib::server::router(tmp.path()).unwrap();
+    let app2 = indice_lib::server::router(tmp.path()).unwrap();
     let resp = app2
         .oneshot(
             Request::get(format!("/crawl/{}", col.id))
@@ -1130,10 +1126,9 @@ const REAL_URL: &str = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e
 #[test]
 fn index_real_wacz_searchable() {
     let tmp = make_index(&["a.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     let results = idx.search("Britain", 10).unwrap();
     assert!(
         !results.is_empty(),
@@ -1149,10 +1144,9 @@ fn index_real_wacz_searchable() {
 #[test]
 fn index_real_wacz_has_correct_url() {
     let tmp = make_index(&["a.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     let results = idx.search("Britain", 10).unwrap();
     assert!(
         results
@@ -1168,10 +1162,9 @@ fn index_pdf_text_is_searchable() {
     // application/pdf response. Its body text ("flux capacitor ...") exists
     // only inside the PDF, so a hit proves PDF extraction ran during indexing.
     let tmp = make_index(&["pdf-doc.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     let results = idx.search("\"flux capacitor\"", 10).unwrap();
     assert!(!results.is_empty(), "PDF text should be searchable");
     let hit = &results[0];
@@ -1191,10 +1184,9 @@ fn index_real_wacz_indexes_rendered_text() {
     // urn:text record carries the fully rendered text (author name, body prose),
     // which we now index. "Scout Butler" (the author) appears only there.
     let tmp = make_index(&["a.wacz"]);
-    let idx = rustyweb_lib::search::SearchIndex::open(
-        tmp.path().join("index").join("full_text").as_path(),
-    )
-    .unwrap();
+    let idx =
+        indice_lib::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
+            .unwrap();
     let results = idx.search("\"Scout Butler\"", 10).unwrap();
     assert!(
         !results.is_empty(),
@@ -1250,7 +1242,7 @@ async fn get_reader_retries_a_transient_status() {
     // get_reader is blocking (ureq); run it off the async runtime.
     let body = tokio::task::spawn_blocking(move || {
         use std::io::Read;
-        let mut r = rustyweb_lib::http_range::get_reader(&url).unwrap();
+        let mut r = indice_lib::http_range::get_reader(&url).unwrap();
         let mut s = String::new();
         r.read_to_string(&mut s).unwrap();
         s

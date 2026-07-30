@@ -1,5 +1,5 @@
 //! A small client for the Browsertrix REST API — Webrecorder's hosted crawling
-//! service, which produces the WACZ files rustyweb serves. It authenticates with
+//! service, which produces the WACZ files indice serves. It authenticates with
 //! a username/password to get a JWT, lists a user's archived items across their
 //! orgs, and resolves each item's WACZ resources.
 //!
@@ -165,7 +165,7 @@ pub struct Org {
 /// A Browsertrix collection (a named group of crawls). The API's item filters
 /// take the `id` (a UUID), not the slug. The descriptive fields (`description`,
 /// `caption`, `tags`, date range) come back on the `collections` list endpoint,
-/// so they cost no extra request; they seed the rustyweb collection's finding aid.
+/// so they cost no extra request; they seed the indice collection's finding aid.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Collection {
     pub id: String,

@@ -18,7 +18,7 @@ set -euo pipefail
 # Pinned ReplayWeb.page (replaywebpage npm package) version.
 VERSION="${1:-2.4.6}"
 
-DEST="$(cd "$(dirname "$0")/.." && pwd)/crates/rustyweb-lib/static/replay"
+DEST="$(cd "$(dirname "$0")/.." && pwd)/crates/indice-lib/static/replay"
 BASE="https://cdn.jsdelivr.net/npm/replaywebpage@${VERSION}"
 
 mkdir -p "$DEST"
