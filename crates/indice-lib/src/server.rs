@@ -135,9 +135,23 @@ pub async fn serve_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<()> {
-    let app = router_with_resolver(home, resolver)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
+    serve_on_listener(listener, home, resolver).await
+}
+
+/// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
+/// read back the OS-assigned port via [`TcpListener::local_addr`], and only then
+/// serve — which is exactly what the desktop app shell needs so it can point the
+/// window at `http://127.0.0.1:<port>` before the server starts accepting.
+///
+/// [`TcpListener::local_addr`]: tokio::net::TcpListener::local_addr
+pub async fn serve_on_listener(
+    listener: tokio::net::TcpListener,
+    home: &Path,
+    resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+) -> Result<()> {
+    let app = router_with_resolver(home, resolver)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

@@ -88,6 +88,22 @@ The bundled ReplayWeb.page assets are committed to the repo, so a fresh clone
 builds and runs as-is. To upgrade them later, run `./scripts/fetch-replay.sh`
 and rebuild.
 
+### Desktop app (in development)
+
+For people who don't want a command line, there's a `indice-app` crate that
+wraps everything in a native double-click window: it runs the server in-process
+and opens a window straight onto your archive — no `serve` + browser dance. It's
+not packaged/signed yet, but you can run it from a clone:
+
+```sh
+# opens a window onto the default data dir (~/Library/Application Support/indice
+# on macOS, %APPDATA%\indice on Windows); set INDICE_HOME to point elsewhere.
+cargo run -p indice-app
+INDICE_HOME=/path/to/an/existing/home cargo run -p indice-app
+```
+
+The regular `indice` CLI is unchanged; the app is an additional front door.
+
 ## How it works
 
 indice runs [ReplayWeb.page] in **WACZ-direct mode**. Rather than

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the macOS app's Info.plist by tauri-build. The embedded webview
+  (WKWebView) blocks cleartext http:// by default (App Transport Security); the
+  app talks to its own in-process server over http://127.0.0.1, and
+  ReplayWeb.page's service worker needs that real http origin, so we allow local
+  networking. See the Phase-0 spike findings on rustyweb-desktop-app-i91t.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>

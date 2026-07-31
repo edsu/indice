@@ -2,6 +2,7 @@
 members = [
     "crates/indice-lib",
     "crates/indice-bin",
+    "crates/indice-app",
 ]
 resolver = "2"
 

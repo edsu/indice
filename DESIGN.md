@@ -49,10 +49,31 @@ indice/
 │   │       ├── wacz.rs      - WACZ ZIP handling, datapackage.json, CDX reader
 │   │       ├── thumbnail.rs - Representative-image thumbnails (og:image → cached JPEG)
 │   │       └── http_range.rs - Read+Seek over HTTP range requests (remote streaming)
-│   └── indice-bin/        (thin CLI entry point)
-│       └── src/main.rs      - Clap CLI, subcommand dispatch, tokio::main
+│   ├── indice-bin/        (thin CLI entry point)
+│   │   └── src/main.rs      - Clap CLI, subcommand dispatch, tokio::main
+│   └── indice-app/        (Tauri desktop shell - double-click app for non-CLI users)
+│       └── src/main.rs      - Runs the axum server in-process on 127.0.0.1:0,
+│                              opens a native window at http://127.0.0.1:<port>
 └── static/replay/           (ReplayWebPage assets - embedded at compile time)
 ```
+
+### `indice-app` — desktop shell
+
+`indice-app` makes the tool usable without a command line: double-clicking it
+runs the ordinary `indice` server in-process (binding `127.0.0.1:0`, an
+OS-assigned port) and opens a native window whose embedded webview points at
+`http://127.0.0.1:<port>/`. The CLI (`indice index` / `indice serve`) is
+unchanged — this is an additional front door, not a replacement, and it reuses
+`indice-lib` wholesale via `server::serve_on_listener`.
+
+Replay requires a real browser engine (service worker + IndexedDB + HTTP range
+over a real `http` origin), so the webview must point at the localhost origin,
+**not** a `tauri://` custom scheme. On macOS the app ships an `Info.plist` with
+`NSAppTransportSecurity → NSAllowsLocalNetworking` so WKWebView will load the
+cleartext `http://127.0.0.1` origin (see the Phase-0 spike on the desktop-app
+epic). The home directory defaults to a per-platform data dir
+(`~/Library/Application Support/…` on macOS, `%APPDATA%\…` on Windows) and can be
+overridden with `INDICE_HOME`. Packaging/signing is tracked separately.
 
 ---
 

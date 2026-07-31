@@ -1,0 +1,28 @@
+[package]
+name = "indice-app"
+version = "0.1.0"
+edition = "2021"
+description = "indice desktop app — double-click to search, browse, and replay web archives"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Desktop shell: native window hosting an embedded webview (WKWebView on macOS,
+# WebView2 on Windows) pointed at the in-process indice server.
+#
+# NOTE: Tauri pulls in `cookie 0.18.1`, which does NOT compile against
+# `time >= 0.3.52` (a `Parsable::parse` signature change). `time` is therefore
+# pinned to `0.3.51` in Cargo.lock. If a `cargo update` ever re-breaks the build
+# with a `cookie`/`time` error, re-pin: `cargo update -p time --precise 0.3.51`
+# (or drop the pin once `cookie`/`tauri` ship a fix).
+tauri = { version = "2", features = [] }
+indice-lib = { path = "../indice-lib" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Platform data dir: ~/Library/Application Support/indice (macOS),
+# %APPDATA%\indice (Windows).
+directories = "6"
