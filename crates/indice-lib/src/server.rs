@@ -1,15 +1,21 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use rust_embed::RustEmbed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
@@ -32,7 +38,12 @@ struct SiteAssets;
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 struct AppState {
-    search: SearchIndex,
+    /// Read-only searcher, behind an `RwLock<Arc<…>>` so management-mode ingestion
+    /// can hot-reload it after a commit without restarting the server. Read-mostly:
+    /// search handlers take the read lock only long enough to clone the `Arc` (then
+    /// query against the snapshot); [`AppState::reload_searcher`] takes the write
+    /// lock just long enough to swap in a freshly-opened index.
+    search: RwLock<Arc<SearchIndex>>,
     /// indice home directory; local WACZ sources resolve against it.
     home: PathBuf,
     /// `<home>/index`, where the manifest and full-text index live.
@@ -43,12 +54,32 @@ struct AppState {
     /// Cache of resolved presigned URLs by crawl id, with when they were fetched
     /// — Browsertrix URLs expire (~48h), so this is refreshed well before that.
     signed_cache: std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
+    /// Serializes management writes: [`crate::index::index_location`] takes
+    /// Tantivy's exclusive write lock, so two concurrent adds would contend. One
+    /// in-flight add at a time is plenty for the single-user desktop case this
+    /// mode targets.
+    write_lock: std::sync::Mutex<()>,
+    /// Progress channels for in-flight add-archive jobs, drained once by the SSE
+    /// endpoint. Keyed by an incrementing job id ([`AppState::job_counter`]).
+    jobs: std::sync::Mutex<HashMap<u64, mpsc::UnboundedReceiver<ProgressEvent>>>,
+    job_counter: AtomicU64,
+}
+
+impl AppState {
+    /// Re-open the read-only search index and swap it in, so documents committed
+    /// by a management-mode ingest become visible to search without a restart.
+    /// Called from the blocking add-archive task after `index_location` commits.
+    fn reload_searcher(&self) -> Result<()> {
+        let fresh = SearchIndex::open_read_only(self.index_dir.join("full_text").as_path())?;
+        *self.search.write().unwrap() = Arc::new(fresh);
+        Ok(())
+    }
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(home: &Path) -> Result<Router> {
-    router_with_resolver(home, None)
+    build_router(home, None, false)
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
@@ -57,19 +88,36 @@ pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<Router> {
+    build_router(home, resolver, false)
+}
+
+/// Build the app router. `management` gates the opt-in write routes (add-archive):
+/// when `false` (the default for `serve`) only the read-only site is mounted, so
+/// the public deployment can never mutate the archive; when `true` (`serve
+/// --manage`) the management endpoints are added on top.
+fn build_router(
+    home: &Path,
+    resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    management: bool,
+) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
-    // Read-only: the server never writes, so it must not hold the write lock,
-    // which would block `indice index` from running while serving.
+    // Read-only: the server never holds Tantivy's exclusive write lock, so
+    // `indice index` (and, in management mode, an add-archive job in a separate
+    // writer) can run while serving. Management writes reload this searcher after
+    // they commit — see [`AppState::reload_searcher`].
     let search = SearchIndex::open_read_only(index_dir.join("full_text").as_path())?;
     let state = Arc::new(AppState {
-        search,
+        search: RwLock::new(Arc::new(search)),
         home: home.to_path_buf(),
         index_dir,
         resolver,
         signed_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        write_lock: std::sync::Mutex::new(()),
+        jobs: std::sync::Mutex::new(HashMap::new()),
+        job_counter: AtomicU64::new(0),
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(homepage))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
@@ -83,7 +131,17 @@ pub fn router_with_resolver(
         .route("/api/search", get(search_api))
         .route("/assets/{*path}", get(asset_handler))
         .route("/replay/", get(replay_index))
-        .route("/replay/{*path}", get(replay_handler))
+        .route("/replay/{*path}", get(replay_handler));
+
+    // Opt-in write surface: mounted only under `serve --manage`. Add a crawl to a
+    // collection (`index_location`), streaming progress over SSE.
+    if management {
+        app = app
+            .route("/api/archives", post(add_archive))
+            .route("/api/archives/{id}/events", get(add_archive_events));
+    }
+
+    let app = app
         .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
@@ -125,25 +183,238 @@ pub fn router_with_resolver(
 }
 
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None).await
+    serve_with_resolver(bind, home, None, false).await
 }
 
 /// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
-/// sources can be replayed (fresh presigned URLs resolved on demand).
+/// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
+/// enables the opt-in write routes (see [`build_router`]).
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    manage: bool,
 ) -> Result<()> {
-    let app = router_with_resolver(home, resolver)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
+    serve_on_listener(listener, home, resolver, manage).await
+}
+
+/// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
+/// read back the OS-assigned port via [`TcpListener::local_addr`], and only then
+/// serve — which is exactly what the desktop app shell needs so it can point the
+/// window at `http://127.0.0.1:<port>` before the server starts accepting.
+///
+/// [`TcpListener::local_addr`]: tokio::net::TcpListener::local_addr
+pub async fn serve_on_listener(
+    listener: tokio::net::TcpListener,
+    home: &Path,
+    resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    manage: bool,
+) -> Result<()> {
+    let app = build_router(home, resolver, manage)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await?;
     Ok(())
+}
+
+// ── Management mode: add-archive ────────────────────────────────────────────
+//
+// Opt-in (`serve --manage`) write surface. `POST /api/archives` starts an ingest
+// job that reuses the exact library path the CLI uses (`index::index_location`),
+// running it on a blocking thread and returning a job id immediately. The browser
+// then streams `GET /api/archives/{id}/events` (Server-Sent Events) to watch
+// progress. On success the read-only searcher is hot-reloaded so results appear
+// without a restart. None of this is mounted in the default read-only server.
+
+/// Progress events streamed to the management UI over SSE while an add-archive
+/// job runs. The first six mirror [`crate::index::IndexProgress`]; `done`/`error`
+/// are the terminal outcomes. Serialized as a tagged JSON object, e.g.
+/// `{"type":"total","total":1234}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ProgressEvent {
+    Begin {
+        label: String,
+    },
+    Phase {
+        phase: String,
+    },
+    Total {
+        total: u64,
+    },
+    Records {
+        done: u64,
+    },
+    WaczIndexed {
+        label: String,
+        pages: u64,
+    },
+    Finish,
+    /// The whole job succeeded and the searcher was reloaded.
+    Done,
+    /// The job failed; `message` is the (chained) error.
+    Error {
+        message: String,
+    },
+}
+
+impl ProgressEvent {
+    /// SSE `event:` name, so a browser can `addEventListener` per variant.
+    fn name(&self) -> &'static str {
+        match self {
+            ProgressEvent::Begin { .. } => "begin",
+            ProgressEvent::Phase { .. } => "phase",
+            ProgressEvent::Total { .. } => "total",
+            ProgressEvent::Records { .. } => "records",
+            ProgressEvent::WaczIndexed { .. } => "wacz_indexed",
+            ProgressEvent::Finish => "finish",
+            ProgressEvent::Done => "done",
+            ProgressEvent::Error { .. } => "error",
+        }
+    }
+}
+
+/// An [`IndexProgress`](crate::index::IndexProgress) that forwards each callback
+/// into an unbounded channel, so the SSE endpoint can relay it to the browser.
+/// The channel is unbounded (and thus buffers) so events emitted before the
+/// client connects to the SSE stream are not lost. Sends are non-blocking and
+/// ignore a dropped receiver (client disconnected mid-job).
+struct ChannelProgress {
+    tx: mpsc::UnboundedSender<ProgressEvent>,
+}
+
+impl ChannelProgress {
+    fn send(&self, ev: ProgressEvent) {
+        let _ = self.tx.send(ev);
+    }
+}
+
+impl crate::index::IndexProgress for ChannelProgress {
+    fn begin(&self, label: &str) {
+        self.send(ProgressEvent::Begin {
+            label: label.to_string(),
+        });
+    }
+    fn phase(&self, phase: &str) {
+        self.send(ProgressEvent::Phase {
+            phase: phase.to_string(),
+        });
+    }
+    fn set_total(&self, total: u64) {
+        self.send(ProgressEvent::Total { total });
+    }
+    fn set_records(&self, done: u64) {
+        self.send(ProgressEvent::Records { done });
+    }
+    fn wacz_indexed(&self, label: &str, pages: u64) {
+        self.send(ProgressEvent::WaczIndexed {
+            label: label.to_string(),
+            pages,
+        });
+    }
+    fn finish(&self) {
+        self.send(ProgressEvent::Finish);
+    }
+}
+
+/// Body of `POST /api/archives`. The native file dialog (desktop) supplies a
+/// local filesystem `path` so the WACZ is indexed in place; a browser byte-upload
+/// (multipart) is a follow-up on this ticket.
+#[derive(Deserialize)]
+struct AddArchiveRequest {
+    /// Local filesystem path to a `.wacz` (or an `http(s)://` URL — both are
+    /// accepted by `index_location`).
+    path: String,
+    /// Collection this crawl belongs to; created if it doesn't exist yet.
+    collection: String,
+    /// Optional display-name override for the collection.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AddArchiveResponse {
+    /// Id to stream progress from at `/api/archives/{job}/events`.
+    job: u64,
+}
+
+/// `POST /api/archives` — start an ingest job and return its id (202 Accepted).
+async fn add_archive(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddArchiveRequest>,
+) -> Response {
+    // Mirror the CLI's "every crawl belongs to a collection" guard.
+    if req.collection.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+
+    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    state.jobs.lock().unwrap().insert(id, rx);
+
+    let job_state = state.clone();
+    // `index_location` blocks (file IO, network range reads, the Tantivy commit),
+    // so run it off the async runtime — never on a request-handling thread.
+    tokio::task::spawn_blocking(move || {
+        let progress = ChannelProgress { tx: tx.clone() };
+        let result = {
+            // Only one add may hold Tantivy's exclusive write lock at a time.
+            let _guard = job_state.write_lock.lock().unwrap();
+            crate::index::index_location(
+                &req.path,
+                &job_state.home,
+                req.name.as_deref(),
+                &req.collection,
+                false,
+                None,
+                Some(&progress),
+            )
+        };
+        match result {
+            Ok(()) => match job_state.reload_searcher() {
+                Ok(()) => tx.send(ProgressEvent::Done).ok(),
+                Err(e) => tx
+                    .send(ProgressEvent::Error {
+                        message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                    })
+                    .ok(),
+            },
+            Err(e) => tx
+                .send(ProgressEvent::Error {
+                    message: format!("{e:#}"),
+                })
+                .ok(),
+        };
+        // `tx` (and the `progress` clone) drop here → the SSE stream ends once the
+        // client has read the terminal event.
+    });
+
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
+}
+
+/// `GET /api/archives/{id}/events` — stream one job's progress as SSE. The
+/// receiver is taken from the registry on first connect (a job's progress is
+/// consumed once); reconnecting after that yields 404.
+async fn add_archive_events(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Response {
+    let Some(rx) = state.jobs.lock().unwrap().remove(&id) else {
+        return (StatusCode::NOT_FOUND, "unknown or already-consumed job").into_response();
+    };
+
+    let stream = UnboundedReceiverStream::new(rx).map(|ev| {
+        let event = Event::default()
+            .event(ev.name())
+            .data(serde_json::to_string(&ev).unwrap_or_default());
+        Ok::<Event, std::convert::Infallible>(event)
+    });
+
+    Sse::new(stream).into_response()
 }
 
 // ── Homepage ──────────────────────────────────────────────────────────────────
@@ -188,7 +459,12 @@ async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     // Browse entry points: years (most recent first) and the busiest sites,
     // each a search link. Derived from an archive-wide facet overview.
-    let overview = state.search.facet_overview().unwrap_or_default();
+    let overview = state
+        .search
+        .read()
+        .unwrap()
+        .facet_overview()
+        .unwrap_or_default();
     let browse = views::HomeBrowse {
         years: browse_links(&overview, "year", "year", 12, true),
         sites: browse_links(&overview, "site", "site", 8, false),
@@ -301,7 +577,12 @@ async fn search_page(
 
     let page = params.page.unwrap_or(1).max(1);
     let offset = (page - 1) * PAGE_SIZE;
-    let response = match state.search.search_faceted(&q, PAGE_SIZE, offset) {
+    let response = match state
+        .search
+        .read()
+        .unwrap()
+        .search_faceted(&q, PAGE_SIZE, offset)
+    {
         Ok(r) => r,
         Err(e) => return error_response(e).into_response(),
     };
@@ -556,6 +837,8 @@ async fn collection_page(
     // scoped to it. Turns the page into a faceted entry point, not just a list.
     let overview = state
         .search
+        .read()
+        .unwrap()
         .facet_overview_scoped(crate::search::FacetScope::Collection(&id))
         .unwrap_or_default();
     let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
@@ -686,7 +969,7 @@ async fn collection_pages(
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
     let offset = (page - 1) * page_size;
-    match state.search.collection_pages(
+    match state.search.read().unwrap().collection_pages(
         &id,
         params.url.as_deref(),
         params.search.as_deref(),
@@ -910,6 +1193,8 @@ async fn crawl_page(
         facets: scoped_facet_sections(
             &state
                 .search
+                .read()
+                .unwrap()
                 .facet_overview_scoped(crate::search::FacetScope::Crawl(&id))
                 .unwrap_or_default(),
             &format!("crawl:{id}"),
@@ -1082,7 +1367,12 @@ async fn search_api(
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(20).min(200);
-    match state.search.search_faceted(&params.q, limit, 0) {
+    match state
+        .search
+        .read()
+        .unwrap()
+        .search_faceted(&params.q, limit, 0)
+    {
         Ok(response) => {
             let body = serde_json::json!({
                 "total": response.total_hits,

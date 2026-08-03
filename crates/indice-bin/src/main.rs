@@ -109,6 +109,12 @@ enum Commands {
         /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
+
+        /// Enable management mode: mount the opt-in write endpoints (add archives
+        /// to collections from the UI). Off by default — the public server is
+        /// read-only. Intended for a trusted, typically localhost, operator.
+        #[arg(long)]
+        manage: bool,
     },
     /// Rebuild the search index from collections.json (re-fetches remote sources).
     Reindex {
@@ -707,7 +713,7 @@ async fn main() -> Result<()> {
             tracing::info!("indexing complete");
         }
 
-        Commands::Serve { bind, home } => {
+        Commands::Serve { bind, home, manage } => {
             let ctrl_c = async {
                 tokio::signal::ctrl_c()
                     .await
@@ -734,7 +740,7 @@ async fn main() -> Result<()> {
                 std::sync::Arc::new(BrowsertrixResolver::new());
 
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver)) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage) => {
                     result?;
                 }
                 _ = ctrl_c => {}

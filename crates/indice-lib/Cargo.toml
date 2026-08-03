@@ -33,12 +33,16 @@ flate2 = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
 
 [dependencies.tempfile]
 version = "3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Real-socket HTTP client for the serve_on_listener integration test (the crate's
+# own ureq isn't visible to integration-test crates).
+ureq = { workspace = true }
 # Generate a valid image in tests that exercise thumbnail pinning/serving.
 image = { workspace = true }
 # Headless-browser replay smoke test (run with `cargo test -- --ignored`).

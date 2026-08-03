@@ -1664,6 +1664,7 @@ dependencies = [
  "tempfile",
  "thirtyfour",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tower",
  "tower-http 0.7.0",
