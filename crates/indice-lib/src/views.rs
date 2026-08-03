@@ -595,6 +595,8 @@ pub struct CollectionPage {
     pub members: Vec<MemberItem>,
     /// Viewer URL that replays the whole collection (multi-WACZ).
     pub replay_href: String,
+    /// Whether management mode is on — gates the "Edit collection" affordance.
+    pub management: bool,
 }
 
 impl CollectionPage {
@@ -656,6 +658,11 @@ pub fn collection(p: &CollectionPage) -> Markup {
     let missing = p.missing_minimum();
     let body = html! {
         (top_bar(None))
+        @if p.management {
+            div.manage-bar {
+                a.manage-link href=(format!("/manage/edit/{slug}")) { "Edit collection" }
+            }
+        }
         h1.page-title { (p.name) }
         @if let Some(d) = &p.description { p.desc { (d) } }
         @if !p.members.is_empty() {

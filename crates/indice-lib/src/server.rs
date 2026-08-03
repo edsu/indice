@@ -1008,6 +1008,7 @@ async fn collection_page(
         facets,
         members: member_items,
         replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
+        management: state.management,
     };
     views::collection(&page).into_response()
 }

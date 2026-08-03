@@ -132,6 +132,10 @@ async fn manage_create_collection_via_form_then_it_appears() {
     .unwrap();
     assert_eq!(status, 200, "create should redirect to the collection page");
     assert!(page.contains("Demo Collection"), "collection page shows it");
+    assert!(
+        page.contains("Edit collection"),
+        "collection page has the edit affordance under --manage"
+    );
 
     // It's persisted in the manifest with the finding-aid fields...
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
@@ -146,8 +150,22 @@ async fn manage_create_collection_via_form_then_it_appears() {
     // ...and it shows on the homepage.
     let (_, home) = get(format!("{base}/")).await;
     assert!(home.contains("Demo Collection"), "homepage lists it");
-
     server.abort();
+
+    // The edit affordance is gated: a read-only server on the same home does not
+    // render it on the collection page.
+    let (ro_base, ro_server) = serve(tmp.path().to_path_buf(), false).await;
+    let (status, ro_page) = get(format!("{ro_base}/collection/demo-collection")).await;
+    assert_eq!(status, 200);
+    assert!(
+        ro_page.contains("Demo Collection"),
+        "read-only page still renders"
+    );
+    assert!(
+        !ro_page.contains("Edit collection"),
+        "no edit affordance in read-only mode"
+    );
+    ro_server.abort();
 }
 
 #[tokio::test]
