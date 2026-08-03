@@ -8,9 +8,9 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Form, Json, Router};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -63,6 +63,10 @@ struct AppState {
     /// endpoint. Keyed by an incrementing job id ([`AppState::job_counter`]).
     jobs: std::sync::Mutex<HashMap<u64, mpsc::UnboundedReceiver<ProgressEvent>>>,
     job_counter: AtomicU64,
+    /// Whether management mode is on. The write *routes* are gated at mount time
+    /// (below), but the read handlers also read this to decide whether to render
+    /// management affordances (the `/manage` link, the empty-state CTA).
+    management: bool,
 }
 
 impl AppState {
@@ -115,6 +119,7 @@ fn build_router(
         write_lock: std::sync::Mutex::new(()),
         jobs: std::sync::Mutex::new(HashMap::new()),
         job_counter: AtomicU64::new(0),
+        management,
     });
 
     let mut app = Router::new()
@@ -133,12 +138,17 @@ fn build_router(
         .route("/replay/", get(replay_index))
         .route("/replay/{*path}", get(replay_handler));
 
-    // Opt-in write surface: mounted only under `serve --manage`. Add a crawl to a
-    // collection (`index_location`), streaming progress over SSE.
+    // Opt-in write surface: mounted only under `serve --manage`. The browser
+    // management UI plus its write endpoints — add a crawl (`index_location`,
+    // streaming progress over SSE) and create/edit a collection finding aid
+    // (`set_collection`). None of this exists in the default read-only server.
     if management {
         app = app
+            .route("/manage", get(manage_page))
+            .route("/manage/edit/{id}", get(manage_edit_collection))
             .route("/api/archives", post(add_archive))
-            .route("/api/archives/{id}/events", get(add_archive_events));
+            .route("/api/archives/{id}/events", get(add_archive_events))
+            .route("/api/collections", post(create_collection));
     }
 
     let app = app
@@ -197,6 +207,25 @@ pub async fn serve_with_resolver(
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
+    // Interim footgun-guard: management mode has no auth yet (see
+    // rustyweb-admin-mode-r67p.2). It's safe bound to loopback (only a local
+    // operator can reach it); on any other address it exposes an unauthenticated
+    // write surface. Warn loudly rather than silently serving writes to the world.
+    if manage {
+        let loopback = listener
+            .local_addr()
+            .map(|a| a.ip().is_loopback())
+            .unwrap_or(false);
+        if !loopback {
+            tracing::warn!(
+                bind,
+                "management mode (--manage) is enabled on a NON-loopback address \
+                 and has NO authentication — anyone who can reach this address can \
+                 add or edit archives. Bind to 127.0.0.1 for local use, or put an \
+                 authenticating reverse proxy in front until auth lands."
+            );
+        }
+    }
     serve_on_listener(listener, home, resolver, manage).await
 }
 
@@ -417,6 +446,130 @@ async fn add_archive_events(
     Sse::new(stream).into_response()
 }
 
+// ── Management mode: collections + pages ────────────────────────────────────
+
+/// The management landing page (`GET /manage`): add-archive form, new-collection
+/// form, and the list of existing collections with edit links.
+async fn manage_page(State(state): State<Arc<AppState>>) -> Response {
+    match manage_collection_rows(&state) {
+        Ok(rows) => views::manage(&rows, &views::CollectionFormData::default()).into_response(),
+        Err(e) => error_response(e).into_response(),
+    }
+}
+
+/// The edit form for an existing collection (`GET /manage/edit/{id}`): the same
+/// page, with the finding-aid form pre-filled and the name locked (the name is
+/// the collection's identity — its slug — so renaming would create a new one).
+async fn manage_edit_collection(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e).into_response(),
+    };
+    let Some(c) = manifest.collections.iter().find(|c| c.id == id) else {
+        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+    };
+    let form = views::CollectionFormData {
+        name: c.name.clone(),
+        description: c.description.clone().unwrap_or_default(),
+        curator: c.curator.clone().unwrap_or_default(),
+        creator: c.creator.clone().unwrap_or_default(),
+        dates: c.dates.clone().unwrap_or_default(),
+        rights: c.rights.clone().unwrap_or_default(),
+        subjects: c.subjects.join(", "),
+        narrative: c.narrative.clone().unwrap_or_default(),
+        editing: true,
+    };
+    let rows = match manage_collection_rows(&state) {
+        Ok(r) => r,
+        Err(e) => return error_response(e).into_response(),
+    };
+    views::manage(&rows, &form).into_response()
+}
+
+fn manage_collection_rows(state: &AppState) -> Result<Vec<views::ManageCollectionRow>> {
+    let manifest = Manifest::open(&state.index_dir)?;
+    Ok(manifest
+        .collections
+        .iter()
+        .map(|c| views::ManageCollectionRow {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            count: manifest.members_of(&c.id).count(),
+        })
+        .collect())
+}
+
+/// Form body for create/edit collection (`application/x-www-form-urlencoded`).
+/// All finding-aid fields are optional; `subjects` is a comma-separated list.
+#[derive(Deserialize)]
+struct CollectionForm {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    curator: String,
+    #[serde(default)]
+    creator: String,
+    #[serde(default)]
+    dates: String,
+    #[serde(default)]
+    rights: String,
+    #[serde(default)]
+    subjects: String,
+    #[serde(default)]
+    narrative: String,
+}
+
+/// Trim a form field to `Some(value)`, or `None` if empty. (v1 leaves cleared
+/// fields untouched rather than blanking them; explicit clearing is a follow-up.)
+fn field_opt(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// `POST /api/collections` — create or edit a collection finding aid, then
+/// redirect (POST-redirect-GET) to its page. Wraps [`crate::index::set_collection`].
+async fn create_collection(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CollectionForm>,
+) -> Response {
+    let name = form.name.trim().to_string();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection name is required").into_response();
+    }
+    let subjects: Vec<String> = form
+        .subjects
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let fields = crate::collections::CollectionFields {
+        description: field_opt(&form.description),
+        curator: field_opt(&form.curator),
+        creator: field_opt(&form.creator),
+        dates: field_opt(&form.dates),
+        rights: field_opt(&form.rights),
+        subjects: (!subjects.is_empty()).then_some(subjects),
+        narrative: field_opt(&form.narrative),
+    };
+    let home = state.home.clone();
+    // set_collection writes the README + manifest — quick, but blocking, so keep
+    // it off the async runtime. The homepage re-reads the manifest per request,
+    // so the new/edited collection shows immediately (no searcher reload needed).
+    let result =
+        tokio::task::spawn_blocking(move || crate::index::set_collection(&home, &name, &fields))
+            .await;
+    match result {
+        Ok(Ok(id)) => Redirect::to(&format!("/collection/{id}")).into_response(),
+        Ok(Err(e)) => error_response(e).into_response(),
+        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+    }
+}
+
 // ── Homepage ──────────────────────────────────────────────────────────────────
 
 async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -470,7 +623,7 @@ async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    views::home(&cards, &browse).into_response()
+    views::home(&cards, &browse, state.management).into_response()
 }
 
 /// Build homepage browse links from one facet dimension: `field` is the facet

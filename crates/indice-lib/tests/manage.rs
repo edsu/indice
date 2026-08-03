@@ -112,6 +112,72 @@ async fn manage_add_archive_indexes_and_reloads_search() {
 }
 
 #[tokio::test]
+async fn manage_create_collection_via_form_then_it_appears() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), true).await;
+
+    // Submit the create-collection form (application/x-www-form-urlencoded).
+    let post_url = format!("{base}/api/collections");
+    let (status, page) = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .send("name=Demo+Collection&description=A+demo&subjects=alpha,+beta")
+            .unwrap();
+        // POST-redirect-GET: ureq follows the 303 to the new collection page.
+        let status = res.status().as_u16();
+        (status, res.body_mut().read_to_string().unwrap())
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 200, "create should redirect to the collection page");
+    assert!(page.contains("Demo Collection"), "collection page shows it");
+
+    // It's persisted in the manifest with the finding-aid fields...
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let c = manifest
+        .collections
+        .iter()
+        .find(|c| c.name == "Demo Collection")
+        .expect("collection persisted");
+    assert_eq!(c.description.as_deref(), Some("A demo"));
+    assert_eq!(c.subjects, vec!["alpha".to_string(), "beta".to_string()]);
+
+    // ...and it shows on the homepage.
+    let (_, home) = get(format!("{base}/")).await;
+    assert!(home.contains("Demo Collection"), "homepage lists it");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn manage_page_gated_on_management_mode() {
+    // Present under --manage.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), true).await;
+    let (status, body) = get(format!("{base}/manage")).await;
+    assert_eq!(status, 200);
+    assert!(body.contains("Add an archive"), "manage page renders");
+    // Empty homepage shows the management CTA, not the CLI hint.
+    let (_, home) = get(format!("{base}/")).await;
+    assert!(home.contains("Add your first archive"), "empty-state CTA");
+    server.abort();
+
+    // Absent in the default read-only server.
+    let tmp2 = tempfile::TempDir::new().unwrap();
+    let (base2, server2) = serve(tmp2.path().to_path_buf(), false).await;
+    let (status2, _) = get(format!("{base2}/manage")).await;
+    assert_eq!(status2, 404, "no /manage in read-only mode");
+    let (_, home2) = get(format!("{base2}/")).await;
+    assert!(
+        home2.contains("indice index"),
+        "read-only empty homepage keeps the CLI hint"
+    );
+    assert!(!home2.contains("Add your first archive"));
+    server2.abort();
+}
+
+#[tokio::test]
 async fn read_only_server_has_no_add_archive_route() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (base, server) = serve(tmp.path().to_path_buf(), false).await;

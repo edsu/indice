@@ -191,3 +191,45 @@ nav.pagination a { color: #0066cc; text-decoration: none; padding: 0.4rem 0.8rem
 nav.pagination a:hover { background: #eef4fb; text-decoration: none; }
 nav.pagination .disabled { color: #bbb; padding: 0.4rem 0.8rem; border: 1px solid #eee; border-radius: 4px; }
 nav.pagination .page-info { color: #666; }
+
+/* Management UI (serve --manage) */
+.manage-bar { display: flex; justify-content: flex-end; margin-bottom: 0.5rem; }
+.manage-link { font-size: 0.85rem; color: #0066cc; text-decoration: none; border: 1px solid #d6e4f2; border-radius: 4px; padding: 0.25rem 0.7rem; }
+.manage-link:hover { background: #eef4fb; }
+.top .muted { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+.empty-cta { border: 1px dashed #ccc; border-radius: 8px; padding: 1.5rem; text-align: center; background: #fafafa; margin: 1rem 0; }
+.empty-cta p { margin: 0 0 0.8rem; color: #666; }
+.cta-btn, a.cta-btn { display: inline-block; background: #0066cc; color: #fff; text-decoration: none; padding: 0.6rem 1.2rem; border-radius: 4px; font-size: 1rem; }
+.cta-btn:hover { background: #0055aa; }
+
+.manage-section { margin: 0 0 2.5rem; }
+.manage-section h2 { border-bottom: 1px solid #eee; padding-bottom: 0.3rem; }
+.manage-form { display: flex; flex-direction: column; gap: 0.8rem; max-width: 640px; }
+.manage-form label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; }
+.manage-form label > span { color: #444; font-weight: 600; }
+.manage-form input, .manage-form textarea {
+  padding: 0.5rem 0.7rem; font-size: 0.95rem; font-family: inherit;
+  border: 1px solid #ccc; border-radius: 4px; width: 100%; box-sizing: border-box;
+}
+.manage-form input[readonly] { background: #f2f2f2; color: #666; }
+.manage-form textarea { resize: vertical; }
+.form-actions { display: flex; align-items: center; gap: 1rem; }
+.manage-form button {
+  padding: 0.6rem 1.4rem; font-size: 1rem; cursor: pointer; width: fit-content;
+  background: #0066cc; color: #fff; border: none; border-radius: 4px;
+}
+.manage-form button:hover { background: #0055aa; }
+.form-actions .cancel { color: #666; text-decoration: none; font-size: 0.9rem; }
+
+.progress {
+  margin: 0.8rem 0 0; min-height: 1.2rem; white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; color: #444;
+}
+.progress:empty { display: none; }
+
+.manage-list { list-style: none; padding: 0; }
+.manage-list li { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid #f0f0f0; }
+.manage-list li a:first-child { font-weight: 600; text-decoration: none; color: #222; }
+.manage-list .edit { margin-left: auto; color: #0066cc; text-decoration: none; font-size: 0.85rem; }
+.manage-list .edit:hover { text-decoration: underline; }
