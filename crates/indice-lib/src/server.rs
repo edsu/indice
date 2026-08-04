@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -147,6 +147,13 @@ fn build_router(
             .route("/manage", get(manage_page))
             .route("/manage/edit/{id}", get(manage_edit_collection))
             .route("/api/archives", post(add_archive))
+            // File upload can be large (a whole WACZ), so lift axum's 2 MB default
+            // body limit on this route only. Trusted-operator surface (see the
+            // non-loopback startup warning); the rest keep the default cap.
+            .route(
+                "/api/archives/upload",
+                post(upload_archive).layer(DefaultBodyLimit::disable()),
+            )
             .route("/api/archives/{id}/events", get(add_archive_events))
             .route("/api/collections", post(create_collection));
     }
@@ -350,9 +357,8 @@ impl crate::index::IndexProgress for ChannelProgress {
     }
 }
 
-/// Body of `POST /api/archives`. The native file dialog (desktop) supplies a
-/// local filesystem `path` so the WACZ is indexed in place; a browser byte-upload
-/// (multipart) is a follow-up on this ticket.
+/// Body of `POST /api/archives` — add a crawl by reference. Browser byte-upload
+/// uses [`upload_archive`] (`/api/archives/upload`) instead.
 #[derive(Deserialize)]
 struct AddArchiveRequest {
     /// Local filesystem path to a `.wacz` (or an `http(s)://` URL — both are
@@ -371,16 +377,18 @@ struct AddArchiveResponse {
     job: u64,
 }
 
-/// `POST /api/archives` — start an ingest job and return its id (202 Accepted).
-async fn add_archive(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<AddArchiveRequest>,
-) -> Response {
-    // Mirror the CLI's "every crawl belongs to a collection" guard.
-    if req.collection.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
-    }
-
+/// Register an ingest job and run `index_location` for it on a blocking thread,
+/// returning the job id immediately. Shared by the JSON add ([`add_archive`]) and
+/// the multipart upload ([`upload_archive`]). `keepalive` holds a temp dir (the
+/// uploaded file) alive until indexing finishes, then drops it — `None` for the
+/// path/URL case, which owns no temp file.
+fn start_index_job(
+    state: &Arc<AppState>,
+    location: String,
+    collection: String,
+    name: Option<String>,
+    keepalive: Option<tempfile::TempDir>,
+) -> u64 {
     let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
@@ -389,15 +397,18 @@ async fn add_archive(
     // `index_location` blocks (file IO, network range reads, the Tantivy commit),
     // so run it off the async runtime — never on a request-handling thread.
     tokio::task::spawn_blocking(move || {
+        // Held until the job ends; dropping it deletes any uploaded temp file
+        // (after `index_location` has copied it into `archive/`).
+        let _keepalive = keepalive;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
             // Only one add may hold Tantivy's exclusive write lock at a time.
             let _guard = job_state.write_lock.lock().unwrap();
             crate::index::index_location(
-                &req.path,
+                &location,
                 &job_state.home,
-                req.name.as_deref(),
-                &req.collection,
+                name.as_deref(),
+                &collection,
                 false,
                 None,
                 Some(&progress),
@@ -422,7 +433,95 @@ async fn add_archive(
         // client has read the terminal event.
     });
 
+    id
+}
+
+/// `POST /api/archives` — add a crawl by local path or `http(s)://` URL. Starts
+/// an ingest job and returns its id (202 Accepted).
+async fn add_archive(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddArchiveRequest>,
+) -> Response {
+    // Mirror the CLI's "every crawl belongs to a collection" guard.
+    if req.collection.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    let id = start_index_job(&state, req.path, req.collection, req.name, None);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
+}
+
+/// `POST /api/archives/upload` — add a crawl by uploading the `.wacz` bytes
+/// (multipart/form-data: `collection`, optional `name`, and the `file`). The
+/// upload is streamed to a temp file, then indexed exactly like a local path
+/// (`index_location` copies it into `archive/`); the temp file is deleted when
+/// the job finishes. Returns a job id (202) to stream progress from.
+async fn upload_archive(State(state): State<Arc<AppState>>, mut multipart: Multipart) -> Response {
+    let mut collection: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut tmpdir: Option<tempfile::TempDir> = None;
+    let mut file_path: Option<PathBuf> = None;
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("malformed upload: {e}")).into_response()
+            }
+        };
+        match field.name() {
+            Some("collection") => collection = field.text().await.ok(),
+            Some("name") => name = field.text().await.ok(),
+            Some("file") => {
+                // Keep just the basename of the client filename, defaulting the
+                // extension so `index_location`'s `.wacz` check passes.
+                let raw = field.file_name().unwrap_or("upload.wacz").to_string();
+                let fname = Path::new(&raw)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "upload.wacz".to_string());
+                let dir = match tempfile::TempDir::new() {
+                    Ok(d) => d,
+                    Err(e) => return error_response(anyhow::anyhow!(e)).into_response(),
+                };
+                let path = dir.path().join(&fname);
+                if let Err(e) = stream_field_to_file(field, &path).await {
+                    return error_response(e).into_response();
+                }
+                file_path = Some(path);
+                tmpdir = Some(dir);
+            }
+            _ => {}
+        }
+    }
+
+    let collection = match collection {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => return (StatusCode::BAD_REQUEST, "collection is required").into_response(),
+    };
+    let Some(path) = file_path else {
+        return (StatusCode::BAD_REQUEST, "a file is required").into_response();
+    };
+    let name = name.filter(|n| !n.trim().is_empty());
+    let location = path.to_string_lossy().to_string();
+    let id = start_index_job(&state, location, collection, name, tmpdir);
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
+}
+
+/// Stream one multipart field's bytes to `path`, chunk by chunk (never buffering
+/// the whole upload in memory).
+async fn stream_field_to_file(
+    mut field: axum::extract::multipart::Field<'_>,
+    path: &Path,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(path).await?;
+    while let Some(chunk) = field.chunk().await? {
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
 }
 
 /// `GET /api/archives/{id}/events` — stream one job's progress as SSE. The

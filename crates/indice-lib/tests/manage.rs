@@ -112,6 +112,68 @@ async fn manage_add_archive_indexes_and_reloads_search() {
 }
 
 #[tokio::test]
+async fn manage_upload_archive_indexes_and_reloads_search() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let (base, server) = serve(home.clone(), true).await;
+
+    // Hand-build a multipart/form-data body: the `collection` text field + the
+    // `.wacz` bytes as the `file` field.
+    let boundary = "----indiceUploadTest";
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"collection\"\r\n\r\nuploaded\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"simple.wacz\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(&wacz);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let post_url = format!("{base}/api/archives/upload");
+    let ct = format!("multipart/form-data; boundary={boundary}");
+    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post_url)
+            .header("content-type", &ct)
+            .send(&body[..])
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 202, "upload should be accepted");
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let job_id = job["job"].as_u64().expect("response carries a job id");
+
+    let (status, events) = get(format!("{base}/api/archives/{job_id}/events")).await;
+    assert_eq!(status, 200);
+    assert!(
+        events.contains("event: done"),
+        "upload job should complete; got:\n{events}"
+    );
+    assert!(
+        !events.contains("event: error"),
+        "upload job should not error; got:\n{events}"
+    );
+
+    // Indexed under the given collection, and searchable after the reload.
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(manifest.waczs.len(), 1, "one crawl indexed from the upload");
+    assert_eq!(manifest.waczs[0].collection, "uploaded");
+    let (_, search) = get(format!("{base}/api/search?q=example")).await;
+    let after: serde_json::Value = serde_json::from_str(&search).unwrap();
+    assert!(
+        after["total"].as_u64().unwrap() > 0,
+        "reloaded searcher finds the uploaded crawl"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn manage_create_collection_via_form_then_it_appears() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (base, server) = serve(tmp.path().to_path_buf(), true).await;

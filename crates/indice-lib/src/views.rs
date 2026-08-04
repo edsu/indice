@@ -680,11 +680,17 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 @if !missing.is_empty() {
                     p.muted.nudge {
                         "Still needed: " (missing.join(", "))
-                        " (the finding-aid minimum). Add with "
-                        code { "indice collection set \"" (p.name) "\" …" }
-                        " or edit "
-                        code { "collections/" (slug) "/README.md" }
-                        "."
+                        " (the finding-aid minimum). "
+                        @if p.management {
+                            a href=(format!("/manage/edit/{slug}")) { "Edit this collection" }
+                            " to add them."
+                        } @else {
+                            "Add with "
+                            code { "indice collection set \"" (p.name) "\" …" }
+                            " or edit "
+                            code { "collections/" (slug) "/README.md" }
+                            "."
+                        }
                     }
                 }
             } @else {
@@ -693,11 +699,17 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 p.muted.nudge {
                     "No finding-aid description yet. Add the essentials a reader needs — "
                     "who gathered it (Creator), why it was archived (Scope & Content), and "
-                    "who may use it (Access): "
-                    code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
-                    " — or edit "
-                    code { "collections/" (slug) "/README.md" }
-                    "."
+                    "who may use it (Access). "
+                    @if p.management {
+                        a href=(format!("/manage/edit/{slug}")) { "Edit this collection" }
+                        " to describe it."
+                    } @else {
+                        "Add with "
+                        code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
+                        " — or edit "
+                        code { "collections/" (slug) "/README.md" }
+                        "."
+                    }
                 }
             }
         }
@@ -867,16 +879,35 @@ const f = document.getElementById('add-archive-form');
 const out = document.getElementById('add-progress');
 f.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const body = { path: f.location.value.trim(), collection: f.collection.value.trim() };
-  if (f.name.value.trim()) body.name = f.name.value.trim();
-  out.textContent = 'Starting…';
+  const collection = f.collection.value.trim();
+  const name = f.name.value.trim();
+  const file = f.file.files[0];
+  const location = f.location.value.trim();
+  if (!collection) { out.textContent = 'Please name the collection.'; return; }
   let res;
   try {
-    res = await fetch('/api/archives', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    if (file) {
+      // Upload the bytes as multipart/form-data.
+      out.textContent = 'Uploading…';
+      const fd = new FormData();
+      fd.append('collection', collection);
+      if (name) fd.append('name', name);
+      fd.append('file', file);
+      res = await fetch('/api/archives/upload', { method: 'POST', body: fd });
+    } else if (location) {
+      // Reference a path or URL as JSON.
+      out.textContent = 'Starting…';
+      const body = { path: location, collection };
+      if (name) body.name = name;
+      res = await fetch('/api/archives', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } else {
+      out.textContent = 'Choose a file to upload, or enter a path/URL.';
+      return;
+    }
   } catch (err) { out.textContent = 'Request failed: ' + err; return; }
   if (!res.ok) { out.textContent = 'Error: ' + (await res.text()); return; }
   const { job } = await res.json();
@@ -912,18 +943,14 @@ pub fn manage(collections: &[ManageCollectionRow], form: &CollectionFormData) ->
         section.manage-section {
             h2 { "Add an archive" }
             p.muted {
-                "Point indice at a "
+                "Upload a "
                 code { ".wacz" }
-                " file on this machine, or an "
+                " file, or reference one already on this machine (a path) or the web "
+                "(an "
                 code { "http(s)://" }
-                " URL. A local file is copied into the archive; a URL is streamed in place."
+                " URL). An uploaded or local file is copied into the archive; a URL is streamed in place."
             }
             form #add-archive-form.manage-form {
-                label {
-                    span { "Location" }
-                    input type="text" name="location" required
-                        placeholder="/path/to/crawl.wacz or https://example.org/crawl.wacz";
-                }
                 label {
                     span { "Collection" }
                     input type="text" name="collection" required
@@ -932,6 +959,16 @@ pub fn manage(collections: &[ManageCollectionRow], form: &CollectionFormData) ->
                 label {
                     span { "Display name " span.muted { "(optional)" } }
                     input type="text" name="name" placeholder="override the collection's display name";
+                }
+                label {
+                    span { "Upload a " code { ".wacz" } " file" }
+                    input type="file" name="file" accept=".wacz";
+                }
+                p.muted.or-sep { "… or reference one by location:" }
+                label {
+                    span { "Location" }
+                    input type="text" name="location"
+                        placeholder="/path/to/crawl.wacz or https://example.org/crawl.wacz";
                 }
                 button type="submit" { "Add" }
             }

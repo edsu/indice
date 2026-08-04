@@ -213,7 +213,9 @@ nav.pagination .page-info { color: #666; }
   border: 1px solid #ccc; border-radius: 4px; width: 100%; box-sizing: border-box;
 }
 .manage-form input[readonly] { background: #f2f2f2; color: #666; }
+.manage-form input[type="file"] { border: none; padding-left: 0; }
 .manage-form textarea { resize: vertical; }
+.or-sep { margin: 0.2rem 0; font-size: 0.85rem; }
 .form-actions { display: flex; align-items: center; gap: 1rem; }
 .manage-form button {
   padding: 0.6rem 1.4rem; font-size: 1rem; cursor: pointer; width: fit-content;
