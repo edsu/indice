@@ -35,6 +35,67 @@ struct ReplayAssets;
 #[folder = "static/assets"]
 struct SiteAssets;
 
+// ── Management-mode configuration ───────────────────────────────────────────
+
+/// How `serve --manage` authenticates the write surface.
+///
+/// - **Local** (`forward_auth: None`): every request is trusted. Only valid on a
+///   loopback bind (enforced at startup) — the local operator is the admin, no
+///   login. This is the laptop / single-user case.
+/// - **Forward-auth** (`forward_auth: Some`): indice sits behind an authenticating
+///   reverse proxy that performs the real login (SSO/OIDC/SAML) and injects the
+///   authenticated user in a header. indice trusts that header **only** when the
+///   request also carries the shared secret in `X-Indice-Auth-Secret` (which the
+///   proxy adds), so a client that forges the identity header — or a request that
+///   never went through the proxy — is rejected. This is the institutional
+///   "install as a service" case; indice stores no passwords and speaks to no IdP.
+#[derive(Clone, Default)]
+pub struct ManageConfig {
+    /// Whether the management routes are mounted at all (`--manage`).
+    pub enabled: bool,
+    pub forward_auth: Option<ForwardAuth>,
+}
+
+/// Forward-auth settings: which header carries the authenticated user, and the
+/// shared secret the trusted proxy must present alongside it.
+#[derive(Clone)]
+pub struct ForwardAuth {
+    /// Header the proxy injects with the authenticated identity, e.g.
+    /// `X-Forwarded-Email` (oauth2-proxy), `Remote-Email` (Authelia).
+    pub user_header: String,
+    /// Secret the proxy must send in `X-Indice-Auth-Secret`. Static, proxy-side
+    /// config (not the IdP); its presence is what makes trusting the identity
+    /// header safe.
+    pub secret: String,
+}
+
+impl ManageConfig {
+    /// Management disabled — the default read-only server.
+    pub fn off() -> Self {
+        Self::default()
+    }
+    /// Management on, local mode (trust every request; requires a loopback bind).
+    pub fn local() -> Self {
+        Self {
+            enabled: true,
+            forward_auth: None,
+        }
+    }
+    /// Management on, gated behind a trusted auth proxy.
+    pub fn forward_auth(user_header: impl Into<String>, secret: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            forward_auth: Some(ForwardAuth {
+                user_header: user_header.into(),
+                secret: secret.into(),
+            }),
+        }
+    }
+}
+
+/// The fixed header carrying the proxy↔indice shared secret in forward-auth mode.
+const AUTH_SECRET_HEADER: &str = "x-indice-auth-secret";
+
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 struct AppState {
@@ -67,6 +128,10 @@ struct AppState {
     /// (below), but the read handlers also read this to decide whether to render
     /// management affordances (the `/manage` link, the empty-state CTA).
     management: bool,
+    /// Forward-auth settings, when management runs behind an auth proxy. Handlers
+    /// read the `user_header` to show who's signed in; the route middleware does
+    /// the actual enforcement.
+    forward_auth: Option<ForwardAuth>,
 }
 
 impl AppState {
@@ -83,7 +148,7 @@ impl AppState {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(home: &Path) -> Result<Router> {
-    build_router(home, None, false)
+    build_router(home, None, ManageConfig::off())
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
@@ -92,17 +157,19 @@ pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<Router> {
-    build_router(home, resolver, false)
+    build_router(home, resolver, ManageConfig::off())
 }
 
-/// Build the app router. `management` gates the opt-in write routes (add-archive):
-/// when `false` (the default for `serve`) only the read-only site is mounted, so
-/// the public deployment can never mutate the archive; when `true` (`serve
-/// --manage`) the management endpoints are added on top.
+/// Build the app router. `manage` gates the opt-in write routes: when disabled
+/// (the default for `serve`) only the read-only site is mounted, so the public
+/// deployment can never mutate the archive; when enabled (`serve --manage`) the
+/// management endpoints are added on top, and — in forward-auth mode — wrapped in
+/// the [`forward_auth`] middleware so every management request must carry the
+/// trusted proxy's identity header and shared secret.
 fn build_router(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    management: bool,
+    manage: ManageConfig,
 ) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
@@ -119,7 +186,8 @@ fn build_router(
         write_lock: std::sync::Mutex::new(()),
         jobs: std::sync::Mutex::new(HashMap::new()),
         job_counter: AtomicU64::new(0),
-        management,
+        management: manage.enabled,
+        forward_auth: manage.forward_auth.clone(),
     });
 
     let mut app = Router::new()
@@ -140,22 +208,36 @@ fn build_router(
 
     // Opt-in write surface: mounted only under `serve --manage`. The browser
     // management UI plus its write endpoints — add a crawl (`index_location`,
-    // streaming progress over SSE) and create/edit a collection finding aid
-    // (`set_collection`). None of this exists in the default read-only server.
-    if management {
-        app = app
+    // streaming progress over SSE), upload a WACZ, and create/edit a collection
+    // finding aid (`set_collection`). None of this exists in the default
+    // read-only server.
+    if manage.enabled {
+        let mut manage_routes = Router::new()
             .route("/manage", get(manage_page))
             .route("/manage/edit/{id}", get(manage_edit_collection))
             .route("/api/archives", post(add_archive))
             // File upload can be large (a whole WACZ), so lift axum's 2 MB default
-            // body limit on this route only. Trusted-operator surface (see the
-            // non-loopback startup warning); the rest keep the default cap.
+            // body limit on this route only.
             .route(
                 "/api/archives/upload",
                 post(upload_archive).layer(DefaultBodyLimit::disable()),
             )
             .route("/api/archives/{id}/events", get(add_archive_events))
             .route("/api/collections", post(create_collection));
+
+        // Forward-auth: reject any management request that doesn't carry the
+        // trusted proxy's shared secret + a non-empty identity header. Layered
+        // outermost so it runs before a body is read (e.g. a large upload).
+        if let Some(fa) = manage.forward_auth {
+            let guard = Arc::new(fa);
+            manage_routes = manage_routes.layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let guard = guard.clone();
+                    async move { forward_auth(&guard, req, next).await }
+                },
+            ));
+        }
+        app = app.merge(manage_routes);
     }
 
     let app = app
@@ -200,39 +282,20 @@ fn build_router(
 }
 
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None, false).await
+    serve_with_resolver(bind, home, None, ManageConfig::off()).await
 }
 
 /// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
 /// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
-/// enables the opt-in write routes (see [`build_router`]).
+/// configures the opt-in write routes (see [`build_router`]).
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    manage: bool,
+    manage: ManageConfig,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
-    // Interim footgun-guard: management mode has no auth yet (see
-    // rustyweb-admin-mode-r67p.2). It's safe bound to loopback (only a local
-    // operator can reach it); on any other address it exposes an unauthenticated
-    // write surface. Warn loudly rather than silently serving writes to the world.
-    if manage {
-        let loopback = listener
-            .local_addr()
-            .map(|a| a.ip().is_loopback())
-            .unwrap_or(false);
-        if !loopback {
-            tracing::warn!(
-                bind,
-                "management mode (--manage) is enabled on a NON-loopback address \
-                 and has NO authentication — anyone who can reach this address can \
-                 add or edit archives. Bind to 127.0.0.1 for local use, or put an \
-                 authenticating reverse proxy in front until auth lands."
-            );
-        }
-    }
     serve_on_listener(listener, home, resolver, manage).await
 }
 
@@ -246,8 +309,25 @@ pub async fn serve_on_listener(
     listener: tokio::net::TcpListener,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    manage: bool,
+    manage: ManageConfig,
 ) -> Result<()> {
+    // Safety guard: local management mode (no auth proxy) trusts every request, so
+    // it must not be reachable beyond this machine. Refuse to start if it's bound
+    // to a non-loopback address without forward-auth configured — otherwise it
+    // would expose an unauthenticated write surface. To run as a service, put an
+    // authenticating proxy in front and configure forward-auth.
+    if manage.enabled && manage.forward_auth.is_none() {
+        let addr = listener.local_addr()?;
+        if !addr.ip().is_loopback() {
+            anyhow::bail!(
+                "refusing to start: management mode (--manage) without an auth proxy \
+                 trusts every request, so it must bind to a loopback address \
+                 (127.0.0.1 / ::1), but it is bound to {addr}. To run as a service, \
+                 front it with an authenticating reverse proxy and set \
+                 --auth-proxy-header / --auth-proxy-secret."
+            );
+        }
+    }
     let app = build_router(home, resolver, manage)?;
     axum::serve(
         listener,
@@ -255,6 +335,51 @@ pub async fn serve_on_listener(
     )
     .await?;
     Ok(())
+}
+
+/// Forward-auth middleware for the management routes: allow the request through
+/// only if it carries the shared secret in `X-Indice-Auth-Secret` (matching the
+/// configured value) **and** a non-empty identity in the configured user header —
+/// both injected by the trusted proxy. Anything else (a forged identity header, a
+/// request that skipped the proxy) gets 403.
+async fn forward_auth(
+    fa: &ForwardAuth,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let headers = req.headers();
+    let secret_ok = headers
+        .get(AUTH_SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| constant_time_eq(v.as_bytes(), fa.secret.as_bytes()))
+        .unwrap_or(false);
+    let identity_ok = headers
+        .get(fa.user_header.as_str())
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if secret_ok && identity_ok {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            "forbidden: this management surface requires authentication via its front proxy",
+        )
+            .into_response()
+    }
+}
+
+/// Constant-time byte comparison, to avoid leaking the secret via timing. The
+/// length check can leak length, which is fine for a shared secret.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 // ── Management mode: add-archive ────────────────────────────────────────────
@@ -547,11 +672,25 @@ async fn add_archive_events(
 
 // ── Management mode: collections + pages ────────────────────────────────────
 
+/// The authenticated user for display, read from the trusted proxy's identity
+/// header in forward-auth mode (the [`forward_auth`] middleware has already
+/// validated it). `None` in local mode.
+fn signed_in_user(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let fa = state.forward_auth.as_ref()?;
+    headers
+        .get(fa.user_header.as_str())
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// The management landing page (`GET /manage`): add-archive form, new-collection
 /// form, and the list of existing collections with edit links.
-async fn manage_page(State(state): State<Arc<AppState>>) -> Response {
+async fn manage_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let who = signed_in_user(&state, &headers);
     match manage_collection_rows(&state) {
-        Ok(rows) => views::manage(&rows, &views::CollectionFormData::default()).into_response(),
+        Ok(rows) => views::manage(&rows, &views::CollectionFormData::default(), who.as_deref())
+            .into_response(),
         Err(e) => error_response(e).into_response(),
     }
 }
@@ -561,6 +700,7 @@ async fn manage_page(State(state): State<Arc<AppState>>) -> Response {
 /// the collection's identity — its slug — so renaming would create a new one).
 async fn manage_edit_collection(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     let manifest = match Manifest::open(&state.index_dir) {
@@ -585,7 +725,8 @@ async fn manage_edit_collection(
         Ok(r) => r,
         Err(e) => return error_response(e).into_response(),
     };
-    views::manage(&rows, &form).into_response()
+    let who = signed_in_user(&state, &headers);
+    views::manage(&rows, &form, who.as_deref()).into_response()
 }
 
 fn manage_collection_rows(state: &AppState) -> Result<Vec<views::ManageCollectionRow>> {

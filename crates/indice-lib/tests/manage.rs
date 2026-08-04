@@ -36,7 +36,10 @@ async fn get(url: String) -> (u16, String) {
 }
 
 /// Start a server on an ephemeral localhost port; returns `(base_url, handle)`.
-async fn serve(home: std::path::PathBuf, manage: bool) -> (String, tokio::task::JoinHandle<()>) {
+async fn serve(
+    home: std::path::PathBuf,
+    manage: indice_lib::server::ManageConfig,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move {
@@ -51,7 +54,7 @@ async fn serve(home: std::path::PathBuf, manage: bool) -> (String, tokio::task::
 async fn manage_add_archive_indexes_and_reloads_search() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), true).await;
+    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
 
     // Precondition: empty index, so search finds nothing.
     let (status, body) = get(format!("{base}/api/search?q=example")).await;
@@ -115,7 +118,7 @@ async fn manage_add_archive_indexes_and_reloads_search() {
 async fn manage_upload_archive_indexes_and_reloads_search() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), true).await;
+    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
 
     // Hand-build a multipart/form-data body: the `collection` text field + the
     // `.wacz` bytes as the `file` field.
@@ -176,7 +179,11 @@ async fn manage_upload_archive_indexes_and_reloads_search() {
 #[tokio::test]
 async fn manage_create_collection_via_form_then_it_appears() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(tmp.path().to_path_buf(), true).await;
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::local(),
+    )
+    .await;
 
     // Submit the create-collection form (application/x-www-form-urlencoded).
     let post_url = format!("{base}/api/collections");
@@ -216,7 +223,11 @@ async fn manage_create_collection_via_form_then_it_appears() {
 
     // The edit affordance is gated: a read-only server on the same home does not
     // render it on the collection page.
-    let (ro_base, ro_server) = serve(tmp.path().to_path_buf(), false).await;
+    let (ro_base, ro_server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
     let (status, ro_page) = get(format!("{ro_base}/collection/demo-collection")).await;
     assert_eq!(status, 200);
     assert!(
@@ -234,7 +245,11 @@ async fn manage_create_collection_via_form_then_it_appears() {
 async fn manage_page_gated_on_management_mode() {
     // Present under --manage.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(tmp.path().to_path_buf(), true).await;
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::local(),
+    )
+    .await;
     let (status, body) = get(format!("{base}/manage")).await;
     assert_eq!(status, 200);
     assert!(body.contains("Add an archive"), "manage page renders");
@@ -245,7 +260,11 @@ async fn manage_page_gated_on_management_mode() {
 
     // Absent in the default read-only server.
     let tmp2 = tempfile::TempDir::new().unwrap();
-    let (base2, server2) = serve(tmp2.path().to_path_buf(), false).await;
+    let (base2, server2) = serve(
+        tmp2.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
     let (status2, _) = get(format!("{base2}/manage")).await;
     assert_eq!(status2, 404, "no /manage in read-only mode");
     let (_, home2) = get(format!("{base2}/")).await;
@@ -257,10 +276,95 @@ async fn manage_page_gated_on_management_mode() {
     server2.abort();
 }
 
+/// GET with extra request headers; returns `(status, body)`.
+async fn get_with_headers(
+    url: String,
+    headers: Vec<(&'static str, &'static str)>,
+) -> (u16, String) {
+    tokio::task::spawn_blocking(move || {
+        let mut req = agent().get(&url);
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        let mut res = req.call().unwrap();
+        (
+            res.status().as_u16(),
+            res.body_mut().read_to_string().unwrap(),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn forward_auth_gates_management_routes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let manage = format!("{base}/manage");
+
+    // No proxy headers at all -> 403.
+    let (status, _) = get(manage.clone()).await;
+    assert_eq!(status, 403, "management requires proxy auth");
+
+    // Wrong secret -> 403.
+    let (status, _) = get_with_headers(
+        manage.clone(),
+        vec![
+            ("x-indice-auth-secret", "wrong"),
+            ("x-forwarded-email", "alice@x.edu"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403, "wrong secret is rejected");
+
+    // Correct secret but no identity -> 403 (a forged/absent identity can't pass).
+    let (status, _) =
+        get_with_headers(manage.clone(), vec![("x-indice-auth-secret", "s3cret")]).await;
+    assert_eq!(status, 403, "secret without identity is rejected");
+
+    // Correct secret + identity -> 200, and the page shows who's signed in.
+    let (status, body) = get_with_headers(
+        manage.clone(),
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "valid proxy auth is allowed");
+    assert!(body.contains("alice@x.edu"), "shows the signed-in user");
+
+    // A write route is gated the same way.
+    let post_url = format!("{base}/api/collections");
+    let unauthed_write = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&post_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .send("name=Nope")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(unauthed_write, 403, "unauthenticated write is rejected");
+
+    // The public read-only site is not gated.
+    let (status, _) = get(format!("{base}/")).await;
+    assert_eq!(status, 200, "homepage stays public");
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn read_only_server_has_no_add_archive_route() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(tmp.path().to_path_buf(), false).await;
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
 
     // The write route is not mounted in the default (read-only) server.
     let post_url = format!("{base}/api/archives");

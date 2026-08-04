@@ -932,11 +932,18 @@ f.addEventListener('submit', async (e) => {
 /// The management landing page (`/manage`): add-archive form, create/edit
 /// collection form, and the list of existing collections. Rendered only under
 /// `serve --manage`.
-pub fn manage(collections: &[ManageCollectionRow], form: &CollectionFormData) -> Markup {
+pub fn manage(
+    collections: &[ManageCollectionRow],
+    form: &CollectionFormData,
+    signed_in: Option<&str>,
+) -> Markup {
     let body = html! {
         div.top {
             a.home href="/" { "indice" }
             span.muted { "Management" }
+            @if let Some(user) = signed_in {
+                span.signed-in { "Signed in as " strong { (user) } }
+            }
         }
         h1 { "Manage" }
 

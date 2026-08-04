@@ -197,6 +197,7 @@ nav.pagination .page-info { color: #666; }
 .manage-link { font-size: 0.85rem; color: #0066cc; text-decoration: none; border: 1px solid #d6e4f2; border-radius: 4px; padding: 0.25rem 0.7rem; }
 .manage-link:hover { background: #eef4fb; }
 .top .muted { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.signed-in { margin-left: auto; font-size: 0.85rem; color: #555; }
 
 .empty-cta { border: 1px dashed #ccc; border-radius: 8px; padding: 1.5rem; text-align: center; background: #fafafa; margin: 1rem 0; }
 .empty-cta p { margin: 0 0 0.8rem; color: #666; }

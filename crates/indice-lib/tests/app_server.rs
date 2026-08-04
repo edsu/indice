@@ -31,7 +31,13 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
 
     let home = tmp.path().to_path_buf();
     let server = tokio::spawn(async move {
-        indice_lib::server::serve_on_listener(listener, &home, None, false).await
+        indice_lib::server::serve_on_listener(
+            listener,
+            &home,
+            None,
+            indice_lib::server::ManageConfig::off(),
+        )
+        .await
     });
 
     let base = format!("http://127.0.0.1:{port}");
