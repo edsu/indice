@@ -250,9 +250,10 @@ async fn manage_page_gated_on_management_mode() {
         indice_lib::server::ManageConfig::local(),
     )
     .await;
-    let (status, body) = get(format!("{base}/manage")).await;
+    // The accession desk renders under --manage.
+    let (status, body) = get(format!("{base}/manage/add")).await;
     assert_eq!(status, 200);
-    assert!(body.contains("Add an archive"), "manage page renders");
+    assert!(body.contains("Add crawls"), "accession desk renders");
     // Empty homepage shows the management CTA, not the CLI hint.
     let (_, home) = get(format!("{base}/")).await;
     assert!(home.contains("Add your first archive"), "empty-state CTA");
@@ -265,8 +266,8 @@ async fn manage_page_gated_on_management_mode() {
         indice_lib::server::ManageConfig::off(),
     )
     .await;
-    let (status2, _) = get(format!("{base2}/manage")).await;
-    assert_eq!(status2, 404, "no /manage in read-only mode");
+    let (status2, _) = get(format!("{base2}/manage/add")).await;
+    assert_eq!(status2, 404, "no management routes in read-only mode");
     let (_, home2) = get(format!("{base2}/")).await;
     assert!(
         home2.contains("indice index"),
@@ -301,7 +302,7 @@ async fn forward_auth_gates_management_routes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
-    let manage = format!("{base}/manage");
+    let manage = format!("{base}/manage/add");
 
     // No proxy headers at all -> 403.
     let (status, _) = get(manage.clone()).await;

@@ -358,25 +358,27 @@ Notes:
 
 By default `indice serve` is **read-only** — it never writes, so you curate from
 the command line (`index`, `collection set`, `import browsertrix`). Passing
-`--manage` mounts an opt-in **management UI and write API** on top of the same
-server, so you can add archives and curate collections from the browser, no
-command line needed:
+`--manage` turns the ordinary site into an editable **workroom**: the same pages
+gain curation controls (a warm clay "red-tape" accent marks write mode), so you can add
+archives and curate collections in place, no command line needed:
 
 ```bash
-indice serve --manage        # http://127.0.0.1:8080  — adds a "Manage" link
+indice serve --manage        # http://127.0.0.1:8080
 ```
 
-Visit **`/manage`** to:
+With `--manage` on:
 
-- **Add an archive** — upload a `.wacz` from your computer, or point indice at a
-  local path or an `http(s)://` URL. Indexing runs in the background with live
-  progress; when it finishes the crawl is searchable immediately (the server
-  hot-reloads its reader — no restart). Uploaded/local files are copied into
-  `<home>/archive/`; a URL is streamed in place.
-- **Create or edit a collection** — fill in the finding-aid fields (description,
-  creator, dates, rights, subjects, narrative). Every collection page gains an
-  **Edit** link, and an empty instance greets you with an "add your first archive"
-  prompt.
+- **The homepage** — its collection list gains a **+ New collection** button, and
+  each card an **Edit** affordance. An empty instance greets you with "add your
+  first archive."
+- **Each collection page** — gains **Edit collection** (the finding-aid form:
+  description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
+- **Add crawls** (the accession desk) — upload a `.wacz` from your computer, or
+  point indice at a local path or an `http(s)://` URL. Indexing runs in the
+  background with live progress; when it finishes the crawl is searchable
+  immediately (the server hot-reloads its reader — no restart). Uploaded/local
+  files are copied into `<home>/archive/`; a URL is streamed in place. (Importing
+  from Browsertrix / Archive-It will slot in here as additional sources.)
 
 The default `serve` (without `--manage`) mounts none of this, so a public,
 read-only deployment can never mutate the archive.
@@ -418,7 +420,7 @@ Every management request must carry both the identity header and the secret;
 anything else is rejected. The public read-only site (search, browse, replay) is
 **not** gated — only the management routes are. "Who is an admin" is delegated
 entirely to your proxy/SSO: anyone it logs in can administer, and the signed-in
-identity is shown on `/manage`.
+identity is shown in the workroom strip at the top of every management page.
 
 **Deploy checklist**
 

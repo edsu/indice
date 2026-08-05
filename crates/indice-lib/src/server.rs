@@ -213,8 +213,9 @@ fn build_router(
     // read-only server.
     if manage.enabled {
         let mut manage_routes = Router::new()
-            .route("/manage", get(manage_page))
-            .route("/manage/edit/{id}", get(manage_edit_collection))
+            .route("/manage/collections/new", get(new_collection_form))
+            .route("/manage/edit/{id}", get(edit_collection_form))
+            .route("/manage/add", get(accession_desk_page))
             .route("/api/archives", post(add_archive))
             // File upload can be large (a whole WACZ), so lift axum's 2 MB default
             // body limit on this route only.
@@ -347,18 +348,7 @@ async fn forward_auth(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let headers = req.headers();
-    let secret_ok = headers
-        .get(AUTH_SECRET_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| constant_time_eq(v.as_bytes(), fa.secret.as_bytes()))
-        .unwrap_or(false);
-    let identity_ok = headers
-        .get(fa.user_header.as_str())
-        .and_then(|v| v.to_str().ok())
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false);
-    if secret_ok && identity_ok {
+    if check_forward_auth(fa, req.headers()).is_some() {
         next.run(req).await
     } else {
         (
@@ -366,6 +356,44 @@ async fn forward_auth(
             "forbidden: this management surface requires authentication via its front proxy",
         )
             .into_response()
+    }
+}
+
+/// Validate a forward-auth request: returns the authenticated identity iff the
+/// request carries the shared secret (in `X-Indice-Auth-Secret`) **and** a
+/// non-empty identity in the configured user header — both injected by the
+/// trusted proxy. A forged identity header, or a request that skipped the proxy,
+/// lacks the secret and yields `None`.
+fn check_forward_auth(fa: &ForwardAuth, headers: &HeaderMap) -> Option<String> {
+    let secret_ok = headers
+        .get(AUTH_SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| constant_time_eq(v.as_bytes(), fa.secret.as_bytes()))
+        .unwrap_or(false);
+    if !secret_ok {
+        return None;
+    }
+    headers
+        .get(fa.user_header.as_str())
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Whether this request may use management affordances, plus the signed-in user.
+/// Local mode trusts every request (it's loopback-only); forward-auth defers to
+/// [`check_forward_auth`]. Used by the read handlers to decide whether to render
+/// the workroom chrome and edit-in-place controls.
+fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<String>) {
+    if !state.management {
+        return (false, None);
+    }
+    match &state.forward_auth {
+        None => (true, None),
+        Some(fa) => match check_forward_auth(fa, headers) {
+            Some(user) => (true, Some(user)),
+            None => (false, None),
+        },
     }
 }
 
@@ -670,35 +698,21 @@ async fn add_archive_events(
     Sse::new(stream).into_response()
 }
 
-// ── Management mode: collections + pages ────────────────────────────────────
+// ── Management mode: collection form + accession desk ───────────────────────
+//
+// Edit-in-place: the collections list is the homepage and collections are edited
+// from their own pages, so the only dedicated workroom pages are the two
+// multi-step accessions — the finding-aid form and the add-crawls desk.
 
-/// The authenticated user for display, read from the trusted proxy's identity
-/// header in forward-auth mode (the [`forward_auth`] middleware has already
-/// validated it). `None` in local mode.
-fn signed_in_user(state: &AppState, headers: &HeaderMap) -> Option<String> {
-    let fa = state.forward_auth.as_ref()?;
-    headers
-        .get(fa.user_header.as_str())
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// `GET /manage/collections/new` — the empty finding-aid form.
+async fn new_collection_form(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let (_, who) = admin_ctx(&state, &headers);
+    views::collection_form(&views::CollectionFormData::default(), who.as_deref()).into_response()
 }
 
-/// The management landing page (`GET /manage`): add-archive form, new-collection
-/// form, and the list of existing collections with edit links.
-async fn manage_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let who = signed_in_user(&state, &headers);
-    match manage_collection_rows(&state) {
-        Ok(rows) => views::manage(&rows, &views::CollectionFormData::default(), who.as_deref())
-            .into_response(),
-        Err(e) => error_response(e).into_response(),
-    }
-}
-
-/// The edit form for an existing collection (`GET /manage/edit/{id}`): the same
-/// page, with the finding-aid form pre-filled and the name locked (the name is
-/// the collection's identity — its slug — so renaming would create a new one).
-async fn manage_edit_collection(
+/// `GET /manage/edit/{id}` — the finding-aid form pre-filled for an existing
+/// collection (name locked, since the slug is its identity).
+async fn edit_collection_form(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -711,6 +725,7 @@ async fn manage_edit_collection(
         return (StatusCode::NOT_FOUND, "unknown collection").into_response();
     };
     let form = views::CollectionFormData {
+        id: c.id.clone(),
         name: c.name.clone(),
         description: c.description.clone().unwrap_or_default(),
         curator: c.curator.clone().unwrap_or_default(),
@@ -721,25 +736,36 @@ async fn manage_edit_collection(
         narrative: c.narrative.clone().unwrap_or_default(),
         editing: true,
     };
-    let rows = match manage_collection_rows(&state) {
-        Ok(r) => r,
-        Err(e) => return error_response(e).into_response(),
-    };
-    let who = signed_in_user(&state, &headers);
-    views::manage(&rows, &form, who.as_deref()).into_response()
+    let (_, who) = admin_ctx(&state, &headers);
+    views::collection_form(&form, who.as_deref()).into_response()
 }
 
-fn manage_collection_rows(state: &AppState) -> Result<Vec<views::ManageCollectionRow>> {
-    let manifest = Manifest::open(&state.index_dir)?;
-    Ok(manifest
-        .collections
-        .iter()
-        .map(|c| views::ManageCollectionRow {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            count: manifest.members_of(&c.id).count(),
+/// Query for the accession desk: which collection to add to (prefilled).
+#[derive(Deserialize)]
+struct AddQuery {
+    #[serde(default)]
+    collection: String,
+}
+
+/// `GET /manage/add` — the add-crawls accession desk, with the target collection
+/// prefilled when arriving from a collection page.
+async fn accession_desk_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<AddQuery>,
+) -> Response {
+    // The `?collection=` is a slug; show its display name if we know it.
+    let name = Manifest::open(&state.index_dir)
+        .ok()
+        .and_then(|m| {
+            m.collections
+                .iter()
+                .find(|c| c.id == q.collection)
+                .map(|c| c.name.clone())
         })
-        .collect())
+        .unwrap_or(q.collection);
+    let (_, who) = admin_ctx(&state, &headers);
+    views::accession_desk(&name, who.as_deref()).into_response()
 }
 
 /// Form body for create/edit collection (`application/x-www-form-urlencoded`).
@@ -812,7 +838,7 @@ async fn create_collection(
 
 // ── Homepage ──────────────────────────────────────────────────────────────────
 
-async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn homepage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
         Err(e) => return error_response(e).into_response(),
@@ -863,7 +889,8 @@ async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    views::home(&cards, &browse, state.management).into_response()
+    let (manage, who) = admin_ctx(&state, &headers);
+    views::home(&cards, &browse, manage, who.as_deref()).into_response()
 }
 
 /// Build homepage browse links from one facet dimension: `field` is the facet
@@ -956,6 +983,7 @@ struct SearchPageParams {
 
 async fn search_page(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<SearchPageParams>,
 ) -> impl IntoResponse {
     let q = params.q.trim().to_string();
@@ -1173,13 +1201,24 @@ async fn search_page(
         })
         .collect();
 
-    views::search_results(&q, &page_nav, &sidebar, &timeline, &rows).into_response()
+    let (manage, who) = admin_ctx(&state, &headers);
+    views::search_results(
+        &q,
+        &page_nav,
+        &sidebar,
+        &timeline,
+        &rows,
+        manage,
+        who.as_deref(),
+    )
+    .into_response()
 }
 
 // ── Collection detail page ──────────────────────────────────────────────────
 
 async fn collection_page(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let manifest = match Manifest::open(&state.index_dir) {
@@ -1236,6 +1275,7 @@ async fn collection_page(
         .unwrap_or_default();
     let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
 
+    let (manage, who) = admin_ctx(&state, &headers);
     let page = views::CollectionPage {
         name: c.name.clone(),
         description: c.description.clone(),
@@ -1248,7 +1288,9 @@ async fn collection_page(
         facets,
         members: member_items,
         replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
-        management: state.management,
+        id: id.clone(),
+        management: manage,
+        signed_in: who,
     };
     views::collection(&page).into_response()
 }
@@ -1439,6 +1481,7 @@ fn scoped_facet_sections(
 
 async fn crawl_page(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let manifest = match Manifest::open(&state.index_dir) {
@@ -1559,6 +1602,7 @@ async fn crawl_page(
         provenance.push(views::MetaRow::new("WACZ modified", m.to_string()));
     }
 
+    let (manage, who) = admin_ctx(&state, &headers);
     let page = views::CrawlPage {
         crumb,
         name: c.name.clone(),
@@ -1594,6 +1638,8 @@ async fn crawl_page(
             &format!("crawl:{id}"),
         ),
         pages,
+        management: manage,
+        signed_in: who,
     };
 
     views::crawl(&page).into_response()
