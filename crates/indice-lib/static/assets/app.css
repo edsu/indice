@@ -35,7 +35,8 @@ a:hover { text-decoration: underline; }
 h1 { font-size: 2.2rem; margin: 0.3rem 0 0.25rem; letter-spacing: -0.01em; }
 .page-title { font-size: 1.5rem; }
 h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.4rem; }
-.tagline { color: var(--muted); margin-bottom: 2rem; }
+/* Homepage hero title (the tool's one-line purpose; the brand is in the header) */
+.home-hero { font-size: 1.7rem; font-weight: 650; margin: 0.6rem 0 1.3rem; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; word-break: break-all; }
 .ok { color: var(--ok); }
@@ -44,23 +45,29 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.
 /* Finding-aid vernacular: small-caps eyebrow/label used across the app. */
 .eyebrow { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); font-weight: 700; }
 
-/* ── Workroom chrome (full-bleed): the persistent "you're in write mode" cue ── */
-.manage-rule { height: 3px; background: var(--clay); }
-.manage-strip { background: var(--paper); border-bottom: 1px solid var(--line); }
-.manage-strip .inner {
-  max-width: var(--col); margin: 0 auto; padding: 0.55rem 1.25rem;
-  display: flex; align-items: center; gap: 0.7rem;
+/* ── Unified app header (full-bleed). One bar on every page; in the workroom
+   it flips to the clay accent + a top rule and gains the Manage chip + signed-in
+   name — the same header, not a separate stacked strip. ── */
+.appbar {
+  display: flex; align-items: center; gap: 0.9rem;
+  padding: 0.6rem 1.25rem; border-bottom: 1px solid var(--line); background: #fff;
 }
-.manage-strip .chip {
-  font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 800;
-  color: #fff; background: var(--clay); padding: 0.16rem 0.5rem; border-radius: 999px;
+.appbar .wordmark { font-size: 1.2rem; font-weight: 800; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+.appbar .wordmark:hover { text-decoration: none; }
+.appbar .chip {
+  font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 800;
+  color: #fff; background: var(--clay); padding: 0.15rem 0.5rem; border-radius: 999px;
 }
-.manage-strip .who { margin-left: auto; font-size: 0.83rem; color: var(--muted); }
-.manage-strip .who b { color: var(--ink); font-weight: 650; }
+.appbar .search-form { flex: 1; max-width: 420px; }
+.appbar .search-form input { padding: 0.4rem 0.65rem; font-size: 0.9rem; }
+.appbar .search-form button { padding: 0.4rem 0.85rem; font-size: 0.9rem; }
+.appbar .who { margin-left: auto; font-size: 0.82rem; color: var(--muted); white-space: nowrap; }
+.appbar .who b { color: var(--ink); font-weight: 650; }
+/* Workroom: same bar, clay-tinted with a top rule (the accent itself flips via
+   the .mode-manage body class). */
+.mode-manage .appbar { background: var(--clay-tint); border-top: 3px solid var(--clay); }
 
-/* Top bar (search/collection/wacz pages) */
-.top { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
-.top a.home { font-size: 1.4rem; font-weight: 800; text-decoration: none; color: var(--ink); letter-spacing: -0.01em; }
+/* Crawl-page breadcrumb ("in <collection>") */
 .crumb { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
 
 /* Search form */
@@ -82,7 +89,7 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.
    Color follows the mode (blue reading room / clay workroom) via --accent. */
 .btn {
   font: inherit; font-weight: 650; font-size: 0.92rem; cursor: pointer; text-decoration: none;
-  display: inline-flex; align-items: center; gap: 0.4rem;
+  display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap;
   padding: 0.5rem 1rem; border-radius: var(--radius);
   background: #fff; color: var(--accent-dk); border: 1px solid var(--accent);
 }
@@ -169,7 +176,7 @@ table.meta th { text-align: left; padding: 0.3rem 1rem 0.3rem 0; color: var(--mu
 table.meta td { padding: 0.3rem 0; }
 
 /* Replay button */
-.replay-btn { display: inline-block; padding: 0.5rem 1rem; background: #fff; color: var(--accent-dk); border: 1px solid var(--accent); border-radius: var(--radius); text-decoration: none; margin-bottom: 1.5rem; }
+.replay-btn { display: inline-block; white-space: nowrap; padding: 0.5rem 1rem; background: #fff; color: var(--accent-dk); border: 1px solid var(--accent); border-radius: var(--radius); text-decoration: none; margin-bottom: 1.5rem; }
 .replay-btn:hover { background: var(--accent-tint); text-decoration: none; }
 .card-footer { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
 .card-footer .prov { margin: 0; }
@@ -197,7 +204,7 @@ table.results td { padding: 0.8rem 0.4rem; vertical-align: top; }
 .snippet { font-size: 0.88rem; color: #444; margin: 0.4rem 0; line-height: 1.4; }
 .snippet b { background: #fff3cd; font-weight: 600; }
 .replay-col { width: 100px; text-align: right; white-space: nowrap; }
-.result-replay { display: inline-block; padding: 0.3rem 0.7rem; background: #fff; color: var(--accent-dk); border: 1px solid var(--accent); border-radius: var(--radius); font-size: 0.85rem; text-decoration: none; }
+.result-replay { display: inline-block; white-space: nowrap; padding: 0.3rem 0.7rem; background: #fff; color: var(--accent-dk); border: 1px solid var(--accent); border-radius: var(--radius); font-size: 0.85rem; text-decoration: none; }
 .result-replay:hover { background: var(--accent-tint); }
 
 /* Active filter chips */
