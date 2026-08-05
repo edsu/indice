@@ -103,12 +103,13 @@ async fn collection_replay_button_opens_on_a_default_landing_page() {
 
     // The "Replay collection" button points at the multi-WACZ manifest and, since
     // a whole-collection entry has no page in mind, carries a default url+ts (the
-    // first member's first seed page) so the viewer opens on a real page.
+    // first member's first seed page) so the viewer opens on a real page. On the
+    // read-only collection page the action row has just this one `.btn`.
     let btn = html
-        .split("replay-btn\" href=\"")
+        .split("class=\"btn\" href=\"")
         .nth(1)
         .and_then(|s| s.split('"').next())
-        .expect("replay-btn href present");
+        .expect("replay button href present");
     assert!(
         btn.contains("replay.json"),
         "targets the collection manifest"
