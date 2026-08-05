@@ -168,8 +168,13 @@ fn facet_browse(facets: &[FacetSection]) -> Markup {
 
 /// The homepage: search box, tips, browse-by entry points, and a card per
 /// collection.
-pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
+pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, management: bool) -> Markup {
     let body = html! {
+        @if management {
+            div.manage-bar {
+                a.manage-link href="/manage" { "Manage" }
+            }
+        }
         h1 { "indice" }
         p.tagline { "Web archive search and replay" }
         form.search-form.home action="/search" method="get" {
@@ -207,9 +212,16 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse) -> Markup {
         }
         h2 { "Collections" }
         @if cards.is_empty() {
-            p.muted {
-                "No collections indexed yet. Run "
-                code { "indice index archive/*.wacz" } " to get started."
+            @if management {
+                div.empty-cta {
+                    p { "No collections yet." }
+                    a.cta-btn href="/manage" { "Add your first archive →" }
+                }
+            } @else {
+                p.muted {
+                    "No collections indexed yet. Run "
+                    code { "indice index archive/*.wacz" } " to get started."
+                }
             }
         }
         div.cards {
@@ -583,6 +595,8 @@ pub struct CollectionPage {
     pub members: Vec<MemberItem>,
     /// Viewer URL that replays the whole collection (multi-WACZ).
     pub replay_href: String,
+    /// Whether management mode is on — gates the "Edit collection" affordance.
+    pub management: bool,
 }
 
 impl CollectionPage {
@@ -644,6 +658,11 @@ pub fn collection(p: &CollectionPage) -> Markup {
     let missing = p.missing_minimum();
     let body = html! {
         (top_bar(None))
+        @if p.management {
+            div.manage-bar {
+                a.manage-link href=(format!("/manage/edit/{slug}")) { "Edit collection" }
+            }
+        }
         h1.page-title { (p.name) }
         @if let Some(d) = &p.description { p.desc { (d) } }
         @if !p.members.is_empty() {
@@ -661,11 +680,17 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 @if !missing.is_empty() {
                     p.muted.nudge {
                         "Still needed: " (missing.join(", "))
-                        " (the finding-aid minimum). Add with "
-                        code { "indice collection set \"" (p.name) "\" …" }
-                        " or edit "
-                        code { "collections/" (slug) "/README.md" }
-                        "."
+                        " (the finding-aid minimum). "
+                        @if p.management {
+                            a href=(format!("/manage/edit/{slug}")) { "Edit this collection" }
+                            " to add them."
+                        } @else {
+                            "Add with "
+                            code { "indice collection set \"" (p.name) "\" …" }
+                            " or edit "
+                            code { "collections/" (slug) "/README.md" }
+                            "."
+                        }
                     }
                 }
             } @else {
@@ -674,11 +699,17 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 p.muted.nudge {
                     "No finding-aid description yet. Add the essentials a reader needs — "
                     "who gathered it (Creator), why it was archived (Scope & Content), and "
-                    "who may use it (Access): "
-                    code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
-                    " — or edit "
-                    code { "collections/" (slug) "/README.md" }
-                    "."
+                    "who may use it (Access). "
+                    @if p.management {
+                        a href=(format!("/manage/edit/{slug}")) { "Edit this collection" }
+                        " to describe it."
+                    } @else {
+                        "Add with "
+                        code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
+                        " — or edit "
+                        code { "collections/" (slug) "/README.md" }
+                        "."
+                    }
                 }
             }
         }
@@ -812,4 +843,210 @@ pub fn crawl(p: &CrawlPage) -> Markup {
         }
     };
     layout(&format!("{} - indice", p.name), body)
+}
+
+// ── Management UI (serve --manage) ───────────────────────────────────────────
+
+/// One row in the management page's collection list.
+pub struct ManageCollectionRow {
+    pub id: String,
+    pub name: String,
+    pub count: usize,
+}
+
+/// Values for the create/edit collection form. Empty strings render as blank
+/// fields. `editing` locks the name (its slug is the collection's identity) and
+/// switches the labels from "New/Create" to "Edit/Save".
+#[derive(Default)]
+pub struct CollectionFormData {
+    pub name: String,
+    pub description: String,
+    pub curator: String,
+    pub creator: String,
+    pub dates: String,
+    pub rights: String,
+    pub subjects: String,
+    pub narrative: String,
+    pub editing: bool,
+}
+
+/// Progressive-enhancement script for the add-archive form: POST the location as
+/// JSON, then stream the job's SSE progress into the status area. Kept tiny and
+/// dependency-free. The form field is called "location" but the API field is
+/// "path" (it accepts a local path or an http(s) URL) — mapped here.
+const ADD_ARCHIVE_JS: &str = r#"
+const f = document.getElementById('add-archive-form');
+const out = document.getElementById('add-progress');
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const collection = f.collection.value.trim();
+  const name = f.name.value.trim();
+  const file = f.file.files[0];
+  const location = f.location.value.trim();
+  if (!collection) { out.textContent = 'Please name the collection.'; return; }
+  let res;
+  try {
+    if (file) {
+      // Upload the bytes as multipart/form-data.
+      out.textContent = 'Uploading…';
+      const fd = new FormData();
+      fd.append('collection', collection);
+      if (name) fd.append('name', name);
+      fd.append('file', file);
+      res = await fetch('/api/archives/upload', { method: 'POST', body: fd });
+    } else if (location) {
+      // Reference a path or URL as JSON.
+      out.textContent = 'Starting…';
+      const body = { path: location, collection };
+      if (name) body.name = name;
+      res = await fetch('/api/archives', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } else {
+      out.textContent = 'Choose a file to upload, or enter a path/URL.';
+      return;
+    }
+  } catch (err) { out.textContent = 'Request failed: ' + err; return; }
+  if (!res.ok) { out.textContent = 'Error: ' + (await res.text()); return; }
+  const { job } = await res.json();
+  const es = new EventSource('/api/archives/' + job + '/events');
+  const lines = [];
+  const show = (m) => { lines.push(m); out.textContent = lines.join('\n'); };
+  es.addEventListener('begin', (ev) => show('reading ' + JSON.parse(ev.data).label));
+  es.addEventListener('phase', (ev) => show('… ' + JSON.parse(ev.data).phase));
+  es.addEventListener('total', (ev) => show('records to index: ' + JSON.parse(ev.data).total));
+  es.addEventListener('wacz_indexed', (ev) => {
+    const d = JSON.parse(ev.data);
+    show('indexed ' + d.label + ' (' + d.pages + ' pages)');
+  });
+  es.addEventListener('done', () => { show('Done ✓  — reload the homepage to see it.'); es.close(); });
+  es.addEventListener('error', (ev) => {
+    if (ev.data) { show('Error: ' + JSON.parse(ev.data).message); }
+    es.close();
+  });
+});
+"#;
+
+/// The management landing page (`/manage`): add-archive form, create/edit
+/// collection form, and the list of existing collections. Rendered only under
+/// `serve --manage`.
+pub fn manage(
+    collections: &[ManageCollectionRow],
+    form: &CollectionFormData,
+    signed_in: Option<&str>,
+) -> Markup {
+    let body = html! {
+        div.top {
+            a.home href="/" { "indice" }
+            span.muted { "Management" }
+            @if let Some(user) = signed_in {
+                span.signed-in { "Signed in as " strong { (user) } }
+            }
+        }
+        h1 { "Manage" }
+
+        section.manage-section {
+            h2 { "Add an archive" }
+            p.muted {
+                "Upload a "
+                code { ".wacz" }
+                " file, or reference one already on this machine (a path) or the web "
+                "(an "
+                code { "http(s)://" }
+                " URL). An uploaded or local file is copied into the archive; a URL is streamed in place."
+            }
+            form #add-archive-form.manage-form {
+                label {
+                    span { "Collection" }
+                    input type="text" name="collection" required
+                        placeholder="which collection this belongs to";
+                }
+                label {
+                    span { "Display name " span.muted { "(optional)" } }
+                    input type="text" name="name" placeholder="override the collection's display name";
+                }
+                label {
+                    span { "Upload a " code { ".wacz" } " file" }
+                    input type="file" name="file" accept=".wacz";
+                }
+                p.muted.or-sep { "… or reference one by location:" }
+                label {
+                    span { "Location" }
+                    input type="text" name="location"
+                        placeholder="/path/to/crawl.wacz or https://example.org/crawl.wacz";
+                }
+                button type="submit" { "Add" }
+            }
+            pre #add-progress.progress {}
+        }
+
+        section.manage-section {
+            h2 { @if form.editing { "Edit collection" } @else { "New collection" } }
+            @if form.editing {
+                p.muted { "Editing “" (form.name) "”. The name is fixed; edit the finding-aid fields below." }
+            }
+            form.manage-form method="post" action="/api/collections" {
+                label {
+                    span { "Name" }
+                    input type="text" name="name" required value=(form.name) readonly[form.editing];
+                }
+                label {
+                    span { "Description" }
+                    textarea name="description" rows="2" { (form.description) }
+                }
+                label {
+                    span { "Curator" }
+                    input type="text" name="curator" value=(form.curator);
+                }
+                label {
+                    span { "Creator" }
+                    input type="text" name="creator" value=(form.creator);
+                }
+                label {
+                    span { "Dates" }
+                    input type="text" name="dates" value=(form.dates);
+                }
+                label {
+                    span { "Rights" }
+                    input type="text" name="rights" value=(form.rights);
+                }
+                label {
+                    span { "Subjects " span.muted { "(comma-separated)" } }
+                    input type="text" name="subjects" value=(form.subjects);
+                }
+                label {
+                    span { "Narrative " span.muted { "(Markdown)" } }
+                    textarea name="narrative" rows="6" { (form.narrative) }
+                }
+                div.form-actions {
+                    button type="submit" { @if form.editing { "Save" } @else { "Create" } }
+                    @if form.editing {
+                        a.cancel href="/manage" { "Cancel" }
+                    }
+                }
+            }
+        }
+
+        section.manage-section {
+            h2 { "Collections" }
+            @if collections.is_empty() {
+                p.muted { "No collections yet — create one above, or add an archive (its collection is created automatically)." }
+            } @else {
+                ul.manage-list {
+                    @for c in collections {
+                        li {
+                            a href=(format!("/collection/{}", c.id)) { (c.name) }
+                            span.muted { " · " (c.count) " crawl" @if c.count != 1 { "s" } }
+                            a.edit href=(format!("/manage/edit/{}", c.id)) { "Edit" }
+                        }
+                    }
+                }
+            }
+        }
+
+        script { (PreEscaped(ADD_ARCHIVE_JS)) }
+    };
+    layout("Manage - indice", body)
 }

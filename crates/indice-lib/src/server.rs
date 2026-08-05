@@ -1,15 +1,21 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{get, post};
+use axum::{Form, Json, Router};
 use rust_embed::RustEmbed;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
@@ -29,10 +35,76 @@ struct ReplayAssets;
 #[folder = "static/assets"]
 struct SiteAssets;
 
+// ── Management-mode configuration ───────────────────────────────────────────
+
+/// How `serve --manage` authenticates the write surface.
+///
+/// - **Local** (`forward_auth: None`): every request is trusted. Only valid on a
+///   loopback bind (enforced at startup) — the local operator is the admin, no
+///   login. This is the laptop / single-user case.
+/// - **Forward-auth** (`forward_auth: Some`): indice sits behind an authenticating
+///   reverse proxy that performs the real login (SSO/OIDC/SAML) and injects the
+///   authenticated user in a header. indice trusts that header **only** when the
+///   request also carries the shared secret in `X-Indice-Auth-Secret` (which the
+///   proxy adds), so a client that forges the identity header — or a request that
+///   never went through the proxy — is rejected. This is the institutional
+///   "install as a service" case; indice stores no passwords and speaks to no IdP.
+#[derive(Clone, Default)]
+pub struct ManageConfig {
+    /// Whether the management routes are mounted at all (`--manage`).
+    pub enabled: bool,
+    pub forward_auth: Option<ForwardAuth>,
+}
+
+/// Forward-auth settings: which header carries the authenticated user, and the
+/// shared secret the trusted proxy must present alongside it.
+#[derive(Clone)]
+pub struct ForwardAuth {
+    /// Header the proxy injects with the authenticated identity, e.g.
+    /// `X-Forwarded-Email` (oauth2-proxy), `Remote-Email` (Authelia).
+    pub user_header: String,
+    /// Secret the proxy must send in `X-Indice-Auth-Secret`. Static, proxy-side
+    /// config (not the IdP); its presence is what makes trusting the identity
+    /// header safe.
+    pub secret: String,
+}
+
+impl ManageConfig {
+    /// Management disabled — the default read-only server.
+    pub fn off() -> Self {
+        Self::default()
+    }
+    /// Management on, local mode (trust every request; requires a loopback bind).
+    pub fn local() -> Self {
+        Self {
+            enabled: true,
+            forward_auth: None,
+        }
+    }
+    /// Management on, gated behind a trusted auth proxy.
+    pub fn forward_auth(user_header: impl Into<String>, secret: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            forward_auth: Some(ForwardAuth {
+                user_header: user_header.into(),
+                secret: secret.into(),
+            }),
+        }
+    }
+}
+
+/// The fixed header carrying the proxy↔indice shared secret in forward-auth mode.
+const AUTH_SECRET_HEADER: &str = "x-indice-auth-secret";
+
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 struct AppState {
-    search: SearchIndex,
+    /// Read-only searcher, behind an `RwLock<Arc<…>>` so management-mode ingestion
+    /// can hot-reload it after a commit without restarting the server. Read-mostly:
+    /// search handlers take the read lock only long enough to clone the `Arc` (then
+    /// query against the snapshot); [`AppState::reload_searcher`] takes the write
+    /// lock just long enough to swap in a freshly-opened index.
+    search: RwLock<Arc<SearchIndex>>,
     /// indice home directory; local WACZ sources resolve against it.
     home: PathBuf,
     /// `<home>/index`, where the manifest and full-text index live.
@@ -43,12 +115,40 @@ struct AppState {
     /// Cache of resolved presigned URLs by crawl id, with when they were fetched
     /// — Browsertrix URLs expire (~48h), so this is refreshed well before that.
     signed_cache: std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
+    /// Serializes management writes: [`crate::index::index_location`] takes
+    /// Tantivy's exclusive write lock, so two concurrent adds would contend. One
+    /// in-flight add at a time is plenty for the single-user desktop case this
+    /// mode targets.
+    write_lock: std::sync::Mutex<()>,
+    /// Progress channels for in-flight add-archive jobs, drained once by the SSE
+    /// endpoint. Keyed by an incrementing job id ([`AppState::job_counter`]).
+    jobs: std::sync::Mutex<HashMap<u64, mpsc::UnboundedReceiver<ProgressEvent>>>,
+    job_counter: AtomicU64,
+    /// Whether management mode is on. The write *routes* are gated at mount time
+    /// (below), but the read handlers also read this to decide whether to render
+    /// management affordances (the `/manage` link, the empty-state CTA).
+    management: bool,
+    /// Forward-auth settings, when management runs behind an auth proxy. Handlers
+    /// read the `user_header` to show who's signed in; the route middleware does
+    /// the actual enforcement.
+    forward_auth: Option<ForwardAuth>,
+}
+
+impl AppState {
+    /// Re-open the read-only search index and swap it in, so documents committed
+    /// by a management-mode ingest become visible to search without a restart.
+    /// Called from the blocking add-archive task after `index_location` commits.
+    fn reload_searcher(&self) -> Result<()> {
+        let fresh = SearchIndex::open_read_only(self.index_dir.join("full_text").as_path())?;
+        *self.search.write().unwrap() = Arc::new(fresh);
+        Ok(())
+    }
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(home: &Path) -> Result<Router> {
-    router_with_resolver(home, None)
+    build_router(home, None, ManageConfig::off())
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
@@ -57,19 +157,40 @@ pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<Router> {
+    build_router(home, resolver, ManageConfig::off())
+}
+
+/// Build the app router. `manage` gates the opt-in write routes: when disabled
+/// (the default for `serve`) only the read-only site is mounted, so the public
+/// deployment can never mutate the archive; when enabled (`serve --manage`) the
+/// management endpoints are added on top, and — in forward-auth mode — wrapped in
+/// the [`forward_auth`] middleware so every management request must carry the
+/// trusted proxy's identity header and shared secret.
+fn build_router(
+    home: &Path,
+    resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    manage: ManageConfig,
+) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
-    // Read-only: the server never writes, so it must not hold the write lock,
-    // which would block `indice index` from running while serving.
+    // Read-only: the server never holds Tantivy's exclusive write lock, so
+    // `indice index` (and, in management mode, an add-archive job in a separate
+    // writer) can run while serving. Management writes reload this searcher after
+    // they commit — see [`AppState::reload_searcher`].
     let search = SearchIndex::open_read_only(index_dir.join("full_text").as_path())?;
     let state = Arc::new(AppState {
-        search,
+        search: RwLock::new(Arc::new(search)),
         home: home.to_path_buf(),
         index_dir,
         resolver,
         signed_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        write_lock: std::sync::Mutex::new(()),
+        jobs: std::sync::Mutex::new(HashMap::new()),
+        job_counter: AtomicU64::new(0),
+        management: manage.enabled,
+        forward_auth: manage.forward_auth.clone(),
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(homepage))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
@@ -83,7 +204,43 @@ pub fn router_with_resolver(
         .route("/api/search", get(search_api))
         .route("/assets/{*path}", get(asset_handler))
         .route("/replay/", get(replay_index))
-        .route("/replay/{*path}", get(replay_handler))
+        .route("/replay/{*path}", get(replay_handler));
+
+    // Opt-in write surface: mounted only under `serve --manage`. The browser
+    // management UI plus its write endpoints — add a crawl (`index_location`,
+    // streaming progress over SSE), upload a WACZ, and create/edit a collection
+    // finding aid (`set_collection`). None of this exists in the default
+    // read-only server.
+    if manage.enabled {
+        let mut manage_routes = Router::new()
+            .route("/manage", get(manage_page))
+            .route("/manage/edit/{id}", get(manage_edit_collection))
+            .route("/api/archives", post(add_archive))
+            // File upload can be large (a whole WACZ), so lift axum's 2 MB default
+            // body limit on this route only.
+            .route(
+                "/api/archives/upload",
+                post(upload_archive).layer(DefaultBodyLimit::disable()),
+            )
+            .route("/api/archives/{id}/events", get(add_archive_events))
+            .route("/api/collections", post(create_collection));
+
+        // Forward-auth: reject any management request that doesn't carry the
+        // trusted proxy's shared secret + a non-empty identity header. Layered
+        // outermost so it runs before a body is read (e.g. a large upload).
+        if let Some(fa) = manage.forward_auth {
+            let guard = Arc::new(fa);
+            manage_routes = manage_routes.layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let guard = guard.clone();
+                    async move { forward_auth(&guard, req, next).await }
+                },
+            ));
+        }
+        app = app.merge(manage_routes);
+    }
+
+    let app = app
         .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
@@ -125,25 +282,532 @@ pub fn router_with_resolver(
 }
 
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None).await
+    serve_with_resolver(bind, home, None, ManageConfig::off()).await
 }
 
 /// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
-/// sources can be replayed (fresh presigned URLs resolved on demand).
+/// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
+/// configures the opt-in write routes (see [`build_router`]).
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    manage: ManageConfig,
 ) -> Result<()> {
-    let app = router_with_resolver(home, resolver)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
+    serve_on_listener(listener, home, resolver, manage).await
+}
+
+/// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
+/// read back the OS-assigned port via [`TcpListener::local_addr`], and only then
+/// serve — which is exactly what the desktop app shell needs so it can point the
+/// window at `http://127.0.0.1:<port>` before the server starts accepting.
+///
+/// [`TcpListener::local_addr`]: tokio::net::TcpListener::local_addr
+pub async fn serve_on_listener(
+    listener: tokio::net::TcpListener,
+    home: &Path,
+    resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    manage: ManageConfig,
+) -> Result<()> {
+    // Safety guard: local management mode (no auth proxy) trusts every request, so
+    // it must not be reachable beyond this machine. Refuse to start if it's bound
+    // to a non-loopback address without forward-auth configured — otherwise it
+    // would expose an unauthenticated write surface. To run as a service, put an
+    // authenticating proxy in front and configure forward-auth.
+    if manage.enabled && manage.forward_auth.is_none() {
+        let addr = listener.local_addr()?;
+        if !addr.ip().is_loopback() {
+            anyhow::bail!(
+                "refusing to start: management mode (--manage) without an auth proxy \
+                 trusts every request, so it must bind to a loopback address \
+                 (127.0.0.1 / ::1), but it is bound to {addr}. To run as a service, \
+                 front it with an authenticating reverse proxy and set \
+                 --auth-proxy-header / --auth-proxy-secret."
+            );
+        }
+    }
+    let app = build_router(home, resolver, manage)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await?;
     Ok(())
+}
+
+/// Forward-auth middleware for the management routes: allow the request through
+/// only if it carries the shared secret in `X-Indice-Auth-Secret` (matching the
+/// configured value) **and** a non-empty identity in the configured user header —
+/// both injected by the trusted proxy. Anything else (a forged identity header, a
+/// request that skipped the proxy) gets 403.
+async fn forward_auth(
+    fa: &ForwardAuth,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let headers = req.headers();
+    let secret_ok = headers
+        .get(AUTH_SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| constant_time_eq(v.as_bytes(), fa.secret.as_bytes()))
+        .unwrap_or(false);
+    let identity_ok = headers
+        .get(fa.user_header.as_str())
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if secret_ok && identity_ok {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            "forbidden: this management surface requires authentication via its front proxy",
+        )
+            .into_response()
+    }
+}
+
+/// Constant-time byte comparison, to avoid leaking the secret via timing. The
+/// length check can leak length, which is fine for a shared secret.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+// ── Management mode: add-archive ────────────────────────────────────────────
+//
+// Opt-in (`serve --manage`) write surface. `POST /api/archives` starts an ingest
+// job that reuses the exact library path the CLI uses (`index::index_location`),
+// running it on a blocking thread and returning a job id immediately. The browser
+// then streams `GET /api/archives/{id}/events` (Server-Sent Events) to watch
+// progress. On success the read-only searcher is hot-reloaded so results appear
+// without a restart. None of this is mounted in the default read-only server.
+
+/// Progress events streamed to the management UI over SSE while an add-archive
+/// job runs. The first six mirror [`crate::index::IndexProgress`]; `done`/`error`
+/// are the terminal outcomes. Serialized as a tagged JSON object, e.g.
+/// `{"type":"total","total":1234}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ProgressEvent {
+    Begin {
+        label: String,
+    },
+    Phase {
+        phase: String,
+    },
+    Total {
+        total: u64,
+    },
+    Records {
+        done: u64,
+    },
+    WaczIndexed {
+        label: String,
+        pages: u64,
+    },
+    Finish,
+    /// The whole job succeeded and the searcher was reloaded.
+    Done,
+    /// The job failed; `message` is the (chained) error.
+    Error {
+        message: String,
+    },
+}
+
+impl ProgressEvent {
+    /// SSE `event:` name, so a browser can `addEventListener` per variant.
+    fn name(&self) -> &'static str {
+        match self {
+            ProgressEvent::Begin { .. } => "begin",
+            ProgressEvent::Phase { .. } => "phase",
+            ProgressEvent::Total { .. } => "total",
+            ProgressEvent::Records { .. } => "records",
+            ProgressEvent::WaczIndexed { .. } => "wacz_indexed",
+            ProgressEvent::Finish => "finish",
+            ProgressEvent::Done => "done",
+            ProgressEvent::Error { .. } => "error",
+        }
+    }
+}
+
+/// An [`IndexProgress`](crate::index::IndexProgress) that forwards each callback
+/// into an unbounded channel, so the SSE endpoint can relay it to the browser.
+/// The channel is unbounded (and thus buffers) so events emitted before the
+/// client connects to the SSE stream are not lost. Sends are non-blocking and
+/// ignore a dropped receiver (client disconnected mid-job).
+struct ChannelProgress {
+    tx: mpsc::UnboundedSender<ProgressEvent>,
+}
+
+impl ChannelProgress {
+    fn send(&self, ev: ProgressEvent) {
+        let _ = self.tx.send(ev);
+    }
+}
+
+impl crate::index::IndexProgress for ChannelProgress {
+    fn begin(&self, label: &str) {
+        self.send(ProgressEvent::Begin {
+            label: label.to_string(),
+        });
+    }
+    fn phase(&self, phase: &str) {
+        self.send(ProgressEvent::Phase {
+            phase: phase.to_string(),
+        });
+    }
+    fn set_total(&self, total: u64) {
+        self.send(ProgressEvent::Total { total });
+    }
+    fn set_records(&self, done: u64) {
+        self.send(ProgressEvent::Records { done });
+    }
+    fn wacz_indexed(&self, label: &str, pages: u64) {
+        self.send(ProgressEvent::WaczIndexed {
+            label: label.to_string(),
+            pages,
+        });
+    }
+    fn finish(&self) {
+        self.send(ProgressEvent::Finish);
+    }
+}
+
+/// Body of `POST /api/archives` — add a crawl by reference. Browser byte-upload
+/// uses [`upload_archive`] (`/api/archives/upload`) instead.
+#[derive(Deserialize)]
+struct AddArchiveRequest {
+    /// Local filesystem path to a `.wacz` (or an `http(s)://` URL — both are
+    /// accepted by `index_location`).
+    path: String,
+    /// Collection this crawl belongs to; created if it doesn't exist yet.
+    collection: String,
+    /// Optional display-name override for the collection.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AddArchiveResponse {
+    /// Id to stream progress from at `/api/archives/{job}/events`.
+    job: u64,
+}
+
+/// Register an ingest job and run `index_location` for it on a blocking thread,
+/// returning the job id immediately. Shared by the JSON add ([`add_archive`]) and
+/// the multipart upload ([`upload_archive`]). `keepalive` holds a temp dir (the
+/// uploaded file) alive until indexing finishes, then drops it — `None` for the
+/// path/URL case, which owns no temp file.
+fn start_index_job(
+    state: &Arc<AppState>,
+    location: String,
+    collection: String,
+    name: Option<String>,
+    keepalive: Option<tempfile::TempDir>,
+) -> u64 {
+    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    state.jobs.lock().unwrap().insert(id, rx);
+
+    let job_state = state.clone();
+    // `index_location` blocks (file IO, network range reads, the Tantivy commit),
+    // so run it off the async runtime — never on a request-handling thread.
+    tokio::task::spawn_blocking(move || {
+        // Held until the job ends; dropping it deletes any uploaded temp file
+        // (after `index_location` has copied it into `archive/`).
+        let _keepalive = keepalive;
+        let progress = ChannelProgress { tx: tx.clone() };
+        let result = {
+            // Only one add may hold Tantivy's exclusive write lock at a time.
+            let _guard = job_state.write_lock.lock().unwrap();
+            crate::index::index_location(
+                &location,
+                &job_state.home,
+                name.as_deref(),
+                &collection,
+                false,
+                None,
+                Some(&progress),
+            )
+        };
+        match result {
+            Ok(()) => match job_state.reload_searcher() {
+                Ok(()) => tx.send(ProgressEvent::Done).ok(),
+                Err(e) => tx
+                    .send(ProgressEvent::Error {
+                        message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                    })
+                    .ok(),
+            },
+            Err(e) => tx
+                .send(ProgressEvent::Error {
+                    message: format!("{e:#}"),
+                })
+                .ok(),
+        };
+        // `tx` (and the `progress` clone) drop here → the SSE stream ends once the
+        // client has read the terminal event.
+    });
+
+    id
+}
+
+/// `POST /api/archives` — add a crawl by local path or `http(s)://` URL. Starts
+/// an ingest job and returns its id (202 Accepted).
+async fn add_archive(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddArchiveRequest>,
+) -> Response {
+    // Mirror the CLI's "every crawl belongs to a collection" guard.
+    if req.collection.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    let id = start_index_job(&state, req.path, req.collection, req.name, None);
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
+}
+
+/// `POST /api/archives/upload` — add a crawl by uploading the `.wacz` bytes
+/// (multipart/form-data: `collection`, optional `name`, and the `file`). The
+/// upload is streamed to a temp file, then indexed exactly like a local path
+/// (`index_location` copies it into `archive/`); the temp file is deleted when
+/// the job finishes. Returns a job id (202) to stream progress from.
+async fn upload_archive(State(state): State<Arc<AppState>>, mut multipart: Multipart) -> Response {
+    let mut collection: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut tmpdir: Option<tempfile::TempDir> = None;
+    let mut file_path: Option<PathBuf> = None;
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("malformed upload: {e}")).into_response()
+            }
+        };
+        match field.name() {
+            Some("collection") => collection = field.text().await.ok(),
+            Some("name") => name = field.text().await.ok(),
+            Some("file") => {
+                // Keep just the basename of the client filename, defaulting the
+                // extension so `index_location`'s `.wacz` check passes.
+                let raw = field.file_name().unwrap_or("upload.wacz").to_string();
+                let fname = Path::new(&raw)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "upload.wacz".to_string());
+                let dir = match tempfile::TempDir::new() {
+                    Ok(d) => d,
+                    Err(e) => return error_response(anyhow::anyhow!(e)).into_response(),
+                };
+                let path = dir.path().join(&fname);
+                if let Err(e) = stream_field_to_file(field, &path).await {
+                    return error_response(e).into_response();
+                }
+                file_path = Some(path);
+                tmpdir = Some(dir);
+            }
+            _ => {}
+        }
+    }
+
+    let collection = match collection {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => return (StatusCode::BAD_REQUEST, "collection is required").into_response(),
+    };
+    let Some(path) = file_path else {
+        return (StatusCode::BAD_REQUEST, "a file is required").into_response();
+    };
+    let name = name.filter(|n| !n.trim().is_empty());
+    let location = path.to_string_lossy().to_string();
+    let id = start_index_job(&state, location, collection, name, tmpdir);
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
+}
+
+/// Stream one multipart field's bytes to `path`, chunk by chunk (never buffering
+/// the whole upload in memory).
+async fn stream_field_to_file(
+    mut field: axum::extract::multipart::Field<'_>,
+    path: &Path,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(path).await?;
+    while let Some(chunk) = field.chunk().await? {
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+/// `GET /api/archives/{id}/events` — stream one job's progress as SSE. The
+/// receiver is taken from the registry on first connect (a job's progress is
+/// consumed once); reconnecting after that yields 404.
+async fn add_archive_events(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Response {
+    let Some(rx) = state.jobs.lock().unwrap().remove(&id) else {
+        return (StatusCode::NOT_FOUND, "unknown or already-consumed job").into_response();
+    };
+
+    let stream = UnboundedReceiverStream::new(rx).map(|ev| {
+        let event = Event::default()
+            .event(ev.name())
+            .data(serde_json::to_string(&ev).unwrap_or_default());
+        Ok::<Event, std::convert::Infallible>(event)
+    });
+
+    Sse::new(stream).into_response()
+}
+
+// ── Management mode: collections + pages ────────────────────────────────────
+
+/// The authenticated user for display, read from the trusted proxy's identity
+/// header in forward-auth mode (the [`forward_auth`] middleware has already
+/// validated it). `None` in local mode.
+fn signed_in_user(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let fa = state.forward_auth.as_ref()?;
+    headers
+        .get(fa.user_header.as_str())
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The management landing page (`GET /manage`): add-archive form, new-collection
+/// form, and the list of existing collections with edit links.
+async fn manage_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let who = signed_in_user(&state, &headers);
+    match manage_collection_rows(&state) {
+        Ok(rows) => views::manage(&rows, &views::CollectionFormData::default(), who.as_deref())
+            .into_response(),
+        Err(e) => error_response(e).into_response(),
+    }
+}
+
+/// The edit form for an existing collection (`GET /manage/edit/{id}`): the same
+/// page, with the finding-aid form pre-filled and the name locked (the name is
+/// the collection's identity — its slug — so renaming would create a new one).
+async fn manage_edit_collection(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e).into_response(),
+    };
+    let Some(c) = manifest.collections.iter().find(|c| c.id == id) else {
+        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+    };
+    let form = views::CollectionFormData {
+        name: c.name.clone(),
+        description: c.description.clone().unwrap_or_default(),
+        curator: c.curator.clone().unwrap_or_default(),
+        creator: c.creator.clone().unwrap_or_default(),
+        dates: c.dates.clone().unwrap_or_default(),
+        rights: c.rights.clone().unwrap_or_default(),
+        subjects: c.subjects.join(", "),
+        narrative: c.narrative.clone().unwrap_or_default(),
+        editing: true,
+    };
+    let rows = match manage_collection_rows(&state) {
+        Ok(r) => r,
+        Err(e) => return error_response(e).into_response(),
+    };
+    let who = signed_in_user(&state, &headers);
+    views::manage(&rows, &form, who.as_deref()).into_response()
+}
+
+fn manage_collection_rows(state: &AppState) -> Result<Vec<views::ManageCollectionRow>> {
+    let manifest = Manifest::open(&state.index_dir)?;
+    Ok(manifest
+        .collections
+        .iter()
+        .map(|c| views::ManageCollectionRow {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            count: manifest.members_of(&c.id).count(),
+        })
+        .collect())
+}
+
+/// Form body for create/edit collection (`application/x-www-form-urlencoded`).
+/// All finding-aid fields are optional; `subjects` is a comma-separated list.
+#[derive(Deserialize)]
+struct CollectionForm {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    curator: String,
+    #[serde(default)]
+    creator: String,
+    #[serde(default)]
+    dates: String,
+    #[serde(default)]
+    rights: String,
+    #[serde(default)]
+    subjects: String,
+    #[serde(default)]
+    narrative: String,
+}
+
+/// Trim a form field to `Some(value)`, or `None` if empty. (v1 leaves cleared
+/// fields untouched rather than blanking them; explicit clearing is a follow-up.)
+fn field_opt(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// `POST /api/collections` — create or edit a collection finding aid, then
+/// redirect (POST-redirect-GET) to its page. Wraps [`crate::index::set_collection`].
+async fn create_collection(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CollectionForm>,
+) -> Response {
+    let name = form.name.trim().to_string();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection name is required").into_response();
+    }
+    let subjects: Vec<String> = form
+        .subjects
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let fields = crate::collections::CollectionFields {
+        description: field_opt(&form.description),
+        curator: field_opt(&form.curator),
+        creator: field_opt(&form.creator),
+        dates: field_opt(&form.dates),
+        rights: field_opt(&form.rights),
+        subjects: (!subjects.is_empty()).then_some(subjects),
+        narrative: field_opt(&form.narrative),
+    };
+    let home = state.home.clone();
+    // set_collection writes the README + manifest — quick, but blocking, so keep
+    // it off the async runtime. The homepage re-reads the manifest per request,
+    // so the new/edited collection shows immediately (no searcher reload needed).
+    let result =
+        tokio::task::spawn_blocking(move || crate::index::set_collection(&home, &name, &fields))
+            .await;
+    match result {
+        Ok(Ok(id)) => Redirect::to(&format!("/collection/{id}")).into_response(),
+        Ok(Err(e)) => error_response(e).into_response(),
+        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+    }
 }
 
 // ── Homepage ──────────────────────────────────────────────────────────────────
@@ -188,13 +852,18 @@ async fn homepage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     // Browse entry points: years (most recent first) and the busiest sites,
     // each a search link. Derived from an archive-wide facet overview.
-    let overview = state.search.facet_overview().unwrap_or_default();
+    let overview = state
+        .search
+        .read()
+        .unwrap()
+        .facet_overview()
+        .unwrap_or_default();
     let browse = views::HomeBrowse {
         years: browse_links(&overview, "year", "year", 12, true),
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    views::home(&cards, &browse).into_response()
+    views::home(&cards, &browse, state.management).into_response()
 }
 
 /// Build homepage browse links from one facet dimension: `field` is the facet
@@ -301,7 +970,12 @@ async fn search_page(
 
     let page = params.page.unwrap_or(1).max(1);
     let offset = (page - 1) * PAGE_SIZE;
-    let response = match state.search.search_faceted(&q, PAGE_SIZE, offset) {
+    let response = match state
+        .search
+        .read()
+        .unwrap()
+        .search_faceted(&q, PAGE_SIZE, offset)
+    {
         Ok(r) => r,
         Err(e) => return error_response(e).into_response(),
     };
@@ -556,6 +1230,8 @@ async fn collection_page(
     // scoped to it. Turns the page into a faceted entry point, not just a list.
     let overview = state
         .search
+        .read()
+        .unwrap()
         .facet_overview_scoped(crate::search::FacetScope::Collection(&id))
         .unwrap_or_default();
     let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
@@ -572,6 +1248,7 @@ async fn collection_page(
         facets,
         members: member_items,
         replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
+        management: state.management,
     };
     views::collection(&page).into_response()
 }
@@ -686,7 +1363,7 @@ async fn collection_pages(
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
     let offset = (page - 1) * page_size;
-    match state.search.collection_pages(
+    match state.search.read().unwrap().collection_pages(
         &id,
         params.url.as_deref(),
         params.search.as_deref(),
@@ -910,6 +1587,8 @@ async fn crawl_page(
         facets: scoped_facet_sections(
             &state
                 .search
+                .read()
+                .unwrap()
                 .facet_overview_scoped(crate::search::FacetScope::Crawl(&id))
                 .unwrap_or_default(),
             &format!("crawl:{id}"),
@@ -1082,7 +1761,12 @@ async fn search_api(
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(20).min(200);
-    match state.search.search_faceted(&params.q, limit, 0) {
+    match state
+        .search
+        .read()
+        .unwrap()
+        .search_faceted(&params.q, limit, 0)
+    {
         Ok(response) => {
             let body = serde_json::json!({
                 "total": response.total_hits,

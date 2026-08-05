@@ -7,7 +7,7 @@ resolver = "2"
 
 [workspace.dependencies]
 # HTTP server
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.7", features = ["compression-full", "fs", "trace"] }
 
@@ -82,3 +82,6 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Async utilities
 tokio-util = { version = "0.7", features = ["io"] }
+# Bridge an mpsc receiver to a Stream for Server-Sent Events (management-mode
+# add-archive progress).
+tokio-stream = { version = "0.1", features = ["sync"] }

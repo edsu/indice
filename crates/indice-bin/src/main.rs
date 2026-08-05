@@ -109,6 +109,27 @@ enum Commands {
         /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
+
+        /// Enable management mode: mount the opt-in write endpoints (add archives,
+        /// create/edit collections from the UI). Off by default — the public
+        /// server is read-only. Without an auth proxy (below) this trusts every
+        /// request, so it must bind to a loopback address.
+        #[arg(long)]
+        manage: bool,
+
+        /// Run management mode behind a trusted authenticating reverse proxy: read
+        /// the authenticated user from this request header (e.g.
+        /// `X-Forwarded-Email`). Requires `--auth-proxy-secret`. Lets `--manage`
+        /// bind to a non-loopback address for a service deployment.
+        #[arg(long, value_name = "HEADER")]
+        auth_proxy_header: Option<String>,
+
+        /// Shared secret the trusted proxy must send in the `X-Indice-Auth-Secret`
+        /// header (set it as a static header in your proxy config). Its presence is
+        /// what makes trusting the identity header safe. May also be given via the
+        /// INDICE_AUTH_PROXY_SECRET environment variable.
+        #[arg(long, value_name = "SECRET")]
+        auth_proxy_secret: Option<String>,
     },
     /// Rebuild the search index from collections.json (re-fetches remote sources).
     Reindex {
@@ -707,7 +728,35 @@ async fn main() -> Result<()> {
             tracing::info!("indexing complete");
         }
 
-        Commands::Serve { bind, home } => {
+        Commands::Serve {
+            bind,
+            home,
+            manage,
+            auth_proxy_header,
+            auth_proxy_secret,
+        } => {
+            // Build the management config from the flags. Forward-auth is on when
+            // an identity header is named; it then requires a shared secret (flag
+            // or INDICE_AUTH_PROXY_SECRET). `--manage` off ignores the auth flags.
+            let manage = if !manage {
+                indice_lib::server::ManageConfig::off()
+            } else if let Some(header) = auth_proxy_header {
+                let secret = auth_proxy_secret
+                    .or_else(|| std::env::var("INDICE_AUTH_PROXY_SECRET").ok())
+                    .filter(|s| !s.is_empty());
+                let Some(secret) = secret else {
+                    eprintln!(
+                        "--auth-proxy-header requires a shared secret: pass --auth-proxy-secret \
+                         (or set INDICE_AUTH_PROXY_SECRET). The proxy must send it in the \
+                         X-Indice-Auth-Secret header."
+                    );
+                    std::process::exit(2);
+                };
+                indice_lib::server::ManageConfig::forward_auth(header, secret)
+            } else {
+                indice_lib::server::ManageConfig::local()
+            };
+
             let ctrl_c = async {
                 tokio::signal::ctrl_c()
                     .await
@@ -734,7 +783,7 @@ async fn main() -> Result<()> {
                 std::sync::Arc::new(BrowsertrixResolver::new());
 
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver)) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage) => {
                     result?;
                 }
                 _ = ctrl_c => {}

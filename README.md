@@ -354,13 +354,107 @@ Notes:
   individual collections). `--limit <N>` caps how many are imported; `--dry-run`
   lists them without downloading.
 
+## Management mode
+
+By default `indice serve` is **read-only** — it never writes, so you curate from
+the command line (`index`, `collection set`, `import browsertrix`). Passing
+`--manage` mounts an opt-in **management UI and write API** on top of the same
+server, so you can add archives and curate collections from the browser, no
+command line needed:
+
+```bash
+indice serve --manage        # http://127.0.0.1:8080  — adds a "Manage" link
+```
+
+Visit **`/manage`** to:
+
+- **Add an archive** — upload a `.wacz` from your computer, or point indice at a
+  local path or an `http(s)://` URL. Indexing runs in the background with live
+  progress; when it finishes the crawl is searchable immediately (the server
+  hot-reloads its reader — no restart). Uploaded/local files are copied into
+  `<home>/archive/`; a URL is streamed in place.
+- **Create or edit a collection** — fill in the finding-aid fields (description,
+  creator, dates, rights, subjects, narrative). Every collection page gains an
+  **Edit** link, and an empty instance greets you with an "add your first archive"
+  prompt.
+
+The default `serve` (without `--manage`) mounts none of this, so a public,
+read-only deployment can never mutate the archive.
+
+### Local use
+
+`indice serve --manage` bound to `127.0.0.1` (the default) trusts every request:
+you're the only one who can reach it, so you're the admin and there's no login.
+Because it trusts everything, indice **refuses to start** if `--manage` is bound
+to a non-loopback address without an auth proxy configured (below) — otherwise
+you'd expose an unauthenticated write surface to the network.
+
+### Running as a service (forward-auth)
+
+To offer management to real users over the network, run indice behind an
+**authenticating reverse proxy** — nginx, Caddy, [oauth2-proxy], Authelia,
+Cloudflare Access, Tailscale, an institutional SSO gateway, and so on. The proxy
+performs the login and forwards the authenticated user to indice in a header;
+indice trusts that header only when the request also carries a shared secret:
+
+```bash
+indice serve --manage \
+  --bind 127.0.0.1:8080 \
+  --auth-proxy-header X-Forwarded-Email \
+  --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET"   # or set that env var
+```
+
+- **`--auth-proxy-header`** is the header your proxy injects with the
+  authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy,
+  `Remote-Email` for Authelia).
+- **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random
+  secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a
+  static header you set in the proxy config — *not* something your identity
+  provider sends. Requiring it is what makes trusting the identity header safe: a
+  client that forges `X-Forwarded-Email`, or any request that didn't come through
+  the proxy, lacks the secret and gets a `403`.
+
+Every management request must carry both the identity header and the secret;
+anything else is rejected. The public read-only site (search, browse, replay) is
+**not** gated — only the management routes are. "Who is an admin" is delegated
+entirely to your proxy/SSO: anyone it logs in can administer, and the signed-in
+identity is shown on `/manage`.
+
+**Deploy checklist**
+
+- Bind indice to loopback and have the proxy connect to it there, so nothing but
+  the proxy can reach the port.
+- Configure the proxy to **strip any client-supplied** identity header on inbound
+  requests before setting its own, so a client can't smuggle one in. (The shared
+  secret is your backstop if this is ever missed.)
+- Set the static `X-Indice-Auth-Secret` header in the proxy, and terminate TLS
+  there.
+
+Illustrative Caddy config (adapt directives to your proxy/version):
+
+```caddy
+example.org {
+    # 1. require an SSO login (oauth2-proxy talks to your IdP)
+    forward_auth 127.0.0.1:4180 {
+        uri /oauth2/auth
+        copy_headers X-Forwarded-Email          # the authenticated identity
+    }
+    # 2. proxy to indice, adding the shared secret
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Indice-Auth-Secret {env.INDICE_AUTH_PROXY_SECRET}
+    }
+}
+```
+
+[oauth2-proxy]: https://oauth2-proxy.github.io/oauth2-proxy/
+
 ## Command line
 
 ```
 indice index           [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
 indice reindex         [--home <DIR>] [--concurrency <N>] [-v|--verbose]
 indice optimize        [--home <DIR>] [--max-segments <N>] [-v|--verbose]
-indice serve           [--home <DIR>] [--bind <ADDR>]
+indice serve           [--home <DIR>] [--bind <ADDR>] [--manage] [--auth-proxy-header <HEADER> --auth-proxy-secret <SECRET>]
 indice collection set  [--home <DIR>] <NAME> [--creator <TEXT>] [--dates <TEXT>] [--rights <TEXT>] [--subject <SUBJECT>]... [--narrative <MD> | --narrative-file <FILE>] [--thumbnail <FILE>] [--description <TEXT>] [--curator <TEXT>]
 indice collection list [--home <DIR>]
 indice crawl set       [--home <DIR>] <CRAWL_ID> [--image <FILE>] [--note <MD> | --note-file <FILE>]
@@ -430,7 +524,10 @@ derived siblings under it.
   needs more free disk during the merge (roughly index size ÷ target). Reports the
   `before → after` segment count.
 - **`serve`** - opens the index read-only and starts the HTTP server (so you can
-  `index` while it runs). Defaults to `127.0.0.1:8080`.
+  `index` while it runs). Defaults to `127.0.0.1:8080`. `--manage` adds an opt-in
+  browser UI + write API for adding archives and curating collections; see
+  [Management mode](#management-mode) for local vs. behind-a-proxy (`--auth-proxy-*`)
+  use.
 - **`search-url`** - a debugging aid: reads the CDX index *inside* each WACZ and
   prints the records matching a URL. No separate CDX store is maintained; the
   WACZ's own index is authoritative.
