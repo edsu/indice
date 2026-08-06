@@ -10,52 +10,51 @@
     html, body { height: 100%; }
     body { display: flex; flex-direction: column; font-family: sans-serif; }
 
+    /* Matches the app header (.appbar): light, hairline, wordmark + breadcrumb.
+       Values mirror app.css tokens (viewer.html is standalone, so no CSS vars). */
     #banner {
       flex: 0 0 auto;
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      padding: 0.5rem 0.9rem;
-      background: #1a1a2e;
-      color: #eee;
+      gap: 0.5rem;
+      padding: 0.55rem 1rem;
+      background: #fff;
+      color: #1a1a1a;
       font-size: 0.85rem;
-      border-bottom: 1px solid #000;
+      border-bottom: 1px solid #e7e3db;
+      /* Sit above the replayed page (isolated in its iframe below) with a soft
+         shadow, so the banner always reads as indice's chrome regardless of the
+         archived page's own background. */
+      position: relative;
+      z-index: 1;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
     }
     #banner a.home {
-      color: #fff;
-      font-weight: bold;
-      text-decoration: none;
-      font-size: 1rem;
-    }
-    #banner a.home:hover { text-decoration: underline; }
-    #collection-name {
-      background: #16213e;
-      padding: 0.15rem 0.5rem;
-      border-radius: 3px;
-      color: #9ecbff;
-      white-space: nowrap;
+      color: #1a1a1a;
+      font-weight: 800;
+      font-size: 1.15rem;
+      letter-spacing: -0.01em;
       text-decoration: none;
     }
-    a#collection-name[href]:hover { text-decoration: underline; }
-    #banner a#collection {
-      background: #16213e;
-      padding: 0.15rem 0.5rem;
-      border-radius: 3px;
-      color: #9ecbff;
+    #banner .sep { color: #cfcabf; }
+    #banner a#collection,
+    #banner a#collection-name {
+      color: #0053a6;
       text-decoration: none;
       white-space: nowrap;
     }
-    #banner a#collection:hover { text-decoration: underline; }
-    #banner .sep { color: #667; }
+    #banner a#collection:hover,
+    #banner a#collection-name:hover { text-decoration: underline; }
     #current-url {
-      color: #bbb;
-      font-family: monospace;
-      font-size: 0.8rem;
+      color: #8f8b83;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1;
       min-width: 0;
+      margin-left: 0.3rem;
     }
 
     #replay-container { flex: 1 1 auto; position: relative; min-height: 0; }
@@ -66,7 +65,9 @@
 <body>
   <div id="banner">
     <a class="home" href="/">indice</a>
+    <span class="sep">/</span>
     <a id="collection"></a>
+    <span class="sep" id="collection-sep">/</span>
     <a id="collection-name"></a>
     <span id="current-url"></span>
   </div>
@@ -113,6 +114,7 @@
         if (collectionId) collEl.href = '/collection/' + encodeURIComponent(collectionId);
       } else {
         collEl.style.display = 'none';
+        document.getElementById('collection-sep').style.display = 'none';
       }
       const nameEl = document.getElementById('collection-name');
       nameEl.textContent = name || collId;

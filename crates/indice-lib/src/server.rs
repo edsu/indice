@@ -754,18 +754,20 @@ async fn accession_desk_page(
     headers: HeaderMap,
     Query(q): Query<AddQuery>,
 ) -> Response {
-    // The `?collection=` is a slug; show its display name if we know it.
+    // The `?collection=` is a slug (id); resolve its display name if we know it
+    // (falling back to the raw value for a not-yet-created collection).
+    let id = q.collection.trim().to_string();
     let name = Manifest::open(&state.index_dir)
         .ok()
         .and_then(|m| {
             m.collections
                 .iter()
-                .find(|c| c.id == q.collection)
+                .find(|c| c.id == id)
                 .map(|c| c.name.clone())
         })
-        .unwrap_or(q.collection);
+        .unwrap_or_else(|| id.clone());
     let (_, who) = admin_ctx(&state, &headers);
-    views::accession_desk(&name, who.as_deref()).into_response()
+    views::accession_desk(&id, &name, who.as_deref()).into_response()
 }
 
 /// Form body for create/edit collection (`application/x-www-form-urlencoded`).
@@ -977,6 +979,11 @@ fn query_without_filter(q: &str, field: &str, value: &str) -> String {
 #[derive(Deserialize)]
 struct SearchPageParams {
     q: String,
+    /// A `field:value` token to scope the search (e.g. `collection:<id>`),
+    /// carried by the header search box when viewing a collection/crawl. ANDed
+    /// into the query so it rides the normal filter machinery (removable chip).
+    #[serde(default)]
+    scope: String,
     /// 1-based page number; absent/`<1` means the first page.
     page: Option<usize>,
 }
@@ -986,7 +993,18 @@ async fn search_page(
     headers: HeaderMap,
     Query(params): Query<SearchPageParams>,
 ) -> impl IntoResponse {
-    let q = params.q.trim().to_string();
+    // Fold any scope token (e.g. `collection:<id>` from the header search on a
+    // collection page) into the query, so downstream faceting + the removable
+    // active-filter chip treat it like any other `field:value`.
+    let typed = params.q.trim();
+    let scope = params.scope.trim();
+    let q = if scope.is_empty() || typed.split_whitespace().any(|t| t == scope) {
+        typed.to_string()
+    } else if typed.is_empty() {
+        scope.to_string()
+    } else {
+        format!("{scope} {typed}")
+    };
     if q.is_empty() {
         return (
             StatusCode::SEE_OTHER,

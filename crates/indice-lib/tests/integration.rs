@@ -1261,3 +1261,53 @@ async fn get_reader_retries_a_transient_status() {
         hits.load(Ordering::SeqCst)
     );
 }
+
+/// The header search box on a collection page carries the collection scope (a
+/// hidden `scope=collection:<id>` field) and a scoped placeholder, so searching
+/// from there stays within the collection.
+#[tokio::test]
+async fn collection_page_header_search_is_scoped() {
+    let tmp = make_index(&["simple.wacz"]); // indexed into collection "test"
+    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let req = Request::get("/collection/test")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        html.contains(r#"name="scope" value="collection:test""#),
+        "header search carries the collection scope"
+    );
+    assert!(
+        html.contains("Search test…"),
+        "placeholder names the collection"
+    );
+}
+
+/// A `scope` param folds into the query so it rides the normal filter machinery:
+/// the results page shows a removable active-filter chip for the collection.
+#[tokio::test]
+async fn search_scope_param_folds_into_query() {
+    let tmp = make_index(&["simple.wacz"]);
+    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let req = Request::get("/search?scope=collection:test&q=example")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let html = String::from_utf8(
+        to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    // The folded-in collection scope surfaces as a removable active-filter chip
+    // (broaden-to-everything is one click), which a bare `q=example` would lack.
+    assert!(
+        html.contains("filter-chip"),
+        "scoped search renders the collection filter chip"
+    );
+}

@@ -7,12 +7,33 @@
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
-/// The shared page shell: doctype, head (with the stylesheet link), and body.
-/// The shared page shell. `manage` puts the whole page in "workroom" mode — it
-/// sets the `.mode-manage` accent flip and renders the full-bleed management
-/// chrome (the ochre rule + a strip naming the mode and, in forward-auth mode,
-/// the signed-in user). Page content is centered in `.wrap`.
-pub fn layout(title: &str, manage: bool, signed_in: Option<&str>, body: Markup) -> Markup {
+/// Header search-box configuration. Default (all empty) is a global search box;
+/// `scope_query`/`scope_label` scope it to the page's context (e.g. the
+/// collection being viewed).
+#[derive(Default)]
+pub struct SearchBox {
+    /// Prefill for the box (the current query, on the results page).
+    pub query: String,
+    /// A `field:value` token ANDed into the query server-side and carried as a
+    /// hidden field, e.g. `collection:ukraine-…` — scopes the search.
+    pub scope_query: String,
+    /// Human label for the scoped placeholder, e.g. `Ukraine Cultural Heritage`.
+    pub scope_label: String,
+}
+
+/// The shared page shell. Renders one full-bleed app header (`.appbar`) on every
+/// page — wordmark + (optional) search — then the page `body` centered in
+/// `.wrap`. `manage` puts the page in "workroom" mode: the `.mode-manage` accent
+/// flip plus the header's clay treatment, Manage chip, and signed-in name.
+/// `search` is the header search box (`None` omits it — the homepage, whose hero
+/// carries the search instead).
+pub fn layout(
+    title: &str,
+    manage: bool,
+    signed_in: Option<&str>,
+    search: Option<&SearchBox>,
+    body: Markup,
+) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -23,15 +44,25 @@ pub fn layout(title: &str, manage: bool, signed_in: Option<&str>, body: Markup) 
                 link rel="stylesheet" href="/assets/app.css";
             }
             body class=[manage.then_some("mode-manage")] {
-                @if manage {
-                    div.manage-rule {}
-                    div.manage-strip {
-                        div.inner {
-                            span.chip { "Manage" }
-                            @if let Some(u) = signed_in {
-                                span.who { "signed in as " b { (u) } }
+                header.appbar {
+                    a.wordmark href="/" { "indice" }
+                    @if manage { span.chip { "Manage" } }
+                    @if let Some(s) = search {
+                        @let placeholder = if s.scope_label.is_empty() {
+                            "Search all collections…".to_string()
+                        } else {
+                            format!("Search {}…", s.scope_label)
+                        };
+                        form.search-form action="/search" method="get" {
+                            @if !s.scope_query.is_empty() {
+                                input type="hidden" name="scope" value=(s.scope_query);
                             }
+                            input type="search" name="q" value=(s.query) placeholder=(placeholder);
+                            button type="submit" { "Search" }
                         }
+                    }
+                    @if let Some(u) = signed_in {
+                        span.who { "signed in as " b { (u) } }
                     }
                 }
                 main.wrap { (body) }
@@ -77,25 +108,6 @@ pub fn search_tips() -> Markup {
                     code { "domain:" } " needs the exact host (e.g. " code { "www.example.com" }
                     "); to match host words loosely, just type them (e.g. " code { "example" } ")."
                 }
-            }
-        }
-    }
-}
-
-/// The top bar on inner pages: the home link plus a search form. On the results
-/// page the box is prefilled with the current query; elsewhere it shows a
-/// placeholder.
-fn top_bar(query: Option<&str>) -> Markup {
-    html! {
-        div.top {
-            a.home href="/" { "indice" }
-            form.search-form action="/search" method="get" {
-                @if let Some(q) = query {
-                    input type="search" name="q" value=(q);
-                } @else {
-                    input type="search" name="q" placeholder="Search all collections…";
-                }
-                button type="submit" { "Search" }
             }
         }
     }
@@ -192,8 +204,9 @@ pub fn home(
     signed_in: Option<&str>,
 ) -> Markup {
     let body = html! {
-        h1 { "indice" }
-        p.tagline { "Web archive search and replay" }
+        // The brand "indice" lives in the header now; the hero leads with what
+        // the tool does + the search, rather than repeating the name.
+        h1.home-hero { "Web archive search and replay" }
         form.search-form.home action="/search" method="get" {
             input type="search" name="q" placeholder="Search archived pages…" autofocus;
             button type="submit" { "Search" }
@@ -287,7 +300,8 @@ pub fn home(
             }
         }
     };
-    layout("indice", management, signed_in, body)
+    // No header search on the homepage — the hero below carries it.
+    layout("indice", management, signed_in, None, body)
 }
 
 // ── Search results ─────────────────────────────────────────────────────────
@@ -409,7 +423,6 @@ pub fn search_results(
     // Preserve the query when linking to another page.
     let page_href = |p: usize| format!("/search?q={}&page={}", nav.query_encoded, p);
     let body = html! {
-        (top_bar(Some(query)))
         (search_tips())
         div.count {
             @if nav.total_hits == 0 {
@@ -524,7 +537,18 @@ pub fn search_results(
             }
         }
     };
-    layout(&format!("{query} - indice"), management, signed_in, body)
+    // Header search prefilled with the current query (the results box).
+    let search = SearchBox {
+        query: query.to_string(),
+        ..Default::default()
+    };
+    layout(
+        &format!("{query} - indice"),
+        management,
+        signed_in,
+        Some(&search),
+        body,
+    )
 }
 
 // ── Shared metadata / provenance rows ────────────────────────────────────────
@@ -692,7 +716,6 @@ pub fn collection(p: &CollectionPage) -> Markup {
     let curatorial = p.curatorial_rows();
     let missing = p.missing_minimum();
     let body = html! {
-        (top_bar(None))
         h1.page-title { (p.name) }
         @if let Some(d) = &p.description { p.desc { (d) } }
         // One action row: Replay plus, in workroom mode, the edit-in-place
@@ -781,10 +804,17 @@ pub fn collection(p: &CollectionPage) -> Markup {
             }
         }
     };
+    // Header search scoped to this collection (broaden via the results chip).
+    let search = SearchBox {
+        scope_query: format!("collection:{}", p.id),
+        scope_label: p.name.clone(),
+        ..Default::default()
+    };
     layout(
         &format!("{} - indice", p.name),
         p.management,
         p.signed_in.as_deref(),
+        Some(&search),
         body,
     )
 }
@@ -834,7 +864,6 @@ pub struct CrawlPage {
 /// The crawl detail page: provenance panel, file metadata, and seed-page list.
 pub fn crawl(p: &CrawlPage) -> Markup {
     let body = html! {
-        (top_bar(None))
         @if let Some((id, cname)) = &p.crumb {
             div.crumb { "in " a href=(format!("/collection/{}", id)) { (cname) } }
         }
@@ -889,10 +918,20 @@ pub fn crawl(p: &CrawlPage) -> Markup {
             }
         }
     };
+    // Header search scoped to the crawl's collection when it has one.
+    let search = match &p.crumb {
+        Some((id, cname)) => SearchBox {
+            scope_query: format!("collection:{id}"),
+            scope_label: cname.clone(),
+            ..Default::default()
+        },
+        None => SearchBox::default(),
+    };
     layout(
         &format!("{} - indice", p.name),
         p.management,
         p.signed_in.as_deref(),
+        Some(&search),
         body,
     )
 }
@@ -971,7 +1010,17 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
             }
         }
     };
-    layout("Manage - indice", true, signed_in, body)
+    // When editing, scope the header search to this collection (as its page does).
+    let search = if form.editing && !form.id.is_empty() {
+        SearchBox {
+            scope_query: format!("collection:{}", form.id),
+            scope_label: form.name.clone(),
+            ..Default::default()
+        }
+    } else {
+        SearchBox::default()
+    };
+    layout("Manage - indice", true, signed_in, Some(&search), body)
 }
 
 /// Progressive-enhancement script for the add-archive form: POST the chosen
@@ -1045,7 +1094,11 @@ document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click
 /// `collection` prefills the target when arriving from a collection page. Upload
 /// and Path/URL are live; Browsertrix / Archive-It are placeholders for the
 /// import wizards (rustyweb-admin-mode-r67p.5 / rustyweb-kx53).
-pub fn accession_desk(collection: &str, signed_in: Option<&str>) -> Markup {
+pub fn accession_desk(
+    collection_id: &str,
+    collection_name: &str,
+    signed_in: Option<&str>,
+) -> Markup {
     let body = html! {
         div.crumbs {
             a href="/" { "Home" }
@@ -1058,7 +1111,7 @@ pub fn accession_desk(collection: &str, signed_in: Option<&str>) -> Markup {
         form #add-archive-form.manage-form {
             label {
                 span { "Collection" }
-                input type="text" name="collection" required value=(collection)
+                input type="text" name="collection" required value=(collection_name)
                     placeholder="which collection this belongs to";
             }
             label {
@@ -1100,5 +1153,15 @@ pub fn accession_desk(collection: &str, signed_in: Option<&str>) -> Markup {
         pre #add-progress.progress {}
         script { (PreEscaped(ADD_ARCHIVE_JS)) }
     };
-    layout("Add crawls - indice", true, signed_in, body)
+    // Scope the header search to the target collection, when known.
+    let search = if collection_id.is_empty() {
+        SearchBox::default()
+    } else {
+        SearchBox {
+            scope_query: format!("collection:{collection_id}"),
+            scope_label: collection_name.to_string(),
+            ..Default::default()
+        }
+    };
+    layout("Add crawls - indice", true, signed_in, Some(&search), body)
 }
