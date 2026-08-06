@@ -36,6 +36,7 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
             &home,
             None,
             indice_lib::server::ManageConfig::off(),
+            None,
         )
         .await
     });

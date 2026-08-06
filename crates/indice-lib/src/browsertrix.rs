@@ -277,6 +277,16 @@ struct PublicCollections {
     collections: Vec<Collection>,
 }
 
+/// Supplies an authenticated [`Client`] for the management UI's Browsertrix
+/// import flow. Implemented by the **binary**, which holds the credentials and
+/// the target host (env `BROWSERTRIX_*` / `BROWSERTRIX_HOST`), keeping
+/// auth/config out of the library — the same boundary as
+/// [`crate::index::SourceResolver`]. The host is fixed server-side (not taken
+/// from the request) so a client can't redirect the server's credentials.
+pub trait BrowsertrixProvider: Send + Sync {
+    fn client(&self) -> Result<Client>;
+}
+
 // ── Client ───────────────────────────────────────────────────────────────────
 
 /// An authenticated Browsertrix API client. Generic over the [`Transport`] so

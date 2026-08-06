@@ -297,6 +297,20 @@ nav.pagination .page-info { color: var(--muted); }
 .src-panel { display: none; }
 .src-panel.active { display: block; }
 
+/* Browsertrix import wizard */
+.manage-form select { padding: 0.45rem 0.6rem; border: 1px solid #d9d3c8; border-radius: var(--radius); font: inherit; background: #fff; width: 100%; }
+.bx-connect { display: flex; gap: 0.5rem; align-items: center; margin: 0.7rem 0; }
+.bx-connect input { flex: 1; padding: 0.45rem 0.6rem; border: 1px solid #d9d3c8; border-radius: var(--radius); font: inherit; }
+.bx-browse { margin: 0.7rem 0; }
+.bx-browse .grid-2 { margin-bottom: 0.6rem; }
+.bx-items { display: flex; flex-direction: column; margin: 0.7rem 0; max-height: 320px; overflow-y: auto; }
+.bx-items:empty { display: none; }
+.bx-item { display: flex; align-items: center; gap: 0.55rem; padding: 0.4rem 0.4rem; border-bottom: 1px solid var(--line-soft); font-size: 0.9rem; cursor: pointer; }
+.bx-item:last-child { border-bottom: none; }
+.bx-item:hover { background: var(--paper); }
+.bx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bx-meta { color: var(--faint); font-size: 0.78rem; white-space: nowrap; }
+
 .progress {
   margin: 0.8rem 0 0; min-height: 1.2rem; white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; color: #444;

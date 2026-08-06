@@ -782,8 +782,17 @@ async fn main() -> Result<()> {
             let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> =
                 std::sync::Arc::new(BrowsertrixResolver::new());
 
+            // Browsertrix import (management UI) is available only when credentials
+            // are configured; otherwise the import endpoints report it unconfigured.
+            let browsertrix: Option<
+                std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>,
+            > = browsertrix_configured().then(|| {
+                std::sync::Arc::new(EnvBrowsertrix)
+                    as std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>
+            });
+
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage, browsertrix) => {
                     result?;
                 }
                 _ = ctrl_c => {}
@@ -1780,6 +1789,31 @@ fn connect(host: &str) -> Result<indice_lib::browsertrix::Client> {
              environment to authenticate — they're read from the environment so credentials \
              stay out of the command line"
         ),
+    }
+}
+
+/// Whether Browsertrix credentials are present in the environment (a token, or a
+/// user+password), without attempting a login — used to decide whether to offer
+/// the management UI's Browsertrix import.
+fn browsertrix_configured() -> bool {
+    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some();
+    set("BROWSERTRIX_TOKEN") || (set("BROWSERTRIX_USER") && set("BROWSERTRIX_PASSWORD"))
+}
+
+/// Supplies authenticated Browsertrix clients to the server's import UI from the
+/// same env credentials as [`connect`], keeping secrets in the binary (out of
+/// `indice-lib`). Defaults the host to app.browsertrix.com when unspecified.
+struct EnvBrowsertrix;
+
+impl indice_lib::browsertrix::BrowsertrixProvider for EnvBrowsertrix {
+    fn client(&self) -> Result<indice_lib::browsertrix::Client> {
+        // The host is server-configured (never client-supplied), so the browser
+        // can't point the server's credentials at an arbitrary instance.
+        let host = std::env::var("BROWSERTRIX_HOST")
+            .ok()
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| "https://app.browsertrix.com".to_string());
+        connect(&host)
     }
 }
 

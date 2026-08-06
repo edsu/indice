@@ -1023,19 +1023,102 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
     layout("Manage - indice", true, signed_in, Some(&search), body)
 }
 
-/// Progressive-enhancement script for the add-archive form: POST the chosen
-/// source (an uploaded file, or a path/URL), then stream the job's SSE progress.
-/// Small and dependency-free.
+/// Progressive-enhancement script for the accession desk: source tabs, the
+/// add-archive submit (upload / path-URL / Browsertrix), the Browsertrix browse
+/// wizard, and shared SSE progress. Small and dependency-free.
 const ADD_ARCHIVE_JS: &str = r#"
 const f = document.getElementById('add-archive-form');
 const out = document.getElementById('add-progress');
+
+// Stream a job's SSE progress into the status area (shared by every source).
+function stream(job) {
+  const es = new EventSource('/api/archives/' + job + '/events');
+  const lines = [];
+  const show = (m) => { lines.push(m); out.textContent = lines.join('\n'); };
+  es.addEventListener('begin', (ev) => show('reading ' + JSON.parse(ev.data).label));
+  es.addEventListener('phase', (ev) => show('… ' + JSON.parse(ev.data).phase));
+  es.addEventListener('total', (ev) => show('records to index: ' + JSON.parse(ev.data).total));
+  es.addEventListener('wacz_indexed', (ev) => {
+    const d = JSON.parse(ev.data);
+    show('indexed ' + d.label + ' (' + d.pages + ' pages)');
+  });
+  es.addEventListener('done', () => { show('Done ✓'); es.close(); });
+  es.addEventListener('error', (ev) => { if (ev.data) show('Error: ' + JSON.parse(ev.data).message); es.close(); });
+}
+
+// Source tabs.
+document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click', (e) => {
+  e.preventDefault();
+  document.querySelectorAll('.src-tab').forEach(t => t.setAttribute('aria-selected', t === tab));
+  document.querySelectorAll('.src-panel').forEach(p => p.classList.toggle('active', p.id === 'src-' + tab.dataset.src));
+}));
+
+// ── Browsertrix browse (orgs → collections → crawls), using server creds. ──
+async function bxGet(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function fillSelect(sel, items, placeholder) {
+  sel.innerHTML = '';
+  if (placeholder != null) { const o = document.createElement('option'); o.value = ''; o.textContent = placeholder; sel.appendChild(o); }
+  for (const it of items) { const o = document.createElement('option'); o.value = it.id; o.textContent = it.name; sel.appendChild(o); }
+}
+async function bxLoadCollections() {
+  const org = document.getElementById('bx-org').value;
+  if (!org) return;
+  try {
+    const colls = await bxGet('/api/browsertrix/collections?org=' + encodeURIComponent(org));
+    fillSelect(document.getElementById('bx-collection'), colls, 'All crawls');
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
+}
+const bxConnect = document.getElementById('bx-connect');
+if (bxConnect) bxConnect.addEventListener('click', async () => {
+  out.textContent = 'Connecting…';
+  try {
+    const orgs = await bxGet('/api/browsertrix/orgs');
+    fillSelect(document.getElementById('bx-org'), orgs, null);
+    document.getElementById('bx-browse').hidden = false;
+    out.textContent = orgs.length ? '' : 'No organizations visible for these credentials.';
+    bxLoadCollections();
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
+});
+const bxOrg = document.getElementById('bx-org');
+if (bxOrg) bxOrg.addEventListener('change', bxLoadCollections);
+const bxLoad = document.getElementById('bx-load');
+if (bxLoad) bxLoad.addEventListener('click', async () => {
+  const org = document.getElementById('bx-org').value;
+  if (!org) { out.textContent = 'Pick an organization first.'; return; }
+  const coll = document.getElementById('bx-collection').value;
+  out.textContent = 'Loading crawls…';
+  try {
+    const items = await bxGet('/api/browsertrix/items?org=' + encodeURIComponent(org)
+      + '&collection=' + encodeURIComponent(coll));
+    const box = document.getElementById('bx-items');
+    box.innerHTML = '';
+    if (!items.length) { box.textContent = 'No crawls found.'; return; }
+    for (const it of items) {
+      const label = document.createElement('label');
+      label.className = 'bx-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.dataset.id = it.id; cb.dataset.name = it.name || '';
+      if (it.reviewed) cb.checked = true;
+      const nm = document.createElement('span'); nm.className = 'bx-name'; nm.textContent = it.name || it.id;
+      const meta = document.createElement('span'); meta.className = 'bx-meta';
+      meta.textContent = (it.reviewed ? 'reviewed · ' : '') + (it.size ? Math.round(it.size / 1048576) + ' MB' : '');
+      label.append(cb, nm, meta);
+      box.appendChild(label);
+    }
+    out.textContent = '';
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
+});
+
+// Submit: dispatch on the active source tab.
 f.addEventListener('submit', async (e) => {
   e.preventDefault();
   const collection = f.collection.value.trim();
   const name = f.name.value.trim();
   if (!collection) { out.textContent = 'Please name the collection.'; return; }
-  // Use the source the user is actually looking at (the active tab), not
-  // whatever inputs happen to be set in hidden panels.
   const active = document.querySelector('.src-tab[aria-selected="true"]');
   const src = active ? active.dataset.src : 'upload';
   let res;
@@ -1056,9 +1139,19 @@ f.addEventListener('submit', async (e) => {
       const body = { path: location, collection };
       if (name) body.name = name;
       res = await fetch('/api/archives', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+    } else if (src === 'bx') {
+      const checked = [...document.querySelectorAll('#bx-items input:checked')];
+      if (!checked.length) { out.textContent = 'Connect, list crawls, and select at least one.'; return; }
+      out.textContent = 'Importing…';
+      const body = {
+        org: document.getElementById('bx-org').value,
+        collection,
+        items: checked.map(cb => ({ id: cb.dataset.id, name: cb.dataset.name })),
+      };
+      res = await fetch('/api/browsertrix/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
     } else {
       out.textContent = 'That source isn’t available yet.';
@@ -1067,27 +1160,8 @@ f.addEventListener('submit', async (e) => {
   } catch (err) { out.textContent = 'Request failed: ' + err; return; }
   if (!res.ok) { out.textContent = 'Error: ' + (await res.text()); return; }
   const { job } = await res.json();
-  const es = new EventSource('/api/archives/' + job + '/events');
-  const lines = [];
-  const show = (m) => { lines.push(m); out.textContent = lines.join('\n'); };
-  es.addEventListener('begin', (ev) => show('reading ' + JSON.parse(ev.data).label));
-  es.addEventListener('phase', (ev) => show('… ' + JSON.parse(ev.data).phase));
-  es.addEventListener('total', (ev) => show('records to index: ' + JSON.parse(ev.data).total));
-  es.addEventListener('wacz_indexed', (ev) => {
-    const d = JSON.parse(ev.data);
-    show('indexed ' + d.label + ' (' + d.pages + ' pages)');
-  });
-  es.addEventListener('done', () => { show('Done ✓'); es.close(); });
-  es.addEventListener('error', (ev) => {
-    if (ev.data) { show('Error: ' + JSON.parse(ev.data).message); }
-    es.close();
-  });
+  stream(job);
 });
-document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click', (e) => {
-  e.preventDefault();
-  document.querySelectorAll('.src-tab').forEach(t => t.setAttribute('aria-selected', t === tab));
-  document.querySelectorAll('.src-panel').forEach(p => p.classList.toggle('active', p.id === 'src-' + tab.dataset.src));
-}));
 "#;
 
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
@@ -1139,7 +1213,22 @@ pub fn accession_desk(
                 }
             }
             div.src-panel #src-bx {
-                p.note { "Import from Browsertrix (connect → browse → select) is coming here." }
+                p.muted { "Pick crawls to import into the collection above, from the Browsertrix instance this server is configured for (its credentials + host)." }
+                div.bx-connect {
+                    button.btn.ghost type="button" #bx-connect { "Connect" }
+                }
+                div.bx-browse hidden {
+                    div.grid-2 {
+                        label { span { "Organization" } select #bx-org {} }
+                        label {
+                            span { "Browsertrix collection " span.hint { "· optional filter" } }
+                            select #bx-collection { option value="" { "All crawls" } }
+                        }
+                    }
+                    button.btn.ghost type="button" #bx-load { "List crawls" }
+                }
+                div #bx-items.bx-items {}
+                p.note { "Streams the selected crawls in place — replay re-resolves via this server's credentials (no local copy kept)." }
             }
             div.src-panel #src-ait {
                 p.note { "Import from an Archive-It account is coming here." }

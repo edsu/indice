@@ -132,6 +132,10 @@ struct AppState {
     /// read the `user_header` to show who's signed in; the route middleware does
     /// the actual enforcement.
     forward_auth: Option<ForwardAuth>,
+    /// Builds authenticated Browsertrix clients for the import UI (binary-provided
+    /// with env credentials). `None` when no Browsertrix credentials are set —
+    /// the import endpoints then report that it's unconfigured.
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 }
 
 impl AppState {
@@ -148,7 +152,7 @@ impl AppState {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(home: &Path) -> Result<Router> {
-    build_router(home, None, ManageConfig::off())
+    build_router(home, None, ManageConfig::off(), None)
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
@@ -157,7 +161,7 @@ pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<Router> {
-    build_router(home, resolver, ManageConfig::off())
+    build_router(home, resolver, ManageConfig::off(), None)
 }
 
 /// Build the app router. `manage` gates the opt-in write routes: when disabled
@@ -170,6 +174,7 @@ fn build_router(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 ) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
@@ -188,6 +193,7 @@ fn build_router(
         job_counter: AtomicU64::new(0),
         management: manage.enabled,
         forward_auth: manage.forward_auth.clone(),
+        browsertrix,
     });
 
     let mut app = Router::new()
@@ -224,7 +230,13 @@ fn build_router(
                 post(upload_archive).layer(DefaultBodyLimit::disable()),
             )
             .route("/api/archives/{id}/events", get(add_archive_events))
-            .route("/api/collections", post(create_collection));
+            .route("/api/collections", post(create_collection))
+            // Browsertrix import: browse (orgs → collections → items) using the
+            // binary-supplied credentials, then import selected items as a job.
+            .route("/api/browsertrix/orgs", get(bx_orgs))
+            .route("/api/browsertrix/collections", get(bx_collections))
+            .route("/api/browsertrix/items", get(bx_items))
+            .route("/api/browsertrix/import", post(bx_import));
 
         // Forward-auth: reject any management request that doesn't carry the
         // trusted proxy's shared secret + a non-empty identity header. Layered
@@ -283,21 +295,23 @@ fn build_router(
 }
 
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None, ManageConfig::off()).await
+    serve_with_resolver(bind, home, None, ManageConfig::off(), None).await
 }
 
 /// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
 /// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
-/// configures the opt-in write routes (see [`build_router`]).
+/// configures the opt-in write routes (see [`build_router`]); `browsertrix`
+/// supplies authenticated clients for the import UI.
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
-    serve_on_listener(listener, home, resolver, manage).await
+    serve_on_listener(listener, home, resolver, manage, browsertrix).await
 }
 
 /// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
@@ -311,6 +325,7 @@ pub async fn serve_on_listener(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 ) -> Result<()> {
     // Safety guard: local management mode (no auth proxy) trusts every request, so
     // it must not be reachable beyond this machine. Refuse to start if it's bound
@@ -329,7 +344,7 @@ pub async fn serve_on_listener(
             );
         }
     }
-    let app = build_router(home, resolver, manage)?;
+    let app = build_router(home, resolver, manage, browsertrix)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -768,6 +783,219 @@ async fn accession_desk_page(
         .unwrap_or_else(|| id.clone());
     let (_, who) = admin_ctx(&state, &headers);
     views::accession_desk(&id, &name, who.as_deref()).into_response()
+}
+
+// ── Management mode: Browsertrix import ─────────────────────────────────────
+
+/// Response when a Browsertrix endpoint is hit but no credentials are configured.
+fn browsertrix_unconfigured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Browsertrix import is not configured — set BROWSERTRIX_TOKEN (or \
+         BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) in the server's environment.",
+    )
+        .into_response()
+}
+
+/// Query for the browse endpoints (orgs → collections → items). The host is
+/// server-configured, not accepted here.
+#[derive(Deserialize)]
+struct BxBrowse {
+    #[serde(default)]
+    org: String,
+    #[serde(default)]
+    collection: String,
+}
+
+/// Run a blocking Browsertrix client call off the async runtime, returning its
+/// JSON result (or a 502 on a Browsertrix/transport error).
+async fn bx_json<F>(provider: Arc<dyn crate::browsertrix::BrowsertrixProvider>, f: F) -> Response
+where
+    F: FnOnce(&crate::browsertrix::Client) -> Result<serde_json::Value> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(move || {
+        let client = provider.client()?;
+        f(&client)
+    })
+    .await
+    {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => {
+            (StatusCode::BAD_GATEWAY, format!("Browsertrix error: {e:#}")).into_response()
+        }
+        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+    }
+}
+
+/// `GET /api/browsertrix/orgs` — the orgs the configured credentials can see.
+async fn bx_orgs(State(state): State<Arc<AppState>>) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    bx_json(provider, |c| {
+        let orgs = c.orgs()?;
+        Ok(serde_json::json!(orgs
+            .iter()
+            .map(|o| serde_json::json!({ "id": o.id, "name": o.name, "slug": o.slug }))
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// `GET /api/browsertrix/collections?org=<oid>` — collections in an org.
+async fn bx_collections(State(state): State<Arc<AppState>>, Query(q): Query<BxBrowse>) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    if q.org.is_empty() {
+        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+    }
+    let org = q.org.clone();
+    bx_json(provider, move |c| {
+        let colls = c.collections(&org)?;
+        Ok(serde_json::json!(colls
+            .iter()
+            .map(|c| serde_json::json!({ "id": c.id, "name": c.name }))
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// `GET /api/browsertrix/items?org=<oid>&collection=<cid>` — crawls (optionally
+/// scoped to a collection), with QA-review status for the selection UI.
+async fn bx_items(State(state): State<Arc<AppState>>, Query(q): Query<BxBrowse>) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    if q.org.is_empty() {
+        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+    }
+    let org = q.org.clone();
+    let collection = q.collection.clone();
+    bx_json(provider, move |c| {
+        let query = crate::browsertrix::ItemQuery {
+            collection_id: (!collection.is_empty()).then_some(collection.as_str()),
+            item_id: None,
+        };
+        let items = c.items(&org, &query)?;
+        Ok(serde_json::json!(items
+            .iter()
+            .map(|it| serde_json::json!({
+                "id": it.id,
+                "name": it.name,
+                "reviewed": it.is_reviewed(),
+                "upload": it.is_upload(),
+                "size": it.file_size,
+                "review_status": it.review_status,
+            }))
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// One selected crawl to import.
+#[derive(Deserialize)]
+struct BxImportItem {
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// Body of `POST /api/browsertrix/import`. The host is server-configured.
+#[derive(Deserialize)]
+struct BxImportRequest {
+    org: String,
+    /// Target indice collection (display name); created if new.
+    collection: String,
+    items: Vec<BxImportItem>,
+}
+
+/// `POST /api/browsertrix/import` — stream the selected Browsertrix crawls into a
+/// collection as an ingest job (progress over the shared SSE endpoint). v1
+/// streams (index-only, replay re-resolves via the resolver); a durable-download
+/// option is a follow-up.
+async fn bx_import(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BxImportRequest>,
+) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    if req.collection.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    if req.org.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+    }
+    if req.items.is_empty() {
+        return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
+    }
+    // Streaming needs the resolver (to fetch a fresh presigned URL at index time
+    // and again at replay). It comes from the same credentials as the provider.
+    let Some(resolver) = state.resolver.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Browsertrix streaming import requires the resolver (credentials).",
+        )
+            .into_response();
+    };
+
+    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    state.jobs.lock().unwrap().insert(id, rx);
+
+    let job_state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let progress = ChannelProgress { tx: tx.clone() };
+        let result = (|| -> Result<()> {
+            // One writer at a time (index_location opens Tantivy's write lock).
+            let _guard = job_state.write_lock.lock().unwrap();
+            let client = provider.client()?;
+            let host = client.host().to_string();
+            for item in &req.items {
+                let resources = client.item_resources(&req.org, &item.id)?;
+                for res in &resources {
+                    // Record the stable Browsertrix identity + stream it in place;
+                    // replay/reindex re-resolve a fresh URL via the resolver.
+                    let source = crate::collections::Source::Browsertrix {
+                        host: host.clone(),
+                        org: req.org.clone(),
+                        item: item.id.clone(),
+                        resource: res.name.clone(),
+                    };
+                    let name = (!item.name.trim().is_empty()).then_some(item.name.as_str());
+                    crate::index::index_location_with_resolver(
+                        &source.location(),
+                        &job_state.home,
+                        name,
+                        &req.collection,
+                        false,
+                        None,
+                        Some(resolver.as_ref()),
+                        Some(&progress),
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => match job_state.reload_searcher() {
+                Ok(()) => tx.send(ProgressEvent::Done).ok(),
+                Err(e) => tx
+                    .send(ProgressEvent::Error {
+                        message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                    })
+                    .ok(),
+            },
+            Err(e) => tx
+                .send(ProgressEvent::Error {
+                    message: format!("{e:#}"),
+                })
+                .ok(),
+        };
+    });
+
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
 /// Form body for create/edit collection (`application/x-www-form-urlencoded`).
