@@ -1217,7 +1217,7 @@ pub fn accession_desk(
                 div.bx-connect {
                     button.btn.ghost type="button" #bx-connect { "Connect" }
                 }
-                div.bx-browse hidden {
+                div #bx-browse.bx-browse hidden {
                     div.grid-2 {
                         label { span { "Organization" } select #bx-org {} }
                         label {
