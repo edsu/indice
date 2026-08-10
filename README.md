@@ -10,22 +10,24 @@ principles. Technical reviews of the code and design are always welcome!*
 
 ---
 
-**indice** is a small, fast web archive server written in Rust. Think of it
-as a [reading room] for web archives. Point it at a pile of local or remote
-[WACZ] files and it gives you:
+**indice** is a web archive server written in Rust. Think of it as a [reading
+room] for web archives. Point it at a pile of local or remote [WACZ] files and
+it gives you:
 
-- **Full-text search with faceted, temporal browsing** - hit-highlighted
+- **Full-text search with faceted, temporal browsing**: hit-highlighted
   snippets, then narrow by collection, site, date, type, or language, with a
   timeline for navigating through time
-- **Provenance up front** - see how each crawl was made (software, operator,
+- **Provenance up front**: see how each crawl was made (software, operator,
   dates, seeds, page counts) and verify each WACZ's fixity, instead of taking
   the archive on faith
 - **In-browser replay** of the archived pages via [ReplayWeb.page] / wabac.js
+- **Backroom interface** that allows authenticated users to edit collection
+  metadata and descriptions.
 
 It ships as a single self-contained binary - no Solr, no Elasticsearch, no
 separate database server. That's a deliberate design goal: indice is built for
-**small, local, and private** use - a person indexing a handful of their own
-WACZ files on a laptop, with nothing sent to a hosted service - while using the
+**small, local, and private** use, for example a person indexing a handful of their own
+WACZ files on a laptop, with nothing sent to a hosted service. It also uses the
 same model to **scale up** toward institutional collections. It aims to fit both
 ends of that range, rather than assuming the infrastructure of a large web
 archive.
@@ -35,6 +37,20 @@ archive.
 > all the actual replay - and adds a thin Rust layer for indexing, search, and
 > serving. Webrecorder did the heavy lifting; please support them. See
 > [Credits](#credits).
+
+## Why "indice"?
+
+An *indice* is a sign that points beyond itself, and the name gathers three
+senses of the same idea. [Suzanne Briet] argued that a wild antelope becomes
+a *document* once it is captured, catalogued, and set aside as evidence. She
+defined a document as *"un indice concret ou symbolique, conservé ou
+enregistré"* (a concrete or symbolic sign, preserved or recorded). [Charles
+Sanders Peirce] used *index* for the same family of sign: one bound to its
+object by a real, existential connection like smoke to fire, or a weathervane
+to the wind. Squint a little bit and a web capture is like that too: a trace
+connected to a moment of the live web. And, of course, indice builds
+a full-text **index** over the archives it serves, so the simplest meaning
+applies too.
 
 ## Discovery and provenance
 
@@ -194,20 +210,19 @@ indice index https://edsu-webarchives.s3.amazonaws.com/docnow.wacz --collection 
 indice serve
 ```
 
-By default indice **streams** a remote WACZ - it never downloads the whole
-file. Using the WACZ's internal CDX index, it reads (via HTTP range requests)
-only the pieces it needs - the ZIP central directory, the CDX, and the HTML/PDF
-page records - and skips images, video, JS, and CSS entirely. On a media-heavy
-archive that's a tiny fraction of the file: a 323 MB WACZ can be indexed in a
-few seconds without writing anything to disk. The URL is recorded as the
-source, and at replay time the browser reads the remote WACZ directly (also via
-range requests) - indice never proxies the bytes.
+By default indice **streams** a remote WACZ. It never downloads the whole file.
+Using the WACZ's internal CDX index, it reads (via HTTP range requests) only
+the pieces it needs: the ZIP central directory, the CDX, and the HTML/PDF page
+records. It skips images, video, JS, and CSS entirely. On a media-heavy archive
+the indexable text is a tiny fraction of the WACZ: a 323 MB WACZ can be indexed
+in a few seconds. The URL is recorded as the source, and at replay time the
+browser reads the remote WACZ directly (also via range requests).
 
 For this to work the remote host must serve the WACZ with **HTTP range support
 and CORS** allowing indice's origin. The S3 bucket above is configured that
 way (`Accept-Ranges: bytes` and `Access-Control-Allow-Origin: *`), which is why
 S3 and other object stores work with no special support - expose the object as a
-range- and CORS-capable HTTPS URL (public or presigned) and index it.
+range and CORS-capable HTTPS URL (public or presigned) and index it.
 
 If you'd rather keep a **local copy**, add `--download`:
 
@@ -570,34 +585,6 @@ cargo test -p indice-lib --test browser -- --ignored
 - On macOS, a Homebrew `chromedriver` is quarantined and gets killed on launch;
   clear it once with `xattr -d com.apple.quarantine $(which chromedriver)`.
 
-## Why "indice"?
-
-An *indice* is a sign that points beyond itself, and the name gathers three senses
-of the same idea. Suzanne Briet — the documentalist who argued that a wild antelope
-becomes a *document* once it is captured, catalogued, and set aside as evidence —
-defined a document as *"un indice concret ou symbolique, conservé ou enregistré"* (a
-concrete or symbolic sign, preserved or recorded). Charles Sanders Peirce used *index*
-for the same family of sign: one bound to its object by a real, existential connection —
-smoke to fire, a weathervane to the wind. A web capture is exactly that: a trace
-connected to a moment of the live web, pointing back at what was there. And, prosaically,
-the tool builds a full-text **index** over the archives it serves.
-
-### Formerly "rustyweb"
-
-This project was previously called **rustyweb** — a nod to a 2013 [Paris Web] talk by
-[Olivier Thereaux], *"Esthétique et pratique du Web qui rouille"* (the aesthetics and
-practice of **the web that rusts**), and to the notes he gathered under the name
-[rustyweb][rustyweb-orig]: an exploration of how web content ages, decays, and transforms
-over time. A touchstone of that conversation is [Karl Dubost]'s essay
-[*Un site web de 1000 ans*][1000ans] ("A 1000-year website"), which argues that we should
-let a site's information *become obsolete* rather than destroy it — treating a website
-like an archive or a library, using durable URIs and HTTP deliberately as
-memory-management tools (`308 Permanent Redirect`, `307 Temporary Redirect`, `410 Gone`).
-That ethos still animates this tool: keep the archived web readable, searchable, and
-replayable — let it rust gracefully, but keep parts of it around. (The name changed
-because "rusty web" named the *subject* rather than the tool, and collided with an
-unrelated `rusty-web` crate on crates.io.)
-
 ## Credits
 
 indice stands almost entirely on the shoulders of [Webrecorder]. The hard
@@ -627,3 +614,5 @@ wabac.js components it bundles. See [LICENSE](LICENSE) for the full text and
 [SHINE]: https://github.com/ukwa/shine
 [SolrWayback]: https://github.com/netarchivesuite/solrwayback
 [warc-indexer]: https://github.com/ukwa/webarchive-discovery
+[Suzanne Briet]: https://en.wikipedia.org/wiki/Suzanne_Briet
+[Charles Sanders Peirce]: https://plato.stanford.edu/entries/peirce-semiotics/
