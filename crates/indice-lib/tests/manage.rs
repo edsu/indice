@@ -422,3 +422,64 @@ async fn browsertrix_routes_absent_in_read_only_mode() {
     assert_eq!(status, 404, "no Browsertrix routes without --manage");
     server.abort();
 }
+
+#[tokio::test]
+async fn read_only_server_has_no_collection_or_upload_routes() {
+    // Every write route lives in one `if manage.enabled` block, so the read-only
+    // server must expose none of them. `read_only_server_has_no_add_archive_route`
+    // covers POST /api/archives; this covers the rest (collections, upload, and
+    // the management pages) so moving one out of the gate can't slip through.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
+
+    // GET management pages are absent.
+    for path in [
+        "/manage/add",
+        "/manage/collections/new",
+        "/manage/edit/anything",
+    ] {
+        let (status, _) = get(format!("{base}{path}")).await;
+        assert_eq!(status, 404, "GET {path} must be absent in read-only mode");
+    }
+
+    // POST /api/collections (create/edit a finding aid) is absent.
+    let coll_url = format!("{base}/api/collections");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&coll_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .send("name=x")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        status, 404,
+        "POST /api/collections must be absent in read-only mode"
+    );
+
+    // POST /api/archives/upload is absent.
+    let upload_url = format!("{base}/api/archives/upload");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&upload_url)
+            .send("x")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        status, 404,
+        "POST /api/archives/upload must be absent in read-only mode"
+    );
+
+    server.abort();
+}
