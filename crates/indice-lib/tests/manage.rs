@@ -43,7 +43,7 @@ async fn serve(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move {
-        indice_lib::server::serve_on_listener(listener, &home, None, manage)
+        indice_lib::server::serve_on_listener(listener, &home, None, manage, None)
             .await
             .unwrap();
     });
@@ -384,6 +384,101 @@ async fn read_only_server_has_no_add_archive_route() {
     assert_eq!(
         status, 404,
         "management route must be absent in read-only mode"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn browsertrix_import_reports_unconfigured_without_creds() {
+    // Management on, but the test server injects no Browsertrix provider (no
+    // creds) — the browse/import endpoints should say so clearly, not 500.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::local(),
+    )
+    .await;
+
+    let (status, body) = get(format!("{base}/api/browsertrix/orgs")).await;
+    assert_eq!(status, 503, "unconfigured Browsertrix is a 503");
+    assert!(
+        body.contains("not configured"),
+        "clear unconfigured message; got: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn browsertrix_routes_absent_in_read_only_mode() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
+    let (status, _) = get(format!("{base}/api/browsertrix/orgs")).await;
+    assert_eq!(status, 404, "no Browsertrix routes without --manage");
+    server.abort();
+}
+
+#[tokio::test]
+async fn read_only_server_has_no_collection_or_upload_routes() {
+    // Every write route lives in one `if manage.enabled` block, so the read-only
+    // server must expose none of them. `read_only_server_has_no_add_archive_route`
+    // covers POST /api/archives; this covers the rest (collections, upload, and
+    // the management pages) so moving one out of the gate can't slip through.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
+
+    // GET management pages are absent.
+    for path in [
+        "/manage/add",
+        "/manage/collections/new",
+        "/manage/edit/anything",
+    ] {
+        let (status, _) = get(format!("{base}{path}")).await;
+        assert_eq!(status, 404, "GET {path} must be absent in read-only mode");
+    }
+
+    // POST /api/collections (create/edit a finding aid) is absent.
+    let coll_url = format!("{base}/api/collections");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&coll_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .send("name=x")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        status, 404,
+        "POST /api/collections must be absent in read-only mode"
+    );
+
+    // POST /api/archives/upload is absent.
+    let upload_url = format!("{base}/api/archives/upload");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&upload_url)
+            .send("x")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        status, 404,
+        "POST /api/archives/upload must be absent in read-only mode"
     );
 
     server.abort();

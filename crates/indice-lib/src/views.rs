@@ -1023,19 +1023,167 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
     layout("Manage - indice", true, signed_in, Some(&search), body)
 }
 
-/// Progressive-enhancement script for the add-archive form: POST the chosen
-/// source (an uploaded file, or a path/URL), then stream the job's SSE progress.
-/// Small and dependency-free.
+/// Progressive-enhancement script for the accession desk: source tabs, the
+/// add-archive submit (upload / path-URL / Browsertrix), the Browsertrix browse
+/// wizard, and shared SSE progress. Small and dependency-free.
 const ADD_ARCHIVE_JS: &str = r#"
 const f = document.getElementById('add-archive-form');
 const out = document.getElementById('add-progress');
+
+// Stream a job's SSE progress into the status area (shared by every source).
+function stream(job, collectionName) {
+  const es = new EventSource('/api/archives/' + job + '/events');
+  const lines = [];
+  const show = (m) => { lines.push(m); out.textContent = lines.join('\n'); };
+  es.addEventListener('begin', (ev) => show('reading ' + JSON.parse(ev.data).label));
+  es.addEventListener('phase', (ev) => show('… ' + JSON.parse(ev.data).phase));
+  es.addEventListener('total', (ev) => show('records to index: ' + JSON.parse(ev.data).total));
+  es.addEventListener('wacz_indexed', (ev) => {
+    const d = JSON.parse(ev.data);
+    show('indexed ' + d.label + ' (' + d.pages + ' pages)');
+  });
+  es.addEventListener('done', (ev) => {
+    show('Done ✓');
+    let d = {};
+    try { d = JSON.parse(ev.data) || {}; } catch (e) {}
+    const crawls = Array.isArray(d.crawls) ? d.crawls : [];
+    const link = (href, text) => {
+      const a = document.createElement('a'); a.href = href; a.textContent = text; return a;
+    };
+    const para = (child) => { const p = document.createElement('p'); p.appendChild(child); return p; };
+    const collLink = () => link('/collection/' + encodeURIComponent(d.collection),
+      'View ' + (collectionName ? '“' + collectionName + '”' : 'collection') + ' →');
+    const wrap = document.createElement('div'); wrap.className = 'add-done-link';
+    if (crawls.length === 1) {
+      wrap.appendChild(para(link('/crawl/' + encodeURIComponent(crawls[0].id), 'View crawl →')));
+    } else if (crawls.length > 1) {
+      const head = document.createElement('p'); head.textContent = 'Added ' + crawls.length + ' crawls:';
+      wrap.appendChild(head);
+      const ul = document.createElement('ul'); ul.className = 'add-done-crawls';
+      for (const c of crawls) {
+        const li = document.createElement('li');
+        li.appendChild(link('/crawl/' + encodeURIComponent(c.id), c.name || c.id));
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
+      if (d.collection) wrap.appendChild(para(collLink()));
+    } else if (d.collection) {
+      wrap.appendChild(para(collLink()));
+    }
+    if (wrap.childNodes.length) out.appendChild(wrap);
+    es.close();
+  });
+  es.addEventListener('error', (ev) => { if (ev.data) show('Error: ' + JSON.parse(ev.data).message); es.close(); });
+}
+
+// Source tabs.
+document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click', (e) => {
+  e.preventDefault();
+  document.querySelectorAll('.src-tab').forEach(t => t.setAttribute('aria-selected', t === tab));
+  document.querySelectorAll('.src-panel').forEach(p => p.classList.toggle('active', p.id === 'src-' + tab.dataset.src));
+  // Opening the Browsertrix tab reaches out to the configured instance on its own.
+  if (tab.dataset.src === 'bx' && !bxConnected) bxConnect();
+}));
+
+// ── Browsertrix browse (orgs → collections → crawls), using server creds. ──
+async function bxGet(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function fillSelect(sel, items, placeholder) {
+  sel.innerHTML = '';
+  if (placeholder != null) { const o = document.createElement('option'); o.value = ''; o.textContent = placeholder; sel.appendChild(o); }
+  for (const it of items) { const o = document.createElement('option'); o.value = it.id; o.textContent = it.name; sel.appendChild(o); }
+}
+async function bxLoadCollections() {
+  const org = document.getElementById('bx-org').value;
+  if (!org) return;
+  try {
+    const colls = await bxGet('/api/browsertrix/collections?org=' + encodeURIComponent(org));
+    fillSelect(document.getElementById('bx-collection'), colls, 'All crawls');
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
+}
+// Crawls load reactively (on connect / org / collection change), so a later
+// request can overtake an earlier one — bxSeq drops any stale response.
+let bxSeq = 0;
+let bxItems = [];
+async function bxLoadItems() {
+  const org = document.getElementById('bx-org').value;
+  if (!org) return;
+  const coll = document.getElementById('bx-collection').value;
+  const seq = ++bxSeq;
+  out.textContent = 'Loading crawls…';
+  try {
+    const items = await bxGet('/api/browsertrix/items?org=' + encodeURIComponent(org)
+      + '&collection=' + encodeURIComponent(coll));
+    if (seq !== bxSeq) return;
+    bxItems = items;
+    out.textContent = '';
+    bxRender();
+  } catch (e) { if (seq === bxSeq) out.textContent = 'Error: ' + e.message; }
+}
+// Render bxItems into the list, applying the client-side QA-status filter.
+function bxRender() {
+  const box = document.getElementById('bx-items');
+  const mode = (document.getElementById('bx-qa-filter') || {}).value || 'all';
+  const hideImported = !!(document.getElementById('bx-hide-imported') || {}).checked;
+  box.innerHTML = '';
+  if (!bxItems.length) { box.textContent = 'No crawls found.'; return; }
+  const items = bxItems.filter(it => (mode === 'reviewed' ? it.reviewed : mode === 'unreviewed' ? !it.reviewed : true)
+    && !(hideImported && it.imported));
+  if (!items.length) { box.textContent = 'No crawls match this filter.'; return; }
+  for (const it of items) {
+    const label = document.createElement('label');
+    label.className = 'bx-item' + (it.imported ? ' imported' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.dataset.id = it.id; cb.dataset.name = it.name || '';
+    // Already in the library — can't be re-imported, so it's shown disabled.
+    if (it.imported) cb.disabled = true;
+    const nm = document.createElement('span'); nm.className = 'bx-name'; nm.textContent = it.name || it.id;
+    const date = document.createElement('span'); date.className = 'bx-date'; date.textContent = it.date || '';
+    const qa = document.createElement('span');
+    qa.className = 'bx-qa' + (it.reviewed ? ' yes' : '');
+    qa.textContent = it.reviewed ? ('QA’d' + (it.review_status ? ' ' + it.review_status + '/5' : '')) : 'not QA’d';
+    const size = document.createElement('span'); size.className = 'bx-size';
+    size.textContent = it.size_h || '';
+    label.append(cb, nm);
+    if (it.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = 'in library'; label.append(b); }
+    label.append(date, qa, size);
+    box.appendChild(label);
+  }
+}
+let bxConnected = false;
+async function bxConnect() {
+  out.textContent = 'Connecting to Browsertrix…';
+  try {
+    const orgs = await bxGet('/api/browsertrix/orgs');
+    fillSelect(document.getElementById('bx-org'), orgs, null);
+    document.getElementById('bx-browse').hidden = false;
+    bxConnected = true;
+    if (!orgs.length) { out.textContent = 'No organizations visible for these credentials.'; return; }
+    out.textContent = '';
+    await bxLoadCollections();
+    bxLoadItems();
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
+}
+const bxRefresh = document.getElementById('bx-refresh');
+if (bxRefresh) bxRefresh.addEventListener('click', bxLoadItems);
+const bxQaFilter = document.getElementById('bx-qa-filter');
+if (bxQaFilter) bxQaFilter.addEventListener('change', bxRender);
+const bxHideImported = document.getElementById('bx-hide-imported');
+if (bxHideImported) bxHideImported.addEventListener('change', bxRender);
+const bxOrg = document.getElementById('bx-org');
+if (bxOrg) bxOrg.addEventListener('change', async () => { await bxLoadCollections(); bxLoadItems(); });
+const bxColl = document.getElementById('bx-collection');
+if (bxColl) bxColl.addEventListener('change', bxLoadItems);
+
+// Submit: dispatch on the active source tab.
 f.addEventListener('submit', async (e) => {
   e.preventDefault();
   const collection = f.collection.value.trim();
   const name = f.name.value.trim();
   if (!collection) { out.textContent = 'Please name the collection.'; return; }
-  // Use the source the user is actually looking at (the active tab), not
-  // whatever inputs happen to be set in hidden panels.
   const active = document.querySelector('.src-tab[aria-selected="true"]');
   const src = active ? active.dataset.src : 'upload';
   let res;
@@ -1056,9 +1204,24 @@ f.addEventListener('submit', async (e) => {
       const body = { path: location, collection };
       if (name) body.name = name;
       res = await fetch('/api/archives', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+    } else if (src === 'bx') {
+      const checked = [...document.querySelectorAll('#bx-items input:checked')];
+      if (!checked.length) { out.textContent = 'Select at least one crawl to import.'; return; }
+      out.textContent = 'Importing…';
+      const mode = (document.querySelector('input[name="bx-mode"]:checked') || {}).value;
+      const body = {
+        org: document.getElementById('bx-org').value,
+        collection,
+        download: mode !== 'stream',
+        items: checked.map(cb => {
+          const m = bxItems.find(x => x.id === cb.dataset.id) || {};
+          return { id: cb.dataset.id, name: cb.dataset.name, review_status: m.review_status ?? null };
+        }),
+      };
+      res = await fetch('/api/browsertrix/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
     } else {
       out.textContent = 'That source isn’t available yet.';
@@ -1067,27 +1230,8 @@ f.addEventListener('submit', async (e) => {
   } catch (err) { out.textContent = 'Request failed: ' + err; return; }
   if (!res.ok) { out.textContent = 'Error: ' + (await res.text()); return; }
   const { job } = await res.json();
-  const es = new EventSource('/api/archives/' + job + '/events');
-  const lines = [];
-  const show = (m) => { lines.push(m); out.textContent = lines.join('\n'); };
-  es.addEventListener('begin', (ev) => show('reading ' + JSON.parse(ev.data).label));
-  es.addEventListener('phase', (ev) => show('… ' + JSON.parse(ev.data).phase));
-  es.addEventListener('total', (ev) => show('records to index: ' + JSON.parse(ev.data).total));
-  es.addEventListener('wacz_indexed', (ev) => {
-    const d = JSON.parse(ev.data);
-    show('indexed ' + d.label + ' (' + d.pages + ' pages)');
-  });
-  es.addEventListener('done', () => { show('Done ✓'); es.close(); });
-  es.addEventListener('error', (ev) => {
-    if (ev.data) { show('Error: ' + JSON.parse(ev.data).message); }
-    es.close();
-  });
+  stream(job, collection);
 });
-document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click', (e) => {
-  e.preventDefault();
-  document.querySelectorAll('.src-tab').forEach(t => t.setAttribute('aria-selected', t === tab));
-  document.querySelectorAll('.src-panel').forEach(p => p.classList.toggle('active', p.id === 'src-' + tab.dataset.src));
-}));
 "#;
 
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
@@ -1139,7 +1283,37 @@ pub fn accession_desk(
                 }
             }
             div.src-panel #src-bx {
-                p.note { "Import from Browsertrix (connect → browse → select) is coming here." }
+                p.muted { "Pick crawls to import into the collection above, from the Browsertrix instance this server is configured for (its credentials + host)." }
+                div #bx-browse.bx-browse hidden {
+                    div.grid-2 {
+                        label { span { "Organization" } select #bx-org {} }
+                        label {
+                            span { "Browsertrix collection " span.hint { "· optional filter" } }
+                            select #bx-collection { option value="" { "All crawls" } }
+                        }
+                    }
+                    div.bx-toolbar {
+                        label.bx-filter {
+                            span { "Show" }
+                            select #bx-qa-filter {
+                                option value="all" { "All crawls" }
+                                option value="reviewed" { "QA’d only" }
+                                option value="unreviewed" { "Not QA’d" }
+                            }
+                        }
+                        label.bx-check {
+                            input type="checkbox" #bx-hide-imported;
+                            span { "Hide already-imported" }
+                        }
+                        button.btn.ghost type="button" #bx-refresh { "Refresh list" }
+                    }
+                }
+                div #bx-items.bx-items {}
+                fieldset.bx-mode {
+                    legend { "On import" }
+                    label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "· stored locally, replays offline" } } }
+                    label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "· no local copy; replay re-resolves via this server's credentials" } } }
+                }
             }
             div.src-panel #src-ait {
                 p.note { "Import from an Archive-It account is coming here." }

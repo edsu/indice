@@ -132,6 +132,10 @@ struct AppState {
     /// read the `user_header` to show who's signed in; the route middleware does
     /// the actual enforcement.
     forward_auth: Option<ForwardAuth>,
+    /// Builds authenticated Browsertrix clients for the import UI (binary-provided
+    /// with env credentials). `None` when no Browsertrix credentials are set —
+    /// the import endpoints then report that it's unconfigured.
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 }
 
 impl AppState {
@@ -148,7 +152,7 @@ impl AppState {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(home: &Path) -> Result<Router> {
-    build_router(home, None, ManageConfig::off())
+    build_router(home, None, ManageConfig::off(), None)
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
@@ -157,7 +161,7 @@ pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<Router> {
-    build_router(home, resolver, ManageConfig::off())
+    build_router(home, resolver, ManageConfig::off(), None)
 }
 
 /// Build the app router. `manage` gates the opt-in write routes: when disabled
@@ -170,6 +174,7 @@ fn build_router(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 ) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
@@ -188,6 +193,7 @@ fn build_router(
         job_counter: AtomicU64::new(0),
         management: manage.enabled,
         forward_auth: manage.forward_auth.clone(),
+        browsertrix,
     });
 
     let mut app = Router::new()
@@ -224,7 +230,13 @@ fn build_router(
                 post(upload_archive).layer(DefaultBodyLimit::disable()),
             )
             .route("/api/archives/{id}/events", get(add_archive_events))
-            .route("/api/collections", post(create_collection));
+            .route("/api/collections", post(create_collection))
+            // Browsertrix import: browse (orgs → collections → items) using the
+            // binary-supplied credentials, then import selected items as a job.
+            .route("/api/browsertrix/orgs", get(bx_orgs))
+            .route("/api/browsertrix/collections", get(bx_collections))
+            .route("/api/browsertrix/items", get(bx_items))
+            .route("/api/browsertrix/import", post(bx_import));
 
         // Forward-auth: reject any management request that doesn't carry the
         // trusted proxy's shared secret + a non-empty identity header. Layered
@@ -283,21 +295,23 @@ fn build_router(
 }
 
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None, ManageConfig::off()).await
+    serve_with_resolver(bind, home, None, ManageConfig::off(), None).await
 }
 
 /// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
 /// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
-/// configures the opt-in write routes (see [`build_router`]).
+/// configures the opt-in write routes (see [`build_router`]); `browsertrix`
+/// supplies authenticated clients for the import UI.
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
-    serve_on_listener(listener, home, resolver, manage).await
+    serve_on_listener(listener, home, resolver, manage, browsertrix).await
 }
 
 /// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
@@ -311,6 +325,7 @@ pub async fn serve_on_listener(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
+    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
 ) -> Result<()> {
     // Safety guard: local management mode (no auth proxy) trusts every request, so
     // it must not be reachable beyond this machine. Refuse to start if it's bound
@@ -329,7 +344,7 @@ pub async fn serve_on_listener(
             );
         }
     }
-    let app = build_router(home, resolver, manage)?;
+    let app = build_router(home, resolver, manage, browsertrix)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -443,8 +458,13 @@ enum ProgressEvent {
         pages: u64,
     },
     Finish,
-    /// The whole job succeeded and the searcher was reloaded.
-    Done,
+    /// The whole job succeeded and the searcher was reloaded. `collection` is the
+    /// target collection's slug; `crawls` is each indexed crawl as `{id, name}`,
+    /// so the UI can link straight to each crawl (or to the collection).
+    Done {
+        collection: String,
+        crawls: Vec<serde_json::Value>,
+    },
     /// The job failed; `message` is the (chained) error.
     Error {
         message: String,
@@ -461,7 +481,7 @@ impl ProgressEvent {
             ProgressEvent::Records { .. } => "records",
             ProgressEvent::WaczIndexed { .. } => "wacz_indexed",
             ProgressEvent::Finish => "finish",
-            ProgressEvent::Done => "done",
+            ProgressEvent::Done { .. } => "done",
             ProgressEvent::Error { .. } => "error",
         }
     }
@@ -535,6 +555,24 @@ struct AddArchiveResponse {
 /// the multipart upload ([`upload_archive`]). `keepalive` holds a temp dir (the
 /// uploaded file) alive until indexing finishes, then drops it — `None` for the
 /// path/URL case, which owns no temp file.
+/// Acquire the single indexing write lock. If another import already holds it,
+/// tell the user via `progress` first (so a queued job doesn't look hung), then
+/// block. Tolerates poisoning — the guarded unit carries no state to corrupt, so
+/// one panic mid-index must not wedge every future import.
+fn acquire_write_lock<'a>(
+    write_lock: &'a std::sync::Mutex<()>,
+    progress: &ChannelProgress,
+) -> std::sync::MutexGuard<'a, ()> {
+    match write_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            crate::index::IndexProgress::phase(progress, "waiting for another import to finish…");
+            write_lock.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+}
+
 fn start_index_job(
     state: &Arc<AppState>,
     location: String,
@@ -555,8 +593,7 @@ fn start_index_job(
         let _keepalive = keepalive;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
-            // Only one add may hold Tantivy's exclusive write lock at a time.
-            let _guard = job_state.write_lock.lock().unwrap();
+            let _guard = acquire_write_lock(&job_state.write_lock, &progress);
             crate::index::index_location(
                 &location,
                 &job_state.home,
@@ -569,7 +606,12 @@ fn start_index_job(
         };
         match result {
             Ok(()) => match job_state.reload_searcher() {
-                Ok(()) => tx.send(ProgressEvent::Done).ok(),
+                Ok(()) => tx
+                    .send(ProgressEvent::Done {
+                        collection: crate::collections::slugify(&collection),
+                        crawls: Vec::new(),
+                    })
+                    .ok(),
                 Err(e) => tx
                     .send(ProgressEvent::Error {
                         message: format!("indexed, but reloading the searcher failed: {e:#}"),
@@ -768,6 +810,354 @@ async fn accession_desk_page(
         .unwrap_or_else(|| id.clone());
     let (_, who) = admin_ctx(&state, &headers);
     views::accession_desk(&id, &name, who.as_deref()).into_response()
+}
+
+// ── Management mode: Browsertrix import ─────────────────────────────────────
+
+/// Response when a Browsertrix endpoint is hit but no credentials are configured.
+fn browsertrix_unconfigured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Browsertrix import is not configured — set BROWSERTRIX_TOKEN (or \
+         BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) in the server's environment.",
+    )
+        .into_response()
+}
+
+/// Query for the browse endpoints (orgs → collections → items). The host is
+/// server-configured, not accepted here.
+#[derive(Deserialize)]
+struct BxBrowse {
+    #[serde(default)]
+    org: String,
+    #[serde(default)]
+    collection: String,
+}
+
+/// Run a blocking Browsertrix client call off the async runtime, returning its
+/// JSON result (or a 502 on a Browsertrix/transport error).
+async fn bx_json<F>(provider: Arc<dyn crate::browsertrix::BrowsertrixProvider>, f: F) -> Response
+where
+    F: FnOnce(&crate::browsertrix::Client) -> Result<serde_json::Value> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(move || {
+        let client = provider.client()?;
+        f(&client)
+    })
+    .await
+    {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => {
+            (StatusCode::BAD_GATEWAY, format!("Browsertrix error: {e:#}")).into_response()
+        }
+        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+    }
+}
+
+/// `GET /api/browsertrix/orgs` — the orgs the configured credentials can see.
+async fn bx_orgs(State(state): State<Arc<AppState>>) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    bx_json(provider, |c| {
+        let orgs = c.orgs()?;
+        Ok(serde_json::json!(orgs
+            .iter()
+            .map(|o| serde_json::json!({ "id": o.id, "name": o.name, "slug": o.slug }))
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// `GET /api/browsertrix/collections?org=<oid>` — collections in an org.
+async fn bx_collections(State(state): State<Arc<AppState>>, Query(q): Query<BxBrowse>) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    if q.org.is_empty() {
+        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+    }
+    let org = q.org.clone();
+    bx_json(provider, move |c| {
+        let colls = c.collections(&org)?;
+        Ok(serde_json::json!(colls
+            .iter()
+            .map(|c| serde_json::json!({ "id": c.id, "name": c.name }))
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// Browsertrix item ids already imported anywhere in this instance. A crawl
+/// records its origin two ways — streamed imports keep a `Source::Browsertrix`
+/// (item id in the source), downloaded ones keep a local file source plus a
+/// `BrowsertrixRef` provenance — so collect from both to catch either kind.
+fn imported_browsertrix_ids<'a>(
+    waczs: impl Iterator<
+        Item = (
+            &'a crate::collections::Source,
+            Option<&'a crate::collections::BrowsertrixRef>,
+        ),
+    >,
+) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    for (source, provenance) in waczs {
+        if let crate::collections::Source::Browsertrix { item, .. } = source {
+            ids.insert(item.clone());
+        }
+        if let Some(b) = provenance {
+            ids.insert(b.item_id.clone());
+        }
+    }
+    ids
+}
+
+/// `GET /api/browsertrix/items?org=<oid>&collection=<cid>` — crawls (optionally
+/// scoped to a collection), with QA-review status for the selection UI.
+async fn bx_items(State(state): State<Arc<AppState>>, Query(q): Query<BxBrowse>) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    if q.org.is_empty() {
+        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+    }
+    let org = q.org.clone();
+    let collection = q.collection.clone();
+    // Browsertrix item ids already imported into any collection in this instance,
+    // so the UI can mark them and prevent accidental re-imports.
+    let imported = Manifest::open(&state.index_dir)
+        .map(|m| {
+            imported_browsertrix_ids(m.waczs.iter().map(|w| (&w.source, w.browsertrix.as_ref())))
+        })
+        .unwrap_or_default();
+    bx_json(provider, move |c| {
+        let query = crate::browsertrix::ItemQuery {
+            collection_id: (!collection.is_empty()).then_some(collection.as_str()),
+            item_id: None,
+        };
+        let items = c.items(&org, &query)?;
+        Ok(serde_json::json!(items
+            .iter()
+            .map(|it| {
+                // Preformatted, unit-scaling size (B→TB) so the list matches the
+                // rest of the app; blank when the size is unknown.
+                let size_h = if it.file_size > 0 {
+                    human_size(it.file_size)
+                } else {
+                    String::new()
+                };
+                serde_json::json!({
+                    "id": it.id,
+                    "name": it.name,
+                    "date": it.date(),
+                    "reviewed": it.is_reviewed(),
+                    "review_status": it.review_status,
+                    "upload": it.is_upload(),
+                    "size": it.file_size,
+                    "size_h": size_h,
+                    "imported": imported.contains(&it.id),
+                })
+            })
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// One selected crawl to import.
+#[derive(Deserialize)]
+struct BxImportItem {
+    id: String,
+    #[serde(default)]
+    name: String,
+    /// QA review rating (1–5), carried onto the crawl as provenance.
+    #[serde(default)]
+    review_status: Option<u8>,
+}
+
+/// Body of `POST /api/browsertrix/import`. The host is server-configured.
+#[derive(Deserialize)]
+struct BxImportRequest {
+    org: String,
+    /// Target indice collection (display name); created if new.
+    collection: String,
+    items: Vec<BxImportItem>,
+    /// Download a durable local copy (default) vs. stream-index in place.
+    #[serde(default = "default_true")]
+    download: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `POST /api/browsertrix/import` — import the selected Browsertrix crawls into a
+/// collection as an ingest job (progress over the shared SSE endpoint). Two
+/// modes: `download` (the default) fetches a durable local copy and indexes it;
+/// otherwise the crawl is stream-indexed in place, with replay re-resolving a
+/// fresh presigned URL via the resolver.
+async fn bx_import(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BxImportRequest>,
+) -> Response {
+    let Some(provider) = state.browsertrix.clone() else {
+        return browsertrix_unconfigured();
+    };
+    if req.collection.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    if req.org.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+    }
+    if req.items.is_empty() {
+        return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
+    }
+    // Streaming needs the resolver (to fetch a fresh presigned URL at index time
+    // and again at replay); downloading fetches each WACZ directly and doesn't.
+    let resolver = state.resolver.clone();
+    if !req.download && resolver.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Browsertrix streaming import requires the resolver (credentials).",
+        )
+            .into_response();
+    }
+
+    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    state.jobs.lock().unwrap().insert(id, rx);
+
+    let job_state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let progress = ChannelProgress { tx: tx.clone() };
+        let result = (|| -> Result<Vec<serde_json::Value>> {
+            let client = provider.client()?;
+            let host = client.host().to_string();
+            // Each indexed WACZ, as {id, name}, so the UI can link every crawl.
+            let mut crawls: Vec<serde_json::Value> = Vec::new();
+            for item in &req.items {
+                let resources = client.item_resources(&req.org, &item.id)?;
+                let name = (!item.name.trim().is_empty()).then_some(item.name.as_str());
+                for (i, res) in resources.iter().enumerate() {
+                    // Both modes record the Browsertrix provenance (item id,
+                    // resource hash, QA rating) so the crawl is later recognized
+                    // as already-imported and carries its review. The write lock is
+                    // held only around the Tantivy write + provenance — never
+                    // around the download, which would block other imports.
+                    let crawl_id = if req.download {
+                        // Durable: download each WACZ into archive/<collection>/<item>/
+                        // (no lock) and index it as a local File source.
+                        let item_dir = crate::index::archive_dir(&job_state.home)
+                            .join(crate::collections::slugify(&req.collection))
+                            .join(crate::index::safe_component(&item.id));
+                        std::fs::create_dir_all(&item_dir)?;
+                        let filename =
+                            crate::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
+                        let dest = item_dir.join(&filename);
+                        let size = if res.size > 0 {
+                            format!(" ({})", human_size(res.size))
+                        } else {
+                            String::new()
+                        };
+                        crate::index::IndexProgress::phase(
+                            &progress,
+                            &format!("downloading {filename}{size}"),
+                        );
+                        crate::index::download_wacz(&res.path, &dest)?;
+                        let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                        crate::index::index_location(
+                            &dest.to_string_lossy(),
+                            &job_state.home,
+                            name,
+                            &req.collection,
+                            false,
+                            None,
+                            Some(&progress),
+                        )?;
+                        let abs = dest.canonicalize().unwrap_or(dest.clone());
+                        let crawl_id = crate::collections::wacz_id(
+                            &crate::collections::Source::for_file(&abs, &job_state.home),
+                        );
+                        crate::index::set_browsertrix_provenance_by_id(
+                            &job_state.home,
+                            &crawl_id,
+                            &host,
+                            &item.id,
+                            &res.hash,
+                            item.review_status,
+                        )?;
+                        crawl_id
+                    } else {
+                        // Index-only: stream the crawl in place under the lock;
+                        // replay/reindex re-resolve a fresh URL.
+                        let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                        let resolver = resolver.as_ref().expect("resolver present when streaming");
+                        let source = crate::collections::Source::Browsertrix {
+                            host: host.clone(),
+                            org: req.org.clone(),
+                            item: item.id.clone(),
+                            resource: res.name.clone(),
+                        };
+                        crate::index::index_location_with_resolver(
+                            &source.location(),
+                            &job_state.home,
+                            name,
+                            &req.collection,
+                            false,
+                            None,
+                            Some(resolver.as_ref()),
+                            Some(&progress),
+                        )?;
+                        let crawl_id = crate::collections::wacz_id(&source);
+                        crate::index::set_browsertrix_provenance_by_id(
+                            &job_state.home,
+                            &crawl_id,
+                            &host,
+                            &item.id,
+                            &res.hash,
+                            item.review_status,
+                        )?;
+                        crawl_id
+                    };
+                    // Label the crawl by item name; disambiguate by resource
+                    // filename when one item yielded several WACZs.
+                    let display = if item.name.trim().is_empty() {
+                        item.id.clone()
+                    } else {
+                        item.name.clone()
+                    };
+                    let label = if resources.len() > 1 {
+                        format!("{display} · {}", res.name)
+                    } else {
+                        display
+                    };
+                    crawls.push(serde_json::json!({ "id": crawl_id, "name": label }));
+                }
+            }
+            Ok(crawls)
+        })();
+        match result {
+            Ok(crawls) => match job_state.reload_searcher() {
+                Ok(()) => tx
+                    .send(ProgressEvent::Done {
+                        collection: crate::collections::slugify(&req.collection),
+                        crawls,
+                    })
+                    .ok(),
+                Err(e) => tx
+                    .send(ProgressEvent::Error {
+                        message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                    })
+                    .ok(),
+            },
+            Err(e) => tx
+                .send(ProgressEvent::Error {
+                    message: format!("{e:#}"),
+                })
+                .ok(),
+        };
+    });
+
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
 /// Form body for create/edit collection (`application/x-www-form-urlencoded`).
@@ -2301,6 +2691,41 @@ fn format_timestamp(ts: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_browsertrix_ids_from_source_and_provenance() {
+        use crate::collections::{BrowsertrixRef, Source};
+        // Streamed import: the item id lives in the Browsertrix source.
+        let streamed = Source::Browsertrix {
+            host: "h".into(),
+            org: "o".into(),
+            item: "streamed-1".into(),
+            resource: "a.wacz".into(),
+        };
+        // Downloaded import: a local file source + a BrowsertrixRef provenance.
+        let downloaded = Source::File(std::path::PathBuf::from("archive/x/y.wacz"));
+        let downloaded_ref = BrowsertrixRef {
+            host: "h".into(),
+            item_id: "downloaded-1".into(),
+            resource_hash: String::new(),
+            review_status: Some(4),
+        };
+        // A hand-indexed URL crawl contributes nothing.
+        let unrelated = Source::Url("https://ex.org/w.wacz".into());
+
+        let ids = imported_browsertrix_ids(
+            [
+                (&streamed, None),
+                (&downloaded, Some(&downloaded_ref)),
+                (&unrelated, None),
+            ]
+            .into_iter(),
+        );
+
+        assert!(ids.contains("streamed-1"), "detects streamed source id");
+        assert!(ids.contains("downloaded-1"), "detects provenance item id");
+        assert_eq!(ids.len(), 2, "the plain URL crawl adds nothing");
+    }
 
     #[test]
     fn capture_quality_summarizes_status_histogram() {
