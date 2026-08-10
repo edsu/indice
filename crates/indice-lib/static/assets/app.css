@@ -303,13 +303,50 @@ nav.pagination .page-info { color: var(--muted); }
 .bx-connect input { flex: 1; padding: 0.45rem 0.6rem; border: 1px solid #d9d3c8; border-radius: var(--radius); font: inherit; }
 .bx-browse { margin: 0.7rem 0; }
 .bx-browse .grid-2 { margin-bottom: 0.6rem; }
+/* Filter/refresh toolbar above the crawl list. */
+.bx-toolbar { display: flex; align-items: center; gap: 0.9rem; margin: 0.2rem 0 0.4rem; flex-wrap: wrap; }
+.bx-toolbar .bx-filter { flex-direction: row; align-items: center; gap: 0.45rem; }
+.bx-toolbar .bx-filter select { width: auto; }
+.bx-toolbar .bx-check { flex-direction: row; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); }
+.bx-toolbar .bx-check input { width: auto; }
+.bx-toolbar #bx-refresh { margin-left: auto; }
+/* Download-vs-stream chooser under the crawl list. */
+.bx-mode { border: 1px solid var(--line-soft); border-radius: var(--radius); padding: 0.6rem 0.8rem; margin: 0.7rem 0 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.bx-mode legend { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); font-weight: 700; padding: 0 0.3rem; }
+.bx-mode label { display: flex; flex-direction: row; align-items: baseline; gap: 0.45rem; font-size: 0.85rem; cursor: pointer; }
+.bx-mode input { width: auto; flex: none; }
+.bx-mode .hint { color: var(--faint); }
+.add-done-link { margin: 0.5rem 0 0; font-size: 0.9rem; }
+.add-done-link p { margin: 0.3rem 0; }
+.add-done-crawls { margin: 0.2rem 0 0.4rem 1.1rem; padding: 0; }
+.add-done-crawls li { margin: 0.15rem 0; }
 .bx-items { display: flex; flex-direction: column; margin: 0.7rem 0; max-height: 320px; overflow-y: auto; }
 .bx-items:empty { display: none; }
-.bx-item { display: flex; align-items: center; gap: 0.55rem; padding: 0.4rem 0.4rem; border-bottom: 1px solid var(--line-soft); font-size: 0.9rem; cursor: pointer; }
+/* Crawl row: one full-width line on desktop — checkbox · name (grows) · date ·
+   QA · size (right). Wraps to stacked metadata only on narrow screens. */
+/* Scoped under .bx-items so these beat `.manage-form label { flex-direction: column }`. */
+.bx-items .bx-item { display: flex; flex-direction: row; align-items: center; gap: 0.75rem; padding: 0.45rem 0.4rem; border-bottom: 1px solid var(--line-soft); font-size: 0.9rem; cursor: pointer; }
 .bx-item:last-child { border-bottom: none; }
 .bx-item:hover { background: var(--paper); }
-.bx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bx-meta { color: var(--faint); font-size: 0.78rem; white-space: nowrap; }
+/* width:auto stops the checkbox inheriting `.manage-form input { width:100% }`. */
+.bx-items .bx-item input { flex: none; width: auto; margin: 0; }
+.bx-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Fixed-width, right-aligned trailing columns so they line up across rows. */
+.bx-date { flex: none; width: 5.5rem; text-align: right; color: var(--faint); font-size: 0.8rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bx-qa { flex: none; width: 5rem; text-align: right; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); white-space: nowrap; }
+.bx-qa.yes { color: var(--ok); }
+/* Already-imported crawls: dimmed, non-selectable, with an "in library" tag. */
+.bx-item.imported { opacity: 0.62; cursor: default; }
+.bx-badge { flex: none; font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--paper); border: 1px solid var(--line-soft); border-radius: 999px; padding: 0.05rem 0.45rem; white-space: nowrap; }
+.bx-size { flex: none; width: 5rem; text-align: right; color: var(--faint); font-size: 0.8rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Give the accession desk (with its crawl list) more room than a plain form. */
+#add-archive-form { max-width: 820px; }
+/* Narrow screens: metadata wraps under the name, indented past the checkbox. */
+@media (max-width: 560px) {
+  .bx-items .bx-item { flex-wrap: wrap; align-items: baseline; }
+  .bx-name { flex: 1 1 60%; }
+  .bx-date, .bx-qa, .bx-size { margin-left: 1.7rem; width: auto; text-align: left; }
+}
 
 .progress {
   margin: 0.8rem 0 0; min-height: 1.2rem; white-space: pre-wrap;

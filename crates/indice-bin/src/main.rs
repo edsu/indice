@@ -1310,7 +1310,7 @@ fn run_browsertrix(
         // (their crawl id is derived from the path, so a shared path would also
         // merge their manifest entries). The subdir is still under archive/, so
         // it satisfies the "local WACZ lives in archive/" rule.
-        let item_dir = archive.join(safe_component(&item.id));
+        let item_dir = archive.join(indice_lib::index::safe_component(&item.id));
         std::fs::create_dir_all(&item_dir)
             .with_context(|| format!("creating {}", item_dir.display()))?;
 
@@ -1356,10 +1356,11 @@ fn run_browsertrix(
                 indice_lib::collections::wacz_id(&source)
             } else {
                 // Download a durable local copy and index it as a File source.
-                let filename = safe_wacz_filename(&res.name, &format!("resource-{i}"));
+                let filename =
+                    indice_lib::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
                 let dest = item_dir.join(&filename);
                 eprintln!("↓ downloading {filename}{size}");
-                download_wacz(&res.path, &dest)?;
+                indice_lib::index::download_wacz(&res.path, &dest)?;
                 let quiet = gag::Gag::stdout().ok();
                 let indexed = indice_lib::index::index_location(
                     &dest.to_string_lossy(),
@@ -1559,13 +1560,14 @@ fn run_browsertrix_public(
             } else {
                 // Each crawl's WACZ lands in its own subdir so shared filenames
                 // can't collide (mirrors the authenticated path).
-                let item_dir = archive.join(safe_component(&item_id));
+                let item_dir = archive.join(indice_lib::index::safe_component(&item_id));
                 std::fs::create_dir_all(&item_dir)
                     .with_context(|| format!("creating {}", item_dir.display()))?;
-                let filename = safe_wacz_filename(&res.name, &format!("resource-{i}"));
+                let filename =
+                    indice_lib::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
                 let dest = item_dir.join(&filename);
                 eprintln!("↓ downloading {filename}{size}");
-                download_wacz(&res.path, &dest)?;
+                indice_lib::index::download_wacz(&res.path, &dest)?;
                 let quiet = gag::Gag::stdout().ok();
                 let indexed = indice_lib::index::index_location(
                     &dest.to_string_lossy(),
@@ -1718,56 +1720,6 @@ fn load_imported(home: &std::path::Path) -> std::collections::HashSet<(String, S
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Download a WACZ to `dest` via a temp `.part` file renamed on success, so an
-/// interrupted download never leaves a truncated file that looks complete.
-/// Returns the number of bytes written.
-fn download_wacz(url: &str, dest: &std::path::Path) -> Result<u64> {
-    use std::io::{Read, Write};
-
-    let mut tmp = dest.as_os_str().to_owned();
-    tmp.push(".part");
-    let tmp = PathBuf::from(tmp);
-
-    let mut reader =
-        indice_lib::http_range::get_reader(url).with_context(|| format!("fetching {url}"))?;
-    let mut file =
-        std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-    let mut buf = [0u8; 64 * 1024];
-    let mut written = 0u64;
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .with_context(|| format!("reading {url}"))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        written += n as u64;
-    }
-    file.sync_all().ok();
-    drop(file);
-    std::fs::rename(&tmp, dest).with_context(|| format!("finalizing {}", dest.display()))?;
-    Ok(written)
-}
-
-/// A filesystem-safe `.wacz` filename derived from a resource name (falling back
-/// to the item id). Non-`[A-Za-z0-9._-]` characters — including any path
-/// separators — become `_`, so the result stays a single component inside the
-/// archive folder.
-fn safe_wacz_filename(name: &str, fallback: &str) -> String {
-    let base = if name.trim().is_empty() {
-        fallback
-    } else {
-        name.trim()
-    };
-    let mut out = safe_component(base);
-    if !out.to_ascii_lowercase().ends_with(".wacz") {
-        out.push_str(".wacz");
-    }
-    out
 }
 
 /// Build a Browsertrix client from environment credentials, so secrets never
@@ -1939,35 +1891,10 @@ fn resolve_org(
     }
 }
 
-/// A filesystem-safe single path component: any character outside
-/// `[A-Za-z0-9._-]` (including path separators) becomes `_`, and a component
-/// that would be `.` or `..` is neutralized to `_`/`__` so a hostile item id
-/// from the API can't escape its per-item subdirectory.
-fn safe_component(s: &str) -> String {
-    let mapped: String = s
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    match mapped.as_str() {
-        "" => "_".to_string(),
-        "." => "_".to_string(),
-        ".." => "__".to_string(),
-        _ => mapped,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::parse_source_lines;
-    use super::{
-        passes_review, resolve_collection, resolve_org, safe_component, safe_wacz_filename,
-    };
+    use super::{passes_review, resolve_collection, resolve_org};
     use indice_lib::browsertrix::{Collection, Item, Org};
 
     #[test]
@@ -1993,19 +1920,6 @@ mod tests {
         assert_eq!(date_range(Some("garbage"), None), None);
     }
 
-    #[test]
-    fn safe_component_neutralizes_traversal_and_separators() {
-        // A hostile/compromised Browsertrix item id must not escape its subdir.
-        assert_eq!(safe_component(".."), "__");
-        assert_eq!(safe_component("."), "_");
-        // Embedded separators are mapped, leaving a single contained component.
-        assert_eq!(safe_component("../../etc"), ".._.._etc");
-        assert_eq!(safe_component("a/b"), "a_b");
-        assert_eq!(safe_component(""), "_");
-        // A normal id is untouched.
-        assert_eq!(safe_component("manual-20250101-abc"), "manual-20250101-abc");
-    }
-
     fn item(review: Option<u8>) -> Item {
         Item {
             id: "x".into(),
@@ -2013,6 +1927,8 @@ mod tests {
             item_type: "crawl".into(),
             file_size: 0,
             review_status: review,
+            finished: None,
+            created: None,
         }
     }
 
@@ -2102,21 +2018,6 @@ mod tests {
         assert!(passes_review(&item(Some(4)), false, Some(4)));
         assert!(!passes_review(&item(Some(3)), false, Some(4)));
         assert!(!passes_review(&item(None), false, Some(4)));
-    }
-
-    #[test]
-    fn safe_wacz_filename_sanitizes_and_ensures_extension() {
-        assert_eq!(safe_wacz_filename("my crawl.wacz", "id1"), "my_crawl.wacz");
-        // Path separators and other unsafe chars become '_'; extension appended.
-        assert_eq!(
-            safe_wacz_filename("../etc/passwd", "id1"),
-            ".._etc_passwd.wacz"
-        );
-        assert_eq!(safe_wacz_filename("plain", "id1"), "plain.wacz");
-        // Empty name falls back to the item id.
-        assert_eq!(safe_wacz_filename("   ", "abc123"), "abc123.wacz");
-        // Already-correct names are preserved (case-insensitive extension check).
-        assert_eq!(safe_wacz_filename("a-b_c.WACZ", "id1"), "a-b_c.WACZ");
     }
 
     #[test]

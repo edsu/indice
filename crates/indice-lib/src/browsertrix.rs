@@ -208,6 +208,22 @@ pub struct Item {
     /// item has never been QA'd.
     #[serde(rename = "reviewStatus", default)]
     pub review_status: Option<u8>,
+    /// Crawl finish time (ISO 8601), when present.
+    #[serde(default)]
+    pub finished: Option<String>,
+    /// Creation time (ISO 8601) — a fallback date, chiefly for uploads.
+    #[serde(default)]
+    pub created: Option<String>,
+}
+
+impl Item {
+    /// The best available date (finished, else created), trimmed to `YYYY-MM-DD`.
+    pub fn date(&self) -> Option<&str> {
+        self.finished
+            .as_deref()
+            .or(self.created.as_deref())
+            .map(|d| d.get(..10).unwrap_or(d))
+    }
 }
 
 impl Item {
@@ -738,6 +754,8 @@ mod tests {
             item_type: "crawl".into(),
             file_size: 0,
             review_status: None,
+            finished: None,
+            created: None,
         };
         let res = c.resources("o1", &crawl).unwrap();
         assert_eq!(res.len(), 1);
@@ -751,6 +769,8 @@ mod tests {
             item_type: "upload".into(),
             file_size: 0,
             review_status: None,
+            finished: None,
+            created: None,
         };
         let res = c.resources("o1", &upload).unwrap();
         assert_eq!(res[0].path, "https://files/b.wacz?sig=2");
