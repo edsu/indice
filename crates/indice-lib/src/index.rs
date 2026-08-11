@@ -545,6 +545,13 @@ fn local_wacz_to_remove(manifest: &Manifest, wacz: &Wacz, home: &Path) -> Option
         return None;
     }
     let path = wacz.source.resolve(home)?;
+    // Only ever remove files under <home>/archive, never a curator's original
+    // elsewhere. `place_local_wacz` already files every local WACZ into archive,
+    // so a stored File source is always under it — this makes that invariant an
+    // enforced guard, not just an assumption.
+    if !path.starts_with(archive_dir(home)) {
+        return None;
+    }
     if !path.exists() {
         return None;
     }

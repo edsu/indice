@@ -80,6 +80,50 @@ fn delete_crawl_removes_docs_manifest_and_file() {
 }
 
 #[test]
+fn delete_crawl_keeps_a_file_referenced_by_another_entry() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let id1 = index_fixture(home, "c");
+
+    // Craft a second manifest entry that shares the *same* WACZ file (a different
+    // id + collection, identical `source`). The public index API refuses
+    // re-collecting one file, so edit waczs.json directly to set up the case.
+    let waczs_path = index_dir(home).join("waczs.json");
+    let mut entries: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&waczs_path).unwrap()).unwrap();
+    let mut dup = entries[0].clone();
+    dup["id"] = serde_json::json!("dup00001");
+    dup["collection"] = serde_json::json!("d");
+    entries.push(dup);
+    std::fs::write(&waczs_path, serde_json::to_string_pretty(&entries).unwrap()).unwrap();
+
+    let file = indice_lib::collections::Manifest::open(&index_dir(home))
+        .unwrap()
+        .wacz_by_id(&id1)
+        .unwrap()
+        .source
+        .resolve(home)
+        .unwrap();
+    assert!(file.exists());
+
+    // Deleting the first entry must NOT remove the shared file.
+    let plan = indice_lib::index::delete_crawl(home, &id1).unwrap();
+    assert!(
+        plan.local_file.is_none(),
+        "a file shared with another entry is not scheduled for removal"
+    );
+    assert!(file.exists(), "the shared WACZ file is preserved");
+
+    // The other entry survives and still resolves to the (still-present) file.
+    let manifest = indice_lib::collections::Manifest::open(&index_dir(home)).unwrap();
+    assert!(manifest.wacz_by_id(&id1).is_none(), "deleted entry is gone");
+    let other = manifest
+        .wacz_by_id("dup00001")
+        .expect("shared entry remains");
+    assert!(other.source.resolve(home).unwrap().exists());
+}
+
+#[test]
 fn delete_collection_refuses_nonempty_without_flag_then_deletes_with_it() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path();

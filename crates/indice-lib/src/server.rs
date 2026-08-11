@@ -1281,17 +1281,38 @@ async fn delete_collection_handler(
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        // Refusing a non-empty collection is a client choice, not a server fault,
+        // so surface it as 409 rather than letting the lib error become a 500.
+        let plan = crate::index::plan_collection_deletion(&state.home, &id)?;
+        if plan.member_count > 0 && !with_crawls {
+            return Ok(DeleteOutcome::Refused(plan.member_count));
+        }
         let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let plan = crate::index::delete_collection(&state.home, &id, with_crawls)?;
+        crate::index::delete_collection(&state.home, &id, with_crawls)?;
         state.reload_searcher()?;
-        Ok::<_, anyhow::Error>(plan)
+        Ok::<_, anyhow::Error>(DeleteOutcome::Done)
     })
     .await;
     match result {
-        Ok(Ok(_)) => Redirect::to("/").into_response(),
+        Ok(Ok(DeleteOutcome::Done)) => Redirect::to("/").into_response(),
+        Ok(Ok(DeleteOutcome::Refused(n))) => (
+            StatusCode::CONFLICT,
+            format!(
+                "This collection has {n} crawl(s); tick “also delete member crawls” \
+                 to remove them too, or delete/move the crawls first."
+            ),
+        )
+            .into_response(),
         Ok(Err(e)) => error_response(e).into_response(),
         Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
     }
+}
+
+/// Outcome of a collection-delete attempt: done, or refused because it still has
+/// members and `with_crawls` wasn't set (a 409, not a 500).
+enum DeleteOutcome {
+    Done,
+    Refused(usize),
 }
 
 // ── Homepage ──────────────────────────────────────────────────────────────────
