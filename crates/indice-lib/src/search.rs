@@ -112,7 +112,21 @@ impl SearchIndex {
             }
             Ok(index)
         } else {
-            Index::create_in_dir(index_dir, schema)
+            // Compress the doc store with zstd rather than the default lz4: the
+            // store holds the page text (the largest, corpus-linear part of the
+            // index) and zstd compresses text markedly better, with negligible
+            // read cost. Applied on create, so `reindex` picks it up. See the
+            // size/scale model in DESIGN.md.
+            let settings = tantivy::IndexSettings {
+                docstore_compression: tantivy::store::Compressor::Zstd(
+                    tantivy::store::ZstdCompressor::default(),
+                ),
+                ..Default::default()
+            };
+            Index::builder()
+                .schema(schema)
+                .settings(settings)
+                .create_in_dir(index_dir)
                 .with_context(|| format!("creating Tantivy index at {}", index_dir.display()))
         }
     }
@@ -237,6 +251,12 @@ impl SearchIndex {
     /// disk), which slows *every* query — a search fans out across all segments.
     pub fn segment_count(&self) -> Result<usize> {
         Ok(self.index.searchable_segment_ids()?.len())
+    }
+
+    /// Total number of live documents across all segments — the denominator for
+    /// the bytes-per-doc size/scale model.
+    pub fn num_docs(&self) -> Result<u64> {
+        Ok(self.index.reader()?.searcher().num_docs())
     }
 
     /// Compact the index by merging segments down toward `target_segments`

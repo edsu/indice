@@ -188,6 +188,20 @@ One document per WACZ is indexed at `indice index` time. Its `body` concatenates
 
 One document per HTML response in the WACZ. `body` is extracted from the `<body>` element with `<script>`, `<style>`, and `<noscript>` removed.
 
+### Index footprint & the size/scale model
+
+indice's identity is small→institutional (a laptop's handful of WACZs up to an institution's TBs), so index footprint is a first-class concern. `indice stats` reports the on-disk size broken down by Tantivy segment-file type, the live doc count, bytes-per-doc, and projections to 1M / 100M docs — re-run it after any change to measure the effect (this is the "measure-first" model; deeper tuning is tracked under the *Scale* epic).
+
+The file types and what drives them:
+
+- **`store`** — the stored fields returned for results, dominated by the page **`body`** text kept for snippets. This is the largest, **corpus-linear** cost (≈64% on a measured 21.7k-doc / 118 MB corpus). It is compressed with **zstd** (set via `IndexSettings.docstore_compression` at index-create time; tantivy's default is lz4, which compresses text markedly worse). A `reindex` migrates an older lz4 index to zstd.
+- **`pos`** — term positions, needed for phrase queries; dominated by `body` (~20%).
+- **`term`/`idx`** — the inverted index; intrinsic to search (~16%).
+- **`fast`** — columnar values backing facets/sorting (`year`/`month`, `site`/`domain`/`media_type`/`lang`); small.
+- **`fieldnorm`**, **`del`** (deletes), **`meta`** (JSON bookkeeping) — minor.
+
+Because stored `body` text is the dominant, corpus-linear cost, the levers that matter at scale attack it: zstd compression (done), and — as data-driven follow-ups under the epic — capping stored body with a snippet fallback (`qw5.3`), a positions audit (`qw5.4`), and configurable frugality presets (`qw5.8`, laptop vs. institution). Every such change should be chosen from an `indice stats` before/after, not intuition.
+
 ---
 
 ## Snippets and Hit Highlighting

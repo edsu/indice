@@ -22,8 +22,10 @@ serde_yaml_ng = "0.10"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Index storage
-tantivy = "0.26"
+# Index storage. zstd-compression enables a zstd doc-store compressor (default
+# features only ship lz4); we use it for the stored page text, which dominates
+# the index — see the size/scale model in DESIGN.md.
+tantivy = { version = "0.26", features = ["zstd-compression"] }
 
 # WARC / WACZ
 warc = "0.4"
