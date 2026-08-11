@@ -535,6 +535,24 @@ impl Manifest {
             .iter()
             .filter(move |w| w.collection == collection_id)
     }
+
+    /// Remove the WACZ entry with `id`, returning it if present. Touches only the
+    /// manifest — not the index, the WACZ file, or thumbnails.
+    pub fn remove_wacz(&mut self, id: &str) -> Option<Wacz> {
+        self.waczs
+            .iter()
+            .position(|w| w.id == id)
+            .map(|i| self.waczs.remove(i))
+    }
+
+    /// Remove the collection grouping with `id`, returning it if present. Members
+    /// (WACZs) are not touched; the caller decides their fate.
+    pub fn remove_collection(&mut self, id: &str) -> Option<Collection> {
+        self.collections
+            .iter()
+            .position(|c| c.id == id)
+            .map(|i| self.collections.remove(i))
+    }
 }
 
 /// Read and parse a JSON file if it exists (`None` when absent).

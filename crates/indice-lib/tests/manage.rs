@@ -481,5 +481,84 @@ async fn read_only_server_has_no_collection_or_upload_routes() {
         "POST /api/archives/upload must be absent in read-only mode"
     );
 
+    // POST delete endpoints are absent.
+    for path in ["/api/crawls/x/delete", "/api/collections/x/delete"] {
+        let url = format!("{base}{path}");
+        let status = tokio::task::spawn_blocking(move || {
+            agent().post(&url).send("").unwrap().status().as_u16()
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 404, "POST {path} must be absent in read-only mode");
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn manage_delete_crawl_removes_it_from_index_and_disk() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+
+    // Add a crawl (POST + drain its SSE to completion).
+    let post_url = format!("{base}/api/archives");
+    let path = fixture("simple.wacz").to_string_lossy().to_string();
+    let body = serde_json::json!({ "path": path, "collection": "test" }).to_string();
+    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post_url)
+            .header("content-type", "application/json")
+            .send(body)
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let job_id = job["job"].as_u64().unwrap();
+    let (_, events) = get(format!("{base}/api/archives/{job_id}/events")).await;
+    assert!(
+        events.contains("event: done"),
+        "add should complete:\n{events}"
+    );
+
+    // Grab the crawl id and confirm search finds it.
+    let id = {
+        let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+        assert_eq!(manifest.waczs.len(), 1);
+        manifest.waczs[0].id.clone()
+    };
+    let (_, body) = get(format!("{base}/api/search?q=example")).await;
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["total"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+
+    // Delete via the management endpoint (follows the redirect to a 2xx page).
+    let del_url = format!("{base}/api/crawls/{id}/delete");
+    let status = tokio::task::spawn_blocking(move || {
+        agent().post(&del_url).send("").unwrap().status().as_u16()
+    })
+    .await
+    .unwrap();
+    assert!(
+        status < 400,
+        "delete should redirect to a page, got {status}"
+    );
+
+    // Gone from the manifest and from the (reloaded) searcher.
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert!(manifest.waczs.is_empty(), "crawl removed from the manifest");
+    let (_, body) = get(format!("{base}/api/search?q=example")).await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["total"]
+            .as_u64()
+            .unwrap(),
+        0,
+        "reloaded searcher no longer finds the deleted crawl"
+    );
+
     server.abort();
 }
