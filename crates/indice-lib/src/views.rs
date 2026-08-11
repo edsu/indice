@@ -729,6 +729,27 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 a.btn href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
             }
         }
+        @if p.management {
+            details.danger-zone {
+                summary { "Delete this collection" }
+                form.confirm-delete method="post" action=(format!("/api/collections/{}/delete", p.id)) {
+                    @if p.members.is_empty() {
+                        p.muted { "Removes this empty collection's finding aid. This can't be undone." }
+                    } @else {
+                        p.muted {
+                            "This collection has " (p.members.len()) " crawl(s). Deleting the "
+                            "grouping alone is refused; tick the box to delete its crawls too "
+                            "(their pages, WACZ files, and thumbnails). This can't be undone."
+                        }
+                        label.confirm-with-crawls {
+                            input type="checkbox" name="with_crawls" value="true";
+                            span { "also delete all " (p.members.len()) " member crawl(s)" }
+                        }
+                    }
+                    button.btn.danger type="submit" { "Delete permanently" }
+                }
+            }
+        }
 
         section.about {
             h2 { "About this collection" }
@@ -831,6 +852,8 @@ pub struct PageItem {
 /// All the data the crawl detail page renders. The handler resolves links,
 /// formats sizes/dates, and gathers provenance/file rows; the view lays them out.
 pub struct CrawlPage {
+    /// The crawl's own id (for the management delete action).
+    pub id: String,
     /// `(collection_id, collection_name)` breadcrumb, if the crawl has one.
     pub crumb: Option<(String, String)>,
     pub name: String,
@@ -914,6 +937,16 @@ pub fn crawl(p: &CrawlPage) -> Markup {
                         a href=(pg.href) { (pg.title) }
                         div.result-url { (pg.url) }
                     }
+                }
+            }
+        }
+
+        @if p.management {
+            details.danger-zone {
+                summary { "Delete this crawl" }
+                form.confirm-delete method="post" action=(format!("/api/crawls/{}/delete", p.id)) {
+                    p.muted { "Permanently removes this crawl: its pages from search, the local WACZ file, and its thumbnail. This can't be undone." }
+                    button.btn.danger type="submit" { "Delete permanently" }
                 }
             }
         }

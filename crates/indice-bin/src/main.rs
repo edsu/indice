@@ -322,6 +322,21 @@ enum CrawlCmd {
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
+    /// Delete a crawl: its search-index documents, manifest entry, local WACZ
+    /// (for a downloaded/File source, if unreferenced), and thumbnail. The index
+    /// reclaims disk only on a later segment merge. Irreversible.
+    Delete {
+        /// Crawl id (the 8-char id shown on the crawl page / in `collection list`).
+        id: String,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -386,6 +401,38 @@ enum CollectionCmd {
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
+    /// Delete a collection's grouping (its finding aid). An empty collection is
+    /// removed outright; a non-empty one is refused unless --with-crawls, which
+    /// also deletes every member crawl (files + index docs). Irreversible.
+    Delete {
+        /// Collection id/slug or name.
+        id: String,
+
+        /// Also delete every member crawl, not just the grouping.
+        #[arg(long)]
+        with_crawls: bool,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
+}
+
+/// Prompt on stderr and read a yes/no answer from stdin. Returns true only for
+/// an explicit `y`/`yes` — the default (empty line, EOF, anything else) is No, so
+/// a destructive command never proceeds on a stray keypress.
+fn confirm(prompt: &str) -> Result<bool> {
+    use std::io::Write;
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+    Ok(answer == "y" || answer == "yes")
 }
 
 /// Read a whole text argument from a file, or from stdin when the path is `-`
@@ -907,6 +954,54 @@ async fn main() -> Result<()> {
             CollectionCmd::List { home } => {
                 run_collection_list(&home)?;
             }
+            CollectionCmd::Delete {
+                id,
+                with_crawls,
+                yes,
+                home,
+            } => {
+                // Resolve the argument (id/slug or name) to a collection id.
+                let manifest =
+                    indice_lib::collections::Manifest::open(&indice_lib::index::index_dir(&home))?;
+                let coll_id = if manifest.collection_by_id(&id).is_some() {
+                    id.clone()
+                } else if let Some(c) = manifest.collections.iter().find(|c| c.name == id) {
+                    c.id.clone()
+                } else {
+                    indice_lib::collections::slugify(&id)
+                };
+                drop(manifest);
+
+                let plan = indice_lib::index::plan_collection_deletion(&home, &coll_id)?;
+                println!(
+                    "About to delete collection {} \"{}\" ({} crawl(s))",
+                    plan.id, plan.name, plan.member_count
+                );
+                if plan.member_count > 0 && !with_crawls {
+                    eprintln!(
+                        "  refusing: {} crawl(s) remain — pass --with-crawls to delete them too, \
+                         or move/delete the crawls first",
+                        plan.member_count
+                    );
+                    std::process::exit(2);
+                }
+                if plan.member_count > 0 {
+                    println!(
+                        "  --with-crawls: all {} member crawl(s) will be deleted (files + index docs)",
+                        plan.member_count
+                    );
+                }
+                if yes || confirm("Delete this collection? [y/N] ")? {
+                    let done = indice_lib::index::delete_collection(&home, &coll_id, with_crawls)?;
+                    println!(
+                        "deleted collection {} ({} crawl(s) removed)",
+                        done.id,
+                        done.crawls_deleted.len()
+                    );
+                } else {
+                    println!("aborted");
+                }
+            }
         },
 
         Commands::Crawl { action } => match action {
@@ -935,6 +1030,29 @@ async fn main() -> Result<()> {
                 if !did {
                     eprintln!("nothing to set — pass --image <FILE> or --note <TEXT>");
                     std::process::exit(2);
+                }
+            }
+            CrawlCmd::Delete { id, yes, home } => {
+                let plan = indice_lib::index::plan_crawl_deletion(&home, &id)?;
+                println!(
+                    "About to delete crawl {} \"{}\" (collection: {})",
+                    plan.id, plan.name, plan.collection
+                );
+                match &plan.local_file {
+                    Some(p) => println!("  local WACZ to remove: {}", p.display()),
+                    None => println!("  no local WACZ file (streamed/remote source)"),
+                }
+                if plan.last_in_collection {
+                    println!(
+                        "  note: last crawl in collection \"{}\" (the empty collection is kept)",
+                        plan.collection
+                    );
+                }
+                if yes || confirm("Delete this crawl? [y/N] ")? {
+                    indice_lib::index::delete_crawl(&home, &id)?;
+                    println!("deleted crawl {id}");
+                } else {
+                    println!("aborted");
                 }
             }
         },

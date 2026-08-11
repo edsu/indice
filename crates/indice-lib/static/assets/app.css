@@ -94,6 +94,16 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.
   background: #fff; color: var(--accent-dk); border: 1px solid var(--accent);
 }
 .btn:hover { background: var(--accent-tint); text-decoration: none; }
+/* Destructive action: red outline button + a collapsed "danger zone" so a
+   delete always takes a deliberate expand-then-confirm, never one stray click. */
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover { background: #fdeceb; }
+.danger-zone { margin: 2.5rem 0 0; border-top: 1px solid var(--line); padding-top: 1rem; }
+.danger-zone > summary { cursor: pointer; color: var(--danger); font-size: 0.9rem; font-weight: 650; width: fit-content; }
+.confirm-delete { margin-top: 0.8rem; padding: 0.9rem 1rem; border: 1px solid var(--danger); border-radius: var(--radius); background: #fdeceb; max-width: 640px; }
+.confirm-delete p { margin: 0 0 0.7rem; }
+.confirm-with-crawls { display: flex; align-items: center; gap: 0.45rem; margin: 0 0 0.8rem; font-size: 0.9rem; }
+.confirm-with-crawls input { width: auto; }
 
 /* Section heading with an optional action on the right (e.g. + New collection) */
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }

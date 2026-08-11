@@ -123,14 +123,17 @@ impl SearchIndex {
             .expect("SearchIndex opened read-only; no writer available")
     }
 
-    /// Remove all documents (pages and the collection doc) belonging to a
-    /// collection.  Call this before re-indexing a collection so that
-    /// re-indexing is an upsert rather than an append.
+    /// Remove all documents (pages and the collection doc) belonging to a single
+    /// crawl, by its `crawl_id`. Used both to re-index a crawl as an upsert and
+    /// to delete it outright. The delete only takes effect on [`commit`].
     ///
-    /// Tantivy applies a delete only to documents committed before it, so the
-    /// caller should `delete_collection()` first, then `index_page()` /
-    /// `index_collection()`, then `commit()` - the fresh documents survive.
-    pub fn delete_collection(&mut self, crawl_id: &str) {
+    /// Tantivy applies a delete only to documents committed before it, so when
+    /// re-indexing the caller should `delete_crawl_docs()` first, then
+    /// `index_page()` / `index_collection()`, then `commit()` — the fresh
+    /// documents survive.
+    ///
+    /// [`commit`]: Self::commit
+    pub fn delete_crawl_docs(&mut self, crawl_id: &str) {
         let field = self.index.schema().get_field(FIELD_CRAWL_ID).unwrap();
         self.writer_mut()
             .delete_term(Term::from_field_text(field, crawl_id));
