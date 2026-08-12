@@ -195,12 +195,12 @@ indice's identity is small→institutional (a laptop's handful of WACZs up to an
 The file types and what drives them:
 
 - **`store`** — the stored fields returned for results, dominated by the page **`body`** text kept for snippets. This is the largest, **corpus-linear** cost (≈64% on a measured 21.7k-doc / 118 MB corpus). It is compressed with **zstd** (set via `IndexSettings.docstore_compression` at index-create time; tantivy's default is lz4, which compresses text markedly worse). A `reindex` migrates an older lz4 index to zstd.
-- **`pos`** — term positions, needed for phrase queries; dominated by `body` (~20%).
+- **`pos`** — term positions, needed for phrase queries; dominated by `body` (~20%). Positions are kept only on `title` and `body` (the fields phrase queries target); the metadata fields (`headings`/`description`/`keywords`/`author`/`url_tokens`) are indexed frequencies-only, dropping their positions.
 - **`term`/`idx`** — the inverted index; intrinsic to search (~16%).
 - **`fast`** — columnar values backing facets/sorting (`year`/`month`, `site`/`domain`/`media_type`/`lang`); small.
 - **`fieldnorm`**, **`del`** (deletes), **`meta`** (JSON bookkeeping) — minor.
 
-Because stored `body` text is the dominant, corpus-linear cost, the levers that matter at scale attack it: zstd compression (done), and — as data-driven follow-ups under the epic — capping stored body with a snippet fallback (`qw5.3`), a positions audit (`qw5.4`), and configurable frugality presets (`qw5.8`, laptop vs. institution). Every such change should be chosen from an `indice stats` before/after, not intuition.
+The dominant costs are attacked directly: zstd doc-store compression (`qw5.2`), capping stored `body` text with a snippet fallback (`qw5.3`), and dropping term positions on the metadata fields (`qw5.4`) — all applied on a fresh index or `reindex`. Remaining, data-driven follow-ups under the epic: configurable frugality presets (`qw5.8`, laptop vs. institution — e.g. the stored-body cap), and query-time faceting/grouping cost at scale (`qw5.5`). Every such change should be chosen from an `indice stats` before/after, not intuition.
 
 ---
 

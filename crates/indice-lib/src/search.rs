@@ -998,6 +998,20 @@ fn facet_string() -> TextOptions {
         )
 }
 
+/// A tokenized text field indexed WITHOUT term positions (frequencies only):
+/// fully searchable as a bag of words, but not usable for phrase queries. Used
+/// for metadata fields where phrase matching adds nothing — headings (whose text
+/// is already in `body`, which keeps positions), description, keywords, author,
+/// URL words — so their positions are dropped from `.pos` (a corpus-linear size
+/// lever). Compose with `.set_stored()` for a field that is also stored.
+fn text_no_positions() -> TextOptions {
+    TextOptions::default().set_indexing_options(
+        TextFieldIndexing::default()
+            .set_tokenizer("default")
+            .set_index_option(IndexRecordOption::WithFreqs),
+    )
+}
+
 fn build_schema() -> Schema {
     let mut builder = Schema::builder();
     builder.add_text_field(FIELD_DOC_TYPE, STRING | STORED);
@@ -1012,19 +1026,20 @@ fn build_schema() -> Schema {
     // snippets is the capped body_snip, so the doc store stays bounded.
     builder.add_text_field(FIELD_BODY, TEXT);
     builder.add_text_field(FIELD_BODY_SNIP, STORED);
-    // Description is stored so it can be shown when a page has no body snippet.
-    builder.add_text_field(FIELD_DESCRIPTION, TEXT | STORED);
-    // Headings are indexed (and boosted at query time) but not stored.
-    builder.add_text_field(FIELD_HEADINGS, TEXT);
-    // Keywords and author are indexed (searchable, incl. `author:`) but not stored.
-    builder.add_text_field(FIELD_KEYWORDS, TEXT);
-    builder.add_text_field(FIELD_AUTHOR, TEXT);
+    // Description is stored (a snippet fallback) but doesn't need positions.
+    builder.add_text_field(FIELD_DESCRIPTION, text_no_positions().set_stored());
+    // Metadata fields: searchable as bag-of-words, no positions (no phrase
+    // queries). Headings' text is also in `body`, which keeps positions, so
+    // phrase matches on headings still work via `body`.
+    builder.add_text_field(FIELD_HEADINGS, text_no_positions());
+    builder.add_text_field(FIELD_KEYWORDS, text_no_positions());
+    builder.add_text_field(FIELD_AUTHOR, text_no_positions());
     // Exact host, for `domain:host` filtering and results display.
     builder.add_text_field(FIELD_DOMAIN, facet_string());
     // Registrable domain, for the cross-subdomain `site:` filter and Site facet.
     builder.add_text_field(FIELD_SITE, facet_string());
-    // Tokenized URL words; indexed for search but not stored (we keep the URL).
-    builder.add_text_field(FIELD_URL_TOKENS, TEXT);
+    // Tokenized URL words; searchable but not stored, and no positions.
+    builder.add_text_field(FIELD_URL_TOKENS, text_no_positions());
     // Numeric crawl year: indexed for `year:2021` / `year:[2020 TO 2023]`, and
     // fast so it can back the year facet.
     builder.add_u64_field(FIELD_YEAR, INDEXED | STORED | FAST);
