@@ -223,6 +223,11 @@ pub fn index_location_with_resolver(
         collection.to_string(),
     );
 
+    // Resolve the stored-body cap (the frugality knob) up front, so a malformed
+    // config.yaml aborts here — before we copy files into archive/ or touch the
+    // index — rather than silently indexing with the wrong setting.
+    let stored_body_cap = crate::config::Config::load(home)?.stored_body_cap_bytes();
+
     let index_dir = index_dir(home);
     std::fs::create_dir_all(&index_dir)
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
@@ -236,12 +241,7 @@ pub fn index_location_with_resolver(
 
     let mut search_index = SearchIndex::open(index_dir.join("full_text").as_path())
         .with_context(|| format!("opening search index at {}", index_dir.display()))?;
-    // Honor the home's stored-body cap (the frugality knob) at index time.
-    search_index.set_stored_body_cap(
-        crate::config::Config::load(home)
-            .unwrap_or_default()
-            .stored_body_cap_bytes(),
-    );
+    search_index.set_stored_body_cap(stored_body_cap);
     let search = Mutex::new(search_index);
 
     for source in &sources {
@@ -355,6 +355,10 @@ pub fn reindex(
         })
         .collect();
 
+    // Resolve the stored-body cap before destroying the old index, so a
+    // malformed config.yaml aborts the reindex rather than leaving no index.
+    let stored_body_cap = crate::config::Config::load(home)?.stored_body_cap_bytes();
+
     // Drop the old full-text index so it is recreated with the current schema.
     let full_text = index_dir.join("full_text");
     if full_text.exists() {
@@ -363,11 +367,7 @@ pub fn reindex(
     }
     let mut search_index = SearchIndex::open(full_text.as_path())
         .with_context(|| format!("creating search index at {}", index_dir.display()))?;
-    search_index.set_stored_body_cap(
-        crate::config::Config::load(home)
-            .unwrap_or_default()
-            .stored_body_cap_bytes(),
-    );
+    search_index.set_stored_body_cap(stored_body_cap);
     let search = Mutex::new(search_index);
 
     let total = targets.len();
