@@ -72,13 +72,6 @@ const CANDIDATE_CAP: usize = 1000;
 /// Headings rank above body text but below the title.
 const HEADINGS_BOOST: tantivy::Score = 2.0;
 
-/// How much page body text to STORE per document for snippets (the full body is
-/// still indexed for search). Long pages/PDFs dominate the doc store, so a cap
-/// bounds the largest, corpus-linear cost; matches past it still count but can't
-/// be highlighted. ~16 KiB keeps generous snippet coverage; a future frugality
-/// setting can dial it down for institutional-scale corpora.
-const STORED_BODY_CAP_BYTES: usize = 16 * 1024;
-
 /// The longest plain leading excerpt used as a last-resort snippet fallback.
 const LEADING_EXCERPT_CHARS: usize = 300;
 
@@ -116,6 +109,10 @@ pub struct SearchIndex {
     /// does not hold Tantivy's exclusive write lock, letting `index` run while
     /// the server is serving.
     writer: Option<IndexWriter>,
+    /// Bytes of page body text stored per document for snippets (the full body
+    /// is always indexed). Defaults to the built-in cap; the indexer overrides
+    /// it from the home config (the "frugality" knob). See [`crate::config`].
+    stored_body_cap: usize,
 }
 
 impl SearchIndex {
@@ -127,6 +124,7 @@ impl SearchIndex {
         Ok(Self {
             index,
             writer: Some(writer),
+            stored_body_cap: crate::config::DEFAULT_STORED_BODY_CAP_BYTES,
         })
     }
 
@@ -137,7 +135,15 @@ impl SearchIndex {
         Ok(Self {
             index,
             writer: None,
+            stored_body_cap: crate::config::DEFAULT_STORED_BODY_CAP_BYTES,
         })
+    }
+
+    /// Set how much body text to store per document for snippets (bytes). The
+    /// indexer sets this from the home config before indexing; `usize::MAX`
+    /// stores the full body.
+    pub fn set_stored_body_cap(&mut self, cap_bytes: usize) {
+        self.stored_body_cap = cap_bytes;
     }
 
     fn open_index(index_dir: &Path) -> Result<Index> {
@@ -214,7 +220,7 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_BODY).unwrap(), page.body);
         doc.add_text(
             schema.get_field(FIELD_BODY_SNIP).unwrap(),
-            truncate_on_char_boundary(page.body, STORED_BODY_CAP_BYTES),
+            truncate_on_char_boundary(page.body, self.stored_body_cap),
         );
         doc.add_text(
             schema.get_field(FIELD_DESCRIPTION).unwrap(),
@@ -279,7 +285,7 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_BODY).unwrap(), body);
         doc.add_text(
             schema.get_field(FIELD_BODY_SNIP).unwrap(),
-            truncate_on_char_boundary(body, STORED_BODY_CAP_BYTES),
+            truncate_on_char_boundary(body, self.stored_body_cap),
         );
         // Collection docs have no page URL or HTML metadata; keep those empty.
         doc.add_text(schema.get_field(FIELD_DESCRIPTION).unwrap(), "");
@@ -1534,7 +1540,7 @@ mod tests {
         // A body longer than the stored cap: a unique marker near the start (in
         // the stored prefix) and another only *past* the cap.
         let filler = "lorem ipsum dolor sit amet ".repeat(1500); // ~40 KB > cap
-        assert!(filler.len() > STORED_BODY_CAP_BYTES);
+        assert!(filler.len() > crate::config::DEFAULT_STORED_BODY_CAP_BYTES);
         let body = format!("zzmarkerhead {filler} zzmarkerdeep");
         idx.index_page(&Page {
             url: "https://ex.com/long",
@@ -1570,6 +1576,40 @@ mod tests {
             head[0].snippet.contains("<b>zzmarkerhead</b>"),
             "a match within the stored prefix is highlighted; got: {}",
             head[0].snippet
+        );
+    }
+
+    #[test]
+    fn stored_body_cap_setting_bounds_snippets() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        idx.set_stored_body_cap(64); // a deliberately tiny cap (the frugality knob)
+        let body = format!("zzhead {} zztail", "x ".repeat(100)); // ~200 B > 64
+        idx.index_page(&Page {
+            url: "https://ex.com/1",
+            title: "t",
+            body: &body,
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        // Both terms are findable — the full body is indexed regardless of cap.
+        assert_eq!(
+            idx.search("zztail", 10).unwrap().len(),
+            1,
+            "recall past cap"
+        );
+        let tail = idx.search("zztail", 10).unwrap();
+        assert!(
+            !tail[0].snippet.contains("zztail"),
+            "a term past the (tiny) stored cap isn't highlighted"
+        );
+        let head = idx.search("zzhead", 10).unwrap();
+        assert!(
+            head[0].snippet.contains("<b>zzhead</b>"),
+            "a term within the cap is highlighted"
         );
     }
 

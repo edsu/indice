@@ -192,6 +192,13 @@ enum Commands {
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
+    /// Show the resolved operator config and the path to `config.yaml` (edit that
+    /// file to change settings; changes apply on the next index/reindex).
+    Config {
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
     /// Manage collections (curated groups of WACZs).
     Collection {
         #[command(subcommand)]
@@ -921,6 +928,8 @@ async fn main() -> Result<()> {
 
         Commands::Stats { home } => run_stats(&home)?,
 
+        Commands::Config { home } => run_config(&home)?,
+
         Commands::Collection { action } => match action {
             CollectionCmd::Set {
                 name,
@@ -1130,6 +1139,36 @@ fn run_collection_list(home: &std::path::Path) -> Result<()> {
         let desc = c.description.as_deref().unwrap_or("");
         println!("{:<24} {:>3} WACZ  {}", c.name, count, desc);
     }
+    Ok(())
+}
+
+/// Show the resolved operator config and where to edit it. The file is optional
+/// and hand-edited (like the finding aids); settings apply on the next
+/// index/reindex.
+fn run_config(home: &std::path::Path) -> Result<()> {
+    let path = indice_lib::config::Config::path(home);
+    let cfg = indice_lib::config::Config::load(home)?;
+    println!(
+        "config file: {}{}",
+        path.display(),
+        if path.exists() {
+            ""
+        } else {
+            " (not present — using defaults)"
+        }
+    );
+    let cap = cfg.stored_body_cap_bytes();
+    let resolved = if cap == usize::MAX {
+        "unbounded (full body stored)".to_string()
+    } else {
+        format!("{} KiB stored per page", cap / 1024)
+    };
+    let set = cfg
+        .index
+        .stored_body_cap_kb
+        .map(|k| k.to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    println!("index.stored_body_cap_kb: {set}  ->  {resolved}");
     Ok(())
 }
 

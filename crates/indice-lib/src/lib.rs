@@ -1,5 +1,6 @@
 pub mod browsertrix;
 pub mod collections;
+pub mod config;
 pub mod http_range;
 pub mod index;
 pub mod markdown;

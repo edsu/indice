@@ -200,7 +200,20 @@ The file types and what drives them:
 - **`fast`** — columnar values backing facets/sorting (`year`/`month`, `site`/`domain`/`media_type`/`lang`); small.
 - **`fieldnorm`**, **`del`** (deletes), **`meta`** (JSON bookkeeping) — minor.
 
-The dominant costs are attacked directly: zstd doc-store compression (`qw5.2`), capping stored `body` text with a snippet fallback (`qw5.3`), and dropping term positions on the metadata fields (`qw5.4`) — all applied on a fresh index or `reindex`. Remaining, data-driven follow-ups under the epic: configurable frugality presets (`qw5.8`, laptop vs. institution — e.g. the stored-body cap), and query-time faceting/grouping cost at scale (`qw5.5`). Every such change should be chosen from an `indice stats` before/after, not intuition.
+The dominant costs are attacked directly: zstd doc-store compression (`qw5.2`), capping stored `body` text with a snippet fallback (`qw5.3`), and dropping term positions on the metadata fields (`qw5.4`) — all applied on a fresh index or `reindex`. The stored-body cap is operator-configurable (`qw5.8`, see below), so a laptop can keep generous snippets while an institution dials it down. Remaining, data-driven follow-ups under the epic: query-time faceting/grouping cost at scale (`qw5.5`), index-build RAM/merges (`qw5.6`), and the one-index-vs-sharding question (`qw5.7`). Every such change should be chosen from an `indice stats` before/after, not intuition.
+
+### Operator config (`<home>/config.yaml`)
+
+indice's first optional, hand-editable home-level config — committable alongside the archive, in the same YAML as the finding aids. It is deliberately forgiving: the file is optional, every field defaults, and unknown/missing keys are ignored, so it can grow (site name, branding, CSS override, theming, …) without breaking older or newer homes. `indice config` shows the resolved settings and the file path. Today it carries index tuning:
+
+```yaml
+index:
+  # Bytes of page body text STORED per document for snippets, in KiB. The full
+  # body is always indexed (search recall is unaffected); this only bounds the
+  # stored copy used to render snippets. 0 = store the full body; omit for the
+  # 16 KiB default. Applied on index/reindex — measure with `indice stats`.
+  stored_body_cap_kb: 8
+```
 
 ---
 
