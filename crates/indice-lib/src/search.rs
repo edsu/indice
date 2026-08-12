@@ -18,7 +18,15 @@ const FIELD_CRAWL_NAME: &str = "crawl_name";
 const FIELD_URL: &str = "url";
 const FIELD_TS: &str = "timestamp";
 const FIELD_TITLE: &str = "title";
+/// Full extracted page text — indexed (so search matches the whole page) but
+/// NOT stored. The stored copy for snippets is the capped [`FIELD_BODY_SNIP`].
 const FIELD_BODY: &str = "body";
+/// A capped prefix of the body text, STORED (not indexed) for snippet display.
+/// Snippets highlight within this prefix; a match deeper in the page than the
+/// cap still counts for search (the full body is indexed) but can't be
+/// highlighted, so results fall back to the description / a leading excerpt.
+/// Bounding the stored text is the headline on-disk size lever at scale.
+const FIELD_BODY_SNIP: &str = "body_snip";
 /// Exact host of a page URL (e.g. `www.example.com`), for `domain:` filtering.
 const FIELD_DOMAIN: &str = "domain";
 /// Registrable domain of a page URL (eTLD+1, e.g. `example.com` for any
@@ -63,6 +71,44 @@ const TITLE_BOOST: tantivy::Score = 3.0;
 const CANDIDATE_CAP: usize = 1000;
 /// Headings rank above body text but below the title.
 const HEADINGS_BOOST: tantivy::Score = 2.0;
+
+/// How much page body text to STORE per document for snippets (the full body is
+/// still indexed for search). Long pages/PDFs dominate the doc store, so a cap
+/// bounds the largest, corpus-linear cost; matches past it still count but can't
+/// be highlighted. ~16 KiB keeps generous snippet coverage; a future frugality
+/// setting can dial it down for institutional-scale corpora.
+const STORED_BODY_CAP_BYTES: usize = 16 * 1024;
+
+/// The longest plain leading excerpt used as a last-resort snippet fallback.
+const LEADING_EXCERPT_CHARS: usize = 300;
+
+/// Truncate `s` to at most `max_bytes`, on a UTF-8 char boundary.
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// A plain, whitespace-collapsed leading excerpt of `s` (first
+/// [`LEADING_EXCERPT_CHARS`] chars), for the last-resort snippet fallback.
+fn leading_excerpt(s: &str) -> String {
+    let mut out: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if out.chars().count() > LEADING_EXCERPT_CHARS {
+        let end = out
+            .char_indices()
+            .nth(LEADING_EXCERPT_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(out.len());
+        out.truncate(end);
+        out.push('…');
+    }
+    out
+}
 
 pub struct SearchIndex {
     index: Index,
@@ -167,6 +213,10 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_TITLE).unwrap(), page.title);
         doc.add_text(schema.get_field(FIELD_BODY).unwrap(), page.body);
         doc.add_text(
+            schema.get_field(FIELD_BODY_SNIP).unwrap(),
+            truncate_on_char_boundary(page.body, STORED_BODY_CAP_BYTES),
+        );
+        doc.add_text(
             schema.get_field(FIELD_DESCRIPTION).unwrap(),
             page.description,
         );
@@ -227,6 +277,10 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_TS).unwrap(), "");
         doc.add_text(schema.get_field(FIELD_TITLE).unwrap(), crawl_name);
         doc.add_text(schema.get_field(FIELD_BODY).unwrap(), body);
+        doc.add_text(
+            schema.get_field(FIELD_BODY_SNIP).unwrap(),
+            truncate_on_char_boundary(body, STORED_BODY_CAP_BYTES),
+        );
         // Collection docs have no page URL or HTML metadata; keep those empty.
         doc.add_text(schema.get_field(FIELD_DESCRIPTION).unwrap(), "");
         doc.add_text(schema.get_field(FIELD_HEADINGS).unwrap(), "");
@@ -484,10 +538,15 @@ impl SearchIndex {
         // context around the matched terms in search results.
         snippet_gen.set_max_num_chars(350);
 
+        let body_snip_f = schema.get_field(FIELD_BODY_SNIP).unwrap();
         let mut results = Vec::new();
         for g in groups.iter().skip(offset).take(limit) {
             let doc: TantivyDocument = searcher.doc(g.addr)?;
-            let snippet = snippet_gen.snippet_from_doc(&doc);
+            // Snippets highlight the stored capped body prefix (the full body is
+            // indexed but not stored). A match deeper than the cap yields an empty
+            // highlight; the leading excerpt is a last-resort fallback for that.
+            let body_snip = get_text(&doc, body_snip_f);
+            let snippet = snippet_gen.snippet(&body_snip);
             results.push(SearchResult {
                 doc_type: get_text(&doc, doc_type_f),
                 crawl_id: get_text(&doc, coll_id_f),
@@ -499,6 +558,7 @@ impl SearchIndex {
                 title: get_text(&doc, title_f),
                 description: get_text(&doc, description_f),
                 snippet: snippet.to_html(),
+                body_excerpt: leading_excerpt(&body_snip),
                 capture_count: g.captures,
                 status: get_u64(&doc, status_f).map(|s| s as u16),
             });
@@ -699,6 +759,10 @@ pub struct SearchResult {
     /// Page description (`<meta description>` / og:description), if any.
     pub description: String,
     pub snippet: String,
+    /// A plain leading excerpt of the stored body prefix — the last-resort
+    /// snippet fallback when the query matched only deeper than the stored cap
+    /// (so there's no highlight) and the page has no description.
+    pub body_excerpt: String,
     /// How many captures of this URL matched (1 when there are no repeats). The
     /// result shown is the best-ranked capture; the rest are collapsed into it.
     pub capture_count: usize,
@@ -944,7 +1008,10 @@ fn build_schema() -> Schema {
     builder.add_text_field(FIELD_URL, STRING | STORED);
     builder.add_text_field(FIELD_TS, STRING | STORED);
     builder.add_text_field(FIELD_TITLE, TEXT | STORED);
-    builder.add_text_field(FIELD_BODY, TEXT | STORED);
+    // Body is indexed for full-text recall but NOT stored; the stored copy for
+    // snippets is the capped body_snip, so the doc store stays bounded.
+    builder.add_text_field(FIELD_BODY, TEXT);
+    builder.add_text_field(FIELD_BODY_SNIP, STORED);
     // Description is stored so it can be shown when a page has no body snippet.
     builder.add_text_field(FIELD_DESCRIPTION, TEXT | STORED);
     // Headings are indexed (and boosted at query time) but not stored.
@@ -1442,6 +1509,52 @@ mod tests {
             (before2, after2),
             (2, 2),
             "already-compact index is untouched"
+        );
+    }
+
+    #[test]
+    fn body_past_the_stored_cap_is_searchable_but_not_highlighted() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        // A body longer than the stored cap: a unique marker near the start (in
+        // the stored prefix) and another only *past* the cap.
+        let filler = "lorem ipsum dolor sit amet ".repeat(1500); // ~40 KB > cap
+        assert!(filler.len() > STORED_BODY_CAP_BYTES);
+        let body = format!("zzmarkerhead {filler} zzmarkerdeep");
+        idx.index_page(&Page {
+            url: "https://ex.com/long",
+            title: "long page",
+            body: &body,
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        // The deep term is still findable — the full body is indexed even though
+        // only a capped prefix is stored (recall is unaffected by the cap).
+        let deep = idx.search("zzmarkerdeep", 10).unwrap();
+        assert_eq!(
+            deep.len(),
+            1,
+            "a term past the stored cap is still findable"
+        );
+        assert!(
+            !deep[0].snippet.contains("zzmarkerdeep"),
+            "a match past the stored cap can't be highlighted"
+        );
+        assert!(
+            !deep[0].body_excerpt.is_empty(),
+            "a leading-excerpt fallback is available for a past-cap hit"
+        );
+
+        // A term inside the stored prefix is highlighted as usual.
+        let head = idx.search("zzmarkerhead", 10).unwrap();
+        assert_eq!(head.len(), 1);
+        assert!(
+            head[0].snippet.contains("<b>zzmarkerhead</b>"),
+            "a match within the stored prefix is highlighted; got: {}",
+            head[0].snippet
         );
     }
 

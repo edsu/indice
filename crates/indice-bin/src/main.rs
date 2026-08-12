@@ -1149,7 +1149,10 @@ fn run_stats(home: &std::path::Path) -> Result<()> {
         human_size(s.total_bytes),
         human_size(s.bytes_per_doc().round() as u64),
     );
-    println!("  {:<10} {:>11} {:>7}  {:>10}", "type", "size", "%", "per doc");
+    println!(
+        "  {:<10} {:>11} {:>7}  {:>10}",
+        "type", "size", "%", "per doc"
+    );
     println!("  {:-<10} {:->11} {:->7}  {:->10}", "", "", "", "");
     for (label, bytes) in &s.by_type {
         println!(
@@ -1160,7 +1163,10 @@ fn run_stats(home: &std::path::Path) -> Result<()> {
             human_size((*bytes as f64 / s.docs as f64).round() as u64),
         );
     }
-    println!("\n  Projected at {}/doc:", human_size(s.bytes_per_doc().round() as u64));
+    println!(
+        "\n  Projected at {}/doc:",
+        human_size(s.bytes_per_doc().round() as u64)
+    );
     for (n, label) in [(1_000_000u64, "1M"), (100_000_000, "100M")] {
         println!("    {:>4} docs  ->  {}", label, human_size(s.project(n)));
     }

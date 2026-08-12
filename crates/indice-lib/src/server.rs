@@ -1573,10 +1573,17 @@ async fn search_page(
             // page's description so the result still has context. The snippet is
             // already-safe HTML (Tantivy emits `<b>` tags); the description is
             // plain text, so escape it before splicing as pre-escaped HTML.
+            // Fallback chain: the hit-highlighted body snippet; else the page
+            // description; else a plain leading excerpt of the stored body prefix
+            // (e.g. a title/URL-only hit, or a match deeper than the stored cap);
+            // else nothing (the row shows title + URL). Plain text is escaped
+            // before splicing as pre-escaped HTML; the snippet is already safe.
             let snippet_html = if !r.snippet.is_empty() {
                 Some(r.snippet.clone())
             } else if !r.description.is_empty() {
                 Some(html_escape(&r.description))
+            } else if !r.body_excerpt.is_empty() {
+                Some(html_escape(&r.body_excerpt))
             } else {
                 None
             };
