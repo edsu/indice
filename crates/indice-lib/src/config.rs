@@ -23,6 +23,14 @@ const CONFIG_FILE: &str = "config.yaml";
 /// trades snippet depth for a smaller doc store at scale.
 pub const DEFAULT_STORED_BODY_CAP_BYTES: usize = 16 * 1024;
 
+/// Default Tantivy indexing buffer budget (bytes) — the RAM the writer may use
+/// before flushing a segment. Split across indexing threads by Tantivy.
+pub const DEFAULT_WRITER_HEAP_BYTES: usize = 50 * 1024 * 1024;
+
+/// Floor for the writer heap; Tantivy errors on a too-small budget, so a tiny
+/// configured value is clamped up to something it accepts.
+const MIN_WRITER_HEAP_BYTES: usize = 15 * 1024 * 1024;
+
 /// Operator configuration for a indice home. Every section and field is
 /// optional; an absent file (or key) means "use the defaults".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -45,6 +53,12 @@ pub struct IndexConfig {
     /// matches deeper than the cap can't be highlighted. Applied on
     /// `index`/`reindex`; measure with `indice stats`.
     pub stored_body_cap_kb: Option<u64>,
+
+    /// Tantivy indexing buffer budget in MiB — the RAM ceiling / throughput knob
+    /// for building the index. Higher = fewer, larger segments (faster bulk
+    /// ingest, more RAM); lower caps memory. Omit for the 50 MiB default; values
+    /// below ~15 MiB are clamped up (Tantivy's minimum).
+    pub writer_heap_mb: Option<u64>,
 }
 
 impl Config {
@@ -75,6 +89,17 @@ impl Config {
             None => DEFAULT_STORED_BODY_CAP_BYTES,
         }
     }
+
+    /// The Tantivy writer heap in bytes: an explicit MiB value (clamped up to
+    /// Tantivy's minimum), else the default.
+    pub fn writer_heap_bytes(&self) -> usize {
+        match self.index.writer_heap_mb {
+            Some(mb) => (mb as usize)
+                .saturating_mul(1024 * 1024)
+                .max(MIN_WRITER_HEAP_BYTES),
+            None => DEFAULT_WRITER_HEAP_BYTES,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -96,6 +121,7 @@ mod tests {
         let frugal = Config {
             index: IndexConfig {
                 stored_body_cap_kb: Some(4),
+                ..Default::default()
             },
         };
         assert_eq!(frugal.stored_body_cap_bytes(), 4 * 1024);
@@ -103,9 +129,33 @@ mod tests {
         let unbounded = Config {
             index: IndexConfig {
                 stored_body_cap_kb: Some(0),
+                ..Default::default()
             },
         };
         assert_eq!(unbounded.stored_body_cap_bytes(), usize::MAX);
+    }
+
+    #[test]
+    fn writer_heap_resolves_and_clamps() {
+        assert_eq!(
+            Config::default().writer_heap_bytes(),
+            DEFAULT_WRITER_HEAP_BYTES
+        );
+        let big = Config {
+            index: IndexConfig {
+                writer_heap_mb: Some(256),
+                ..Default::default()
+            },
+        };
+        assert_eq!(big.writer_heap_bytes(), 256 * 1024 * 1024);
+        // A too-small value is clamped up to Tantivy's minimum.
+        let tiny = Config {
+            index: IndexConfig {
+                writer_heap_mb: Some(1),
+                ..Default::default()
+            },
+        };
+        assert_eq!(tiny.writer_heap_bytes(), MIN_WRITER_HEAP_BYTES);
     }
 
     #[test]

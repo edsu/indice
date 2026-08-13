@@ -213,7 +213,27 @@ index:
   # stored copy used to render snippets. 0 = store the full body; omit for the
   # 16 KiB default. Applied on index/reindex — measure with `indice stats`.
   stored_body_cap_kb: 8
+  # Tantivy indexing-buffer budget in MiB — the RAM ceiling / throughput knob for
+  # building the index. Higher = faster bulk ingest, more RAM; omit for 50 MiB.
+  writer_heap_mb: 256
 ```
+
+### Ingesting large corpora
+
+`index` accepts many WACZs at once (globs, or `--from-file`), and builds the
+index to be practical at TB scale:
+
+- **Incremental & resumable.** Each WACZ is committed and the manifest saved as
+  it finishes, so an interrupted run (OOM, crash, Ctrl-C, power) keeps every
+  completed crawl. Re-running the same `index` command **skips sources already
+  indexed** into the collection and continues from where it stopped; `--force`
+  re-indexes them.
+- **RAM ceiling.** `index.writer_heap_mb` sets the Tantivy indexing buffer
+  (default 50 MiB), the main lever on build-time memory vs. throughput; Tantivy
+  splits it across indexing threads and merges segments in the background.
+- **Measuring a run.** Time and peak RSS aren't instrumented in-process; measure
+  a build with the OS, e.g. `/usr/bin/time -l indice index …` (macOS) or
+  `/usr/bin/time -v` (GNU), and track the resulting footprint with `indice stats`.
 
 ---
 

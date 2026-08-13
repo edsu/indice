@@ -157,7 +157,8 @@ pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str
         home,
         name,
         collection,
-        false,
+        false, // download
+        false, // force
         None,
         None,
     )
@@ -176,12 +177,16 @@ pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str
 /// replaces its documents in Tantivy.
 /// `name` overrides the collection display name; otherwise it comes from the
 /// WACZ metadata, falling back to the filename/URL stem.
+#[allow(clippy::too_many_arguments)]
 pub fn index_location(
     location: &str,
     home: &Path,
     name: Option<&str>,
     collection: &str,
     download: bool,
+    // Re-index a source even if it's already registered in the collection;
+    // otherwise an already-indexed source is skipped (so a large ingest resumes).
+    force: bool,
     concurrency: Option<usize>,
     progress: Option<&dyn IndexProgress>,
 ) -> Result<()> {
@@ -191,6 +196,7 @@ pub fn index_location(
         name,
         collection,
         download,
+        force,
         concurrency,
         None,
         progress,
@@ -209,6 +215,9 @@ pub fn index_location_with_resolver(
     // Download a remote WACZ into <home>/archive and index it as a local file
     // instead of streaming it in place.
     download: bool,
+    // Re-index a source even if already registered in the collection; otherwise
+    // an already-indexed source is skipped so a large ingest can resume.
+    force: bool,
     // Concurrent record fetches for CDX-guided streaming; `None` = per-source
     // default (4 remote, CPU count local).
     concurrency: Option<usize>,
@@ -223,10 +232,10 @@ pub fn index_location_with_resolver(
         collection.to_string(),
     );
 
-    // Resolve the stored-body cap (the frugality knob) up front, so a malformed
-    // config.yaml aborts here — before we copy files into archive/ or touch the
-    // index — rather than silently indexing with the wrong setting.
-    let stored_body_cap = crate::config::Config::load(home)?.stored_body_cap_bytes();
+    // Resolve config (frugality cap + writer-heap ceiling) up front, so a
+    // malformed config.yaml aborts here — before we copy files into archive/ or
+    // touch the index — rather than silently indexing with the wrong setting.
+    let config = crate::config::Config::load(home)?;
 
     let index_dir = index_dir(home);
     std::fs::create_dir_all(&index_dir)
@@ -239,12 +248,25 @@ pub fn index_location_with_resolver(
     // refuse a silent re-collection of an already-registered crawl).
     let sources = resolve_sources(location, home, &group.0, &manifest)?;
 
-    let mut search_index = SearchIndex::open(index_dir.join("full_text").as_path())
-        .with_context(|| format!("opening search index at {}", index_dir.display()))?;
-    search_index.set_stored_body_cap(stored_body_cap);
+    let mut search_index = SearchIndex::open_with_heap(
+        index_dir.join("full_text").as_path(),
+        config.writer_heap_bytes(),
+    )
+    .with_context(|| format!("opening search index at {}", index_dir.display()))?;
+    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
     let search = Mutex::new(search_index);
 
     for source in &sources {
+        // Resume-friendly: skip a source already registered in the manifest
+        // (indexed on an earlier run) unless --force. Commit + save happen per
+        // WACZ below, so a source is "registered" only once its docs are durable.
+        if !force && manifest.wacz_by_id(&wacz_id(source)).is_some() {
+            if let Some(p) = progress {
+                p.phase(&format!("skipping already-indexed {}", source.location()));
+            }
+            continue;
+        }
+
         let (wacz_name, pages) = index_one(
             source,
             home,
@@ -257,27 +279,22 @@ pub fn index_location_with_resolver(
             resolver,
             progress,
         )?;
-        // Print the per-WACZ summary as this one finishes, so the next WACZ's bar
-        // doesn't erase the record of it (the line persists above the new bar).
-        // Emitted before the shared final commit; a commit failure below still
-        // surfaces as an error.
+
+        // Commit + save per WACZ so an interrupted large ingest keeps every
+        // completed crawl (and a re-run resumes past it), rather than losing the
+        // whole run's uncommitted work.
+        if let Some(p) = progress {
+            p.phase("committing");
+        }
+        search.lock().unwrap().commit()?;
+        manifest.save()?;
+
+        // Per-WACZ summary persists above the next WACZ's progress bar.
         if let Some(p) = progress {
             p.wacz_indexed(&wacz_name, pages);
         }
     }
 
-    // The Tantivy commit (segment flush) is the slow tail, especially after fast
-    // local reads. Show it as a spinner, then clear the indicator.
-    if let Some(p) = progress {
-        p.phase("committing");
-    }
-    let commit_start = std::time::Instant::now();
-    search.into_inner().unwrap().commit()?;
-    debug!(
-        commit_ms = commit_start.elapsed().as_millis() as u64,
-        "committed index"
-    );
-    manifest.save()?;
     if let Some(p) = progress {
         p.finish();
     }
@@ -2606,7 +2623,7 @@ mod tests {
         // stable identity into a fresh presigned URL — the error should say so.
         let tmp = TempDir::new().unwrap();
         let loc = "browsertrix|https://app.browsertrix.com|o1|item-1|x-0.wacz";
-        let err = index_location(loc, tmp.path(), None, "test", false, None, None)
+        let err = index_location(loc, tmp.path(), None, "test", false, false, None, None)
             .err()
             .unwrap()
             .to_string();
@@ -2629,6 +2646,7 @@ mod tests {
             tmp.path(),
             None,
             "My Project",
+            false,
             false,
             None,
             None,

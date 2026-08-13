@@ -605,7 +605,8 @@ fn start_index_job(
                 &job_state.home,
                 name.as_deref(),
                 &collection,
-                false,
+                false, // download
+                false, // force
                 None,
                 Some(&progress),
             )
@@ -1075,7 +1076,8 @@ async fn bx_import(
                             &job_state.home,
                             name,
                             &req.collection,
-                            false,
+                            false, // download (already a local file)
+                            true,  // force: honor the explicitly selected crawl
                             None,
                             Some(&progress),
                         )?;
@@ -1108,7 +1110,8 @@ async fn bx_import(
                             &job_state.home,
                             name,
                             &req.collection,
-                            false,
+                            false, // download (stream in place)
+                            true,  // force: honor the explicitly selected crawl
                             None,
                             Some(resolver.as_ref()),
                             Some(&progress),

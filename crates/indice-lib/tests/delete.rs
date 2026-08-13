@@ -21,6 +21,7 @@ fn index_fixture(home: &Path, collection: &str) -> String {
         Some("Simple"),
         collection,
         false,
+        false,
         None,
         None,
     )

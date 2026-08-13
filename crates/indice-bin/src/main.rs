@@ -88,6 +88,12 @@ enum Commands {
         #[arg(long)]
         download: bool,
 
+        /// Re-index sources that are already indexed in the collection. By
+        /// default they're skipped, so a large ingest can be safely re-run to
+        /// resume where an interrupted run left off.
+        #[arg(long)]
+        force: bool,
+
         /// Number of records to fetch concurrently while CDX-guided (streaming)
         /// indexing. Default: 4 for remote URLs (gentle on the host; raise it,
         /// e.g. 16, for object stores like S3), CPU count for local files.
@@ -697,6 +703,7 @@ async fn main() -> Result<()> {
             name,
             collection,
             download,
+            force,
             concurrency,
             verbose: _,
         } => {
@@ -773,6 +780,7 @@ async fn main() -> Result<()> {
                     name.as_deref(),
                     collection,
                     download,
+                    force,
                     concurrency,
                     progress,
                 );
@@ -1169,6 +1177,16 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         .map(|k| k.to_string())
         .unwrap_or_else(|| "unset".to_string());
     println!("index.stored_body_cap_kb: {set}  ->  {resolved}");
+
+    let heap_set = cfg
+        .index
+        .writer_heap_mb
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    println!(
+        "index.writer_heap_mb:     {heap_set}  ->  {} MiB indexing buffer",
+        cfg.writer_heap_bytes() / (1024 * 1024)
+    );
     Ok(())
 }
 
@@ -1552,7 +1570,8 @@ fn run_browsertrix(
                     home,
                     Some(&item.name),
                     into,
-                    false,
+                    false, // download (stream in place)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     Some(&resolver),
                     progress,
@@ -1573,7 +1592,8 @@ fn run_browsertrix(
                     home,
                     Some(&item.name),
                     into,
-                    false,
+                    false, // download (already local)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     progress,
                 );
@@ -1755,7 +1775,8 @@ fn run_browsertrix_public(
                     home,
                     Some(display),
                     into,
-                    false,
+                    false, // download (stream in place)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     Some(&resolver),
                     progress,
@@ -1780,7 +1801,8 @@ fn run_browsertrix_public(
                     home,
                     Some(display),
                     into,
-                    false,
+                    false, // download (already local)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     progress,
                 );

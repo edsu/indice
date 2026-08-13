@@ -116,11 +116,19 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
-    /// Open the index for writing (indexing). Creates it if needed and acquires
-    /// Tantivy's exclusive write lock for the lifetime of this value.
+    /// Open the index for writing (indexing) with the default writer heap.
+    /// Creates it if needed and acquires Tantivy's exclusive write lock.
     pub fn open(index_dir: &Path) -> Result<Self> {
+        Self::open_with_heap(index_dir, crate::config::DEFAULT_WRITER_HEAP_BYTES)
+    }
+
+    /// Like [`open`], but with an explicit Tantivy writer-heap budget (bytes) —
+    /// the indexer sets this from the home config (the RAM/throughput knob).
+    ///
+    /// [`open`]: Self::open
+    pub fn open_with_heap(index_dir: &Path, writer_heap_bytes: usize) -> Result<Self> {
         let index = Self::open_index(index_dir)?;
-        let writer = index.writer(50_000_000)?;
+        let writer = index.writer(writer_heap_bytes)?;
         Ok(Self {
             index,
             writer: Some(writer),
