@@ -286,7 +286,13 @@ pub fn index_location_with_resolver(
         if let Some(p) = progress {
             p.phase("committing");
         }
+        let commit_start = std::time::Instant::now();
         search.lock().unwrap().commit()?;
+        debug!(
+            commit_ms = commit_start.elapsed().as_millis() as u64,
+            wacz = %wacz_name,
+            "committed index"
+        );
         manifest.save()?;
 
         // Per-WACZ summary persists above the next WACZ's progress bar.
