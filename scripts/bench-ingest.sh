@@ -45,8 +45,10 @@ bench_one() {
   local bin="$1" label="$2"
   local home log; home="$(mktemp -d)"; log="$(mktemp)"
 
+  # Fresh temp home per run, so no --force is needed (nothing is pre-indexed) —
+  # and --force / `stats` don't exist on pre-tuning baselines anyway.
   RUST_LOG="indice_lib::index=debug" /usr/bin/time -l \
-    "$bin" index "$WACZ" --home "$home" --collection bench --force \
+    "$bin" index "$WACZ" --home "$home" --collection bench \
     >/dev/null 2>"$log" || { echo "index failed ($label):" >&2; tail -20 "$log" >&2; exit 1; }
 
   local wall rss read_ms index_ms sha_ms commit_ms
@@ -66,7 +68,13 @@ bench_one() {
   printf "    checksum      %6ss\n" "$(sec "${sha_ms:-0}")"
   printf "    commit        %6ss\n" "$(sec "${commit_ms:-0}")"
   echo "  footprint:"
-  "$bin" stats --home "$home" 2>/dev/null | sed 's/^/    /'
+  printf "    index size:  %s\n" "$(du -sh "$home/index/full_text" 2>/dev/null | cut -f1)"
+  # `indice stats` (per-file-type breakdown) exists only on tuned builds; skip it
+  # gracefully on a pre-tuning baseline (the du total above is the comparable one).
+  local statsout
+  if statsout="$("$bin" stats --home "$home" 2>/dev/null)"; then
+    echo "$statsout" | sed 's/^/    /'
+  fi
   echo
 
   rm -rf "$home" "$log"
