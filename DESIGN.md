@@ -132,7 +132,8 @@ Two document types share the same index, distinguished by `doc_type`.
 | `url` | STRING | ✓ | exact | - | Page URL (empty for collection docs) |
 | `timestamp` | STRING | ✓ | - | - | 14-digit crawl timestamp |
 | `title` | TEXT | ✓ | BM25 | - | Page title or collection name |
-| `body` | TEXT | ✓ | BM25 | - | Page body text or collection description + seed URLs |
+| `body` | TEXT | - | BM25 | - | Page body text (or collection description + seed URLs); indexed for search but **not stored** — the snippet copy is `body_snip` |
+| `body_snip` | text | ✓ | - | - | Capped (~16 KiB) prefix of `body`, stored (not indexed) for snippet highlighting; the cap is the `stored_body_cap_kb` frugality knob |
 | `description` | TEXT | ✓ | BM25 | - | Page `<meta description>` / og:description; shown as a snippet fallback |
 | `headings` | TEXT | - | BM25 | - | Page `<h1>`/`<h2>` text; boosted at query time |
 | `keywords` | TEXT | - | BM25 | - | `<meta name=keywords>`; searchable via default fields |
@@ -147,7 +148,7 @@ Two document types share the same index, distinguished by `doc_type`.
 | `status` | u64 | ✓ | numeric | - | HTTP status code, for `status:200` / `status:[200 TO 299]` |
 | `modified` | u64 | ✓ | numeric | - | Year from the HTTP `Last-Modified` header, for `modified:2015` |
 
-`body` and `description` are stored (not just indexed) so that Tantivy's `SnippetGenerator` can produce hit-highlighted excerpts without re-reading the source files, and so a result can show the description when the query didn't match the body. `headings`, `keywords`, `author`, and `url_tokens` are indexed but not stored: they exist only to make that text findable; the canonical URL is kept in `url`.
+The capped body prefix (`body_snip`) and `description` are stored so Tantivy's `SnippetGenerator` can produce hit-highlighted excerpts without re-reading the source files, and so a result can show the description when the query didn't match the body. The full `body` is indexed for search (recall is unaffected by the cap) but **not stored** — only its capped prefix is, which bounds the doc store (see the size/scale model). `headings`, `keywords`, `author`, and `url_tokens` are indexed but not stored. Positions (for phrase queries) are kept on every phrase-useful field — `title`, `body`, `description`, `keywords`, `author` — and dropped only on `headings` (whose text is duplicated into `body`) and `url_tokens` (URL words are never phrase-searched).
 
 The facet dimensions (`collection`, `site`, `type`, `lang`) and the numeric `year`/`month` are **fast** (columnar) fields. Fast storage is what lets them back Tantivy *terms aggregations*, which compute the per-value counts for the facet sidebar and the timeline. The string facet fields use the `raw` tokenizer so each field value is a single term (one bucket), rather than being split into words. Note the **Site facet is the registrable domain (`site`)**, not the raw host — so a whole site groups across subdomains; `domain:` remains available for exact-host filtering. `lang` is taken from the declared `<html lang>` when present, else detected from the body text with `whatlang` (single dominant language, only when confident); the code is normalized to a 639-1 subtag so declared and detected values unify.
 
@@ -195,12 +196,12 @@ indice's identity is small→institutional (a laptop's handful of WACZs up to an
 The file types and what drives them:
 
 - **`store`** — the stored fields returned for results, dominated by the page **`body`** text kept for snippets. This is the largest, **corpus-linear** cost (≈64% on a measured 21.7k-doc / 118 MB corpus). It is compressed with **zstd** (set via `IndexSettings.docstore_compression` at index-create time; tantivy's default is lz4, which compresses text markedly worse). A `reindex` migrates an older lz4 index to zstd.
-- **`pos`** — term positions, needed for phrase queries; dominated by `body` (~20%). Positions are kept only on `title` and `body` (the fields phrase queries target); the metadata fields (`headings`/`description`/`keywords`/`author`/`url_tokens`) are indexed frequencies-only, dropping their positions.
+- **`pos`** — term positions, needed for phrase queries; dominated by `body` (~20%). Positions are kept on the phrase-useful fields (`title`/`body`/`description`/`keywords`/`author`) and dropped only on `headings` (its text is in `body`) and `url_tokens` (never phrase-searched) — the `.pos` win is small because `body` dominates it, so the short metadata fields keep positions rather than silently breaking phrase recall.
 - **`term`/`idx`** — the inverted index; intrinsic to search (~16%).
 - **`fast`** — columnar values backing facets/sorting (`year`/`month`, `site`/`domain`/`media_type`/`lang`); small.
 - **`fieldnorm`**, **`del`** (deletes), **`meta`** (JSON bookkeeping) — minor.
 
-The dominant costs are attacked directly: zstd doc-store compression (`qw5.2`), capping stored `body` text with a snippet fallback (`qw5.3`), and dropping term positions on the metadata fields (`qw5.4`) — all applied on a fresh index or `reindex`. The stored-body cap is operator-configurable (`qw5.8`, see below), so a laptop can keep generous snippets while an institution dials it down. Remaining, data-driven follow-ups under the epic: query-time faceting/grouping cost at scale (`qw5.5`), index-build RAM/merges (`qw5.6`), and the one-index-vs-sharding question (`qw5.7`). Every such change should be chosen from an `indice stats` before/after, not intuition.
+The dominant costs are attacked directly: zstd doc-store compression (`qw5.2`), capping stored `body` text with a snippet fallback (`qw5.3`), and dropping term positions on `headings`/`url_tokens` (`qw5.4`) — all applied on a fresh index or `reindex`. The stored-body cap is operator-configurable (`qw5.8`, see below), so a laptop can keep generous snippets while an institution dials it down. Remaining, data-driven follow-ups under the epic: query-time faceting/grouping cost at scale (`qw5.5`), index-build RAM/merges (`qw5.6`), and the one-index-vs-sharding question (`qw5.7`). Every such change should be chosen from an `indice stats` before/after, not intuition.
 
 ### Operator config (`<home>/config.yaml`)
 
@@ -227,7 +228,10 @@ index to be practical at TB scale:
   it finishes, so an interrupted run (OOM, crash, Ctrl-C, power) keeps every
   completed crawl. Re-running the same `index` command **skips sources already
   indexed** into the collection and continues from where it stopped; `--force`
-  re-indexes them.
+  re-indexes them. (Streaming, local-file, and Browsertrix sources resume this
+  way. A `--download` remote URL is stored under its local archive path, whose id
+  differs from the URL's, so a re-run re-fetches it rather than skipping —
+  idempotent, but not skipped.)
 - **RAM ceiling.** `index.writer_heap_mb` sets the Tantivy indexing buffer
   (default 50 MiB), the main lever on build-time memory vs. throughput; Tantivy
   splits it across indexing threads and merges segments in the background.

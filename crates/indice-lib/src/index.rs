@@ -385,9 +385,10 @@ pub fn reindex(
         })
         .collect();
 
-    // Resolve the stored-body cap before destroying the old index, so a
-    // malformed config.yaml aborts the reindex rather than leaving no index.
-    let stored_body_cap = crate::config::Config::load(home)?.stored_body_cap_bytes();
+    // Resolve config before destroying the old index, so a malformed config.yaml
+    // aborts the reindex rather than leaving no index. reindex re-streams every
+    // source, so honoring the writer heap here matters most.
+    let config = crate::config::Config::load(home)?;
 
     // Drop the old full-text index so it is recreated with the current schema.
     let full_text = index_dir.join("full_text");
@@ -395,9 +396,10 @@ pub fn reindex(
         std::fs::remove_dir_all(&full_text)
             .with_context(|| format!("removing stale index at {}", full_text.display()))?;
     }
-    let mut search_index = SearchIndex::open(full_text.as_path())
-        .with_context(|| format!("creating search index at {}", index_dir.display()))?;
-    search_index.set_stored_body_cap(stored_body_cap);
+    let mut search_index =
+        SearchIndex::open_with_heap(full_text.as_path(), config.writer_heap_bytes())
+            .with_context(|| format!("creating search index at {}", index_dir.display()))?;
+    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
     let search = Mutex::new(search_index);
 
     let total = targets.len();
@@ -576,14 +578,15 @@ pub fn index_stats(home: &Path) -> Result<IndexStats> {
         for entry in std::fs::read_dir(&full_text)? {
             let entry = entry?;
             let meta = entry.metadata()?;
-            if !meta.is_file() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Skip Tantivy's write-lock file (0 bytes; not part of the footprint).
+            if !meta.is_file() || name.ends_with(".lock") {
                 continue;
             }
             total += meta.len();
             // Segment files are `<uuid>.<ext>` (store/pos/term/idx/fast/fieldnorm)
             // or `<uuid>.<n>.del`; bookkeeping is `*.json`.
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
             let label = if name.ends_with(".json") {
                 "meta"
             } else {

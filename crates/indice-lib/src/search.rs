@@ -1014,10 +1014,10 @@ fn facet_string() -> TextOptions {
 
 /// A tokenized text field indexed WITHOUT term positions (frequencies only):
 /// fully searchable as a bag of words, but not usable for phrase queries. Used
-/// for metadata fields where phrase matching adds nothing — headings (whose text
-/// is already in `body`, which keeps positions), description, keywords, author,
-/// URL words — so their positions are dropped from `.pos` (a corpus-linear size
-/// lever). Compose with `.set_stored()` for a field that is also stored.
+/// only where phrase matching adds nothing — `headings` (whose text is already
+/// in `body`, which keeps positions) and `url_tokens` (URL words) — dropping
+/// their positions from `.pos`. Everything phrase-useful (`title`, `body`,
+/// `description`, `keywords`, `author`) keeps positions.
 fn text_no_positions() -> TextOptions {
     TextOptions::default().set_indexing_options(
         TextFieldIndexing::default()
@@ -1040,14 +1040,17 @@ fn build_schema() -> Schema {
     // snippets is the capped body_snip, so the doc store stays bounded.
     builder.add_text_field(FIELD_BODY, TEXT);
     builder.add_text_field(FIELD_BODY_SNIP, STORED);
-    // Description is stored (a snippet fallback) but doesn't need positions.
-    builder.add_text_field(FIELD_DESCRIPTION, text_no_positions().set_stored());
-    // Metadata fields: searchable as bag-of-words, no positions (no phrase
-    // queries). Headings' text is also in `body`, which keeps positions, so
-    // phrase matches on headings still work via `body`.
+    // Description is stored (a snippet fallback) and keeps positions.
+    builder.add_text_field(FIELD_DESCRIPTION, TEXT | STORED);
+    // Positions are dropped only where phrase queries add nothing: `headings`
+    // (its text is duplicated into `body`, which keeps positions, so heading
+    // phrases still match via `body`) and, below, `url_tokens` (URL words are
+    // never phrase-searched). `keywords`/`author` keep positions — they're short,
+    // so the positions cost is negligible, and dropping them would silently break
+    // phrase queries against author/keywords text that isn't in `body`.
     builder.add_text_field(FIELD_HEADINGS, text_no_positions());
-    builder.add_text_field(FIELD_KEYWORDS, text_no_positions());
-    builder.add_text_field(FIELD_AUTHOR, text_no_positions());
+    builder.add_text_field(FIELD_KEYWORDS, TEXT);
+    builder.add_text_field(FIELD_AUTHOR, TEXT);
     // Exact host, for `domain:host` filtering and results display.
     builder.add_text_field(FIELD_DOMAIN, facet_string());
     // Registrable domain, for the cross-subdomain `site:` filter and Site facet.
