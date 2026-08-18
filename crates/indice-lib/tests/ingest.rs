@@ -72,3 +72,12 @@ fn rerun_skips_already_indexed_unless_forced() {
     assert!(!rec2.skipped(), "--force re-indexes rather than skipping");
     assert_eq!(crawl_count(home), 1, "still one crawl (upsert)");
 }
+
+// The resume-skip is scoped to the target collection (`w.collection == group.0`)
+// so a genuine reassignment to a different collection isn't silently swallowed.
+// Its only *behavioral* difference from an unscoped skip is for a URL source
+// re-indexed into another collection — a local file is refused upstream, or gets
+// its own per-collection copy + id, so its skip never collides across
+// collections. Exercising the URL case needs a network fetch, so it isn't
+// unit-tested here; `rerun_skips_already_indexed_unless_forced` above guards
+// that the same-collection resume path still works after the scoping change.

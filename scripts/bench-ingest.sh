@@ -89,11 +89,12 @@ CUR="$REPO/target/release/indice"
 
 if [ -n "$BASELINE_REF" ]; then
   WT="$(mktemp -d)"
+  # Clean up the worktree even if the build or benchmark below fails.
+  trap 'git worktree remove --force "$WT" 2>/dev/null || true; rm -rf "$WT"' EXIT
   echo "Building baseline $BASELINE_REF in a worktree…" >&2
   git worktree add -q --detach "$WT" "$BASELINE_REF"
   ( cd "$WT" && cargo build --release -q )
   bench_one "$WT/target/release/indice" "baseline ($BASELINE_REF)"
-  git worktree remove --force "$WT"
 fi
 
 bench_one "$CUR" "current ($(git rev-parse --short HEAD))"

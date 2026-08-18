@@ -56,8 +56,9 @@ pub struct IndexConfig {
 
     /// Tantivy indexing buffer budget in MiB — the RAM ceiling / throughput knob
     /// for building the index. Higher = fewer, larger segments (faster bulk
-    /// ingest, more RAM); lower caps memory. Omit for the 50 MiB default; values
-    /// below ~15 MiB are clamped up (Tantivy's minimum).
+    /// ingest, more RAM); lower caps memory. Omit for the 50 MiB default. Unlike
+    /// `stored_body_cap_kb`, `0` here is *not* "unlimited": any value below
+    /// Tantivy's ~15 MiB minimum (including 0) is clamped up to it.
     pub writer_heap_mb: Option<u64>,
 }
 

@@ -257,10 +257,17 @@ pub fn index_location_with_resolver(
     let search = Mutex::new(search_index);
 
     for source in &sources {
-        // Resume-friendly: skip a source already registered in the manifest
-        // (indexed on an earlier run) unless --force. Commit + save happen per
-        // WACZ below, so a source is "registered" only once its docs are durable.
-        if !force && manifest.wacz_by_id(&wacz_id(source)).is_some() {
+        // Resume-friendly: skip a source already indexed *into this collection*
+        // on an earlier run (unless --force). Commit + save happen per WACZ below,
+        // so a source is "registered" only once its docs are durable. Scoping to
+        // the collection means a genuine (re)assignment to a different collection
+        // isn't silently swallowed — it falls through to index_one (a local file
+        // is refused upstream by place_local_wacz; a URL is re-homed as before).
+        if !force
+            && manifest
+                .wacz_by_id(&wacz_id(source))
+                .is_some_and(|w| w.collection == group.0)
+        {
             if let Some(p) = progress {
                 p.phase(&format!("skipping already-indexed {}", source.location()));
             }
