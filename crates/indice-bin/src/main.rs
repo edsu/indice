@@ -88,6 +88,12 @@ enum Commands {
         #[arg(long)]
         download: bool,
 
+        /// Re-index sources that are already indexed in the collection. By
+        /// default they're skipped, so a large ingest can be safely re-run to
+        /// resume where an interrupted run left off.
+        #[arg(long)]
+        force: bool,
+
         /// Number of records to fetch concurrently while CDX-guided (streaming)
         /// indexing. Default: 4 for remote URLs (gentle on the host; raise it,
         /// e.g. 16, for object stores like S3), CPU count for local files.
@@ -181,6 +187,20 @@ enum Commands {
     },
     /// Verify the fixity of indexed WACZ files by re-hashing each one.
     Verify {
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
+    /// Report the search-index footprint (bytes by file type + bytes/doc), with
+    /// projections to larger corpora — the size/scale model.
+    Stats {
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
+    /// Show the resolved operator config and the path to `config.yaml` (edit that
+    /// file to change settings; changes apply on the next index/reindex).
+    Config {
         /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
@@ -683,6 +703,7 @@ async fn main() -> Result<()> {
             name,
             collection,
             download,
+            force,
             concurrency,
             verbose: _,
         } => {
@@ -759,6 +780,7 @@ async fn main() -> Result<()> {
                     name.as_deref(),
                     collection,
                     download,
+                    force,
                     concurrency,
                     progress,
                 );
@@ -911,6 +933,10 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+
+        Commands::Stats { home } => run_stats(&home)?,
+
+        Commands::Config { home } => run_config(&home)?,
 
         Commands::Collection { action } => match action {
             CollectionCmd::Set {
@@ -1120,6 +1146,86 @@ fn run_collection_list(home: &std::path::Path) -> Result<()> {
         let count = manifest.members_of(&c.id).count();
         let desc = c.description.as_deref().unwrap_or("");
         println!("{:<24} {:>3} WACZ  {}", c.name, count, desc);
+    }
+    Ok(())
+}
+
+/// Show the resolved operator config and where to edit it. The file is optional
+/// and hand-edited (like the finding aids); settings apply on the next
+/// index/reindex.
+fn run_config(home: &std::path::Path) -> Result<()> {
+    let path = indice_lib::config::Config::path(home);
+    let cfg = indice_lib::config::Config::load(home)?;
+    println!(
+        "config file: {}{}",
+        path.display(),
+        if path.exists() {
+            ""
+        } else {
+            " (not present — using defaults)"
+        }
+    );
+    let cap = cfg.stored_body_cap_bytes();
+    let resolved = if cap == usize::MAX {
+        "unbounded (full body stored)".to_string()
+    } else {
+        format!("{} KiB stored per page", cap / 1024)
+    };
+    let set = cfg
+        .index
+        .stored_body_cap_kb
+        .map(|k| k.to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    println!("index.stored_body_cap_kb: {set}  ->  {resolved}");
+
+    let heap_set = cfg
+        .index
+        .writer_heap_mb
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    println!(
+        "index.writer_heap_mb:     {heap_set}  ->  {} MiB indexing buffer",
+        cfg.writer_heap_bytes() / (1024 * 1024)
+    );
+    Ok(())
+}
+
+/// Print the search-index footprint (the size/scale model): total bytes, a
+/// breakdown by Tantivy file type with per-doc cost, and projections to larger
+/// corpora at today's bytes-per-doc. Re-run after a change to compare.
+fn run_stats(home: &std::path::Path) -> Result<()> {
+    use indice_lib::server::human_size;
+    let s = indice_lib::index::index_stats(home)?;
+    if s.docs == 0 {
+        println!("No indexed documents yet (nothing to measure).");
+        return Ok(());
+    }
+    println!(
+        "Search index: {} docs, {} on disk, {}/doc\n",
+        s.docs,
+        human_size(s.total_bytes),
+        human_size(s.bytes_per_doc().round() as u64),
+    );
+    println!(
+        "  {:<10} {:>11} {:>7}  {:>10}",
+        "type", "size", "%", "per doc"
+    );
+    println!("  {:-<10} {:->11} {:->7}  {:->10}", "", "", "", "");
+    for (label, bytes) in &s.by_type {
+        println!(
+            "  {:<10} {:>11} {:>6.1}%  {:>10}",
+            label,
+            human_size(*bytes),
+            100.0 * *bytes as f64 / s.total_bytes as f64,
+            human_size((*bytes as f64 / s.docs as f64).round() as u64),
+        );
+    }
+    println!(
+        "\n  Projected at {}/doc:",
+        human_size(s.bytes_per_doc().round() as u64)
+    );
+    for (n, label) in [(1_000_000u64, "1M"), (100_000_000, "100M")] {
+        println!("    {:>4} docs  ->  {}", label, human_size(s.project(n)));
     }
     Ok(())
 }
@@ -1464,7 +1570,8 @@ fn run_browsertrix(
                     home,
                     Some(&item.name),
                     into,
-                    false,
+                    false, // download (stream in place)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     Some(&resolver),
                     progress,
@@ -1485,7 +1592,8 @@ fn run_browsertrix(
                     home,
                     Some(&item.name),
                     into,
-                    false,
+                    false, // download (already local)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     progress,
                 );
@@ -1667,7 +1775,8 @@ fn run_browsertrix_public(
                     home,
                     Some(display),
                     into,
-                    false,
+                    false, // download (stream in place)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     Some(&resolver),
                     progress,
@@ -1692,7 +1801,8 @@ fn run_browsertrix_public(
                     home,
                     Some(display),
                     into,
-                    false,
+                    false, // download (already local)
+                    true,  // force: the importer already decided what to bring in
                     opts.concurrency,
                     progress,
                 );

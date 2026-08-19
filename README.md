@@ -198,8 +198,9 @@ Open <http://127.0.0.1:8080/>, search, and click a result to replay it.
 (If you built from a clone instead of installing, use `./target/release/indice`
 in place of `indice`.)
 
-Re-indexing the same WACZ is an upsert - safe to re-run any time to add or
-refresh collections.
+Re-running `index` **skips** sources already indexed into a collection, so a
+large or interrupted ingest is safe to re-run — it resumes where it left off.
+Pass `--force` to re-index (refresh) a source that's already there.
 
 ### Remote WACZ files
 
@@ -468,9 +469,11 @@ example.org {
 ## Command line
 
 ```
-indice index           [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
+indice index           [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--force] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
 indice reindex         [--home <DIR>] [--concurrency <N>] [-v|--verbose]
 indice optimize        [--home <DIR>] [--max-segments <N>] [-v|--verbose]
+indice stats           [--home <DIR>]
+indice config          [--home <DIR>]
 indice serve           [--home <DIR>] [--bind <ADDR>] [--manage] [--auth-proxy-header <HEADER> --auth-proxy-secret <SECRET>]
 indice collection set  [--home <DIR>] <NAME> [--creator <TEXT>] [--dates <TEXT>] [--rights <TEXT>] [--subject <SUBJECT>]... [--narrative <MD> | --narrative-file <FILE>] [--thumbnail <FILE>] [--description <TEXT>] [--curator <TEXT>]
 indice collection list [--home <DIR>]
@@ -512,6 +515,11 @@ derived siblings under it.
   `-v`/`--verbose` replaces it with debug logs. A **multi-WACZ** (a WACZ that
   bundles other WACZs, e.g. a Browsertrix combined-collection download) is
   detected automatically and its inner crawls indexed too, into one entry.
+  Each WACZ is committed as it finishes, so a re-run **skips** sources already
+  indexed into the collection — an interrupted large ingest resumes where it
+  stopped. `--force` re-indexes a source that's already there (to refresh it).
+  (A `--download` remote URL is stored under a local path whose id differs from
+  the URL's, so it's re-fetched on a re-run rather than skipped.)
 - **`collection`** - `collection list` shows collections and their members;
   `collection set <NAME> …` writes a collection's finding-aid metadata (creator,
   dates, rights, subjects, a Markdown narrative, and an optional `--thumbnail`) to
@@ -540,6 +548,15 @@ derived siblings under it.
   `optimize` merges them back down. A lower `--max-segments` compacts more but
   needs more free disk during the merge (roughly index size ÷ target). Reports the
   `before → after` segment count.
+- **`stats`** - reports the search index's on-disk footprint, broken down by
+  Tantivy file type (`.store` doc store, `.pos` positions, `.term`/`.idx`
+  inverted index, `.fast` columnar, …), with bytes-per-document and projected
+  sizes at 1M / 100M docs. Use it to see the effect of the frugality knobs
+  (`config.yaml`) and to size a large ingest before running it.
+- **`config`** - prints the resolved operator configuration for the home
+  (`<home>/config.yaml`, plus the built-in defaults for anything unset): the
+  stored-body cap (`index.stored_body_cap_kb`, `0` = full body) and the Tantivy
+  writer heap (`index.writer_heap_mb`). See [Operator configuration](#operator-configuration).
 - **`serve`** - opens the index read-only and starts the HTTP server (so you can
   `index` while it runs). Defaults to `127.0.0.1:8080`. `--manage` adds an opt-in
   browser UI + write API for adding archives and curating collections; see
@@ -584,6 +601,57 @@ cargo test -p indice-lib --test browser -- --ignored
   [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/).
 - On macOS, a Homebrew `chromedriver` is quarantined and gets killed on launch;
   clear it once with `xattr -d com.apple.quarantine $(which chromedriver)`.
+
+## Operator configuration
+
+An optional `<home>/config.yaml` holds home-level settings. The file is
+optional and every field has a default, so you only write the knobs you want to
+change; unknown keys are ignored (the file can grow over time). Run `indice
+config` to print the resolved values (your file merged over the defaults).
+
+```yaml
+index:
+  # Bytes of page body text STORED per document for snippets, in KiB. The full
+  # body is always indexed, so search recall is unaffected — this only bounds
+  # the stored copy used to render snippets. Lower = smaller index. Omit for the
+  # 16 KiB default; 0 stores the whole body (no cap).
+  stored_body_cap_kb: 16
+  # Tantivy indexing buffer, in MiB — the build-time RAM ceiling / throughput
+  # knob. Higher = fewer, larger segments (faster bulk ingest, more RAM). Omit
+  # for the 50 MiB default; values below Tantivy's ~15 MiB minimum are clamped
+  # up (so 0 is *not* unlimited here).
+  writer_heap_mb: 50
+```
+
+These apply on `index` and `reindex`; use `indice stats` to see their effect on
+the footprint. After **upgrading** to a version that changes the index schema
+or these defaults, run `indice reindex` to rebuild — that's how existing homes
+pick up footprint improvements (a stale index built by an older version is
+detected, and indice tells you to reindex).
+
+## Benchmarking
+
+`scripts/bench-ingest.sh` measures indexing a WACZ — wall time, peak RSS, a
+per-phase timing breakdown, and the resulting index footprint:
+
+```sh
+scripts/bench-ingest.sh path/to/crawl.wacz            # benchmark the current build
+scripts/bench-ingest.sh path/to/crawl.wacz <git-ref>  # compare a baseline ref vs. current
+```
+
+It builds `--release`, indexes the WACZ into a throwaway home under
+`/usr/bin/time`, and reports the phases the indexer times itself:
+
+- **read+extract** — fetch each record and extract text (HTML/PDF)
+- **index** — tokenize and add documents to the writer buffer
+- **checksum** — whole-file fixity hash
+- **commit** — flush the Tantivy segment to disk
+
+The footprint comes from `indice stats` (bytes by index file type +
+bytes-per-doc, with projections). Passing a git ref builds that revision
+in a temporary worktree and prints a **before/after** — handy for confirming a
+change's effect on real data. Peak RSS + wall time use macOS's `/usr/bin/time
+-l`; on GNU/Linux use `/usr/bin/time -v` and adjust the field names.
 
 ## Credits
 

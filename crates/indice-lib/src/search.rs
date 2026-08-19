@@ -18,7 +18,15 @@ const FIELD_CRAWL_NAME: &str = "crawl_name";
 const FIELD_URL: &str = "url";
 const FIELD_TS: &str = "timestamp";
 const FIELD_TITLE: &str = "title";
+/// Full extracted page text — indexed (so search matches the whole page) but
+/// NOT stored. The stored copy for snippets is the capped [`FIELD_BODY_SNIP`].
 const FIELD_BODY: &str = "body";
+/// A capped prefix of the body text, STORED (not indexed) for snippet display.
+/// Snippets highlight within this prefix; a match deeper in the page than the
+/// cap still counts for search (the full body is indexed) but can't be
+/// highlighted, so results fall back to the description / a leading excerpt.
+/// Bounding the stored text is the headline on-disk size lever at scale.
+const FIELD_BODY_SNIP: &str = "body_snip";
 /// Exact host of a page URL (e.g. `www.example.com`), for `domain:` filtering.
 const FIELD_DOMAIN: &str = "domain";
 /// Registrable domain of a page URL (eTLD+1, e.g. `example.com` for any
@@ -64,23 +72,67 @@ const CANDIDATE_CAP: usize = 1000;
 /// Headings rank above body text but below the title.
 const HEADINGS_BOOST: tantivy::Score = 2.0;
 
+/// The longest plain leading excerpt used as a last-resort snippet fallback.
+const LEADING_EXCERPT_CHARS: usize = 300;
+
+/// Truncate `s` to at most `max_bytes`, on a UTF-8 char boundary.
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// A plain, whitespace-collapsed leading excerpt of `s` (first
+/// [`LEADING_EXCERPT_CHARS`] chars), for the last-resort snippet fallback.
+fn leading_excerpt(s: &str) -> String {
+    let mut out: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if out.chars().count() > LEADING_EXCERPT_CHARS {
+        let end = out
+            .char_indices()
+            .nth(LEADING_EXCERPT_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(out.len());
+        out.truncate(end);
+        out.push('…');
+    }
+    out
+}
+
 pub struct SearchIndex {
     index: Index,
     /// Present only when opened for writing. The server opens read-only so it
     /// does not hold Tantivy's exclusive write lock, letting `index` run while
     /// the server is serving.
     writer: Option<IndexWriter>,
+    /// Bytes of page body text stored per document for snippets (the full body
+    /// is always indexed). Defaults to the built-in cap; the indexer overrides
+    /// it from the home config (the "frugality" knob). See [`crate::config`].
+    stored_body_cap: usize,
 }
 
 impl SearchIndex {
-    /// Open the index for writing (indexing). Creates it if needed and acquires
-    /// Tantivy's exclusive write lock for the lifetime of this value.
+    /// Open the index for writing (indexing) with the default writer heap.
+    /// Creates it if needed and acquires Tantivy's exclusive write lock.
     pub fn open(index_dir: &Path) -> Result<Self> {
+        Self::open_with_heap(index_dir, crate::config::DEFAULT_WRITER_HEAP_BYTES)
+    }
+
+    /// Like [`open`], but with an explicit Tantivy writer-heap budget (bytes) —
+    /// the indexer sets this from the home config (the RAM/throughput knob).
+    ///
+    /// [`open`]: Self::open
+    pub fn open_with_heap(index_dir: &Path, writer_heap_bytes: usize) -> Result<Self> {
         let index = Self::open_index(index_dir)?;
-        let writer = index.writer(50_000_000)?;
+        let writer = index.writer(writer_heap_bytes)?;
         Ok(Self {
             index,
             writer: Some(writer),
+            stored_body_cap: crate::config::DEFAULT_STORED_BODY_CAP_BYTES,
         })
     }
 
@@ -91,7 +143,15 @@ impl SearchIndex {
         Ok(Self {
             index,
             writer: None,
+            stored_body_cap: crate::config::DEFAULT_STORED_BODY_CAP_BYTES,
         })
+    }
+
+    /// Set how much body text to store per document for snippets (bytes). The
+    /// indexer sets this from the home config before indexing; `usize::MAX`
+    /// stores the full body.
+    pub fn set_stored_body_cap(&mut self, cap_bytes: usize) {
+        self.stored_body_cap = cap_bytes;
     }
 
     fn open_index(index_dir: &Path) -> Result<Index> {
@@ -112,7 +172,21 @@ impl SearchIndex {
             }
             Ok(index)
         } else {
-            Index::create_in_dir(index_dir, schema)
+            // Compress the doc store with zstd rather than the default lz4: the
+            // store holds the page text (the largest, corpus-linear part of the
+            // index) and zstd compresses text markedly better, with negligible
+            // read cost. Applied on create, so `reindex` picks it up. See the
+            // size/scale model in DESIGN.md.
+            let settings = tantivy::IndexSettings {
+                docstore_compression: tantivy::store::Compressor::Zstd(
+                    tantivy::store::ZstdCompressor::default(),
+                ),
+                ..Default::default()
+            };
+            Index::builder()
+                .schema(schema)
+                .settings(settings)
+                .create_in_dir(index_dir)
                 .with_context(|| format!("creating Tantivy index at {}", index_dir.display()))
         }
     }
@@ -152,6 +226,10 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_TS).unwrap(), page.timestamp);
         doc.add_text(schema.get_field(FIELD_TITLE).unwrap(), page.title);
         doc.add_text(schema.get_field(FIELD_BODY).unwrap(), page.body);
+        doc.add_text(
+            schema.get_field(FIELD_BODY_SNIP).unwrap(),
+            truncate_on_char_boundary(page.body, self.stored_body_cap),
+        );
         doc.add_text(
             schema.get_field(FIELD_DESCRIPTION).unwrap(),
             page.description,
@@ -213,6 +291,10 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_TS).unwrap(), "");
         doc.add_text(schema.get_field(FIELD_TITLE).unwrap(), crawl_name);
         doc.add_text(schema.get_field(FIELD_BODY).unwrap(), body);
+        doc.add_text(
+            schema.get_field(FIELD_BODY_SNIP).unwrap(),
+            truncate_on_char_boundary(body, self.stored_body_cap),
+        );
         // Collection docs have no page URL or HTML metadata; keep those empty.
         doc.add_text(schema.get_field(FIELD_DESCRIPTION).unwrap(), "");
         doc.add_text(schema.get_field(FIELD_HEADINGS).unwrap(), "");
@@ -237,6 +319,12 @@ impl SearchIndex {
     /// disk), which slows *every* query — a search fans out across all segments.
     pub fn segment_count(&self) -> Result<usize> {
         Ok(self.index.searchable_segment_ids()?.len())
+    }
+
+    /// Total number of live documents across all segments — the denominator for
+    /// the bytes-per-doc size/scale model.
+    pub fn num_docs(&self) -> Result<u64> {
+        Ok(self.index.reader()?.searcher().num_docs())
     }
 
     /// Compact the index by merging segments down toward `target_segments`
@@ -464,10 +552,15 @@ impl SearchIndex {
         // context around the matched terms in search results.
         snippet_gen.set_max_num_chars(350);
 
+        let body_snip_f = schema.get_field(FIELD_BODY_SNIP).unwrap();
         let mut results = Vec::new();
         for g in groups.iter().skip(offset).take(limit) {
             let doc: TantivyDocument = searcher.doc(g.addr)?;
-            let snippet = snippet_gen.snippet_from_doc(&doc);
+            // Snippets highlight the stored capped body prefix (the full body is
+            // indexed but not stored). A match deeper than the cap yields an empty
+            // highlight; the leading excerpt is a last-resort fallback for that.
+            let body_snip = get_text(&doc, body_snip_f);
+            let snippet = snippet_gen.snippet(&body_snip);
             results.push(SearchResult {
                 doc_type: get_text(&doc, doc_type_f),
                 crawl_id: get_text(&doc, coll_id_f),
@@ -479,6 +572,7 @@ impl SearchIndex {
                 title: get_text(&doc, title_f),
                 description: get_text(&doc, description_f),
                 snippet: snippet.to_html(),
+                body_excerpt: leading_excerpt(&body_snip),
                 capture_count: g.captures,
                 status: get_u64(&doc, status_f).map(|s| s as u16),
             });
@@ -679,6 +773,10 @@ pub struct SearchResult {
     /// Page description (`<meta description>` / og:description), if any.
     pub description: String,
     pub snippet: String,
+    /// A plain leading excerpt of the stored body prefix — the last-resort
+    /// snippet fallback when the query matched only deeper than the stored cap
+    /// (so there's no highlight) and the page has no description.
+    pub body_excerpt: String,
     /// How many captures of this URL matched (1 when there are no repeats). The
     /// result shown is the best-ranked capture; the rest are collapsed into it.
     pub capture_count: usize,
@@ -914,6 +1012,20 @@ fn facet_string() -> TextOptions {
         )
 }
 
+/// A tokenized text field indexed WITHOUT term positions (frequencies only):
+/// fully searchable as a bag of words, but not usable for phrase queries. Used
+/// only where phrase matching adds nothing — `headings` (whose text is already
+/// in `body`, which keeps positions) and `url_tokens` (URL words) — dropping
+/// their positions from `.pos`. Everything phrase-useful (`title`, `body`,
+/// `description`, `keywords`, `author`) keeps positions.
+fn text_no_positions() -> TextOptions {
+    TextOptions::default().set_indexing_options(
+        TextFieldIndexing::default()
+            .set_tokenizer("default")
+            .set_index_option(IndexRecordOption::WithFreqs),
+    )
+}
+
 fn build_schema() -> Schema {
     let mut builder = Schema::builder();
     builder.add_text_field(FIELD_DOC_TYPE, STRING | STORED);
@@ -924,20 +1036,27 @@ fn build_schema() -> Schema {
     builder.add_text_field(FIELD_URL, STRING | STORED);
     builder.add_text_field(FIELD_TS, STRING | STORED);
     builder.add_text_field(FIELD_TITLE, TEXT | STORED);
-    builder.add_text_field(FIELD_BODY, TEXT | STORED);
-    // Description is stored so it can be shown when a page has no body snippet.
+    // Body is indexed for full-text recall but NOT stored; the stored copy for
+    // snippets is the capped body_snip, so the doc store stays bounded.
+    builder.add_text_field(FIELD_BODY, TEXT);
+    builder.add_text_field(FIELD_BODY_SNIP, STORED);
+    // Description is stored (a snippet fallback) and keeps positions.
     builder.add_text_field(FIELD_DESCRIPTION, TEXT | STORED);
-    // Headings are indexed (and boosted at query time) but not stored.
-    builder.add_text_field(FIELD_HEADINGS, TEXT);
-    // Keywords and author are indexed (searchable, incl. `author:`) but not stored.
+    // Positions are dropped only where phrase queries add nothing: `headings`
+    // (its text is duplicated into `body`, which keeps positions, so heading
+    // phrases still match via `body`) and, below, `url_tokens` (URL words are
+    // never phrase-searched). `keywords`/`author` keep positions — they're short,
+    // so the positions cost is negligible, and dropping them would silently break
+    // phrase queries against author/keywords text that isn't in `body`.
+    builder.add_text_field(FIELD_HEADINGS, text_no_positions());
     builder.add_text_field(FIELD_KEYWORDS, TEXT);
     builder.add_text_field(FIELD_AUTHOR, TEXT);
     // Exact host, for `domain:host` filtering and results display.
     builder.add_text_field(FIELD_DOMAIN, facet_string());
     // Registrable domain, for the cross-subdomain `site:` filter and Site facet.
     builder.add_text_field(FIELD_SITE, facet_string());
-    // Tokenized URL words; indexed for search but not stored (we keep the URL).
-    builder.add_text_field(FIELD_URL_TOKENS, TEXT);
+    // Tokenized URL words; searchable but not stored, and no positions.
+    builder.add_text_field(FIELD_URL_TOKENS, text_no_positions());
     // Numeric crawl year: indexed for `year:2021` / `year:[2020 TO 2023]`, and
     // fast so it can back the year facet.
     builder.add_u64_field(FIELD_YEAR, INDEXED | STORED | FAST);
@@ -1422,6 +1541,86 @@ mod tests {
             (before2, after2),
             (2, 2),
             "already-compact index is untouched"
+        );
+    }
+
+    #[test]
+    fn body_past_the_stored_cap_is_searchable_but_not_highlighted() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        // A body longer than the stored cap: a unique marker near the start (in
+        // the stored prefix) and another only *past* the cap.
+        let filler = "lorem ipsum dolor sit amet ".repeat(1500); // ~40 KB > cap
+        assert!(filler.len() > crate::config::DEFAULT_STORED_BODY_CAP_BYTES);
+        let body = format!("zzmarkerhead {filler} zzmarkerdeep");
+        idx.index_page(&Page {
+            url: "https://ex.com/long",
+            title: "long page",
+            body: &body,
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        // The deep term is still findable — the full body is indexed even though
+        // only a capped prefix is stored (recall is unaffected by the cap).
+        let deep = idx.search("zzmarkerdeep", 10).unwrap();
+        assert_eq!(
+            deep.len(),
+            1,
+            "a term past the stored cap is still findable"
+        );
+        assert!(
+            !deep[0].snippet.contains("zzmarkerdeep"),
+            "a match past the stored cap can't be highlighted"
+        );
+        assert!(
+            !deep[0].body_excerpt.is_empty(),
+            "a leading-excerpt fallback is available for a past-cap hit"
+        );
+
+        // A term inside the stored prefix is highlighted as usual.
+        let head = idx.search("zzmarkerhead", 10).unwrap();
+        assert_eq!(head.len(), 1);
+        assert!(
+            head[0].snippet.contains("<b>zzmarkerhead</b>"),
+            "a match within the stored prefix is highlighted; got: {}",
+            head[0].snippet
+        );
+    }
+
+    #[test]
+    fn stored_body_cap_setting_bounds_snippets() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        idx.set_stored_body_cap(64); // a deliberately tiny cap (the frugality knob)
+        let body = format!("zzhead {} zztail", "x ".repeat(100)); // ~200 B > 64
+        idx.index_page(&Page {
+            url: "https://ex.com/1",
+            title: "t",
+            body: &body,
+            crawl_id: "c1",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        // Both terms are findable — the full body is indexed regardless of cap.
+        assert_eq!(
+            idx.search("zztail", 10).unwrap().len(),
+            1,
+            "recall past cap"
+        );
+        let tail = idx.search("zztail", 10).unwrap();
+        assert!(
+            !tail[0].snippet.contains("zztail"),
+            "a term past the (tiny) stored cap isn't highlighted"
+        );
+        let head = idx.search("zzhead", 10).unwrap();
+        assert!(
+            head[0].snippet.contains("<b>zzhead</b>"),
+            "a term within the cap is highlighted"
         );
     }
 

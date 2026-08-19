@@ -157,7 +157,8 @@ pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str
         home,
         name,
         collection,
-        false,
+        false, // download
+        false, // force
         None,
         None,
     )
@@ -176,12 +177,16 @@ pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str
 /// replaces its documents in Tantivy.
 /// `name` overrides the collection display name; otherwise it comes from the
 /// WACZ metadata, falling back to the filename/URL stem.
+#[allow(clippy::too_many_arguments)]
 pub fn index_location(
     location: &str,
     home: &Path,
     name: Option<&str>,
     collection: &str,
     download: bool,
+    // Re-index a source even if it's already registered in the collection;
+    // otherwise an already-indexed source is skipped (so a large ingest resumes).
+    force: bool,
     concurrency: Option<usize>,
     progress: Option<&dyn IndexProgress>,
 ) -> Result<()> {
@@ -191,6 +196,7 @@ pub fn index_location(
         name,
         collection,
         download,
+        force,
         concurrency,
         None,
         progress,
@@ -209,6 +215,9 @@ pub fn index_location_with_resolver(
     // Download a remote WACZ into <home>/archive and index it as a local file
     // instead of streaming it in place.
     download: bool,
+    // Re-index a source even if already registered in the collection; otherwise
+    // an already-indexed source is skipped so a large ingest can resume.
+    force: bool,
     // Concurrent record fetches for CDX-guided streaming; `None` = per-source
     // default (4 remote, CPU count local).
     concurrency: Option<usize>,
@@ -223,6 +232,11 @@ pub fn index_location_with_resolver(
         collection.to_string(),
     );
 
+    // Resolve config (frugality cap + writer-heap ceiling) up front, so a
+    // malformed config.yaml aborts here — before we copy files into archive/ or
+    // touch the index — rather than silently indexing with the wrong setting.
+    let config = crate::config::Config::load(home)?;
+
     let index_dir = index_dir(home);
     std::fs::create_dir_all(&index_dir)
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
@@ -234,12 +248,32 @@ pub fn index_location_with_resolver(
     // refuse a silent re-collection of an already-registered crawl).
     let sources = resolve_sources(location, home, &group.0, &manifest)?;
 
-    let search = Mutex::new(
-        SearchIndex::open(index_dir.join("full_text").as_path())
-            .with_context(|| format!("opening search index at {}", index_dir.display()))?,
-    );
+    let mut search_index = SearchIndex::open_with_heap(
+        index_dir.join("full_text").as_path(),
+        config.writer_heap_bytes(),
+    )
+    .with_context(|| format!("opening search index at {}", index_dir.display()))?;
+    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
+    let search = Mutex::new(search_index);
 
     for source in &sources {
+        // Resume-friendly: skip a source already indexed *into this collection*
+        // on an earlier run (unless --force). Commit + save happen per WACZ below,
+        // so a source is "registered" only once its docs are durable. Scoping to
+        // the collection means a genuine (re)assignment to a different collection
+        // isn't silently swallowed — it falls through to index_one (a local file
+        // is refused upstream by place_local_wacz; a URL is re-homed as before).
+        if !force
+            && manifest
+                .wacz_by_id(&wacz_id(source))
+                .is_some_and(|w| w.collection == group.0)
+        {
+            if let Some(p) = progress {
+                p.phase(&format!("skipping already-indexed {}", source.location()));
+            }
+            continue;
+        }
+
         let (wacz_name, pages) = index_one(
             source,
             home,
@@ -252,27 +286,28 @@ pub fn index_location_with_resolver(
             resolver,
             progress,
         )?;
-        // Print the per-WACZ summary as this one finishes, so the next WACZ's bar
-        // doesn't erase the record of it (the line persists above the new bar).
-        // Emitted before the shared final commit; a commit failure below still
-        // surfaces as an error.
+
+        // Commit + save per WACZ so an interrupted large ingest keeps every
+        // completed crawl (and a re-run resumes past it), rather than losing the
+        // whole run's uncommitted work.
+        if let Some(p) = progress {
+            p.phase("committing");
+        }
+        let commit_start = std::time::Instant::now();
+        search.lock().unwrap().commit()?;
+        debug!(
+            commit_ms = commit_start.elapsed().as_millis() as u64,
+            wacz = %wacz_name,
+            "committed index"
+        );
+        manifest.save()?;
+
+        // Per-WACZ summary persists above the next WACZ's progress bar.
         if let Some(p) = progress {
             p.wacz_indexed(&wacz_name, pages);
         }
     }
 
-    // The Tantivy commit (segment flush) is the slow tail, especially after fast
-    // local reads. Show it as a spinner, then clear the indicator.
-    if let Some(p) = progress {
-        p.phase("committing");
-    }
-    let commit_start = std::time::Instant::now();
-    search.into_inner().unwrap().commit()?;
-    debug!(
-        commit_ms = commit_start.elapsed().as_millis() as u64,
-        "committed index"
-    );
-    manifest.save()?;
     if let Some(p) = progress {
         p.finish();
     }
@@ -350,16 +385,22 @@ pub fn reindex(
         })
         .collect();
 
+    // Resolve config before destroying the old index, so a malformed config.yaml
+    // aborts the reindex rather than leaving no index. reindex re-streams every
+    // source, so honoring the writer heap here matters most.
+    let config = crate::config::Config::load(home)?;
+
     // Drop the old full-text index so it is recreated with the current schema.
     let full_text = index_dir.join("full_text");
     if full_text.exists() {
         std::fs::remove_dir_all(&full_text)
             .with_context(|| format!("removing stale index at {}", full_text.display()))?;
     }
-    let search = Mutex::new(
-        SearchIndex::open(full_text.as_path())
-            .with_context(|| format!("creating search index at {}", index_dir.display()))?,
-    );
+    let mut search_index =
+        SearchIndex::open_with_heap(full_text.as_path(), config.writer_heap_bytes())
+            .with_context(|| format!("creating search index at {}", index_dir.display()))?;
+    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
+    let search = Mutex::new(search_index);
 
     let total = targets.len();
     let mut done = 0usize;
@@ -487,6 +528,83 @@ pub fn set_collection_thumbnail(home: &Path, name: &str, image_file: &Path) -> R
         .with_context(|| format!("setting thumbnail for collection {slug}"))?;
     info!(collection = %slug, image = %image_file.display(), "pinned collection thumbnail");
     Ok(())
+}
+
+/// A size/scale snapshot of the search index: total on-disk bytes, a breakdown
+/// by Tantivy segment-file type, the live doc count, and the derived
+/// bytes-per-doc — the inputs to the scale model (project bytes/doc to 1M / 100M
+/// docs). Re-run after any change to compare.
+#[derive(Debug, Clone)]
+pub struct IndexStats {
+    pub docs: u64,
+    pub total_bytes: u64,
+    /// `(file-type label, bytes)`, largest first. Labels are the Tantivy
+    /// segment-file extensions — `store` (stored fields / snippets), `pos`
+    /// (term positions), `term`/`idx` (inverted index), `fast` (columnar /
+    /// facets), `fieldnorm` — plus `del` (deletes) and `meta` (JSON bookkeeping).
+    pub by_type: Vec<(String, u64)>,
+}
+
+impl IndexStats {
+    /// Bytes per live document (0 for an empty index).
+    pub fn bytes_per_doc(&self) -> f64 {
+        if self.docs == 0 {
+            0.0
+        } else {
+            self.total_bytes as f64 / self.docs as f64
+        }
+    }
+
+    /// Projected total bytes at `docs` documents, at today's bytes-per-doc.
+    pub fn project(&self, docs: u64) -> u64 {
+        (self.bytes_per_doc() * docs as f64) as u64
+    }
+}
+
+/// Measure the on-disk footprint of the search index for the size/scale model:
+/// total bytes, a per-file-type breakdown, and the live doc count. Reads only
+/// file sizes + the doc count, so it's cheap to re-run.
+pub fn index_stats(home: &Path) -> Result<IndexStats> {
+    let full_text = index_dir(home).join("full_text");
+    let docs = if full_text.join("meta.json").exists() {
+        crate::search::SearchIndex::open_read_only(&full_text)?.num_docs()?
+    } else {
+        0
+    };
+
+    let mut by: BTreeMap<String, u64> = BTreeMap::new();
+    let mut total = 0u64;
+    if full_text.exists() {
+        for entry in std::fs::read_dir(&full_text)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Skip Tantivy's write-lock file (0 bytes; not part of the footprint).
+            if !meta.is_file() || name.ends_with(".lock") {
+                continue;
+            }
+            total += meta.len();
+            // Segment files are `<uuid>.<ext>` (store/pos/term/idx/fast/fieldnorm)
+            // or `<uuid>.<n>.del`; bookkeeping is `*.json`.
+            let label = if name.ends_with(".json") {
+                "meta"
+            } else {
+                Path::new(name.as_ref())
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("other")
+            };
+            *by.entry(label.to_string()).or_default() += meta.len();
+        }
+    }
+    let mut by_type: Vec<(String, u64)> = by.into_iter().collect();
+    by_type.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+    Ok(IndexStats {
+        docs,
+        total_bytes: total,
+        by_type,
+    })
 }
 
 /// Set a crawl's curator note at `<home>/collections/<slug>/crawls/<id>.md`. Manifest-
@@ -2521,7 +2639,7 @@ mod tests {
         // stable identity into a fresh presigned URL — the error should say so.
         let tmp = TempDir::new().unwrap();
         let loc = "browsertrix|https://app.browsertrix.com|o1|item-1|x-0.wacz";
-        let err = index_location(loc, tmp.path(), None, "test", false, None, None)
+        let err = index_location(loc, tmp.path(), None, "test", false, false, None, None)
             .err()
             .unwrap()
             .to_string();
@@ -2544,6 +2662,7 @@ mod tests {
             tmp.path(),
             None,
             "My Project",
+            false,
             false,
             None,
             None,

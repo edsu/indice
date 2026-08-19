@@ -3366,6 +3366,7 @@ dependencies = [
  "typetag",
  "uuid 1.23.4",
  "winapi",
+ "zstd",
 ]
 
 [[package]]
