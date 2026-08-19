@@ -47,6 +47,45 @@ fn index(home: &Path, src: &str, force: bool, prog: Option<&dyn indice_lib::inde
 }
 
 #[test]
+fn reindex_swaps_cleanly_and_leaves_no_swap_dirs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let input = home.join("in.wacz");
+    std::fs::copy(Path::new(FIXTURES).join("simple.wacz"), &input).unwrap();
+    let src = input.to_string_lossy().into_owned();
+
+    index(home, &src, false, None);
+    let before = crawl_count(home);
+    assert!(before > 0, "fixture registers a crawl");
+
+    // Pre-seed leftover swap dirs as if a previous reindex was interrupted;
+    // reindex must reconcile them away rather than trip over them.
+    let idx = indice_lib::index::index_dir(home);
+    std::fs::create_dir_all(idx.join("full_text.new")).unwrap();
+    std::fs::create_dir_all(idx.join("full_text.old")).unwrap();
+
+    indice_lib::index::reindex(home, None, None, None).unwrap();
+
+    assert_eq!(crawl_count(home), before, "collection membership preserved");
+    assert!(
+        idx.join("full_text").exists(),
+        "live index present after swap"
+    );
+    assert!(
+        !idx.join("full_text.new").exists(),
+        "no leftover .new after a clean reindex"
+    );
+    assert!(
+        !idx.join("full_text.old").exists(),
+        "no leftover .old after a clean reindex"
+    );
+
+    // The swapped-in index is real and searchable.
+    let si = indice_lib::search::SearchIndex::open(&idx.join("full_text")).unwrap();
+    assert!(si.num_docs().unwrap() > 0, "reindexed index has documents");
+}
+
+#[test]
 fn rerun_skips_already_indexed_unless_forced() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path();
