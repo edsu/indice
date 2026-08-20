@@ -1354,7 +1354,15 @@ fn run_wacz_build(args: WaczBuildArgs) -> Result<()> {
         .filter(|c| !c.is_empty())
         .map(str::to_string);
     if collection.is_none() && interactive {
-        collection = prompt_line("Collection name (required): ")?;
+        // Re-prompt on an empty entry rather than aborting on the first blank
+        // line; give up after a few tries so a stray EOF can't loop forever.
+        for _ in 0..3 {
+            collection = prompt_line("Collection name (required): ")?;
+            if collection.is_some() {
+                break;
+            }
+            eprintln!("A collection name is required.");
+        }
     }
     let Some(collection) = collection else {
         eprintln!(

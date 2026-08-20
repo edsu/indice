@@ -259,18 +259,42 @@ struct Scanned {
     records: u64,       // total WARC records seen
 }
 
-/// Validate (sniff-test) each WARC and gather its CDXJ + seed pages in a single
-/// pass. Fails fast if a file isn't a readable WARC or yields no indexable
-/// records — so we never package a broken WACZ.
-fn scan_warcs(warcs: &[std::path::PathBuf]) -> Result<Scanned> {
-    let mut cdxj = Vec::new();
-    let mut pages = Vec::new();
-    let mut records = 0u64;
+/// Assign each input WARC a unique in-zip basename, disambiguating collisions
+/// (two inputs sharing a file name, e.g. from a glob across directories) as
+/// `<stem>-<n>.<ext>`. The reader keys `warc_data_starts` by basename, so
+/// without this two `archive/data.warc.gz` entries would alias and one WARC's
+/// CDX offsets would resolve into the other file.
+fn unique_basenames(warcs: &[std::path::PathBuf]) -> Result<Vec<String>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(warcs.len());
     for warc in warcs {
-        let basename = warc
+        let base = warc
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .with_context(|| format!("{} has no file name", warc.display()))?;
+        let mut candidate = base.clone();
+        let mut n = 1;
+        while !seen.insert(candidate.clone()) {
+            n += 1;
+            candidate = match base.split_once('.') {
+                Some((stem, ext)) => format!("{stem}-{n}.{ext}"),
+                None => format!("{base}-{n}"),
+            };
+        }
+        out.push(candidate);
+    }
+    Ok(out)
+}
+
+/// Validate (sniff-test) each WARC and gather its CDXJ + seed pages in a single
+/// pass, tagging each record's CDX `filename` with the WARC's (unique) in-zip
+/// basename. Fails fast if a file isn't a readable WARC or yields no indexable
+/// records — so we never package a broken WACZ.
+fn scan_warcs(warcs: &[std::path::PathBuf], names: &[String]) -> Result<Scanned> {
+    let mut cdxj = Vec::new();
+    let mut pages = Vec::new();
+    let mut records = 0u64;
+    for (warc, basename) in warcs.iter().zip(names) {
         let mut indexable = 0u64;
         for rec in iter_records(warc)
             .with_context(|| format!("{} does not look like a valid WARC", warc.display()))?
@@ -278,7 +302,7 @@ fn scan_warcs(warcs: &[std::path::PathBuf]) -> Result<Scanned> {
             let rec =
                 rec.with_context(|| format!("{} does not look like a valid WARC", warc.display()))?;
             records += 1;
-            if let Some(line) = cdxj_line(&rec, &basename) {
+            if let Some(line) = cdxj_line(&rec, basename) {
                 indexable += 1;
                 cdxj.push(line);
             }
@@ -335,7 +359,10 @@ pub fn build_wacz(
     if warcs.is_empty() {
         anyhow::bail!("no WARC files given to build a WACZ from");
     }
-    let scanned = scan_warcs(warcs)?;
+    // One unique in-zip basename per input (disambiguates same-named inputs) —
+    // used for both the CDX `filename` and the `archive/` entry so they stay 1:1.
+    let names = unique_basenames(warcs)?;
+    let scanned = scan_warcs(warcs, &names)?;
 
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
@@ -348,9 +375,9 @@ pub fn build_wacz(
 
     let mut resources: Vec<Resource> = Vec::new();
 
-    // 1. WARCs, copied verbatim (streamed + hashed), one entry per input.
-    for warc in warcs {
-        let basename = warc.file_name().unwrap().to_string_lossy().into_owned();
+    // 1. WARCs, copied verbatim (streamed + hashed), one entry per input under
+    //    its unique basename.
+    for (warc, basename) in warcs.iter().zip(&names) {
         let path = format!("archive/{basename}");
         zip.start_file(&path, stored)
             .with_context(|| format!("writing {path}"))?;
@@ -370,7 +397,7 @@ pub fn build_wacz(
         }
         let hash = hasher.finalize();
         resources.push(Resource {
-            name: basename,
+            name: basename.clone(),
             path,
             bytes,
             hash: format!(
@@ -605,6 +632,108 @@ mod tests {
         let idx = crate::index::index_dir(&home).join("full_text");
         let si = crate::search::SearchIndex::open(&idx).unwrap();
         assert!(si.num_docs().unwrap() >= 1, "built WACZ indexed a page");
+    }
+
+    #[test]
+    fn unique_basenames_disambiguates_collisions() {
+        let paths = [
+            std::path::PathBuf::from("/x/dup.warc.gz"),
+            std::path::PathBuf::from("/y/dup.warc.gz"),
+            std::path::PathBuf::from("/z/other.warc.gz"),
+            std::path::PathBuf::from("/w/dup.warc.gz"),
+        ];
+        assert_eq!(
+            unique_basenames(&paths).unwrap(),
+            vec![
+                "dup.warc.gz",
+                "dup-2.warc.gz",
+                "other.warc.gz",
+                "dup-3.warc.gz"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_dedupes_same_named_inputs() {
+        // Two inputs with the same basename (from different dirs) must not alias
+        // in the zip / CDX. Both get distinct archive entries and it indexes.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::copy(fixture("simple.warc.gz"), a.join("dup.warc.gz")).unwrap();
+        std::fs::copy(fixture("simple.warc.gz"), b.join("dup.warc.gz")).unwrap();
+
+        let built = build_wacz(
+            &[a.join("dup.warc.gz"), b.join("dup.warc.gz")],
+            &WaczBuildMeta::default(),
+            &tmp.path().join("out"),
+            "dup",
+        )
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&built.path).unwrap()).unwrap();
+        assert!(zip.by_name("archive/dup.warc.gz").is_ok());
+        assert!(zip.by_name("archive/dup-2.warc.gz").is_ok());
+    }
+
+    #[test]
+    fn build_post_warc_has_no_post_keying_yet() {
+        // post.warc.gz has a POST to /api. Until POST fuzzy-match keying lands
+        // (rustyweb-wacz-build-post-keying) we emit a plain CDX line for it.
+        let lines = cdxj_lines(&fixture("post.warc.gz"), "post.warc.gz").unwrap();
+        assert!(!lines.is_empty());
+        assert!(
+            lines.iter().all(|l| !l.contains("__wb_method")),
+            "POST keying is not applied yet: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn build_from_a_plain_uncompressed_warc() {
+        // A plain (non-gzip) .warc input is packaged verbatim and still indexes
+        // in indice — the "won't CDX-stream" caveat degrades to a full scan, not
+        // a failure. (Normalizing to per-record gzip is the --recompress
+        // follow-up.)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gz = std::fs::read(fixture("simple.warc.gz")).unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(&gz[..]);
+        let mut plain = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut plain).unwrap();
+        let plain_path = tmp.path().join("plain.warc");
+        std::fs::write(&plain_path, &plain).unwrap();
+
+        let built = build_wacz(
+            &[plain_path],
+            &WaczBuildMeta::default(),
+            &tmp.path().join("out"),
+            "plain",
+        )
+        .unwrap();
+        assert!(built.cdx_lines >= 1);
+
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        crate::index::index_location(
+            &built.path.to_string_lossy(),
+            &home,
+            None,
+            "c",
+            false,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let idx = crate::index::index_dir(&home).join("full_text");
+        assert!(
+            crate::search::SearchIndex::open(&idx)
+                .unwrap()
+                .num_docs()
+                .unwrap()
+                >= 1,
+            "plain-WARC WACZ still indexes"
+        );
     }
 
     #[test]

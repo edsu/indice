@@ -592,10 +592,11 @@ derived siblings under it.
   **`--collection <NAME>` is required.** The original WARC bytes are stored
   **verbatim** (uncompressed in the zip) - indice only *packages* your crawl
   data, it never rewrites it - and a CDX index + `datapackage.json` are generated
-  so the WACZ both indexes here and **replays in ReplayWeb.page**. The CDX
-  mirrors [warcio.js](https://github.com/webrecorder/warcio.js)'s indexer and the
-  packaging mirrors [browsertrix-crawler](https://github.com/webrecorder/browsertrix-crawler),
-  so the output matches what Webrecorder's own tools produce. Metadata
+  so the WACZ both indexes here and is **shaped to replay in ReplayWeb.page**.
+  The CDX mirrors [warcio.js](https://github.com/webrecorder/warcio.js)'s indexer
+  (verified line-for-line against it) and the packaging mirrors
+  [browsertrix-crawler](https://github.com/webrecorder/browsertrix-crawler), so
+  the output matches what Webrecorder's own tools produce. Metadata
   (`--title`, `--description`, `--creator`, `--keyword`, `--license`, …) comes
   from flags; on an interactive terminal, missing values are prompted for
   (`--yes` skips prompting for scripts/CI). Each input WARC is sniff-tested first
