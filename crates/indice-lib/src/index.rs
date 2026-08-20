@@ -381,6 +381,30 @@ pub fn optimize_if_fragmented(
     }
 }
 
+/// The operator-facing nudge shown when the index has fragmented into `n`
+/// segments — centralized so every caller (the CLI, the server) words it
+/// identically.
+pub fn fragmentation_warning(n: usize) -> String {
+    format!(
+        "the search index has {n} segments and may be slow to search; \
+         run `indice optimize` to compact it"
+    )
+}
+
+/// Warn (via `tracing`) if the index at `home` has fragmented past
+/// [`FRAGMENTED_SEGMENT_THRESHOLD`]. Best-effort and read-only: for the paths
+/// that detect fragmentation but don't auto-compact (an `index --no-optimize`).
+/// A count error is logged at debug rather than surfaced — this is only a nudge.
+pub fn warn_if_fragmented(home: &Path) {
+    match segment_count(home) {
+        Ok(Some(n)) if n > FRAGMENTED_SEGMENT_THRESHOLD => {
+            tracing::warn!("{}", fragmentation_warning(n));
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!("could not check index fragmentation: {e:#}"),
+    }
+}
+
 /// The live full-text index and the two sibling paths `reindex` uses to swap a
 /// freshly-built index in atomically: `full_text.new` (the in-progress build)
 /// and `full_text.old` (the previous index, parked briefly during the swap).

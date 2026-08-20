@@ -175,7 +175,7 @@ enum Commands {
 
         /// Target number of segments to compact down to (≥1). Lower = fewer
         /// segments (faster queries) but higher peak disk during the merge
-        /// (~index size / this). Default 8 balances the two.
+        /// (~index size / this). The default balances the two (see --help).
         #[arg(long, value_name = "N", default_value_t = indice_lib::index::DEFAULT_OPTIMIZE_TARGET)]
         max_segments: usize,
 
@@ -810,14 +810,7 @@ async fn main() -> Result<()> {
             // operator opted out, in which case point them at `optimize` rather
             // than staying silent.
             if no_optimize {
-                if let Ok(Some(n)) = indice_lib::index::segment_count(&home) {
-                    if n > indice_lib::index::FRAGMENTED_SEGMENT_THRESHOLD {
-                        tracing::warn!(
-                            "the search index has {n} segments and may be slow to \
-                             search; run `indice optimize` to compact it"
-                        );
-                    }
-                }
+                indice_lib::index::warn_if_fragmented(&home);
             } else {
                 match indice_lib::index::optimize_if_fragmented(&home, progress) {
                     Ok(Some((before, after))) => {

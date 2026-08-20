@@ -188,10 +188,7 @@ fn build_router(
     // must not stop the server from starting.
     if let Ok(n) = search.segment_count() {
         if n > crate::index::FRAGMENTED_SEGMENT_THRESHOLD {
-            tracing::warn!(
-                "the search index has {n} segments and may be slow to search; \
-                 run `indice optimize` to compact it"
-            );
+            tracing::warn!("{}", crate::index::fragmentation_warning(n));
         }
     }
     let state = Arc::new(AppState {
