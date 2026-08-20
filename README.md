@@ -539,7 +539,12 @@ derived siblings under it.
   `--concurrency <N>` and shows the same progress bar as `index` (a full reindex
   re-streams every source, so it can take a while); `-v`/`--verbose` swaps the bar
   for debug logs. (If you try to `index` or `serve` against an index built by an
-  older version, indice tells you to run this.)
+  older version, indice tells you to run this.) The rebuild is **atomic**: it
+  builds a fresh index alongside the live one and swaps it in only once the
+  rebuild finishes, so a crash, kill, or full disk mid-rebuild leaves your
+  existing index intact — and a running `serve` keeps answering from the old
+  index until the swap. (Transient cost: the old and new index coexist on disk
+  until then, ~2× the index size.)
 - **`optimize`** - compacts the search index by merging its Tantivy *segments*
   down toward `--max-segments` (default 8), **without re-fetching sources** — so
   it's much cheaper than `reindex`. Every search fans out across all segments, so
