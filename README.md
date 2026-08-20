@@ -469,7 +469,7 @@ example.org {
 ## Command line
 
 ```
-indice index           [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--force] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
+indice index           [--home <DIR>] [--name <NAME>] --collection <NAME> [-f|--from-file <FILE>] [--download] [--force] [--no-optimize] [--concurrency <N>] [-v|--verbose] <PATH|URL>...
 indice reindex         [--home <DIR>] [--concurrency <N>] [-v|--verbose]
 indice optimize        [--home <DIR>] [--max-segments <N>] [-v|--verbose]
 indice stats           [--home <DIR>]
@@ -519,7 +519,12 @@ derived siblings under it.
   indexed into the collection — an interrupted large ingest resumes where it
   stopped. `--force` re-indexes a source that's already there (to refresh it).
   (A `--download` remote URL is stored under a local path whose id differs from
-  the URL's, so it's re-fetched on a re-run rather than skipped.)
+  the URL's, so it's re-fetched on a re-run rather than skipped.) When a batch
+  ingest leaves the index **fragmented** into many segments (which slows every
+  query), indice **compacts it automatically** at the end of the run — so you
+  don't have to remember to run `optimize`. `--no-optimize` skips that (it just
+  prints a reminder to `optimize` later instead); a healthy index, or a single
+  add to an already-tidy one, is left alone either way.
 - **`collection`** - `collection list` shows collections and their members;
   `collection set <NAME> …` writes a collection's finding-aid metadata (creator,
   dates, rights, subjects, a Markdown narrative, and an optional `--thumbnail`) to
@@ -552,7 +557,9 @@ derived siblings under it.
   Tantivy's background merges fail — classically on a full disk) gets slow;
   `optimize` merges them back down. A lower `--max-segments` compacts more but
   needs more free disk during the merge (roughly index size ÷ target). Reports the
-  `before → after` segment count.
+  `before → after` segment count. `index` runs this automatically when a batch
+  ingest leaves the index fragmented, so you mostly only reach for it by hand
+  after an interrupted run or an `index --no-optimize`.
 - **`stats`** - reports the search index's on-disk footprint, broken down by
   Tantivy file type (`.store` doc store, `.pos` positions, `.term`/`.idx`
   inverted index, `.fast` columnar, …), with bytes-per-document and projected
@@ -566,7 +573,8 @@ derived siblings under it.
   `index` while it runs). Defaults to `127.0.0.1:8080`. `--manage` adds an opt-in
   browser UI + write API for adding archives and curating collections; see
   [Management mode](#management-mode) for local vs. behind-a-proxy (`--auth-proxy-*`)
-  use.
+  use. On startup it warns if the index is fragmented (many segments — e.g. built
+  by an older version, or a killed run), pointing you to `optimize`.
 - **`search-url`** - a debugging aid: reads the CDX index *inside* each WACZ and
   prints the records matching a URL. No separate CDX store is maintained; the
   WACZ's own index is authoritative.

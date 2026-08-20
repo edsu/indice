@@ -399,7 +399,7 @@ impl SearchIndex {
     /// `commit()` leaves its own segment. Tests use this to build a deliberately
     /// fragmented index to exercise [`Self::optimize`].
     #[cfg(test)]
-    fn disable_auto_merge(&mut self) {
+    pub(crate) fn disable_auto_merge(&mut self) {
         self.writer_mut()
             .set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
     }
