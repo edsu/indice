@@ -101,6 +101,13 @@ enum Commands {
         #[arg(long, value_name = "N")]
         concurrency: Option<usize>,
 
+        /// Skip the automatic post-ingest compaction. By default, if indexing
+        /// leaves the search index fragmented into many segments (which slows
+        /// every query), indice compacts it for you; pass this to skip that and
+        /// run `indice optimize` yourself later.
+        #[arg(long)]
+        no_optimize: bool,
+
         /// Verbose logging (debug level). Replaces the progress bar with detailed
         /// per-record logs.
         #[arg(short = 'v', long)]
@@ -169,7 +176,7 @@ enum Commands {
         /// Target number of segments to compact down to (≥1). Lower = fewer
         /// segments (faster queries) but higher peak disk during the merge
         /// (~index size / this). Default 8 balances the two.
-        #[arg(long, value_name = "N", default_value_t = 8)]
+        #[arg(long, value_name = "N", default_value_t = indice_lib::index::DEFAULT_OPTIMIZE_TARGET)]
         max_segments: usize,
 
         /// Verbose logging (debug level). Replaces the progress spinner.
@@ -705,6 +712,7 @@ async fn main() -> Result<()> {
             download,
             force,
             concurrency,
+            no_optimize,
             verbose: _,
         } => {
             // Sources come from the positional args plus, optionally, a
@@ -792,6 +800,39 @@ async fn main() -> Result<()> {
                         b.clear();
                     }
                     return Err(e);
+                }
+            }
+
+            // A batch ingest commits one segment per WACZ; if Tantivy's
+            // background merges didn't keep up, the index is left fragmented and
+            // every query (notably the homepage facet overview) slows down.
+            // Compact it now so a big ingest leaves a tidy index — unless the
+            // operator opted out, in which case point them at `optimize` rather
+            // than staying silent.
+            if no_optimize {
+                if let Ok(Some(n)) = indice_lib::index::segment_count(&home) {
+                    if n > indice_lib::index::FRAGMENTED_SEGMENT_THRESHOLD {
+                        tracing::warn!(
+                            "the search index has {n} segments and may be slow to \
+                             search; run `indice optimize` to compact it"
+                        );
+                    }
+                }
+            } else {
+                match indice_lib::index::optimize_if_fragmented(&home, progress) {
+                    Ok(Some((before, after))) => {
+                        tracing::info!("compacted fragmented index: {before} → {after} segments");
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        if let Some(b) = &bar {
+                            b.clear();
+                        }
+                        tracing::warn!(
+                            "automatic index compaction failed ({e:#}); run \
+                             `indice optimize` when you have free disk"
+                        );
+                    }
                 }
             }
             tracing::info!("indexing complete");

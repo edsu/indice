@@ -182,6 +182,18 @@ fn build_router(
     // writer) can run while serving. Management writes reload this searcher after
     // they commit — see [`AppState::reload_searcher`].
     let search = SearchIndex::open_read_only(index_dir.join("full_text").as_path())?;
+    // A fragmented index (many segments — e.g. a big ingest whose background
+    // merges didn't keep up, or one built by an older version) slows every
+    // query; nudge the operator to compact it. Best-effort: a count error here
+    // must not stop the server from starting.
+    if let Ok(n) = search.segment_count() {
+        if n > crate::index::FRAGMENTED_SEGMENT_THRESHOLD {
+            tracing::warn!(
+                "the search index has {n} segments and may be slow to search; \
+                 run `indice optimize` to compact it"
+            );
+        }
+    }
     let state = Arc::new(AppState {
         search: RwLock::new(Arc::new(search)),
         home: home.to_path_buf(),
@@ -1145,19 +1157,38 @@ async fn bx_import(
             Ok(crawls)
         })();
         match result {
-            Ok(crawls) => match job_state.reload_searcher() {
-                Ok(()) => tx
-                    .send(ProgressEvent::Done {
-                        collection: crate::collections::slugify(&req.collection),
-                        crawls,
-                    })
-                    .ok(),
-                Err(e) => tx
-                    .send(ProgressEvent::Error {
-                        message: format!("indexed, but reloading the searcher failed: {e:#}"),
-                    })
-                    .ok(),
-            },
+            Ok(crawls) => {
+                // A bulk import commits a segment per WACZ; if that left the
+                // index fragmented, compact it so search (and the homepage facet
+                // overview) stays fast. Best-effort — a failure here doesn't fail
+                // the import, only leaves the index un-compacted. Needs the write
+                // lock (the per-resource loop above released it each time).
+                {
+                    let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                    match crate::index::optimize_if_fragmented(&job_state.home, Some(&progress)) {
+                        Ok(Some((before, after))) => {
+                            tracing::info!("compacted fragmented index: {before} → {after} segments");
+                        }
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(
+                            "post-import index compaction failed ({e:#}); run `indice optimize` later"
+                        ),
+                    }
+                }
+                match job_state.reload_searcher() {
+                    Ok(()) => tx
+                        .send(ProgressEvent::Done {
+                            collection: crate::collections::slugify(&req.collection),
+                            crawls,
+                        })
+                        .ok(),
+                    Err(e) => tx
+                        .send(ProgressEvent::Error {
+                            message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                        })
+                        .ok(),
+                }
+            }
             Err(e) => tx
                 .send(ProgressEvent::Error {
                     message: format!("{e:#}"),
