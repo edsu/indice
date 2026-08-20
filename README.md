@@ -481,6 +481,7 @@ indice crawl set       [--home <DIR>] <CRAWL_ID> [--image <FILE>] [--note <MD> |
 indice search-url      [--home <DIR>] <URL>
 indice verify          [--home <DIR>]
 indice import browsertrix [--home <DIR>] [--host <URL>] [--org <SLUG>] [--collection <ID|SLUG>] [--crawl <ID>] [--into <NAME>] [--include-unreviewed] [--min-review <N>] [--limit <N>] [--dry-run] [--stream] [--force] [-v]
+indice wacz build      [--home <DIR>] --collection <NAME> [--name <NAME>] [--title <T> | --title-file <FILE>] [--description <D> | --description-file <FILE>] [--creator <TEXT>] [--software <TEXT>] [--main-page-url <URL>] [--keyword <K>]... [--license <L>]... [--yes] [-v] <WARC>...
 ```
 
 Every command takes `--home <DIR>` (default `.`); `archive/` and `index/` are
@@ -586,6 +587,21 @@ derived siblings under it.
 - **`import browsertrix`** - imports WACZ files from a [Browsertrix](https://browsertrix.com/)
   instance (Webrecorder's hosted crawler) - the "index your own crawls" path.
   See [Importing from Browsertrix](#importing-from-browsertrix).
+- **`wacz build`** - the "I have WARCs, not WACZs" on-ramp: packages one or more
+  `.warc`/`.warc.gz` files into a WACZ under `<home>/archive/` and indexes it.
+  **`--collection <NAME>` is required.** The original WARC bytes are stored
+  **verbatim** (uncompressed in the zip) - indice only *packages* your crawl
+  data, it never rewrites it - and a CDX index + `datapackage.json` are generated
+  so the WACZ both indexes here and **replays in ReplayWeb.page**. The CDX
+  mirrors [warcio.js](https://github.com/webrecorder/warcio.js)'s indexer and the
+  packaging mirrors [browsertrix-crawler](https://github.com/webrecorder/browsertrix-crawler),
+  so the output matches what Webrecorder's own tools produce. Metadata
+  (`--title`, `--description`, `--creator`, `--keyword`, `--license`, …) comes
+  from flags; on an interactive terminal, missing values are prompted for
+  (`--yes` skips prompting for scripts/CI). Each input WARC is sniff-tested first
+  (must parse as a WARC with at least one indexable record) so a bad file fails
+  fast instead of producing a broken WACZ. This is also the building block for
+  importing from services that serve WARCs rather than WACZs (e.g. Archive-It).
 
 ## Testing
 
