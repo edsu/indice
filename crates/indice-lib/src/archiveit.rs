@@ -261,6 +261,165 @@ impl<T: Transport> Client<T> {
     }
 }
 
+// ── Import orchestration (shared by the CLI and the server job) ────────────────
+
+/// One crawl's WARC files, grouped for building a single WACZ.
+#[derive(Debug, Clone)]
+pub struct CrawlPlan {
+    pub crawl_id: i64,
+    pub files: Vec<WarcFile>,
+}
+
+/// Group WASAPI files by their `crawl` (job) id (files without one bucket under
+/// `0`), sorted by crawl id — the per-crawl WACZ build units.
+pub fn plan_crawls(files: Vec<WarcFile>) -> Vec<CrawlPlan> {
+    let mut map: std::collections::BTreeMap<i64, Vec<WarcFile>> = std::collections::BTreeMap::new();
+    for f in files {
+        map.entry(f.crawl.unwrap_or(0)).or_default().push(f);
+    }
+    map.into_iter()
+        .map(|(crawl_id, files)| CrawlPlan { crawl_id, files })
+        .collect()
+}
+
+/// Summary of an import run.
+#[derive(Debug, Default)]
+pub struct ImportOutcome {
+    pub imported: u64,
+    pub skipped: u64,
+    /// `(indice crawl id, display name)` for each newly imported crawl.
+    pub crawls: Vec<(String, String)>,
+}
+
+/// Map an Archive-It [`Collection`]'s descriptive metadata into indice
+/// finding-aid [`CollectionFields`] (fill-gaps via `seed_collection`). The
+/// Partner-API metadata shape varies by account, so this reads `extra`
+/// defensively — the exact keys are confirmed against a live account; unknown
+/// fields simply stay unmapped.
+pub fn collection_fields(c: &Collection) -> crate::collections::CollectionFields {
+    let s = |k: &str| c.extra.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    crate::collections::CollectionFields {
+        // Description → narrative (Scope & Content); a short caption → abstract.
+        narrative: s("description"),
+        description: s("caption"),
+        creator: s("creator").or_else(|| s("collector")),
+        rights: s("rights"),
+        dates: None, // filled from crawl times by the caller when available
+        subjects: None,
+        curator: None,
+    }
+}
+
+/// Import a set of grouped crawls into indice: for each crawl not already
+/// imported (unless `force`), download its WARCs, build one WACZ, index it into
+/// `into`, and record provenance. Then seed the collection's finding aid from
+/// `fields`. Shared by the CLI and the server job so the download→build→index
+/// logic lives once.
+#[allow(clippy::too_many_arguments)]
+pub fn import_crawls<T: Transport>(
+    client: &Client<T>,
+    home: &Path,
+    into: &str,
+    ait_collection_id: i64,
+    plans: &[CrawlPlan],
+    fields: &crate::collections::CollectionFields,
+    force: bool,
+    progress: Option<&dyn crate::index::IndexProgress>,
+) -> Result<ImportOutcome> {
+    use crate::collections::{slugify, wacz_id, Manifest, Source};
+
+    let host = client.host().to_string();
+    // Incremental: crawls already imported (by (host, collection, crawl)).
+    let seen: std::collections::HashSet<(String, i64, i64)> =
+        Manifest::open(&crate::index::index_dir(home))
+            .map(|m| {
+                m.waczs
+                    .iter()
+                    .filter_map(|w| w.archive_it.as_ref())
+                    .map(|r| (r.host.clone(), r.collection_id, r.crawl_id))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+    let slug = slugify(into);
+    let dest_dir = crate::index::archive_dir(home).join(&slug);
+    let mut out = ImportOutcome::default();
+
+    for plan in plans {
+        if !force && seen.contains(&(host.clone(), ait_collection_id, plan.crawl_id)) {
+            out.skipped += 1;
+            continue;
+        }
+        // Download this crawl's WARCs to a temp dir.
+        let tmp = tempfile::tempdir().context("temp dir for downloads")?;
+        let mut warcs = Vec::new();
+        for f in &plan.files {
+            let Some(loc) = f.locations.first() else {
+                tracing::warn!(file = %f.filename, "no download location; skipping file");
+                continue;
+            };
+            if let Some(p) = progress {
+                p.phase(&format!("downloading {}", f.filename));
+            }
+            let path = tmp.path().join(&f.filename);
+            client.download(loc, &path)?;
+            warcs.push(path);
+        }
+        if warcs.is_empty() {
+            tracing::warn!(
+                crawl = plan.crawl_id,
+                "crawl had no downloadable WARCs; skipping"
+            );
+            out.skipped += 1;
+            continue;
+        }
+
+        // Build one WACZ per crawl, directly into the collection's archive dir
+        // (so it's indexed in place and its id is deterministic), then index it.
+        let display = format!("Crawl {}", plan.crawl_id);
+        let created = plan.files.iter().filter_map(|f| f.crawl_time.clone()).min();
+        let meta = crate::wacz_build::WaczBuildMeta {
+            title: Some(display.clone()),
+            created,
+            software: Some(format!("Archive-It; indice {}", env!("CARGO_PKG_VERSION"))),
+            creator: fields.creator.clone(),
+            ..Default::default()
+        };
+        let out_name = slugify(&format!("ait-{ait_collection_id}-{}", plan.crawl_id));
+        if let Some(p) = progress {
+            p.phase(&format!("building WACZ for crawl {}", plan.crawl_id));
+        }
+        let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
+        crate::index::index_location(
+            &built.path.to_string_lossy(),
+            home,
+            Some(&display),
+            into,
+            false, // download
+            true,  // force: the importer already made the skip decision
+            None,
+            progress,
+        )?;
+        // The filed WACZ is in place under archive/<slug>/; its id is stable.
+        let abs = built.path.canonicalize().unwrap_or(built.path.clone());
+        let crawl_indice_id = wacz_id(&Source::for_file(&abs, home));
+        crate::index::set_archiveit_provenance_by_id(
+            home,
+            &crawl_indice_id,
+            &host,
+            ait_collection_id,
+            plan.crawl_id,
+            plan.files.len() as u64,
+        )?;
+        out.imported += 1;
+        out.crawls.push((crawl_indice_id, display));
+    }
+
+    // Seed the collection finding aid (fill-gaps; curator edits survive).
+    crate::index::seed_collection(home, into, fields)?;
+    Ok(out)
+}
+
 /// Build the `?a=b&…` query string for a WASAPI `webdata` request (empty when no
 /// filters). Values are percent-encoded.
 fn wasapi_query(q: &WasapiQuery) -> String {
@@ -304,21 +463,25 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// A [`Transport`] returning canned `(status, body)` for exact URLs.
+    /// A [`Transport`] returning canned `(status, bytes)` for exact URLs.
     #[derive(Default)]
     struct FakeTransport {
-        responses: HashMap<String, (u16, String)>,
+        responses: HashMap<String, (u16, Vec<u8>)>,
     }
     impl FakeTransport {
         fn with(mut self, url: &str, status: u16, body: &str) -> Self {
             self.responses
-                .insert(url.to_string(), (status, body.to_string()));
+                .insert(url.to_string(), (status, body.as_bytes().to_vec()));
+            self
+        }
+        fn with_bytes(mut self, url: &str, status: u16, body: Vec<u8>) -> Self {
+            self.responses.insert(url.to_string(), (status, body));
             self
         }
         fn lookup(&self, url: &str) -> Result<(u16, Vec<u8>)> {
             self.responses
                 .get(url)
-                .map(|(s, b)| (*s, b.as_bytes().to_vec()))
+                .map(|(s, b)| (*s, b.clone()))
                 .ok_or_else(|| anyhow::anyhow!("unexpected request: {url}"))
         }
     }
@@ -405,6 +568,91 @@ mod tests {
             !dest.with_extension("part").exists(),
             "temp .part cleaned up"
         );
+    }
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn import_crawls_downloads_builds_indexes_and_is_incremental() {
+        // Two WARC files under one crawl; their download locations serve a real
+        // fixture WARC's bytes. Import → one WACZ built per crawl, indexed,
+        // provenance recorded; a re-run skips it.
+        let warc_bytes = std::fs::read(fixture("simple.warc.gz")).unwrap();
+        let t = FakeTransport::default()
+            .with_bytes("https://warcs.example/one.warc.gz", 200, warc_bytes.clone())
+            .with_bytes("https://warcs.example/two.warc.gz", 200, warc_bytes);
+        let client = client(t);
+
+        let files = vec![
+            WarcFile {
+                filename: "one.warc.gz".into(),
+                size: 10,
+                checksums: Checksums::default(),
+                collection: Some(8232),
+                crawl: Some(304244),
+                crawl_time: Some("2017-05-31T22:15:40Z".into()),
+                locations: vec!["https://warcs.example/one.warc.gz".into()],
+            },
+            WarcFile {
+                filename: "two.warc.gz".into(),
+                size: 10,
+                checksums: Checksums::default(),
+                collection: Some(8232),
+                crawl: Some(304244),
+                crawl_time: Some("2017-05-31T23:00:00Z".into()),
+                locations: vec!["https://warcs.example/two.warc.gz".into()],
+            },
+        ];
+        let plans = plan_crawls(files);
+        assert_eq!(plans.len(), 1, "both files group under one crawl");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let fields = crate::collections::CollectionFields {
+            narrative: Some("A test collection".into()),
+            ..Default::default()
+        };
+        let out = import_crawls(
+            &client, home, "City Gov", 8232, &plans, &fields, false, None,
+        )
+        .unwrap();
+        assert_eq!(out.imported, 1);
+        assert_eq!(out.skipped, 0);
+
+        // One WACZ filed under the collection's archive dir, and it indexed.
+        let wacz = crate::index::archive_dir(home)
+            .join("city-gov")
+            .join("ait-8232-304244.wacz");
+        assert!(
+            wacz.exists(),
+            "per-crawl WACZ built in place: {}",
+            wacz.display()
+        );
+        let si = crate::search::SearchIndex::open(&crate::index::index_dir(home).join("full_text"))
+            .unwrap();
+        assert!(si.num_docs().unwrap() >= 1, "imported crawl indexed a page");
+
+        // Provenance recorded.
+        let manifest = crate::collections::Manifest::open(&crate::index::index_dir(home)).unwrap();
+        let ait = manifest.waczs[0]
+            .archive_it
+            .as_ref()
+            .expect("archive_it provenance");
+        assert_eq!(ait.collection_id, 8232);
+        assert_eq!(ait.crawl_id, 304244);
+        assert_eq!(ait.warc_count, 2);
+
+        // A re-run skips the already-imported crawl.
+        let again = import_crawls(
+            &client, home, "City Gov", 8232, &plans, &fields, false, None,
+        )
+        .unwrap();
+        assert_eq!(again.imported, 0);
+        assert_eq!(again.skipped, 1);
     }
 
     #[test]
