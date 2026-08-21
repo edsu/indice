@@ -370,7 +370,16 @@ fn parse_one_warc_record<R: BufRead>(
         if lower.starts_with("warc-type:") {
             warc_type = trimmed["warc-type:".len()..].trim().to_string();
         } else if lower.starts_with("warc-target-uri:") {
-            target_uri = trimmed["warc-target-uri:".len()..].trim().to_string();
+            let raw = trimmed["warc-target-uri:".len()..].trim();
+            // wget (and some other tools) wrap the target URI in angle brackets
+            // (`WARC-Target-URI: <https://…>`), an older WARC convention. Strip a
+            // single surrounding pair so the URL — and the SURT/CDX key derived
+            // from it — is the bare URI, matching warcio/pywb.
+            let raw = raw
+                .strip_prefix('<')
+                .and_then(|s| s.strip_suffix('>'))
+                .unwrap_or(raw);
+            target_uri = raw.to_string();
         } else if lower.starts_with("warc-date:") {
             date = trimmed["warc-date:".len()..].trim().to_string();
         } else if lower.starts_with("warc-record-id:") {
@@ -622,6 +631,27 @@ mod tests {
         assert_eq!(resp.target_uri, "http://example.com/");
         assert_eq!(resp.http_status, Some(200));
         assert_eq!(resp.timestamp.len(), 14);
+    }
+
+    #[test]
+    fn strips_angle_brackets_from_target_uri() {
+        // wget writes `WARC-Target-URI: <url>` (bracketed); the brackets must be
+        // stripped so the URL — and the SURT/CDX key derived from it — is bare.
+        let http = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nhi";
+        let mut rec = Vec::new();
+        rec.extend_from_slice(b"WARC/1.0\r\n");
+        rec.extend_from_slice(b"WARC-Type: response\r\n");
+        rec.extend_from_slice(b"WARC-Target-URI: <https://ex.com/x>\r\n");
+        rec.extend_from_slice(b"WARC-Date: 2024-01-15T12:00:00Z\r\n");
+        rec.extend_from_slice(b"Content-Type: application/http;msgtype=response\r\n");
+        rec.extend_from_slice(format!("Content-Length: {}\r\n", http.len()).as_bytes());
+        rec.extend_from_slice(b"\r\n");
+        rec.extend_from_slice(http);
+        rec.extend_from_slice(b"\r\n\r\n");
+
+        let parsed = parse_warc_records(&rec, 0, rec.len() as u64);
+        let r = parsed.into_iter().next().unwrap().unwrap();
+        assert_eq!(r.target_uri, "https://ex.com/x");
     }
 
     #[test]
