@@ -478,9 +478,11 @@ indice serve           [--home <DIR>] [--bind <ADDR>] [--manage] [--auth-proxy-h
 indice collection set  [--home <DIR>] <NAME> [--creator <TEXT>] [--dates <TEXT>] [--rights <TEXT>] [--subject <SUBJECT>]... [--narrative <MD> | --narrative-file <FILE>] [--thumbnail <FILE>] [--description <TEXT>] [--curator <TEXT>]
 indice collection list [--home <DIR>]
 indice crawl set       [--home <DIR>] <CRAWL_ID> [--image <FILE>] [--note <MD> | --note-file <FILE>]
+indice crawl list      [--home <DIR>] [<COLLECTION>]
 indice search-url      [--home <DIR>] <URL>
 indice verify          [--home <DIR>]
 indice import browsertrix [--home <DIR>] [--host <URL>] [--org <SLUG>] [--collection <ID|SLUG>] [--crawl <ID>] [--into <NAME>] [--include-unreviewed] [--min-review <N>] [--limit <N>] [--dry-run] [--stream] [--force] [-v]
+indice wacz build      [--home <DIR>] --collection <NAME> [--name <NAME>] [--title <T> | --title-file <FILE>] [--description <D> | --description-file <FILE>] [--creator <TEXT>] [--software <TEXT>] [--main-page-url <URL>] [--keyword <K>]... [--license <L>]... [--yes] [-v] <WARC>...
 ```
 
 Every command takes `--home <DIR>` (default `.`); `archive/` and `index/` are
@@ -525,14 +527,16 @@ derived siblings under it.
   don't have to remember to run `optimize`. `--no-optimize` skips that (it just
   prints a reminder to `optimize` later instead); a healthy index, or a single
   add to an already-tidy one, is left alone either way.
-- **`collection`** - `collection list` shows collections and their members;
+- **`collection`** - `collection list` shows collections and their crawl counts;
   `collection set <NAME> …` writes a collection's finding-aid metadata (creator,
   dates, rights, subjects, a Markdown narrative, and an optional `--thumbnail`) to
   a git-committable `collections/<slug>/README.md` you can also hand-edit.
-  `crawl set <ID> --note` adds a per-crawl Markdown note
-  (`collections/<slug>/crawls/<id>.md`); `crawl set <ID> --image` pins a crawl
-  thumbnail there too. (WACZ→collection membership is set when indexing, via
-  `index --collection <NAME>`.)
+- **`crawl`** - `crawl list [<COLLECTION>]` lists individual crawls with their
+  8-char ids (optionally filtered to one collection) — the ids you pass to
+  `crawl set`/`crawl delete`. `crawl set <ID> --note` adds a per-crawl Markdown
+  note (`collections/<slug>/crawls/<id>.md`); `crawl set <ID> --image` pins a
+  crawl thumbnail there too. (WACZ→collection membership is set when indexing,
+  via `index --collection <NAME>`.)
 - **`reindex`** - rebuild the search index from the WACZs already in the
   manifest, preserving collection membership and metadata. Re-fetches remote URL
   sources and recreates the index from scratch, so it's the way to migrate after
@@ -586,6 +590,22 @@ derived siblings under it.
 - **`import browsertrix`** - imports WACZ files from a [Browsertrix](https://browsertrix.com/)
   instance (Webrecorder's hosted crawler) - the "index your own crawls" path.
   See [Importing from Browsertrix](#importing-from-browsertrix).
+- **`wacz build`** - the "I have WARCs, not WACZs" on-ramp: packages one or more
+  `.warc`/`.warc.gz` files into a WACZ under `<home>/archive/` and indexes it.
+  **`--collection <NAME>` is required.** The original WARC bytes are stored
+  **verbatim** (uncompressed in the zip) - indice only *packages* your crawl
+  data, it never rewrites it - and a CDX index + `datapackage.json` are generated
+  so the WACZ both indexes here and is **shaped to replay in ReplayWeb.page**.
+  The CDX mirrors [warcio.js](https://github.com/webrecorder/warcio.js)'s indexer
+  (verified line-for-line against it) and the packaging mirrors
+  [browsertrix-crawler](https://github.com/webrecorder/browsertrix-crawler), so
+  the output matches what Webrecorder's own tools produce. Metadata
+  (`--title`, `--description`, `--creator`, `--keyword`, `--license`, …) comes
+  from flags; on an interactive terminal, missing values are prompted for
+  (`--yes` skips prompting for scripts/CI). Each input WARC is sniff-tested first
+  (must parse as a WARC with at least one indexable record) so a bad file fails
+  fast instead of producing a broken WACZ. This is also the building block for
+  importing from services that serve WARCs rather than WACZs (e.g. Archive-It).
 
 ## Testing
 

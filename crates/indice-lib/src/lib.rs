@@ -10,4 +10,5 @@ pub mod server;
 mod thumbnail;
 pub mod views;
 pub mod wacz;
+pub mod wacz_build;
 pub mod warc;

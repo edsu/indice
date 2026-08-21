@@ -227,6 +227,76 @@ enum Commands {
         #[command(subcommand)]
         action: ImportCmd,
     },
+    /// Build a WACZ from WARC files (and index it).
+    Wacz {
+        #[command(subcommand)]
+        action: WaczCmd,
+    },
+}
+
+/// WACZ operations. Today just `build` (package WARCs into a WACZ + index it).
+#[derive(Subcommand)]
+enum WaczCmd {
+    /// Package one or more WARC files into a WACZ and index it. The WARC bytes
+    /// are stored verbatim; a CDX index + datapackage are generated so the WACZ
+    /// both indexes here and replays in ReplayWeb.page.
+    Build {
+        /// WARC files to package (`.warc` / `.warc.gz`). At least one.
+        warcs: Vec<PathBuf>,
+
+        /// The collection the built WACZ belongs to (created if new). Required.
+        #[arg(long)]
+        collection: Option<String>,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+
+        /// WACZ display name for indexing (defaults to the title or filename).
+        #[arg(long)]
+        name: Option<String>,
+
+        /// WACZ title (metadata). Prompted for when interactive and omitted.
+        #[arg(long, conflicts_with = "title_file")]
+        title: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        title_file: Option<PathBuf>,
+
+        /// Short description / abstract (metadata).
+        #[arg(long, conflicts_with = "description_file")]
+        description: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        description_file: Option<PathBuf>,
+
+        /// Collecting organization or person (datapackage `organization`).
+        #[arg(long)]
+        creator: Option<String>,
+
+        /// The tool string recorded as `software` (defaults to `indice <ver>`).
+        #[arg(long)]
+        software: Option<String>,
+
+        /// The collection's main page URL (metadata).
+        #[arg(long)]
+        main_page_url: Option<String>,
+
+        /// A topical keyword (repeat for several).
+        #[arg(long = "keyword", value_name = "KEYWORD")]
+        keywords: Vec<String>,
+
+        /// A license label (repeat for several).
+        #[arg(long = "license", value_name = "LICENSE")]
+        licenses: Vec<String>,
+
+        /// Skip interactive metadata prompts (for scripts/CI); missing required
+        /// values then error instead of prompting.
+        #[arg(long)]
+        yes: bool,
+
+        /// Verbose logging (debug level). Replaces the progress bar.
+        #[arg(short = 'v', long)]
+        verbose: bool,
+    },
 }
 
 /// Sources that content can be imported from. Each is its own command (their
@@ -327,7 +397,7 @@ enum ImportCmd {
 enum CrawlCmd {
     /// Set curator-controlled properties of a crawl.
     Set {
-        /// Crawl id (the 8-char id shown on the crawl page / in `collection list`).
+        /// Crawl id (the 8-char id from `crawl list` or the crawl page).
         id: String,
 
         /// Pin a representative image for this crawl from a local image file
@@ -353,12 +423,22 @@ enum CrawlCmd {
     /// (for a downloaded/File source, if unreferenced), and thumbnail. The index
     /// reclaims disk only on a later segment merge. Irreversible.
     Delete {
-        /// Crawl id (the 8-char id shown on the crawl page / in `collection list`).
+        /// Crawl id (the 8-char id from `crawl list` or the crawl page).
         id: String,
 
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
+    /// List crawls (with their ids), optionally filtered to one collection. Use
+    /// the ids with `crawl delete`/`crawl set`.
+    List {
+        /// Only list crawls in this collection (name or slug). Omit for all.
+        collection: Option<String>,
 
         /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
@@ -460,6 +540,19 @@ fn confirm(prompt: &str) -> Result<bool> {
     std::io::stdin().read_line(&mut line)?;
     let answer = line.trim().to_ascii_lowercase();
     Ok(answer == "y" || answer == "yes")
+}
+
+/// Prompt on stderr and read a trimmed line from stdin. Returns `None` for an
+/// empty line/EOF, so an optional field can be skipped with just Enter. Only
+/// used interactively (callers gate on `stdin().is_terminal()`).
+fn prompt_line(prompt: &str) -> Result<Option<String>> {
+    use std::io::Write;
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let value = line.trim();
+    Ok((!value.is_empty()).then(|| value.to_string()))
 }
 
 /// Read a whole text argument from a file, or from stdin when the path is `-`
@@ -647,12 +740,18 @@ async fn main() -> Result<()> {
             | Commands::Import {
                 action: ImportCmd::Browsertrix { verbose: true, .. }
             }
+            | Commands::Wacz {
+                action: WaczCmd::Build { verbose: true, .. }
+            }
     );
-    // `index`, `reindex`, and `browsertrix` (which indexes what it downloads) all
-    // stream records and show the progress bar.
+    // `index`, `reindex`, `browsertrix` (which indexes what it downloads), and
+    // `wacz build` (which indexes what it packages) all show the progress bar.
     let shows_progress = matches!(
         &cli.command,
-        Commands::Index { .. } | Commands::Reindex { .. } | Commands::Import { .. }
+        Commands::Index { .. }
+            | Commands::Reindex { .. }
+            | Commands::Import { .. }
+            | Commands::Wacz { .. }
     );
     let show_bar = shows_progress && !verbose && std::io::stderr().is_terminal();
     let default_level = if verbose {
@@ -1115,6 +1214,7 @@ async fn main() -> Result<()> {
                     println!("aborted");
                 }
             }
+            CrawlCmd::List { collection, home } => run_crawl_list(&home, collection.as_deref())?,
         },
 
         Commands::Import { action } => match action {
@@ -1161,8 +1261,203 @@ async fn main() -> Result<()> {
                 result?;
             }
         },
+
+        Commands::Wacz { action } => match action {
+            WaczCmd::Build {
+                warcs,
+                collection,
+                home,
+                name,
+                title,
+                title_file,
+                description,
+                description_file,
+                creator,
+                software,
+                main_page_url,
+                keywords,
+                licenses,
+                yes,
+                verbose: _,
+            } => {
+                run_wacz_build(WaczBuildArgs {
+                    warcs,
+                    collection,
+                    home,
+                    name,
+                    title,
+                    title_file,
+                    description,
+                    description_file,
+                    creator,
+                    software,
+                    main_page_url,
+                    keywords,
+                    licenses,
+                    yes,
+                    show_bar,
+                })?;
+            }
+        },
     }
 
+    Ok(())
+}
+
+/// Flags for `wacz build`, threaded into `run_wacz_build`.
+struct WaczBuildArgs {
+    warcs: Vec<PathBuf>,
+    collection: Option<String>,
+    home: PathBuf,
+    name: Option<String>,
+    title: Option<String>,
+    title_file: Option<PathBuf>,
+    description: Option<String>,
+    description_file: Option<PathBuf>,
+    creator: Option<String>,
+    software: Option<String>,
+    main_page_url: Option<String>,
+    keywords: Vec<String>,
+    licenses: Vec<String>,
+    yes: bool,
+    show_bar: bool,
+}
+
+/// Package WARC files into a WACZ (metadata from flags, prompted when
+/// interactive) and index it into the collection.
+fn run_wacz_build(args: WaczBuildArgs) -> Result<()> {
+    use indice_lib::wacz_build::{build_wacz, WaczBuildMeta};
+
+    if args.warcs.is_empty() {
+        eprintln!(
+            "wacz build needs at least one WARC file. For example:\n\
+             \n\
+             \x20 indice wacz build crawl.warc.gz --collection \"My Crawl\"\n\
+             \x20 indice wacz build *.warc.gz --collection \"My Crawl\" --title \"…\""
+        );
+        std::process::exit(2);
+    }
+    for warc in &args.warcs {
+        if !warc.is_file() {
+            eprintln!("no such WARC file: {}", warc.display());
+            std::process::exit(2);
+        }
+    }
+
+    let interactive = !args.yes && std::io::stdin().is_terminal();
+
+    // Resolve --*-file into their inline counterparts first.
+    let mut title = match args.title_file {
+        Some(ref p) => Some(read_text_arg(p)?),
+        None => args.title.clone(),
+    };
+    let mut description = match args.description_file {
+        Some(ref p) => Some(read_text_arg(p)?),
+        None => args.description.clone(),
+    };
+    let mut creator = args.creator.clone();
+
+    // Collection is required; prompt for it when interactive, else error.
+    let mut collection = args
+        .collection
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string);
+    if collection.is_none() && interactive {
+        // Re-prompt on an empty entry rather than aborting on the first blank
+        // line; give up after a few tries so a stray EOF can't loop forever.
+        for _ in 0..3 {
+            collection = prompt_line("Collection name (required): ")?;
+            if collection.is_some() {
+                break;
+            }
+            eprintln!("A collection name is required.");
+        }
+    }
+    let Some(collection) = collection else {
+        eprintln!(
+            "wacz build needs --collection <NAME>: every crawl belongs to a curated\n\
+             collection. For example:\n\
+             \n\
+             \x20 indice wacz build crawl.warc.gz --collection \"My Crawl\""
+        );
+        std::process::exit(2);
+    };
+
+    // Optional metadata: prompt for anything missing when interactive (Enter skips).
+    if interactive {
+        if title.is_none() {
+            title = prompt_line("Title (optional): ")?;
+        }
+        if description.is_none() {
+            description = prompt_line("Description (optional): ")?;
+        }
+        if creator.is_none() {
+            creator = prompt_line("Creator / organization (optional): ")?;
+        }
+    }
+
+    let meta = WaczBuildMeta {
+        title: title.clone(),
+        description,
+        creator,
+        software: args.software.clone(),
+        main_page_url: args.main_page_url.clone(),
+        keywords: args.keywords.clone(),
+        licenses: args.licenses.clone(),
+        ..Default::default()
+    };
+
+    // Name the built file from --name/title/first WARC stem (slugified).
+    let stem = args
+        .name
+        .clone()
+        .or_else(|| title.clone())
+        .or_else(|| {
+            args.warcs[0]
+                .file_stem()
+                .map(|s| s.to_string_lossy().trim_end_matches(".warc").to_string())
+        })
+        .unwrap_or_else(|| "crawl".to_string());
+    let out_name = indice_lib::collections::slugify(&stem);
+
+    // Build into a temp dir; `index` copies the WACZ into <home>/archive/.
+    let tmp = tempfile::tempdir().context("creating a temp dir for the build")?;
+    tracing::info!(warcs = args.warcs.len(), "building WACZ");
+    let built = build_wacz(&args.warcs, &meta, tmp.path(), &out_name)?;
+    tracing::info!(
+        records = built.warc_records,
+        cdx = built.cdx_lines,
+        pages = built.pages,
+        "built {}",
+        built.path.display()
+    );
+
+    // Index it (shows the same progress bar as `index`).
+    let bar = args.show_bar.then(BarProgress::new);
+    let progress = bar
+        .as_ref()
+        .map(|b| b as &dyn indice_lib::index::IndexProgress);
+    let quiet = gag::Gag::stdout().ok();
+    let result = indice_lib::index::index_location(
+        &built.path.to_string_lossy(),
+        &args.home,
+        args.name.as_deref().or(title.as_deref()),
+        &collection,
+        false,
+        false,
+        None,
+        progress,
+    );
+    drop(quiet);
+    if result.is_err() {
+        if let Some(b) = &bar {
+            b.clear();
+        }
+    }
+    result?;
+    tracing::info!("wacz build complete");
     Ok(())
 }
 
@@ -1180,6 +1475,54 @@ fn run_collection_list(home: &std::path::Path) -> Result<()> {
         let count = manifest.members_of(&c.id).count();
         let desc = c.description.as_deref().unwrap_or("");
         println!("{:<24} {:>3} WACZ  {}", c.name, count, desc);
+    }
+    Ok(())
+}
+
+/// List crawls as a flat table (id, collection slug, page count, date, name),
+/// optionally filtered to one collection (by name or slug). The ids feed `crawl
+/// delete`/`crawl set`.
+fn run_crawl_list(home: &std::path::Path, collection: Option<&str>) -> Result<()> {
+    use indice_lib::collections::{slugify, Manifest};
+
+    let index_dir = indice_lib::index::index_dir(home);
+    let manifest = Manifest::open(&index_dir)?;
+    // A collection filter matches on the slug, so either the display name
+    // ("DuckLake") or the slug ("ducklake") works.
+    let want = collection.map(slugify);
+
+    // Flat, greppable table — one self-contained line per crawl carrying its
+    // collection slug, so a line copied or grepped out of context still says
+    // which collection the id belongs to.
+    let mut listed = 0usize;
+    for c in &manifest.collections {
+        if want.as_deref().is_some_and(|w| w != c.id) {
+            continue;
+        }
+        for w in manifest.members_of(&c.id) {
+            let pages = w.page_count.unwrap_or(0);
+            let date = w
+                .crawl_date
+                .as_deref()
+                .or(w.capture_start.as_deref())
+                .unwrap_or("");
+            // Dates are ISO/RFC3339; show just the calendar day when present.
+            let date = date.get(..10).unwrap_or(date);
+            println!(
+                "{:<8}  {:<22}  {:>7} pages  {:<10}  {}",
+                w.id, c.id, pages, date, w.name
+            );
+            listed += 1;
+        }
+    }
+    if listed == 0 {
+        match collection {
+            Some(c) => println!(
+                "No crawls in collection '{c}' under {}",
+                index_dir.display()
+            ),
+            None => println!("No crawls registered in {}", index_dir.display()),
+        }
     }
     Ok(())
 }
