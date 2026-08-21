@@ -223,6 +223,7 @@ impl<T: Transport> Client<T> {
     /// streaming to a `.part` file then renaming so a partial download never
     /// looks complete. Returns bytes written.
     pub fn download(&self, url: &str, dest: &Path) -> Result<u64> {
+        tracing::debug!("download {url} → {}", dest.display());
         let tmp = dest.with_extension("part");
         let mut reader = self
             .transport
@@ -253,7 +254,9 @@ impl<T: Transport> Client<T> {
     }
 
     fn get_json_url<D: DeserializeOwned>(&self, url: &str) -> Result<D> {
+        tracing::debug!("GET {url}");
         let (status, body) = self.transport.get(url, Some(&self.auth))?;
+        tracing::debug!("GET {url} → HTTP {status} ({} bytes)", body.len());
         if !(200..300).contains(&status) {
             bail!("GET {url} failed (HTTP {status}): {}", body_snippet(&body));
         }
@@ -350,17 +353,33 @@ pub fn import_crawls<T: Transport>(
             out.skipped += 1;
             continue;
         }
-        // Download this crawl's WARCs to a temp dir.
+        // Download this crawl's WARCs to a temp dir. Narrate it: downloads are
+        // the slow part (multi-GB WARCs), so start the spinner *before* the first
+        // fetch — `phase()` only updates an already-active bar — and also log at
+        // INFO for the no-bar (piped/CI) case.
+        let display = format!("crawl {} · {into}", plan.crawl_id);
+        if let Some(p) = progress {
+            p.begin(&display);
+        }
         let tmp = tempfile::tempdir().context("temp dir for downloads")?;
+        let total_files = plan.files.len();
         let mut warcs = Vec::new();
-        for f in &plan.files {
+        for (i, f) in plan.files.iter().enumerate() {
             let Some(loc) = f.locations.first() else {
                 tracing::warn!(file = %f.filename, "no download location; skipping file");
                 continue;
             };
+            let status = format!(
+                "downloading {} ({}) [{}/{}]",
+                f.filename,
+                human_size(f.size),
+                i + 1,
+                total_files
+            );
             if let Some(p) = progress {
-                p.phase(&format!("downloading {}", f.filename));
+                p.phase(&status);
             }
+            tracing::info!(crawl = plan.crawl_id, "{status}");
             let path = tmp.path().join(&f.filename);
             client.download(loc, &path)?;
             warcs.push(path);
@@ -376,7 +395,6 @@ pub fn import_crawls<T: Transport>(
 
         // Build one WACZ per crawl, directly into the collection's archive dir
         // (so it's indexed in place and its id is deterministic), then index it.
-        let display = format!("Crawl {}", plan.crawl_id);
         let created = plan.files.iter().filter_map(|f| f.crawl_time.clone()).min();
         let meta = crate::wacz_build::WaczBuildMeta {
             title: Some(display.clone()),
@@ -387,8 +405,9 @@ pub fn import_crawls<T: Transport>(
         };
         let out_name = slugify(&format!("ait-{ait_collection_id}-{}", plan.crawl_id));
         if let Some(p) = progress {
-            p.phase(&format!("building WACZ for crawl {}", plan.crawl_id));
+            p.phase("building WACZ");
         }
+        tracing::info!(crawl = plan.crawl_id, warcs = warcs.len(), "building WACZ");
         let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
         crate::index::index_location(
             &built.path.to_string_lossy(),
@@ -411,6 +430,15 @@ pub fn import_crawls<T: Transport>(
             plan.crawl_id,
             plan.files.len() as u64,
         )?;
+        // Leave a persistent line (survives the bar) recording what was imported.
+        if let Some(p) = progress {
+            p.wacz_indexed(&display, built.pages);
+        }
+        tracing::info!(
+            crawl = plan.crawl_id,
+            pages = built.pages,
+            "imported crawl into \"{into}\""
+        );
         out.imported += 1;
         out.crawls.push((crawl_indice_id, display));
     }
@@ -444,6 +472,22 @@ fn wasapi_query(q: &WasapiQuery) -> String {
         ser.append_pair(k, v);
     }
     format!("?{}", ser.finish())
+}
+
+/// A compact human-readable byte size, for progress/log messages.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut n = bytes as f64;
+    let mut u = 0;
+    while n >= 1024.0 && u < UNITS.len() - 1 {
+        n /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{n:.1} {}", UNITS[u])
+    }
 }
 
 /// A short, printable, char-boundary-safe slice of a response body for errors.

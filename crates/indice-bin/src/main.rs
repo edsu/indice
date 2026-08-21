@@ -831,6 +831,10 @@ async fn main() -> Result<()> {
             .add_directive("pdf_extract=off".parse().unwrap())
             .add_directive("lopdf=off".parse().unwrap())
             .add_directive("html5ever=off".parse().unwrap())
+            // ureq's own debug chatter (TCP/resolver/proto, with redacted paths)
+            // buries our clean per-request logs under `-v`; keep only its warnings.
+            .add_directive("ureq=info".parse().unwrap())
+            .add_directive("ureq_proto=info".parse().unwrap())
     });
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -2527,10 +2531,17 @@ fn run_archiveit(
 
     let client = connect_archiveit(host)?;
     // List collections to resolve names + metadata. A specific --collection may
-    // be inactive, so don't filter to ACTIVE in that case.
+    // be inactive, so don't filter to ACTIVE in that case. The network phases can
+    // be slow (esp. a whole-account run), so narrate them — visible with `-v`,
+    // and on stderr for a dry-run so it never looks hung.
+    tracing::info!("connecting to Archive-It at {host}; listing collections…");
+    if opts.dry_run {
+        eprintln!("Listing collections from {host}…");
+    }
     let all = client
         .collections(opts.collection.is_none())
         .context("listing Archive-It collections")?;
+    tracing::info!("found {} collection(s)", all.len());
     let targets: Vec<archiveit::Collection> = match opts.collection {
         Some(id) => all.into_iter().filter(|c| c.id == id).collect(),
         None => all,
@@ -2556,6 +2567,13 @@ fn run_archiveit(
             crawl_time_after: opts.crawl_time_after,
             crawl_time_before: opts.crawl_time_before,
         };
+        tracing::info!(collection = coll.id, name = %coll.name, "listing WARC files (WASAPI)…");
+        if opts.dry_run {
+            eprintln!(
+                "  collection {} \"{}\": listing WARC files (large collections page slowly)…",
+                coll.id, coll.name
+            );
+        }
         let files = client
             .webdata(&query)
             .with_context(|| format!("listing WARC files for collection {}", coll.id))?;
