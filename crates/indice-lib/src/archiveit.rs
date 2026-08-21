@@ -20,7 +20,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Default Archive-It host. Both the Partner API and WASAPI live here.
 pub const DEFAULT_HOST: &str = "https://partner.archive-it.org";
@@ -107,25 +107,29 @@ pub struct Collection {
 /// crawl's status and whether it was deleted (WASAPI has neither). `id` matches
 /// WASAPI's `crawl`. Only the fields we filter/date on are typed; the rest are
 /// ignored.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CrawlJob {
     pub id: i64,
     /// Run outcome: `FINISHED`, `FINISHED_ABORTED`, `FINISHED_TIME_LIMIT`, or a
     /// non-finished state (e.g. running) — `None` if absent.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Test-crawl lifecycle; `DELETED` marks a crawl deleted in Archive-It.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_crawl_state: Option<String>,
     /// Crawl type, e.g. `TEST_DELETED`, `TEST_SAVED`.
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_start_date: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_date: Option<String>,
+    /// Every other crawl_job field, so the record round-trips faithfully into the
+    /// WACZ's `datapackage.json` `archiveitCrawl` provenance key.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl CrawlJob {
@@ -387,12 +391,14 @@ impl Drop for DirGuard {
 /// collection id, derived from its files — `0` for an uncollected crawl). Then
 /// seed `into`'s finding aid from `fields`. Shared by the CLI and the server job
 /// so the download→build→index logic lives once.
+#[allow(clippy::too_many_arguments)]
 pub fn import_crawls<T: Transport>(
     client: &Client<T>,
     home: &Path,
     into: &str,
     plans: &[CrawlPlan],
     fields: &crate::collections::CollectionFields,
+    crawl_jobs: &std::collections::HashMap<i64, CrawlJob>,
     force: bool,
     progress: Option<&dyn crate::index::IndexProgress>,
 ) -> Result<ImportOutcome> {
@@ -476,11 +482,21 @@ pub fn import_crawls<T: Transport>(
         // Build one WACZ per crawl, directly into the collection's archive dir
         // (so it's indexed in place and its id is deterministic), then index it.
         let created = plan.files.iter().filter_map(|f| f.crawl_time.clone()).min();
+        // Persist the source crawl_job record inside datapackage.json under the
+        // custom `archiveitCrawl` key (Frictionless allows custom properties), so
+        // the provenance travels in the file indice parses and can be surfaced later.
+        let mut datapackage_extra = serde_json::Map::new();
+        if let Some(job) = crawl_jobs.get(&plan.crawl_id) {
+            if let Ok(v) = serde_json::to_value(job) {
+                datapackage_extra.insert("archiveitCrawl".to_string(), v);
+            }
+        }
         let meta = crate::wacz_build::WaczBuildMeta {
             title: Some(display.clone()),
             created,
             software: Some(format!("Archive-It; indice {}", env!("CARGO_PKG_VERSION"))),
             creator: fields.creator.clone(),
+            datapackage_extra,
             ..Default::default()
         };
         if let Some(p) = progress {
@@ -774,9 +790,39 @@ mod tests {
             narrative: Some("A test collection".into()),
             ..Default::default()
         };
-        let out = import_crawls(&client, home, "City Gov", &plans, &fields, false, None).unwrap();
+        // A crawl_job record → embedded under datapackage.json `archiveitCrawl`.
+        let mut jobs = HashMap::new();
+        jobs.insert(
+            304244i64,
+            serde_json::from_str::<CrawlJob>(
+                r#"{"id":304244,"type":"TEST_SAVED","status":"FINISHED","collection":8232,"doc_rate":"1.5"}"#,
+            )
+            .unwrap(),
+        );
+        let out = import_crawls(
+            &client, home, "City Gov", &plans, &fields, &jobs, false, None,
+        )
+        .unwrap();
         assert_eq!(out.imported, 1);
         assert_eq!(out.skipped, 0);
+
+        // The source crawl_job record travels inside datapackage.json under
+        // `archiveitCrawl` (the full record, via CrawlJob's flattened `extra`).
+        let wacz_path = crate::index::archive_dir(home)
+            .join("city-gov")
+            .join("ait-8232-304244.wacz");
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&wacz_path).unwrap()).unwrap();
+        let mut dp = String::new();
+        std::io::Read::read_to_string(
+            &mut zip.by_name("datapackage.json").expect("datapackage.json"),
+            &mut dp,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&dp).unwrap();
+        let crawl = &v["archiveitCrawl"];
+        assert_eq!(crawl["id"], 304244);
+        assert_eq!(crawl["type"], "TEST_SAVED");
+        assert_eq!(crawl["doc_rate"], "1.5", "flattened extra fields preserved");
 
         // One WACZ filed under the collection's archive dir, and it indexed.
         let wacz = crate::index::archive_dir(home)
@@ -802,7 +848,10 @@ mod tests {
         assert_eq!(ait.warc_count, 2);
 
         // A re-run skips the already-imported crawl.
-        let again = import_crawls(&client, home, "City Gov", &plans, &fields, false, None).unwrap();
+        let again = import_crawls(
+            &client, home, "City Gov", &plans, &fields, &jobs, false, None,
+        )
+        .unwrap();
         assert_eq!(again.imported, 0);
         assert_eq!(again.skipped, 1);
     }

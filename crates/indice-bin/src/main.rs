@@ -2696,8 +2696,9 @@ fn run_archiveit(
             indice_lib::collections::CollectionFields::default()
         };
         fields.dates = crawl_year_range(group);
-        let outcome =
-            archiveit::import_crawls(&client, home, into, group, &fields, opts.force, progress)?;
+        let outcome = archiveit::import_crawls(
+            &client, home, into, group, &fields, &jobs, opts.force, progress,
+        )?;
         tracing::info!(
             collection = %into,
             imported = outcome.imported,
