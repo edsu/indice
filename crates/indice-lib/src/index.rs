@@ -994,6 +994,32 @@ pub fn set_browsertrix_provenance_by_id(
     Ok(())
 }
 
+/// Record Archive-It import provenance on an already-indexed crawl (by its id),
+/// so a re-run can skip it. Mirrors [`set_browsertrix_provenance_by_id`].
+pub fn set_archiveit_provenance_by_id(
+    home: &Path,
+    crawl_id: &str,
+    host: &str,
+    ait_collection_id: i64,
+    ait_crawl_id: i64,
+    warc_count: u64,
+) -> Result<()> {
+    let mut manifest = Manifest::open(&index_dir(home))?;
+    let wacz = manifest
+        .waczs
+        .iter_mut()
+        .find(|w| w.id == crawl_id)
+        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
+    wacz.archive_it = Some(crate::collections::ArchiveItRef {
+        host: host.to_string(),
+        collection_id: ait_collection_id,
+        crawl_id: ait_crawl_id,
+        warc_count,
+    });
+    manifest.save()?;
+    Ok(())
+}
+
 /// Turn one `index` argument into a source to index, filing local WACZs into the
 /// collection's archive folder. An `http(s)://` URL yields a URL source. A local
 /// `.wacz` file may live anywhere: it's brought into `<home>/archive/<slug>/` —
@@ -1435,9 +1461,10 @@ fn index_one(
         manifest.seed_fields(&collection_id, &collection_name, &seed, &date_indexed);
     }
 
-    // Preserve Browsertrix import provenance (set out-of-band by the importer)
-    // across a reindex, which otherwise rebuilds the entry from scratch.
+    // Preserve import provenance (set out-of-band by the importers) across a
+    // reindex, which otherwise rebuilds the entry from scratch.
     let browsertrix = manifest.wacz_by_id(&id).and_then(|w| w.browsertrix.clone());
+    let archive_it = manifest.wacz_by_id(&id).and_then(|w| w.archive_it.clone());
 
     manifest.upsert_wacz(Wacz {
         id,
@@ -1458,6 +1485,7 @@ fn index_one(
         capture_start: stats.earliest_capture,
         capture_end: stats.latest_capture,
         browsertrix,
+        archive_it,
         nested_waczs: stats.nested_waczs,
         // Provenance previously parsed-but-dropped / newly read.
         modified: meta.modified,

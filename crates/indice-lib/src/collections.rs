@@ -225,6 +225,11 @@ pub struct Wacz {
     /// and attributes provenance. Absent for hand-indexed WACZs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browsertrix: Option<BrowsertrixRef>,
+    /// Where this WACZ came from, when built by `indice import archive-it` from a
+    /// crawl's WARC files. Drives incremental re-sync (skip already-imported
+    /// crawls) and attributes provenance. Absent for other WACZs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_it: Option<ArchiveItRef>,
     /// For a nested multi-WACZ (a WACZ bundling other WACZs), the number of inner
     /// WACZs flattened into this crawl. `None` for an ordinary (flat) WACZ.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,6 +290,27 @@ pub struct BrowsertrixRef {
     /// unreviewed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_status: Option<u8>,
+}
+
+/// Provenance for a WACZ built from an Archive-It crawl's WARC files (`indice
+/// import archive-it`). The `(host, collection_id, crawl_id)` triple lets a
+/// re-run skip a crawl that's already imported without re-downloading it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArchiveItRef {
+    /// The Archive-It host the crawl came from.
+    pub host: String,
+    /// The Archive-It collection id.
+    pub collection_id: i64,
+    /// The Archive-It crawl (job) id whose WARCs this WACZ bundles.
+    pub crawl_id: i64,
+    /// How many WARC files from the crawl were packaged (a coarse change signal:
+    /// if a crawl later grows more WARCs, `--force` re-imports it).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub warc_count: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A curated collection: a named group of [`Wacz`] members with its own
@@ -1168,6 +1194,7 @@ mod tests {
             capture_start: None,
             capture_end: None,
             browsertrix: None,
+            archive_it: None,
             nested_waczs: None,
             modified: None,
             is_part_of: None,
