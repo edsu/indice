@@ -442,6 +442,11 @@ enum ImportCmd {
         #[arg(long)]
         force: bool,
 
+        /// Also import crawls Archive-It marks deleted. By default only finished,
+        /// non-deleted crawls are imported.
+        #[arg(long)]
+        include_deleted: bool,
+
         /// Verbose logging (debug level). Replaces the progress bar.
         #[arg(short = 'v', long)]
         verbose: bool,
@@ -1333,6 +1338,7 @@ async fn main() -> Result<()> {
                 limit,
                 dry_run,
                 force,
+                include_deleted,
                 verbose: _,
             } => {
                 let bar = show_bar.then(BarProgress::new);
@@ -1348,6 +1354,7 @@ async fn main() -> Result<()> {
                     limit,
                     dry_run,
                     force,
+                    include_deleted,
                 };
                 let result = run_archiveit(&host, &home, &opts, progress);
                 if result.is_err() {
@@ -2483,6 +2490,7 @@ struct ArchiveItOpts<'a> {
     limit: usize,
     dry_run: bool,
     force: bool,
+    include_deleted: bool,
 }
 
 /// Build an Archive-It client from environment credentials (basic auth), so
@@ -2565,6 +2573,47 @@ fn run_archiveit(
         .webdata(&query)
         .context("listing WARC files (WASAPI)")?;
     let mut plans = archiveit::plan_crawls(files);
+
+    // Filter by crawl status from the Partner API (WASAPI has none): skip crawls
+    // Archive-It marks deleted (unless --include-deleted) and any that didn't
+    // finish. A crawl with no crawl_job row is kept (don't over-exclude on a
+    // missing record).
+    tracing::info!("listing crawl status (Partner API crawl_job)…");
+    let jobs: HashMap<i64, archiveit::CrawlJob> = client
+        .crawl_jobs(opts.collection)
+        .context("listing Archive-It crawl jobs")?
+        .into_iter()
+        .map(|j| (j.id, j))
+        .collect();
+    let (mut deleted_skipped, mut unfinished_skipped) = (0usize, 0usize);
+    plans.retain(|p| match jobs.get(&p.crawl_id) {
+        Some(j) if j.is_deleted() && !opts.include_deleted => {
+            deleted_skipped += 1;
+            false
+        }
+        Some(j) if !j.is_finished() => {
+            unfinished_skipped += 1;
+            false
+        }
+        _ => true,
+    });
+    if deleted_skipped > 0 || unfinished_skipped > 0 {
+        tracing::info!(
+            deleted = deleted_skipped,
+            unfinished = unfinished_skipped,
+            "skipped crawls by status"
+        );
+        eprintln!(
+            "Skipped {deleted_skipped} deleted and {unfinished_skipped} unfinished crawl(s)\
+             {}.",
+            if opts.include_deleted {
+                ""
+            } else {
+                " (use --include-deleted to include deleted)"
+            }
+        );
+    }
+
     if opts.limit > 0 {
         plans.truncate(opts.limit);
     }

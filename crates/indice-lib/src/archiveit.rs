@@ -103,6 +103,54 @@ pub struct Collection {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A crawl job (Partner API `/api/crawl_job`) — the source of truth for a
+/// crawl's status and whether it was deleted (WASAPI has neither). `id` matches
+/// WASAPI's `crawl`. Only the fields we filter/date on are typed; the rest are
+/// ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrawlJob {
+    pub id: i64,
+    /// Run outcome: `FINISHED`, `FINISHED_ABORTED`, `FINISHED_TIME_LIMIT`, or a
+    /// non-finished state (e.g. running) — `None` if absent.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Test-crawl lifecycle; `DELETED` marks a crawl deleted in Archive-It.
+    #[serde(default)]
+    pub test_crawl_state: Option<String>,
+    /// Crawl type, e.g. `TEST_DELETED`, `TEST_SAVED`.
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub collection: Option<i64>,
+    #[serde(default)]
+    pub original_start_date: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+}
+
+impl CrawlJob {
+    /// Deleted in Archive-It (its WARCs may linger in WASAPI, but it shouldn't be
+    /// imported).
+    pub fn is_deleted(&self) -> bool {
+        self.test_crawl_state.as_deref() == Some("DELETED")
+            || self
+                .kind
+                .as_deref()
+                .is_some_and(|k| k.ends_with("_DELETED"))
+    }
+    /// The crawl ran to a finished state. Lenient: an absent status isn't treated
+    /// as unfinished (so an unexpected shape doesn't silently drop everything).
+    pub fn is_finished(&self) -> bool {
+        self.status
+            .as_deref()
+            .is_none_or(|s| s.starts_with("FINISHED"))
+    }
+    /// Worth importing by default: finished and not deleted.
+    pub fn importable(&self) -> bool {
+        !self.is_deleted() && self.is_finished()
+    }
+}
+
 /// A WASAPI WARC file record (`/wasapi/v1/webdata` → `files[]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct WarcFile {
@@ -200,6 +248,17 @@ impl<T: Transport> Client<T> {
         let mut path = String::from("/api/collection?format=json&limit=-1");
         if active_only {
             path.push_str("&state=ACTIVE");
+        }
+        self.get_json(&path)
+    }
+
+    /// The account's crawl jobs (optionally filtered to one collection) — for
+    /// status/deletion filtering and crawl dates. A fast Partner-API metadata
+    /// listing (one row per crawl), unlike the WASAPI per-WARC listing.
+    pub fn crawl_jobs(&self, collection: Option<i64>) -> Result<Vec<CrawlJob>> {
+        let mut path = String::from("/api/crawl_job?format=json&limit=-1");
+        if let Some(c) = collection {
+            path.push_str(&format!("&collection={c}"));
         }
         self.get_json(&path)
     }
@@ -580,6 +639,43 @@ mod tests {
             colls[0].extra.get("description").and_then(|v| v.as_str()),
             Some("Muni sites")
         );
+    }
+
+    #[test]
+    fn crawl_jobs_parse_and_flag_deleted() {
+        // Real /api/crawl_job output (a Stanford account): all three are deleted
+        // test crawls that nonetheless FINISHED — so status alone wouldn't exclude
+        // them; test_crawl_state/type does.
+        let body = r#"[
+            {"id":1342639,"type":"TEST_DELETED","test_crawl_state":"DELETED","status":"FINISHED_ABORTED","collection":15659},
+            {"id":1342657,"type":"TEST_DELETED","test_crawl_state":"DELETED","status":"FINISHED","collection":15659},
+            {"id":1343658,"type":"TEST_DELETED","test_crawl_state":"DELETED","status":"FINISHED_TIME_LIMIT","collection":15659}
+        ]"#;
+        let t = FakeTransport::default().with(
+            "https://partner.example/api/crawl_job?format=json&limit=-1&collection=15659",
+            200,
+            body,
+        );
+        let jobs = client(t).crawl_jobs(Some(15659)).unwrap();
+        assert_eq!(jobs.len(), 3);
+        for j in &jobs {
+            assert!(j.is_deleted(), "crawl {} should be flagged deleted", j.id);
+            assert!(j.is_finished(), "crawl {} finished", j.id);
+            assert!(
+                !j.importable(),
+                "a deleted crawl is not importable by default"
+            );
+        }
+
+        // A finished, non-deleted crawl is importable; a running one isn't.
+        let saved: CrawlJob = serde_json::from_str(
+            r#"{"id":9,"type":"TEST_SAVED","test_crawl_state":"SAVED","status":"FINISHED"}"#,
+        )
+        .unwrap();
+        assert!(saved.importable());
+        let running: CrawlJob = serde_json::from_str(r#"{"id":10,"status":"RUNNING"}"#).unwrap();
+        assert!(!running.is_finished());
+        assert!(!running.importable());
     }
 
     #[test]
