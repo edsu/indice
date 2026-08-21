@@ -450,15 +450,10 @@ pub fn import_crawls<T: Transport>(
             plan.crawl_id,
             plan.files.len() as u64,
         )?;
-        // Leave a persistent line (survives the bar) recording what was imported.
-        if let Some(p) = progress {
-            p.wacz_indexed(&display, built.pages);
-        }
-        tracing::info!(
-            crawl = plan.crawl_id,
-            pages = built.pages,
-            "imported crawl into \"{into}\""
-        );
+        // `index_location` already emits the persistent "✓ indexed N pages" line
+        // and INFO log (with the accurate distinct-page count), so don't
+        // double-report here — `built.pages` is the pre-dedup seed count and
+        // would disagree confusingly.
         out.imported += 1;
         out.crawls.push((crawl_indice_id, display));
     }
