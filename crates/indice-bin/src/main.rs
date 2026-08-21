@@ -397,7 +397,7 @@ enum ImportCmd {
 enum CrawlCmd {
     /// Set curator-controlled properties of a crawl.
     Set {
-        /// Crawl id (the 8-char id shown on the crawl page / in `collection list`).
+        /// Crawl id (the 8-char id from `crawl list` or the crawl page).
         id: String,
 
         /// Pin a representative image for this crawl from a local image file
@@ -423,12 +423,22 @@ enum CrawlCmd {
     /// (for a downloaded/File source, if unreferenced), and thumbnail. The index
     /// reclaims disk only on a later segment merge. Irreversible.
     Delete {
-        /// Crawl id (the 8-char id shown on the crawl page / in `collection list`).
+        /// Crawl id (the 8-char id from `crawl list` or the crawl page).
         id: String,
 
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
+    /// List crawls (with their ids), optionally filtered to one collection. Use
+    /// the ids with `crawl delete`/`crawl set`.
+    List {
+        /// Only list crawls in this collection (name or slug). Omit for all.
+        collection: Option<String>,
 
         /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
@@ -1204,6 +1214,7 @@ async fn main() -> Result<()> {
                     println!("aborted");
                 }
             }
+            CrawlCmd::List { collection, home } => run_crawl_list(&home, collection.as_deref())?,
         },
 
         Commands::Import { action } => match action {
@@ -1464,6 +1475,54 @@ fn run_collection_list(home: &std::path::Path) -> Result<()> {
         let count = manifest.members_of(&c.id).count();
         let desc = c.description.as_deref().unwrap_or("");
         println!("{:<24} {:>3} WACZ  {}", c.name, count, desc);
+    }
+    Ok(())
+}
+
+/// List crawls (id, page count, date, name), grouped by collection and
+/// optionally filtered to one (by name or slug). The ids feed `crawl
+/// delete`/`crawl set`.
+fn run_crawl_list(home: &std::path::Path, collection: Option<&str>) -> Result<()> {
+    use indice_lib::collections::{slugify, Manifest};
+
+    let index_dir = indice_lib::index::index_dir(home);
+    let manifest = Manifest::open(&index_dir)?;
+    // A collection filter matches on the slug, so either the display name
+    // ("DuckLake") or the slug ("ducklake") works.
+    let want = collection.map(slugify);
+
+    // Flat, greppable table — one self-contained line per crawl carrying its
+    // collection slug, so a line copied or grepped out of context still says
+    // which collection the id belongs to.
+    let mut listed = 0usize;
+    for c in &manifest.collections {
+        if want.as_deref().is_some_and(|w| w != c.id) {
+            continue;
+        }
+        for w in manifest.members_of(&c.id) {
+            let pages = w.page_count.unwrap_or(0);
+            let date = w
+                .crawl_date
+                .as_deref()
+                .or(w.capture_start.as_deref())
+                .unwrap_or("");
+            // Dates are ISO/RFC3339; show just the calendar day when present.
+            let date = date.get(..10).unwrap_or(date);
+            println!(
+                "{:<8}  {:<22}  {:>7} pages  {:<10}  {}",
+                w.id, c.id, pages, date, w.name
+            );
+            listed += 1;
+        }
+    }
+    if listed == 0 {
+        match collection {
+            Some(c) => println!(
+                "No crawls in collection '{c}' under {}",
+                index_dir.display()
+            ),
+            None => println!("No crawls registered in {}", index_dir.display()),
+        }
     }
     Ok(())
 }
