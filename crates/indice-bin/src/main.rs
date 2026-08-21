@@ -1479,8 +1479,8 @@ fn run_collection_list(home: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// List crawls (id, page count, date, name), grouped by collection and
-/// optionally filtered to one (by name or slug). The ids feed `crawl
+/// List crawls as a flat table (id, collection slug, page count, date, name),
+/// optionally filtered to one collection (by name or slug). The ids feed `crawl
 /// delete`/`crawl set`.
 fn run_crawl_list(home: &std::path::Path, collection: Option<&str>) -> Result<()> {
     use indice_lib::collections::{slugify, Manifest};
