@@ -313,6 +313,15 @@ pub fn collection_fields(c: &Collection) -> crate::collections::CollectionFields
     }
 }
 
+/// Removes a directory (best-effort) when dropped — so a crawl's download
+/// staging is cleaned up even if the build/index step errors out mid-crawl.
+struct DirGuard(std::path::PathBuf);
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Import a set of grouped crawls into one indice collection `into`: for each
 /// crawl not already imported (unless `force`), download its WARCs, build one
 /// WACZ, index it, and record provenance (keyed by the crawl's *own* Archive-It
@@ -356,15 +365,24 @@ pub fn import_crawls<T: Transport>(
             out.skipped += 1;
             continue;
         }
-        // Download this crawl's WARCs to a temp dir. Narrate it: downloads are
-        // the slow part (multi-GB WARCs), so start the spinner *before* the first
-        // fetch — `phase()` only updates an already-active bar — and also log at
-        // INFO for the no-bar (piped/CI) case.
+        // Stage this crawl's WARC downloads under <home> (same volume as
+        // archive/, so building the WACZ files it in place with no cross-device
+        // copy, and large crawls use the operator's disk rather than /tmp).
+        // `_staging_guard` removes it per crawl even if the build/index errors.
+        let out_name = slugify(&format!("ait-{ait_collection_id}-{}", plan.crawl_id));
+        let staging = home.join(".import-tmp").join(&out_name);
+        let _ = std::fs::remove_dir_all(&staging); // clear a leftover from a prior run
+        std::fs::create_dir_all(&staging)
+            .with_context(|| format!("creating staging dir {}", staging.display()))?;
+        let _staging_guard = DirGuard(staging.clone());
+
+        // Narrate the downloads (the slow part): start the spinner *before* the
+        // first fetch — `phase()` only updates an already-active bar — and also
+        // log at INFO for the no-bar (piped/CI) case.
         let display = format!("crawl {} · {into}", plan.crawl_id);
         if let Some(p) = progress {
             p.begin(&display);
         }
-        let tmp = tempfile::tempdir().context("temp dir for downloads")?;
         let total_files = plan.files.len();
         let mut warcs = Vec::new();
         for (i, f) in plan.files.iter().enumerate() {
@@ -383,7 +401,7 @@ pub fn import_crawls<T: Transport>(
                 p.phase(&status);
             }
             tracing::info!(crawl = plan.crawl_id, "{status}");
-            let path = tmp.path().join(&f.filename);
+            let path = staging.join(&f.filename);
             client.download(loc, &path)?;
             warcs.push(path);
         }
@@ -406,7 +424,6 @@ pub fn import_crawls<T: Transport>(
             creator: fields.creator.clone(),
             ..Default::default()
         };
-        let out_name = slugify(&format!("ait-{ait_collection_id}-{}", plan.crawl_id));
         if let Some(p) = progress {
             p.phase("building WACZ");
         }
@@ -445,6 +462,9 @@ pub fn import_crawls<T: Transport>(
         out.imported += 1;
         out.crawls.push((crawl_indice_id, display));
     }
+
+    // Remove the staging parent if now empty (best-effort tidy-up).
+    let _ = std::fs::remove_dir(home.join(".import-tmp"));
 
     // Seed the collection finding aid (fill-gaps; curator edits survive).
     crate::index::seed_collection(home, into, fields)?;
