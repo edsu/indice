@@ -2529,68 +2529,77 @@ fn run_archiveit(
 ) -> Result<()> {
     use indice_lib::archiveit::{self, WasapiQuery};
 
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
     let client = connect_archiveit(host)?;
-    // List collections to resolve names + metadata. A specific --collection may
-    // be inactive, so don't filter to ACTIVE in that case. The network phases can
-    // be slow (esp. a whole-account run), so narrate them — visible with `-v`,
-    // and on stderr for a dry-run so it never looks hung.
+    // Collection metadata (names + descriptive fields), fetched once to name each
+    // crawl's indice collection and seed finding aids. The network phases can be
+    // slow (esp. a whole-account run), so narrate them — visible with `-v`, and on
+    // stderr for a dry-run so it never looks hung.
     tracing::info!("connecting to Archive-It at {host}; listing collections…");
     if opts.dry_run {
         eprintln!("Listing collections from {host}…");
     }
-    let all = client
-        .collections(opts.collection.is_none())
+    let collections = client
+        .collections(false)
         .context("listing Archive-It collections")?;
-    tracing::info!("found {} collection(s)", all.len());
-    let targets: Vec<archiveit::Collection> = match opts.collection {
-        Some(id) => all.into_iter().filter(|c| c.id == id).collect(),
-        None => all,
+    tracing::info!("found {} collection(s)", collections.len());
+    let by_id: HashMap<i64, &archiveit::Collection> =
+        collections.iter().map(|c| (c.id, c)).collect();
+
+    // Selection is crawl-centric: WASAPI lists the WARC files, and --collection /
+    // --crawl / crawl-time are filters (mirroring how Browsertrix's --collection
+    // filters its item listing). A crawl in no Archive-It collection is reached
+    // just like any other.
+    let query = WasapiQuery {
+        collection: opts.collection,
+        crawl: opts.crawl,
+        crawl_time_after: opts.crawl_time_after,
+        crawl_time_before: opts.crawl_time_before,
     };
-    if let Some(id) = opts.collection {
-        if targets.is_empty() {
-            anyhow::bail!("collection {id} not found in this Archive-It account");
-        }
+    tracing::info!("listing WARC files (WASAPI)…");
+    if opts.dry_run {
+        eprintln!("Listing WARC files (large accounts/collections page slowly)…");
     }
-    if targets.is_empty() {
-        println!("No collections to import.");
+    let files = client
+        .webdata(&query)
+        .context("listing WARC files (WASAPI)")?;
+    let mut plans = archiveit::plan_crawls(files);
+    if opts.limit > 0 {
+        plans.truncate(opts.limit);
+    }
+    if plans.is_empty() {
+        println!("No crawls match the selection.");
         return Ok(());
     }
 
-    for coll in &targets {
-        let into = opts
-            .into
-            .map(str::to_string)
-            .unwrap_or_else(|| coll.name.clone());
-        let query = WasapiQuery {
-            collection: Some(coll.id),
-            crawl: opts.crawl,
-            crawl_time_after: opts.crawl_time_after,
-            crawl_time_before: opts.crawl_time_before,
-        };
-        tracing::info!(collection = coll.id, name = %coll.name, "listing WARC files (WASAPI)…");
-        if opts.dry_run {
-            eprintln!(
-                "  collection {} \"{}\": listing WARC files (large collections page slowly)…",
-                coll.id, coll.name
-            );
-        }
-        let files = client
-            .webdata(&query)
-            .with_context(|| format!("listing WARC files for collection {}", coll.id))?;
-        let mut plans = archiveit::plan_crawls(files);
-        if opts.limit > 0 {
-            plans.truncate(opts.limit);
-        }
+    // A crawl's Archive-It collection id (from its files); `None` = uncollected.
+    let plan_collection = |p: &archiveit::CrawlPlan| p.files.iter().find_map(|f| f.collection);
 
-        if opts.dry_run {
-            let warcs: usize = plans.iter().map(|p| p.files.len()).sum();
+    if opts.dry_run {
+        // Group by Archive-It collection (uncollected under id 0) and list.
+        let mut by_coll: BTreeMap<i64, Vec<&archiveit::CrawlPlan>> = BTreeMap::new();
+        for p in &plans {
+            by_coll
+                .entry(plan_collection(p).unwrap_or(0))
+                .or_default()
+                .push(p);
+        }
+        for (cid, group) in &by_coll {
+            let label = if *cid == 0 {
+                "(uncollected — needs --into to import)".to_string()
+            } else {
+                by_id
+                    .get(cid)
+                    .map(|c| format!("{cid} \"{}\"", c.name))
+                    .unwrap_or_else(|| cid.to_string())
+            };
+            let warcs: usize = group.iter().map(|p| p.files.len()).sum();
             println!(
-                "Collection {} \"{}\" → indice collection \"{into}\": {} crawl(s), {warcs} WARC file(s)",
-                coll.id,
-                coll.name,
-                plans.len()
+                "Collection {label}: {} crawl(s), {warcs} WARC file(s)",
+                group.len()
             );
-            for p in &plans {
+            for p in group {
                 println!("  crawl {} — {} WARC file(s)", p.crawl_id, p.files.len());
                 for f in &p.files {
                     println!(
@@ -2601,24 +2610,60 @@ fn run_archiveit(
                     );
                 }
             }
-            continue;
         }
+        return Ok(());
+    }
 
-        if plans.is_empty() {
-            tracing::info!(collection = %coll.name, "no WARC files match; nothing to import");
-            continue;
-        }
-        let mut fields = archiveit::collection_fields(coll);
-        fields.dates = crawl_year_range(&plans);
-        let outcome = archiveit::import_crawls(
-            &client, home, &into, coll.id, &plans, &fields, opts.force, progress,
-        )?;
+    // Assign each crawl an indice collection: --into wins; else the crawl's
+    // Archive-It collection name; else (uncollected, no --into) skip it.
+    let mut groups: BTreeMap<String, Vec<archiveit::CrawlPlan>> = BTreeMap::new();
+    let mut uncollected = 0usize;
+    for p in plans {
+        let into = match (opts.into, plan_collection(&p)) {
+            (Some(name), _) => name.to_string(),
+            (None, Some(cid)) => by_id
+                .get(&cid)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("Archive-It collection {cid}")),
+            (None, None) => {
+                uncollected += 1;
+                continue;
+            }
+        };
+        groups.entry(into).or_default().push(p);
+    }
+
+    for (into, group) in &groups {
+        // Seed the finding aid from the Archive-It collection only when this
+        // indice collection maps 1:1 to one (not a user --into catch-all that
+        // merges several); always record the crawl-time date range.
+        let ait_ids: HashSet<i64> = group.iter().filter_map(&plan_collection).collect();
+        let mut fields = if opts.into.is_none() && ait_ids.len() == 1 {
+            by_id
+                .get(ait_ids.iter().next().unwrap())
+                .map(|c| archiveit::collection_fields(c))
+                .unwrap_or_default()
+        } else {
+            indice_lib::collections::CollectionFields::default()
+        };
+        fields.dates = crawl_year_range(group);
+        let outcome =
+            archiveit::import_crawls(&client, home, into, group, &fields, opts.force, progress)?;
         tracing::info!(
-            collection = %coll.name,
+            collection = %into,
             imported = outcome.imported,
             skipped = outcome.skipped,
-            "archive-it import complete"
+            "imported into indice collection"
         );
+    }
+
+    if uncollected > 0 {
+        let msg = format!(
+            "{uncollected} crawl(s) aren't in an Archive-It collection and were skipped — \
+             re-run with --into <NAME> (optionally --crawl <id>) to import them."
+        );
+        tracing::warn!("{msg}");
+        eprintln!("{msg}");
     }
     Ok(())
 }

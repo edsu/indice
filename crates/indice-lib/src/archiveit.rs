@@ -313,17 +313,16 @@ pub fn collection_fields(c: &Collection) -> crate::collections::CollectionFields
     }
 }
 
-/// Import a set of grouped crawls into indice: for each crawl not already
-/// imported (unless `force`), download its WARCs, build one WACZ, index it into
-/// `into`, and record provenance. Then seed the collection's finding aid from
-/// `fields`. Shared by the CLI and the server job so the download→build→index
-/// logic lives once.
-#[allow(clippy::too_many_arguments)]
+/// Import a set of grouped crawls into one indice collection `into`: for each
+/// crawl not already imported (unless `force`), download its WARCs, build one
+/// WACZ, index it, and record provenance (keyed by the crawl's *own* Archive-It
+/// collection id, derived from its files — `0` for an uncollected crawl). Then
+/// seed `into`'s finding aid from `fields`. Shared by the CLI and the server job
+/// so the download→build→index logic lives once.
 pub fn import_crawls<T: Transport>(
     client: &Client<T>,
     home: &Path,
     into: &str,
-    ait_collection_id: i64,
     plans: &[CrawlPlan],
     fields: &crate::collections::CollectionFields,
     force: bool,
@@ -349,6 +348,10 @@ pub fn import_crawls<T: Transport>(
     let mut out = ImportOutcome::default();
 
     for plan in plans {
+        // The crawl's own Archive-It collection (0 = uncollected) — the dedup key
+        // and the provenance we record, independent of which indice collection
+        // `into` it lands in.
+        let ait_collection_id = plan.files.iter().find_map(|f| f.collection).unwrap_or(0);
         if !force && seen.contains(&(host.clone(), ait_collection_id, plan.crawl_id)) {
             out.skipped += 1;
             continue;
@@ -660,10 +663,7 @@ mod tests {
             narrative: Some("A test collection".into()),
             ..Default::default()
         };
-        let out = import_crawls(
-            &client, home, "City Gov", 8232, &plans, &fields, false, None,
-        )
-        .unwrap();
+        let out = import_crawls(&client, home, "City Gov", &plans, &fields, false, None).unwrap();
         assert_eq!(out.imported, 1);
         assert_eq!(out.skipped, 0);
 
@@ -691,10 +691,7 @@ mod tests {
         assert_eq!(ait.warc_count, 2);
 
         // A re-run skips the already-imported crawl.
-        let again = import_crawls(
-            &client, home, "City Gov", 8232, &plans, &fields, false, None,
-        )
-        .unwrap();
+        let again = import_crawls(&client, home, "City Gov", &plans, &fields, false, None).unwrap();
         assert_eq!(again.imported, 0);
         assert_eq!(again.skipped, 1);
     }
