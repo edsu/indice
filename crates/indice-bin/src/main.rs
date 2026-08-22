@@ -2624,16 +2624,24 @@ fn run_archiveit(
         );
     }
 
+    // A crawl's Archive-It collection id (from its files); `None` = uncollected.
+    let plan_collection = |p: &archiveit::CrawlPlan| p.files.iter().find_map(|f| f.collection);
+
     if opts.limit > 0 {
-        plans.truncate(opts.limit);
+        // Cap *per Archive-It collection* (as --help/README promise), not
+        // globally: keep the first N crawls (lowest crawl-id) of each collection,
+        // so a whole-account run doesn't starve later collections.
+        let mut kept: HashMap<i64, usize> = HashMap::new();
+        plans.retain(|p| {
+            let n = kept.entry(plan_collection(p).unwrap_or(0)).or_insert(0);
+            *n += 1;
+            *n <= opts.limit
+        });
     }
     if plans.is_empty() {
         println!("No crawls match the selection.");
         return Ok(());
     }
-
-    // A crawl's Archive-It collection id (from its files); `None` = uncollected.
-    let plan_collection = |p: &archiveit::CrawlPlan| p.files.iter().find_map(|f| f.collection);
 
     if opts.dry_run {
         // Group by Archive-It collection (uncollected under id 0) and list.
@@ -2664,7 +2672,7 @@ fn run_archiveit(
                     println!(
                         "    {}  {}  {}",
                         f.filename,
-                        human_size(f.size),
+                        indice_lib::server::human_size(f.size),
                         f.crawl_time.as_deref().unwrap_or("")
                     );
                 }
@@ -2734,22 +2742,6 @@ fn run_archiveit(
         eprintln!("{msg}");
     }
     Ok(())
-}
-
-/// A compact human-readable byte size (for the `--dry-run` listing).
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut n = bytes as f64;
-    let mut u = 0;
-    while n >= 1024.0 && u < UNITS.len() - 1 {
-        n /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{n:.1} {}", UNITS[u])
-    }
 }
 
 /// Resolves stored Browsertrix sources (`Source::Browsertrix`) to fresh presigned

@@ -624,6 +624,7 @@ pub fn import_crawls<T: Transport>(
         }
         let total_files = plan.files.len();
         let mut warcs = Vec::new();
+        let mut staged_names = std::collections::HashSet::new();
         for (i, f) in plan.files.iter().enumerate() {
             let Some(loc) = f.locations.first() else {
                 tracing::warn!(file = %f.filename, "no download location; skipping file");
@@ -632,7 +633,7 @@ pub fn import_crawls<T: Transport>(
             let status = format!(
                 "downloading {} ({}) [{}/{}]",
                 f.filename,
-                human_size(f.size),
+                crate::server::human_size(f.size),
                 i + 1,
                 total_files
             );
@@ -640,7 +641,15 @@ pub fn import_crawls<T: Transport>(
                 p.phase(&status);
             }
             tracing::info!(crawl = plan.crawl_id, "{status}");
-            let path = staging.join(&f.filename);
+            // Sanitize the server-supplied filename to a safe basename (no path
+            // traversal out of staging), and disambiguate a repeated basename so a
+            // later WARC can't silently overwrite an earlier one.
+            let mut name = crate::index::safe_component(&f.filename);
+            if !staged_names.insert(name.clone()) {
+                name = format!("{i}-{name}");
+                staged_names.insert(name.clone());
+            }
+            let path = staging.join(&name);
             client.download(loc, &path)?;
             warcs.push(path);
         }
@@ -751,22 +760,6 @@ fn wasapi_query(q: &WasapiQuery) -> String {
         ser.append_pair(k, v);
     }
     format!("?{}", ser.finish())
-}
-
-/// A compact human-readable byte size, for progress/log messages.
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut n = bytes as f64;
-    let mut u = 0;
-    while n >= 1024.0 && u < UNITS.len() - 1 {
-        n /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{n:.1} {}", UNITS[u])
-    }
 }
 
 /// A short, printable, char-boundary-safe slice of a response body for errors.
