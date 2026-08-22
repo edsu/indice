@@ -71,7 +71,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 
 # Base64
-base64 = "0.22"
+base64 = "0.23"
 
 # Compression
 flate2 = "1"
