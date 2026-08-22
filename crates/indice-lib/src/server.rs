@@ -136,6 +136,18 @@ struct AppState {
     /// with env credentials). `None` when no Browsertrix credentials are set —
     /// the import endpoints then report that it's unconfigured.
     browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
+    /// Builds authenticated Archive-It clients for the import UI, same boundary as
+    /// `browsertrix`. `None` when no `ARCHIVEIT_*` credentials are set.
+    archiveit: Option<Arc<dyn crate::archiveit::ArchiveItProvider>>,
+}
+
+/// Import providers wired in by the binary (used only by the management UI).
+/// Bundled into one value so the `serve`/`router` constructors don't grow a
+/// parameter per provider as more import sources are added.
+#[derive(Default, Clone)]
+pub struct Providers {
+    pub browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
+    pub archiveit: Option<Arc<dyn crate::archiveit::ArchiveItProvider>>,
 }
 
 impl AppState {
@@ -152,7 +164,7 @@ impl AppState {
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(home: &Path) -> Result<Router> {
-    build_router(home, None, ManageConfig::off(), None)
+    build_router(home, None, ManageConfig::off(), Providers::default())
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
@@ -161,7 +173,7 @@ pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
 ) -> Result<Router> {
-    build_router(home, resolver, ManageConfig::off(), None)
+    build_router(home, resolver, ManageConfig::off(), Providers::default())
 }
 
 /// Build the app router. `manage` gates the opt-in write routes: when disabled
@@ -174,7 +186,7 @@ fn build_router(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
-    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
+    providers: Providers,
 ) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
@@ -202,7 +214,8 @@ fn build_router(
         job_counter: AtomicU64::new(0),
         management: manage.enabled,
         forward_auth: manage.forward_auth.clone(),
-        browsertrix,
+        browsertrix: providers.browsertrix,
+        archiveit: providers.archiveit,
     });
 
     let mut app = Router::new()
@@ -251,7 +264,12 @@ fn build_router(
             .route("/api/browsertrix/orgs", get(bx_orgs))
             .route("/api/browsertrix/collections", get(bx_collections))
             .route("/api/browsertrix/items", get(bx_items))
-            .route("/api/browsertrix/import", post(bx_import));
+            .route("/api/browsertrix/import", post(bx_import))
+            // Archive-It import: browse (collections → crawls) using the
+            // binary-supplied credentials, then import selected crawls as a job.
+            .route("/api/archiveit/collections", get(ait_collections))
+            .route("/api/archiveit/crawls", get(ait_crawls))
+            .route("/api/archiveit/import", post(ait_import));
 
         // Forward-auth: reject any management request that doesn't carry the
         // trusted proxy's shared secret + a non-empty identity header. Layered
@@ -310,23 +328,23 @@ fn build_router(
 }
 
 pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None, ManageConfig::off(), None).await
+    serve_with_resolver(bind, home, None, ManageConfig::off(), Providers::default()).await
 }
 
 /// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
 /// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
-/// configures the opt-in write routes (see [`build_router`]); `browsertrix`
-/// supplies authenticated clients for the import UI.
+/// configures the opt-in write routes (see [`build_router`]); `providers`
+/// supplies authenticated import clients (Browsertrix, Archive-It) for the UI.
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
-    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
+    providers: Providers,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
-    serve_on_listener(listener, home, resolver, manage, browsertrix).await
+    serve_on_listener(listener, home, resolver, manage, providers).await
 }
 
 /// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
@@ -340,7 +358,7 @@ pub async fn serve_on_listener(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     manage: ManageConfig,
-    browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
+    providers: Providers,
 ) -> Result<()> {
     // Safety guard: local management mode (no auth proxy) trusts every request, so
     // it must not be reachable beyond this machine. Refuse to start if it's bound
@@ -359,7 +377,7 @@ pub async fn serve_on_listener(
             );
         }
     }
-    let app = build_router(home, resolver, manage, browsertrix)?;
+    let app = build_router(home, resolver, manage, providers)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -1176,6 +1194,263 @@ async fn bx_import(
                     Ok(()) => tx
                         .send(ProgressEvent::Done {
                             collection: crate::collections::slugify(&req.collection),
+                            crawls,
+                        })
+                        .ok(),
+                    Err(e) => tx
+                        .send(ProgressEvent::Error {
+                            message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                        })
+                        .ok(),
+                }
+            }
+            Err(e) => tx
+                .send(ProgressEvent::Error {
+                    message: format!("{e:#}"),
+                })
+                .ok(),
+        };
+    });
+
+    (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
+}
+
+// ── Archive-It import (management UI) ──────────────────────────────────────────
+
+fn archiveit_unconfigured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Archive-It import is not configured — set ARCHIVEIT_USER + \
+         ARCHIVEIT_PASSWORD in the server's environment.",
+    )
+        .into_response()
+}
+
+/// Run a blocking Archive-It client call off the async runtime, returning its
+/// JSON result (or a 502 on an Archive-It/transport error). Mirrors [`bx_json`].
+async fn archiveit_json<F>(provider: Arc<dyn crate::archiveit::ArchiveItProvider>, f: F) -> Response
+where
+    F: FnOnce(&crate::archiveit::Client) -> Result<serde_json::Value> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(move || {
+        let client = provider.client()?;
+        f(&client)
+    })
+    .await
+    {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("Archive-It error: {e:#}")).into_response(),
+        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+    }
+}
+
+/// `GET /api/archiveit/collections` — the account's collections (including
+/// inactive ones, which still hold importable crawls).
+async fn ait_collections(State(state): State<Arc<AppState>>) -> Response {
+    let Some(provider) = state.archiveit.clone() else {
+        return archiveit_unconfigured();
+    };
+    archiveit_json(provider, |c| {
+        let colls = c.collections(false)?;
+        Ok(serde_json::json!(colls
+            .iter()
+            .map(|c| serde_json::json!({ "id": c.id, "name": c.name, "state": c.state }))
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct AitBrowse {
+    collection: Option<i64>,
+}
+
+/// `GET /api/archiveit/crawls?collection=<id>` — a collection's importable crawls
+/// (finished, not deleted), each marked if already imported into this instance.
+async fn ait_crawls(State(state): State<Arc<AppState>>, Query(q): Query<AitBrowse>) -> Response {
+    let Some(provider) = state.archiveit.clone() else {
+        return archiveit_unconfigured();
+    };
+    let Some(collection) = q.collection else {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    };
+    let index_dir = state.index_dir.clone();
+    archiveit_json(provider, move |c| {
+        // Crawls of this collection already imported from this host, so the UI can
+        // mark them and prevent accidental re-imports (keyed by host+collection).
+        let host = c.host().to_string();
+        let imported: std::collections::HashSet<i64> = Manifest::open(&index_dir)
+            .map(|m| {
+                m.waczs
+                    .iter()
+                    .filter_map(|w| w.archive_it.as_ref())
+                    .filter(|r| r.host == host && r.collection_id == collection)
+                    .map(|r| r.crawl_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Per-crawl WARC totals (bytes + file count) from WASAPI — the Partner
+        // API's crawl list carries no byte totals, so sum the file records.
+        let mut totals: std::collections::HashMap<i64, (u64, u64)> =
+            std::collections::HashMap::new();
+        for f in c.webdata(&crate::archiveit::WasapiQuery {
+            collection: Some(collection),
+            crawl: None,
+            crawl_time_after: None,
+            crawl_time_before: None,
+        })? {
+            if let Some(cr) = f.crawl {
+                let e = totals.entry(cr).or_default();
+                e.0 += f.size;
+                e.1 += 1;
+            }
+        }
+        let jobs = c.crawl_jobs(Some(collection))?;
+        Ok(serde_json::json!(jobs
+            .iter()
+            .filter(|j| j.importable())
+            .map(|j| {
+                let (bytes, warcs) = totals.get(&j.id).copied().unwrap_or((0, 0));
+                serde_json::json!({
+                    "id": j.id,
+                    "status": j.status,
+                    "type": j.kind,
+                    "start": j.original_start_date,
+                    "end": j.end_date,
+                    "size": bytes,
+                    "size_h": if bytes > 0 { human_size(bytes) } else { String::new() },
+                    "warcs": warcs,
+                    "imported": imported.contains(&j.id),
+                })
+            })
+            .collect::<Vec<_>>()))
+    })
+    .await
+}
+
+/// Body of `POST /api/archiveit/import`. The host is server-configured.
+#[derive(Deserialize)]
+struct AitImportRequest {
+    /// Source Archive-It collection id.
+    collection_id: i64,
+    /// Target indice collection (display name); created if new.
+    #[serde(rename = "collection")]
+    into: String,
+    /// Selected Archive-It crawl (job) ids to import.
+    crawls: Vec<i64>,
+    /// Re-import a crawl even if it's already imported.
+    #[serde(default)]
+    force: bool,
+}
+
+/// `POST /api/archiveit/import` — download the selected crawls' WARCs, build one
+/// WACZ per crawl, and index them into `collection` as a job (progress over the
+/// shared SSE endpoint). Reuses [`crate::archiveit::import_crawls`], the same
+/// orchestrator the CLI uses.
+async fn ait_import(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AitImportRequest>,
+) -> Response {
+    let Some(provider) = state.archiveit.clone() else {
+        return archiveit_unconfigured();
+    };
+    if req.into.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    if req.crawls.is_empty() {
+        return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
+    }
+
+    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    state.jobs.lock().unwrap().insert(id, rx);
+
+    let job_state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let progress = ChannelProgress { tx: tx.clone() };
+        let result = (|| -> Result<Vec<serde_json::Value>> {
+            let client = provider.client()?;
+            let selected: std::collections::HashSet<i64> = req.crawls.iter().copied().collect();
+
+            // Source metadata → Catalog (crawl_jobs for the selection + the
+            // collection record), so each built WACZ can embed its provenance and
+            // the finding aid can be seeded.
+            let mut catalog = crate::archiveit::Catalog::default();
+            for j in client.crawl_jobs(Some(req.collection_id))? {
+                if selected.contains(&j.id) {
+                    catalog.crawl_jobs.insert(j.id, j);
+                }
+            }
+            let collection = client
+                .collections(false)?
+                .into_iter()
+                .find(|c| c.id == req.collection_id);
+            let mut fields = collection
+                .as_ref()
+                .map(crate::archiveit::collection_fields)
+                .unwrap_or_default();
+            if let Some(c) = collection {
+                catalog.collections.insert(c.id, c);
+            }
+
+            // WARC files for the collection, grouped by crawl, kept to the selection.
+            let files = client.webdata(&crate::archiveit::WasapiQuery {
+                collection: Some(req.collection_id),
+                crawl: None,
+                crawl_time_after: None,
+                crawl_time_before: None,
+            })?;
+            let plans: Vec<crate::archiveit::CrawlPlan> = crate::archiveit::plan_crawls(files)
+                .into_iter()
+                .filter(|p| selected.contains(&p.crawl_id))
+                .collect();
+            if plans.is_empty() {
+                anyhow::bail!("no WARC files found for the selected crawls");
+            }
+            fields.dates = crate::archiveit::crawl_year_range(&plans);
+
+            // Hold the write lock across the whole import: `import_crawls`
+            // interleaves per-crawl download and Tantivy writes, and single-user
+            // management mode only ever needs one import in flight at a time.
+            let outcome = {
+                let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                crate::archiveit::import_crawls(
+                    &client,
+                    &job_state.home,
+                    &req.into,
+                    &plans,
+                    &fields,
+                    &catalog,
+                    req.force,
+                    Some(&progress),
+                )?
+            };
+            Ok(outcome
+                .crawls
+                .into_iter()
+                .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                .collect())
+        })();
+        match result {
+            Ok(crawls) => {
+                // A per-crawl import commits a segment per WACZ; compact if that
+                // left the index fragmented (best-effort — see `bx_import`).
+                {
+                    let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                    match crate::index::optimize_if_fragmented(&job_state.home, Some(&progress)) {
+                        Ok(Some((before, after))) => {
+                            tracing::info!("compacted fragmented index: {before} → {after} segments")
+                        }
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(
+                            "post-import index compaction failed ({e:#}); run `indice optimize` later"
+                        ),
+                    }
+                }
+                match job_state.reload_searcher() {
+                    Ok(()) => tx
+                        .send(ProgressEvent::Done {
+                            collection: crate::collections::slugify(&req.into),
                             crawls,
                         })
                         .ok(),
@@ -2083,6 +2358,32 @@ async fn crawl_page(
         }
         if !bt.item_id.is_empty() {
             provenance.push(views::MetaRow::mono("Browsertrix item", bt.item_id.clone()));
+        }
+    }
+    if let Some(ait) = &c.archive_it {
+        // Attribution for content pulled in via `indice import archive-it`.
+        let host = ait
+            .host
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        provenance.push(views::MetaRow::new(
+            "Source",
+            format!("Archive-It ({host})"),
+        ));
+        if !ait.collection_title.is_empty() {
+            provenance.push(views::MetaRow::new(
+                "Collection",
+                ait.collection_title.clone(),
+            ));
+        }
+        if ait.crawl_id != 0 {
+            provenance.push(views::MetaRow::mono("Crawl", ait.crawl_id.to_string()));
+        }
+        if ait.warc_count != 0 {
+            provenance.push(views::MetaRow::new(
+                "WARC files",
+                ait.warc_count.to_string(),
+            ));
         }
     }
     if !c.software.is_empty() {

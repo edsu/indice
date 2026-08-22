@@ -391,6 +391,66 @@ enum ImportCmd {
         #[arg(short = 'v', long)]
         verbose: bool,
     },
+    /// Import from an Archive-It account. Archive-It serves WARC files (not
+    /// WACZ), so this downloads a crawl's WARCs and builds a WACZ from them
+    /// behind the scenes, then indexes it — one WACZ per crawl. Credentials come
+    /// from the environment: ARCHIVEIT_USER + ARCHIVEIT_PASSWORD (kept out of the
+    /// command line so secrets don't appear in the process list).
+    ArchiveIt {
+        /// Archive-It host (Partner API + WASAPI live here).
+        #[arg(long, default_value = indice_lib::archiveit::DEFAULT_HOST)]
+        host: String,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+
+        /// Import only this Archive-It collection (its numeric id). Default: all
+        /// ACTIVE collections in the account.
+        #[arg(long)]
+        collection: Option<i64>,
+
+        /// Import only this crawl (job) id.
+        #[arg(long)]
+        crawl: Option<i64>,
+
+        /// Group the imported crawls into this indice collection (created if
+        /// new). Without it, the Archive-It collection's name is used.
+        #[arg(long)]
+        into: Option<String>,
+
+        /// Only WARCs whose crawl time is on/after this (ISO-8601, e.g.
+        /// 2024-01-01).
+        #[arg(long, value_name = "DATE")]
+        crawl_time_after: Option<String>,
+
+        /// Only WARCs whose crawl time is on/before this (ISO-8601).
+        #[arg(long, value_name = "DATE")]
+        crawl_time_before: Option<String>,
+
+        /// Import at most N crawls per collection (0 = all).
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        limit: usize,
+
+        /// List what would be imported (collections, crawls, WARC files), without
+        /// downloading or indexing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Re-download and re-import crawls even if already imported (otherwise
+        /// already-synced crawls are skipped).
+        #[arg(long)]
+        force: bool,
+
+        /// Also import crawls Archive-It marks deleted. By default only finished,
+        /// non-deleted crawls are imported.
+        #[arg(long)]
+        include_deleted: bool,
+
+        /// Verbose logging (debug level). Replaces the progress bar.
+        #[arg(short = 'v', long)]
+        verbose: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -740,6 +800,9 @@ async fn main() -> Result<()> {
             | Commands::Import {
                 action: ImportCmd::Browsertrix { verbose: true, .. }
             }
+            | Commands::Import {
+                action: ImportCmd::ArchiveIt { verbose: true, .. }
+            }
             | Commands::Wacz {
                 action: WaczCmd::Build { verbose: true, .. }
             }
@@ -773,6 +836,10 @@ async fn main() -> Result<()> {
             .add_directive("pdf_extract=off".parse().unwrap())
             .add_directive("lopdf=off".parse().unwrap())
             .add_directive("html5ever=off".parse().unwrap())
+            // ureq's own debug chatter (TCP/resolver/proto, with redacted paths)
+            // buries our clean per-request logs under `-v`; keep only its warnings.
+            .add_directive("ureq=info".parse().unwrap())
+            .add_directive("ureq_proto=info".parse().unwrap())
     });
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -984,17 +1051,22 @@ async fn main() -> Result<()> {
             let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> =
                 std::sync::Arc::new(BrowsertrixResolver::new());
 
-            // Browsertrix import (management UI) is available only when credentials
-            // are configured; otherwise the import endpoints report it unconfigured.
-            let browsertrix: Option<
-                std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>,
-            > = browsertrix_configured().then(|| {
-                std::sync::Arc::new(EnvBrowsertrix)
-                    as std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>
-            });
+            // Import providers (management UI): each is wired in only when its
+            // credentials are configured; otherwise that import endpoint reports
+            // itself unconfigured.
+            let providers = indice_lib::server::Providers {
+                browsertrix: browsertrix_configured().then(|| {
+                    std::sync::Arc::new(EnvBrowsertrix)
+                        as std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>
+                }),
+                archiveit: archiveit_configured().then(|| {
+                    std::sync::Arc::new(EnvArchiveIt)
+                        as std::sync::Arc<dyn indice_lib::archiveit::ArchiveItProvider>
+                }),
+            };
 
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage, browsertrix) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage, providers) => {
                     result?;
                 }
                 _ = ctrl_c => {}
@@ -1253,6 +1325,43 @@ async fn main() -> Result<()> {
                     force,
                 };
                 let result = run_browsertrix(&host, org.as_deref(), &home, &opts, progress);
+                if result.is_err() {
+                    if let Some(b) = &bar {
+                        b.clear();
+                    }
+                }
+                result?;
+            }
+            ImportCmd::ArchiveIt {
+                host,
+                home,
+                collection,
+                crawl,
+                into,
+                crawl_time_after,
+                crawl_time_before,
+                limit,
+                dry_run,
+                force,
+                include_deleted,
+                verbose: _,
+            } => {
+                let bar = show_bar.then(BarProgress::new);
+                let progress = bar
+                    .as_ref()
+                    .map(|b| b as &dyn indice_lib::index::IndexProgress);
+                let opts = ArchiveItOpts {
+                    collection,
+                    crawl,
+                    into: into.as_deref(),
+                    crawl_time_after: crawl_time_after.as_deref(),
+                    crawl_time_before: crawl_time_before.as_deref(),
+                    limit,
+                    dry_run,
+                    force,
+                    include_deleted,
+                };
+                let result = run_archiveit(&host, &home, &opts, progress);
                 if result.is_err() {
                     if let Some(b) = &bar {
                         b.clear();
@@ -2372,6 +2481,267 @@ impl indice_lib::browsertrix::BrowsertrixProvider for EnvBrowsertrix {
             .unwrap_or_else(|| "https://app.browsertrix.com".to_string());
         connect(&host)
     }
+}
+
+// ── Archive-It import ──────────────────────────────────────────────────────
+
+/// Options for an Archive-It import run (see `ImportCmd::ArchiveIt`).
+struct ArchiveItOpts<'a> {
+    collection: Option<i64>,
+    crawl: Option<i64>,
+    into: Option<&'a str>,
+    crawl_time_after: Option<&'a str>,
+    crawl_time_before: Option<&'a str>,
+    limit: usize,
+    dry_run: bool,
+    force: bool,
+    include_deleted: bool,
+}
+
+/// Build an Archive-It client from environment credentials (basic auth), so
+/// secrets never appear in argv.
+fn connect_archiveit(host: &str) -> Result<indice_lib::archiveit::Client> {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    match (env("ARCHIVEIT_USER"), env("ARCHIVEIT_PASSWORD")) {
+        (Some(user), Some(password)) => {
+            Ok(indice_lib::archiveit::Client::new(host, &user, &password))
+        }
+        _ => anyhow::bail!(
+            "set ARCHIVEIT_USER and ARCHIVEIT_PASSWORD in the environment to authenticate — \
+             they're read from the environment so credentials stay out of the command line"
+        ),
+    }
+}
+
+/// Whether Archive-It credentials are present, so the server only mounts a
+/// working import endpoint when it can actually authenticate.
+fn archiveit_configured() -> bool {
+    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some();
+    set("ARCHIVEIT_USER") && set("ARCHIVEIT_PASSWORD")
+}
+
+/// Supplies authenticated Archive-It clients to the server's import UI from the
+/// same env credentials as [`connect_archiveit`], keeping secrets in the binary.
+/// The host is server-configured (`ARCHIVEIT_HOST`, default the public host), so
+/// the browser can't point the server's credentials at an arbitrary instance.
+struct EnvArchiveIt;
+
+impl indice_lib::archiveit::ArchiveItProvider for EnvArchiveIt {
+    fn client(&self) -> Result<indice_lib::archiveit::Client> {
+        let host = std::env::var("ARCHIVEIT_HOST")
+            .ok()
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| indice_lib::archiveit::DEFAULT_HOST.to_string());
+        connect_archiveit(&host)
+    }
+}
+
+/// Drive an Archive-It import: resolve the target collection(s), list their WARC
+/// files (WASAPI), and per crawl download → build a WACZ → index (via the shared
+/// `archiveit::import_crawls`). `--dry-run` just lists what would be imported.
+fn run_archiveit(
+    host: &str,
+    home: &std::path::Path,
+    opts: &ArchiveItOpts,
+    progress: Option<&dyn indice_lib::index::IndexProgress>,
+) -> Result<()> {
+    use indice_lib::archiveit::{self, WasapiQuery};
+
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
+    let client = connect_archiveit(host)?;
+    // Collection metadata (names + descriptive fields), fetched once to name each
+    // crawl's indice collection and seed finding aids. The network phases can be
+    // slow (esp. a whole-account run), so narrate them — visible with `-v`, and on
+    // stderr for a dry-run so it never looks hung.
+    tracing::info!("connecting to Archive-It at {host}; listing collections…");
+    if opts.dry_run {
+        eprintln!("Listing collections from {host}…");
+    }
+    let collections = client
+        .collections(false)
+        .context("listing Archive-It collections")?;
+    tracing::info!("found {} collection(s)", collections.len());
+    let by_id: HashMap<i64, archiveit::Collection> =
+        collections.into_iter().map(|c| (c.id, c)).collect();
+
+    // Selection is crawl-centric: WASAPI lists the WARC files, and --collection /
+    // --crawl / crawl-time are filters (mirroring how Browsertrix's --collection
+    // filters its item listing). A crawl in no Archive-It collection is reached
+    // just like any other.
+    let query = WasapiQuery {
+        collection: opts.collection,
+        crawl: opts.crawl,
+        crawl_time_after: opts.crawl_time_after,
+        crawl_time_before: opts.crawl_time_before,
+    };
+    tracing::info!("listing WARC files (WASAPI)…");
+    if opts.dry_run {
+        eprintln!("Listing WARC files (large accounts/collections page slowly)…");
+    }
+    let files = client
+        .webdata(&query)
+        .context("listing WARC files (WASAPI)")?;
+    let mut plans = archiveit::plan_crawls(files);
+
+    // Filter by crawl status from the Partner API (WASAPI has none): skip crawls
+    // Archive-It marks deleted (unless --include-deleted) and any that didn't
+    // finish. A crawl with no crawl_job row is kept (don't over-exclude on a
+    // missing record).
+    tracing::info!("listing crawl status (Partner API crawl_job)…");
+    let jobs: HashMap<i64, archiveit::CrawlJob> = client
+        .crawl_jobs(opts.collection)
+        .context("listing Archive-It crawl jobs")?
+        .into_iter()
+        .map(|j| (j.id, j))
+        .collect();
+    let (mut deleted_skipped, mut unfinished_skipped) = (0usize, 0usize);
+    plans.retain(|p| match jobs.get(&p.crawl_id) {
+        Some(j) if j.is_deleted() && !opts.include_deleted => {
+            deleted_skipped += 1;
+            false
+        }
+        Some(j) if !j.is_finished() => {
+            unfinished_skipped += 1;
+            false
+        }
+        _ => true,
+    });
+    if deleted_skipped > 0 || unfinished_skipped > 0 {
+        tracing::info!(
+            deleted = deleted_skipped,
+            unfinished = unfinished_skipped,
+            "skipped crawls by status"
+        );
+        eprintln!(
+            "Skipped {deleted_skipped} deleted and {unfinished_skipped} unfinished crawl(s)\
+             {}.",
+            if opts.include_deleted {
+                ""
+            } else {
+                " (use --include-deleted to include deleted)"
+            }
+        );
+    }
+
+    // A crawl's Archive-It collection id (from its files); `None` = uncollected.
+    let plan_collection = |p: &archiveit::CrawlPlan| p.files.iter().find_map(|f| f.collection);
+
+    if opts.limit > 0 {
+        // Cap *per Archive-It collection* (as --help/README promise), not
+        // globally: keep the first N crawls (lowest crawl-id) of each collection,
+        // so a whole-account run doesn't starve later collections.
+        let mut kept: HashMap<i64, usize> = HashMap::new();
+        plans.retain(|p| {
+            let n = kept.entry(plan_collection(p).unwrap_or(0)).or_insert(0);
+            *n += 1;
+            *n <= opts.limit
+        });
+    }
+    if plans.is_empty() {
+        println!("No crawls match the selection.");
+        return Ok(());
+    }
+
+    if opts.dry_run {
+        // Group by Archive-It collection (uncollected under id 0) and list.
+        let mut by_coll: BTreeMap<i64, Vec<&archiveit::CrawlPlan>> = BTreeMap::new();
+        for p in &plans {
+            by_coll
+                .entry(plan_collection(p).unwrap_or(0))
+                .or_default()
+                .push(p);
+        }
+        for (cid, group) in &by_coll {
+            let label = if *cid == 0 {
+                "(uncollected — needs --into to import)".to_string()
+            } else {
+                by_id
+                    .get(cid)
+                    .map(|c| format!("{cid} \"{}\"", c.name))
+                    .unwrap_or_else(|| cid.to_string())
+            };
+            let warcs: usize = group.iter().map(|p| p.files.len()).sum();
+            println!(
+                "Collection {label}: {} crawl(s), {warcs} WARC file(s)",
+                group.len()
+            );
+            for p in group {
+                println!("  crawl {} — {} WARC file(s)", p.crawl_id, p.files.len());
+                for f in &p.files {
+                    println!(
+                        "    {}  {}  {}",
+                        f.filename,
+                        indice_lib::server::human_size(f.size),
+                        f.crawl_time.as_deref().unwrap_or("")
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Assign each crawl an indice collection: --into wins; else the crawl's
+    // Archive-It collection name; else (uncollected, no --into) skip it.
+    let mut groups: BTreeMap<String, Vec<archiveit::CrawlPlan>> = BTreeMap::new();
+    let mut uncollected = 0usize;
+    for p in plans {
+        let into = match (opts.into, plan_collection(&p)) {
+            (Some(name), _) => name.to_string(),
+            (None, Some(cid)) => by_id
+                .get(&cid)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("Archive-It collection {cid}")),
+            (None, None) => {
+                uncollected += 1;
+                continue;
+            }
+        };
+        groups.entry(into).or_default().push(p);
+    }
+
+    // The crawl_job + collection records, for status/dates and for embedding each
+    // crawl's `archiveit.crawl` / `archiveit.collection` provenance in its WACZ.
+    let catalog = archiveit::Catalog {
+        crawl_jobs: jobs,
+        collections: by_id,
+    };
+
+    for (into, group) in &groups {
+        // Seed the finding aid from the Archive-It collection only when this
+        // indice collection maps 1:1 to one (not a user --into catch-all that
+        // merges several); always record the crawl-time date range.
+        let ait_ids: HashSet<i64> = group.iter().filter_map(&plan_collection).collect();
+        let mut fields = if opts.into.is_none() && ait_ids.len() == 1 {
+            catalog
+                .collections
+                .get(ait_ids.iter().next().unwrap())
+                .map(archiveit::collection_fields)
+                .unwrap_or_default()
+        } else {
+            indice_lib::collections::CollectionFields::default()
+        };
+        fields.dates = archiveit::crawl_year_range(group);
+        let outcome = archiveit::import_crawls(
+            &client, home, into, group, &fields, &catalog, opts.force, progress,
+        )?;
+        tracing::info!(
+            collection = %into,
+            imported = outcome.imported,
+            skipped = outcome.skipped,
+            "imported into indice collection"
+        );
+    }
+
+    if uncollected > 0 {
+        let msg = format!(
+            "{uncollected} crawl(s) aren't in an Archive-It collection and were skipped — \
+             re-run with --into <NAME> (optionally --crawl <id>) to import them."
+        );
+        tracing::warn!("{msg}");
+        eprintln!("{msg}");
+    }
+    Ok(())
 }
 
 /// Resolves stored Browsertrix sources (`Source::Browsertrix`) to fresh presigned

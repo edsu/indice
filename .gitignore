@@ -36,3 +36,9 @@
 # Chrome for Testing + chromedriver (local browser testing, via @puppeteer/browsers)
 /chrome/
 /chromedriver/
+
+env.sh
+
+# Archive-It import staging (created under the indice home; shows up here when
+# the home dir is the repo root during local testing).
+/.import-tmp/

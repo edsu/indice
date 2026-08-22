@@ -1057,8 +1057,9 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
 }
 
 /// Progressive-enhancement script for the accession desk: source tabs, the
-/// add-archive submit (upload / path-URL / Browsertrix), the Browsertrix browse
-/// wizard, and shared SSE progress. Small and dependency-free.
+/// add-archive submit (upload / path-URL / Browsertrix / Archive-It), the
+/// Browsertrix and Archive-It browse wizards, and shared SSE progress. Small and
+/// dependency-free.
 const ADD_ARCHIVE_JS: &str = r#"
 const f = document.getElementById('add-archive-form');
 const out = document.getElementById('add-progress');
@@ -1114,8 +1115,9 @@ document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click
   e.preventDefault();
   document.querySelectorAll('.src-tab').forEach(t => t.setAttribute('aria-selected', t === tab));
   document.querySelectorAll('.src-panel').forEach(p => p.classList.toggle('active', p.id === 'src-' + tab.dataset.src));
-  // Opening the Browsertrix tab reaches out to the configured instance on its own.
+  // Opening an import tab reaches out to the configured instance on its own.
   if (tab.dataset.src === 'bx' && !bxConnected) bxConnect();
+  if (tab.dataset.src === 'ait' && !aitConnected) aitConnect();
 }));
 
 // ── Browsertrix browse (orgs → collections → crawls), using server creds. ──
@@ -1211,6 +1213,77 @@ if (bxOrg) bxOrg.addEventListener('change', async () => { await bxLoadCollection
 const bxColl = document.getElementById('bx-collection');
 if (bxColl) bxColl.addEventListener('change', bxLoadItems);
 
+// ── Archive-It browse (collections → crawls), using server creds. ──
+let aitConnected = false;
+let aitCrawls = [];
+// Crawls load reactively (on connect / collection change); aitSeq drops a stale
+// response so a slower earlier request can't overwrite a newer list.
+let aitSeq = 0;
+async function aitConnect() {
+  out.textContent = 'Connecting to Archive-It…';
+  try {
+    const colls = await bxGet('/api/archiveit/collections');
+    const sel = document.getElementById('ait-collection');
+    sel.innerHTML = '';
+    for (const c of colls) {
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = c.name + (c.state && c.state !== 'ACTIVE' ? ' (' + c.state.toLowerCase() + ')' : '');
+      sel.appendChild(o);
+    }
+    document.getElementById('ait-browse').hidden = false;
+    aitConnected = true;
+    if (!colls.length) { out.textContent = 'No Archive-It collections visible for these credentials.'; return; }
+    out.textContent = '';
+    aitLoadCrawls();
+  } catch (e) { out.textContent = 'Error: ' + e.message; }
+}
+async function aitLoadCrawls() {
+  const coll = document.getElementById('ait-collection').value;
+  if (!coll) return;
+  const seq = ++aitSeq;
+  out.textContent = 'Loading crawls…';
+  try {
+    const crawls = await bxGet('/api/archiveit/crawls?collection=' + encodeURIComponent(coll));
+    if (seq !== aitSeq) return;
+    aitCrawls = crawls;
+    out.textContent = '';
+    aitRender();
+  } catch (e) { if (seq === aitSeq) out.textContent = 'Error: ' + e.message; }
+}
+function aitRender() {
+  const box = document.getElementById('ait-crawls');
+  const hideImported = !!(document.getElementById('ait-hide-imported') || {}).checked;
+  box.innerHTML = '';
+  if (!aitCrawls.length) { box.textContent = 'No importable crawls found.'; return; }
+  const crawls = aitCrawls.filter(c => !(hideImported && c.imported));
+  if (!crawls.length) { box.textContent = 'No crawls match this filter.'; return; }
+  for (const c of crawls) {
+    const label = document.createElement('label');
+    label.className = 'bx-item' + (c.imported ? ' imported' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.dataset.id = c.id;
+    // Already in the library — can't be re-imported, so it's shown disabled.
+    if (c.imported) cb.disabled = true;
+    const nm = document.createElement('span'); nm.className = 'bx-name'; nm.textContent = 'crawl ' + c.id;
+    // A single (start) date keeps the column within its width; the crawl page
+    // shows the full capture-date range.
+    const date = document.createElement('span'); date.className = 'bx-date';
+    date.textContent = (c.start || c.end || '').slice(0, 10);
+    const size = document.createElement('span'); size.className = 'bx-size'; size.textContent = c.size_h || '';
+    label.append(cb, nm);
+    if (c.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = 'in library'; label.append(b); }
+    label.append(date, size);
+    box.appendChild(label);
+  }
+}
+const aitColl = document.getElementById('ait-collection');
+if (aitColl) aitColl.addEventListener('change', aitLoadCrawls);
+const aitRefresh = document.getElementById('ait-refresh');
+if (aitRefresh) aitRefresh.addEventListener('click', aitLoadCrawls);
+const aitHideImported = document.getElementById('ait-hide-imported');
+if (aitHideImported) aitHideImported.addEventListener('change', aitRender);
+
 // Submit: dispatch on the active source tab.
 f.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1256,6 +1329,18 @@ f.addEventListener('submit', async (e) => {
       res = await fetch('/api/browsertrix/import', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
+    } else if (src === 'ait') {
+      const checked = [...document.querySelectorAll('#ait-crawls input:checked')];
+      if (!checked.length) { out.textContent = 'Select at least one crawl to import.'; return; }
+      out.textContent = 'Importing…';
+      const body = {
+        collection_id: parseInt(document.getElementById('ait-collection').value, 10),
+        collection,
+        crawls: checked.map(cb => parseInt(cb.dataset.id, 10)),
+      };
+      res = await fetch('/api/archiveit/import', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
     } else {
       out.textContent = 'That source isn’t available yet.';
       return;
@@ -1268,9 +1353,9 @@ f.addEventListener('submit', async (e) => {
 "#;
 
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
-/// `collection` prefills the target when arriving from a collection page. Upload
-/// and Path/URL are live; Browsertrix / Archive-It are placeholders for the
-/// import wizards (rustyweb-admin-mode-r67p.5 / rustyweb-kx53).
+/// `collection` prefills the target when arriving from a collection page. All
+/// four sources are live: Upload, Path/URL, and the Browsertrix and Archive-It
+/// browse-and-import wizards (each uses the server's configured credentials).
 pub fn accession_desk(
     collection_id: &str,
     collection_name: &str,
@@ -1349,7 +1434,18 @@ pub fn accession_desk(
                 }
             }
             div.src-panel #src-ait {
-                p.note { "Import from an Archive-It account is coming here." }
+                p.muted { "Pick crawls to import into the collection above, from the Archive-It account this server is configured for. Each selected crawl is downloaded and packaged into a WACZ." }
+                div #ait-browse.bx-browse hidden {
+                    label { span { "Archive-It collection" } select #ait-collection {} }
+                    div.bx-toolbar {
+                        label.bx-check {
+                            input type="checkbox" #ait-hide-imported;
+                            span { "Hide already-imported" }
+                        }
+                        button.btn.ghost type="button" #ait-refresh { "Refresh list" }
+                    }
+                }
+                div #ait-crawls.bx-items {}
             }
 
             div.form-actions {

@@ -319,7 +319,7 @@ nav.pagination .page-info { color: var(--muted); }
 .bx-toolbar .bx-filter select { width: auto; }
 .bx-toolbar .bx-check { flex-direction: row; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); }
 .bx-toolbar .bx-check input { width: auto; }
-.bx-toolbar #bx-refresh { margin-left: auto; }
+.bx-toolbar #bx-refresh, .bx-toolbar #ait-refresh { margin-left: auto; }
 /* Download-vs-stream chooser under the crawl list. */
 .bx-mode { border: 1px solid var(--line-soft); border-radius: var(--radius); padding: 0.6rem 0.8rem; margin: 0.7rem 0 0; display: flex; flex-direction: column; gap: 0.4rem; }
 .bx-mode legend { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); font-weight: 700; padding: 0 0.3rem; }

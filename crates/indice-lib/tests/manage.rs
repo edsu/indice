@@ -43,9 +43,15 @@ async fn serve(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = tokio::spawn(async move {
-        indice_lib::server::serve_on_listener(listener, &home, None, manage, None)
-            .await
-            .unwrap();
+        indice_lib::server::serve_on_listener(
+            listener,
+            &home,
+            None,
+            manage,
+            indice_lib::server::Providers::default(),
+        )
+        .await
+        .unwrap();
     });
     (format!("http://127.0.0.1:{port}"), handle)
 }
@@ -254,6 +260,15 @@ async fn manage_page_gated_on_management_mode() {
     let (status, body) = get(format!("{base}/manage/add")).await;
     assert_eq!(status, 200);
     assert!(body.contains("Add crawls"), "accession desk renders");
+    // All four import-source tabs, including the Archive-It browse wizard.
+    for needle in [
+        r#"data-src="bx""#,
+        r#"data-src="ait""#,
+        "ait-collection",
+        "/api/archiveit/collections",
+    ] {
+        assert!(body.contains(needle), "accession desk wires up: {needle}");
+    }
     // Empty homepage shows the management CTA, not the CLI hint.
     let (_, home) = get(format!("{base}/")).await;
     assert!(home.contains("Add your first archive"), "empty-state CTA");
@@ -407,6 +422,40 @@ async fn browsertrix_import_reports_unconfigured_without_creds() {
         "clear unconfigured message; got: {body}"
     );
 
+    server.abort();
+}
+
+#[tokio::test]
+async fn archiveit_import_reports_unconfigured_without_creds() {
+    // Management on, but no Archive-It provider injected (no creds) — the
+    // browse/import endpoints should say so clearly, not 500.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::local(),
+    )
+    .await;
+
+    let (status, body) = get(format!("{base}/api/archiveit/collections")).await;
+    assert_eq!(status, 503, "unconfigured Archive-It is a 503");
+    assert!(
+        body.contains("not configured"),
+        "clear unconfigured message; got: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn archiveit_routes_absent_in_read_only_mode() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
+    let (status, _) = get(format!("{base}/api/archiveit/collections")).await;
+    assert_eq!(status, 404, "no Archive-It routes without --manage");
     server.abort();
 }
 
