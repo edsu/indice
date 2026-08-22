@@ -37,14 +37,9 @@
 /chrome/
 /chromedriver/
 
+# some environment vars for testing
 env.sh
 
 # Archive-It import staging (created under the indice home; shows up here when
 # the home dir is the repo root during local testing).
 /.import-tmp/
-
-# Local Stanford import scratch/data (catalog dump + WACZ URL lists), not part of
-# the project — kept locally but untracked.
-/stanford.json
-/sul-wacz-urls.txt
-/sul-wacz-urls-10.txt
