@@ -2552,8 +2552,8 @@ fn run_archiveit(
         .collections(false)
         .context("listing Archive-It collections")?;
     tracing::info!("found {} collection(s)", collections.len());
-    let by_id: HashMap<i64, &archiveit::Collection> =
-        collections.iter().map(|c| (c.id, c)).collect();
+    let by_id: HashMap<i64, archiveit::Collection> =
+        collections.into_iter().map(|c| (c.id, c)).collect();
 
     // Selection is crawl-centric: WASAPI lists the WARC files, and --collection /
     // --crawl / crawl-time are filters (mirroring how Browsertrix's --collection
@@ -2682,22 +2682,30 @@ fn run_archiveit(
         groups.entry(into).or_default().push(p);
     }
 
+    // The crawl_job + collection records, for status/dates and for embedding each
+    // crawl's `archiveit.crawl` / `archiveit.collection` provenance in its WACZ.
+    let catalog = archiveit::Catalog {
+        crawl_jobs: jobs,
+        collections: by_id,
+    };
+
     for (into, group) in &groups {
         // Seed the finding aid from the Archive-It collection only when this
         // indice collection maps 1:1 to one (not a user --into catch-all that
         // merges several); always record the crawl-time date range.
         let ait_ids: HashSet<i64> = group.iter().filter_map(&plan_collection).collect();
         let mut fields = if opts.into.is_none() && ait_ids.len() == 1 {
-            by_id
+            catalog
+                .collections
                 .get(ait_ids.iter().next().unwrap())
-                .map(|c| archiveit::collection_fields(c))
+                .map(archiveit::collection_fields)
                 .unwrap_or_default()
         } else {
             indice_lib::collections::CollectionFields::default()
         };
         fields.dates = crawl_year_range(group);
         let outcome = archiveit::import_crawls(
-            &client, home, into, group, &fields, &jobs, opts.force, progress,
+            &client, home, into, group, &fields, &catalog, opts.force, progress,
         )?;
         tracing::info!(
             collection = %into,

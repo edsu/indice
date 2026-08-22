@@ -2085,6 +2085,32 @@ async fn crawl_page(
             provenance.push(views::MetaRow::mono("Browsertrix item", bt.item_id.clone()));
         }
     }
+    if let Some(ait) = &c.archive_it {
+        // Attribution for content pulled in via `indice import archive-it`.
+        let host = ait
+            .host
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        provenance.push(views::MetaRow::new(
+            "Source",
+            format!("Archive-It ({host})"),
+        ));
+        if !ait.collection_title.is_empty() {
+            provenance.push(views::MetaRow::new(
+                "Collection",
+                ait.collection_title.clone(),
+            ));
+        }
+        if ait.crawl_id != 0 {
+            provenance.push(views::MetaRow::mono("Crawl", ait.crawl_id.to_string()));
+        }
+        if ait.warc_count != 0 {
+            provenance.push(views::MetaRow::new(
+                "WARC files",
+                ait.warc_count.to_string(),
+            ));
+        }
+    }
     if !c.software.is_empty() {
         provenance.push(views::MetaRow::new("Software", c.software.join(", ")));
     }

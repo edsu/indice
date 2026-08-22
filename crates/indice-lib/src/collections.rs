@@ -307,6 +307,11 @@ pub struct ArchiveItRef {
     /// if a crawl later grows more WARCs, `--force` re-imports it).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub warc_count: u64,
+    /// The Archive-It collection's display title (e.g. "Stephen Ratcliffe
+    /// Papers"), so the crawl page can name it — far more descriptive than the
+    /// indice collection the crawl was imported into. Empty when uncollected.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub collection_title: String,
 }
 
 fn is_zero(n: &u64) -> bool {

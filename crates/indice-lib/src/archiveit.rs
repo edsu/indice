@@ -92,15 +92,78 @@ impl Transport for UreqTransport {
 /// descriptive-metadata block, whose exact shape varies by account) are captured
 /// in `extra` so the metadata mapper can read them defensively without this
 /// struct hard-coding keys that must be confirmed against a live account.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Collection {
     pub id: i64,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// Every other collection field (descriptive `metadata`, `topics`, dates, …),
+    /// captured so the metadata mapper and `collection_provenance` allowlist can
+    /// read them without this struct hard-coding keys.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+// Allowlists of the fields we embed in a built WACZ's `datapackage.json`, one
+// per Archive-It record. These are allowlists, not denylists, on purpose: the
+// WACZ is meant to be shared/committed, and the raw collection record carries a
+// `private_access_token` (grants private-replay access) plus operator PII
+// (`created_by`/`last_updated_by`) and account internals. Copying only the
+// fields named here means a *new* upstream field — including a future secret —
+// can never leak, whereas "dump everything then strip the token" breaks silently
+// the moment Archive-It adds another sensitive field.
+const COLLECTION_FIELDS: &[&str] = &[
+    "id",
+    "name",
+    "state",
+    "publicly_visible",
+    "topics",
+    "metadata",
+    "created_date",
+    "last_crawl_date",
+];
+const CRAWL_FIELDS: &[&str] = &[
+    "id",
+    "status",
+    "type",
+    "test_crawl_state",
+    "collection",
+    "original_start_date",
+    "end_date",
+];
+
+/// The `archiveit.collection` provenance object embedded in a built WACZ.
+fn collection_provenance(c: &Collection) -> serde_json::Value {
+    allowlisted(c, COLLECTION_FIELDS)
+}
+
+/// The `archiveit.crawl` provenance object embedded in a built WACZ.
+fn crawl_provenance(j: &CrawlJob) -> serde_json::Value {
+    allowlisted(j, CRAWL_FIELDS)
+}
+
+/// Serialize an Archive-It record and keep only the named `fields` (dropping
+/// nulls). An allowlist copy: any key not listed — secrets, PII, unknown future
+/// fields — is left out by construction. See [`COLLECTION_FIELDS`].
+fn allowlisted<T: Serialize>(record: &T, fields: &[&str]) -> serde_json::Value {
+    let full = serde_json::to_value(record).unwrap_or(serde_json::Value::Null);
+    let src = full.as_object();
+    let kept = fields.iter().filter_map(|&k| {
+        let v = src?.get(k).filter(|v| !v.is_null())?;
+        Some((k.to_string(), v.clone()))
+    });
+    serde_json::Value::Object(kept.collect())
+}
+
+/// Archive-It metadata for enriching built WACZs — the crawl_job and collection
+/// records keyed by id — passed to [`import_crawls`] so each crawl's WACZ can
+/// embed its `archiveit.crawl` + `archiveit.collection`.
+#[derive(Default)]
+pub struct Catalog {
+    pub crawl_jobs: std::collections::HashMap<i64, CrawlJob>,
+    pub collections: std::collections::HashMap<i64, Collection>,
 }
 
 /// A crawl job (Partner API `/api/crawl_job`) — the source of truth for a
@@ -126,8 +189,9 @@ pub struct CrawlJob {
     pub original_start_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_date: Option<String>,
-    /// Every other crawl_job field, so the record round-trips faithfully into the
-    /// WACZ's `datapackage.json` `archiveitCrawl` provenance key.
+    /// Every other crawl_job field, kept so status/deletion checks can read
+    /// fields this struct doesn't type. (Only allowlisted fields are embedded in
+    /// the WACZ — see `crawl_provenance`.)
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -357,21 +421,102 @@ pub struct ImportOutcome {
     pub crawls: Vec<(String, String)>,
 }
 
+/// Pull every string value for a Dublin-Core `metadata` key out of an Archive-It
+/// collection record. The Partner API nests descriptive metadata under a
+/// `metadata` object keyed by capitalized DC terms (`Description`, `Subject`, …),
+/// each mapping to an array of `{ "value": "…" }` entries; this reads that shape
+/// but also tolerates a bare string or an array of strings, and matches the key
+/// case-insensitively so account-specific casing still resolves.
+fn metadata_values(c: &Collection, key: &str) -> Vec<String> {
+    let Some(md) = c.extra.get("metadata").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    let Some(field) = md
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+    else {
+        return Vec::new();
+    };
+    let one = |v: &serde_json::Value| -> Option<String> {
+        // `{ "value": "…" }` (Archive-It's shape) or a bare string.
+        v.get("value")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+    };
+    match field {
+        serde_json::Value::Array(arr) => arr.iter().filter_map(one).collect(),
+        other => one(other).into_iter().collect(),
+    }
+}
+
+/// Turn an Archive-It `topics` category code (camelCase, e.g.
+/// `"artsAndHumanities"`) into a readable subject (`"Arts and Humanities"`):
+/// split on case boundaries, capitalize the first word, and lowercase short
+/// connectives. A value that isn't camelCase is left as-is (just trimmed).
+fn humanize_topic(code: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in code.trim().chars() {
+        if ch.is_uppercase() && !cur.is_empty() {
+            words.push(std::mem::take(&mut cur));
+        }
+        cur.extend(ch.to_lowercase());
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            // Keep connectives lowercase mid-phrase; capitalize everything else.
+            if i > 0 && matches!(w.as_str(), "and" | "of" | "the" | "for") {
+                w.clone()
+            } else {
+                let mut c = w.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().chain(c).collect(),
+                    None => w.clone(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Map an Archive-It [`Collection`]'s descriptive metadata into indice
-/// finding-aid [`CollectionFields`] (fill-gaps via `seed_collection`). The
-/// Partner-API metadata shape varies by account, so this reads `extra`
-/// defensively — the exact keys are confirmed against a live account; unknown
-/// fields simply stay unmapped.
+/// finding-aid [`CollectionFields`] (fill-gaps via `seed_collection`). Reads the
+/// Partner-API `metadata` sub-object (Dublin Core) plus the top-level `topics`
+/// list, defensively — unknown or empty fields simply stay unmapped.
 pub fn collection_fields(c: &Collection) -> crate::collections::CollectionFields {
-    let s = |k: &str| c.extra.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let first = |key: &str| metadata_values(c, key).into_iter().next();
+
+    // Subjects come from DC `Subject` metadata and the collection's `topics`.
+    // `topics` is Archive-It's coarse category vocabulary, delivered as a single
+    // camelCase code (e.g. "artsAndHumanities") — humanize it so it reads as a
+    // subject rather than a raw code. It's usually null (empty account-wide in
+    // practice); we still accept a list defensively.
+    let mut subjects = metadata_values(c, "Subject");
+    match c.extra.get("topics") {
+        Some(serde_json::Value::Array(arr)) => {
+            subjects.extend(arr.iter().filter_map(|v| v.as_str()).map(humanize_topic))
+        }
+        Some(serde_json::Value::String(s)) if !s.is_empty() => subjects.push(humanize_topic(s)),
+        _ => {}
+    }
+    let subjects = (!subjects.is_empty()).then_some(subjects);
+
     crate::collections::CollectionFields {
-        // Description → narrative (Scope & Content); a short caption → abstract.
-        narrative: s("description"),
-        description: s("caption"),
-        creator: s("creator").or_else(|| s("collector")),
-        rights: s("rights"),
+        // DC Description → narrative (Scope & Content); Title → short abstract.
+        narrative: first("Description"),
+        description: first("Title"),
+        creator: first("Creator").or_else(|| first("Collector")),
+        rights: first("Rights"),
         dates: None, // filled from crawl times by the caller when available
-        subjects: None,
+        subjects,
         curator: None,
     }
 }
@@ -398,7 +543,7 @@ pub fn import_crawls<T: Transport>(
     into: &str,
     plans: &[CrawlPlan],
     fields: &crate::collections::CollectionFields,
-    crawl_jobs: &std::collections::HashMap<i64, CrawlJob>,
+    catalog: &Catalog,
     force: bool,
     progress: Option<&dyn crate::index::IndexProgress>,
 ) -> Result<ImportOutcome> {
@@ -441,10 +586,19 @@ pub fn import_crawls<T: Transport>(
             .with_context(|| format!("creating staging dir {}", staging.display()))?;
         let _staging_guard = DirGuard(staging.clone());
 
+        // Name the crawl after its Archive-It collection title when we have one
+        // (far more descriptive than the indice collection it lands in); fall back
+        // to `into` otherwise. This title is baked into the WACZ and shown as the
+        // crawl heading.
+        let coll_title = catalog
+            .collections
+            .get(&ait_collection_id)
+            .map(|c| c.name.trim())
+            .filter(|n| !n.is_empty());
         // Narrate the downloads (the slow part): start the spinner *before* the
         // first fetch — `phase()` only updates an already-active bar — and also
         // log at INFO for the no-bar (piped/CI) case.
-        let display = format!("crawl {} · {into}", plan.crawl_id);
+        let display = format!("crawl {} · {}", plan.crawl_id, coll_title.unwrap_or(into));
         if let Some(p) = progress {
             p.begin(&display);
         }
@@ -482,14 +636,25 @@ pub fn import_crawls<T: Transport>(
         // Build one WACZ per crawl, directly into the collection's archive dir
         // (so it's indexed in place and its id is deterministic), then index it.
         let created = plan.files.iter().filter_map(|f| f.crawl_time.clone()).min();
-        // Persist the source crawl_job record inside datapackage.json under the
-        // custom `archiveitCrawl` key (Frictionless allows custom properties), so
-        // the provenance travels in the file indice parses and can be surfaced later.
+        // Persist an allowlisted subset of the source crawl + collection records
+        // inside datapackage.json under a custom `archiveit` object (Frictionless
+        // allows custom properties), so the provenance travels in the file indice
+        // parses and can be surfaced later. Allowlisted (not the raw record) so no
+        // secret/PII field can leak into a shareable WACZ — see
+        // `collection_provenance`/`crawl_provenance`.
+        let mut archiveit = serde_json::Map::new();
+        if let Some(job) = catalog.crawl_jobs.get(&plan.crawl_id) {
+            archiveit.insert("crawl".to_string(), crawl_provenance(job));
+        }
+        if let Some(coll) = catalog.collections.get(&ait_collection_id) {
+            archiveit.insert("collection".to_string(), collection_provenance(coll));
+        }
         let mut datapackage_extra = serde_json::Map::new();
-        if let Some(job) = crawl_jobs.get(&plan.crawl_id) {
-            if let Ok(v) = serde_json::to_value(job) {
-                datapackage_extra.insert("archiveitCrawl".to_string(), v);
-            }
+        if !archiveit.is_empty() {
+            datapackage_extra.insert(
+                "archiveit".to_string(),
+                serde_json::Value::Object(archiveit),
+            );
         }
         let meta = crate::wacz_build::WaczBuildMeta {
             title: Some(display.clone()),
@@ -524,6 +689,7 @@ pub fn import_crawls<T: Transport>(
             ait_collection_id,
             plan.crawl_id,
             plan.files.len() as u64,
+            coll_title.unwrap_or(""),
         )?;
         // `index_location` already emits the persistent "✓ indexed N pages" line
         // and INFO log (with the accurate distinct-page count), so don't
@@ -655,6 +821,51 @@ mod tests {
             colls[0].extra.get("description").and_then(|v| v.as_str()),
             Some("Muni sites")
         );
+    }
+
+    #[test]
+    fn collection_fields_maps_dublin_core_and_topics() {
+        // Archive-It nests descriptive metadata under `metadata`, keyed by
+        // capitalized DC terms whose values are arrays of `{value}` objects.
+        // `topics` is a single camelCase category code (the real shape); the DC
+        // `metadata` block here is synthetic (accounts that populate it).
+        let c: Collection = serde_json::from_str(
+            r#"{
+                "id":18491,
+                "name":"Stephen Ratcliffe Papers",
+                "state":"INACTIVE",
+                "topics":"artsAndHumanities",
+                "metadata":{
+                    "Description":[{"value":"Papers of the poet."}],
+                    "Title":[{"value":"Ratcliffe"}],
+                    "Creator":[{"value":"Ratcliffe, Stephen"}],
+                    "Rights":[{"value":"In copyright"}],
+                    "Subject":[{"value":"American poetry"},{"value":"Experimental literature"}]
+                }
+            }"#,
+        )
+        .unwrap();
+        let f = collection_fields(&c);
+        assert_eq!(f.narrative.as_deref(), Some("Papers of the poet."));
+        assert_eq!(f.description.as_deref(), Some("Ratcliffe"));
+        assert_eq!(f.creator.as_deref(), Some("Ratcliffe, Stephen"));
+        assert_eq!(f.rights.as_deref(), Some("In copyright"));
+        assert_eq!(
+            f.subjects,
+            Some(vec![
+                "American poetry".to_string(),
+                "Experimental literature".to_string(),
+                "Arts and Humanities".to_string(), // humanized topic code
+            ])
+        );
+
+        // Empty metadata + null topics (the common real-world case) maps to
+        // nothing — matching every collection in the test account.
+        let empty: Collection =
+            serde_json::from_str(r#"{"id":1,"name":"Empty","metadata":{},"topics":null}"#).unwrap();
+        let f = collection_fields(&empty);
+        assert!(f.narrative.is_none());
+        assert!(f.subjects.is_none());
     }
 
     #[test]
@@ -790,24 +1001,39 @@ mod tests {
             narrative: Some("A test collection".into()),
             ..Default::default()
         };
-        // A crawl_job record → embedded under datapackage.json `archiveitCrawl`.
-        let mut jobs = HashMap::new();
-        jobs.insert(
+        // Catalog: the crawl_job + collection records → embedded under
+        // datapackage.json `archiveit`, with the collection's secret redacted.
+        let mut catalog = Catalog::default();
+        catalog.crawl_jobs.insert(
             304244i64,
             serde_json::from_str::<CrawlJob>(
+                // `doc_rate` is an unvetted extra: it must NOT reach the WACZ.
                 r#"{"id":304244,"type":"TEST_SAVED","status":"FINISHED","collection":8232,"doc_rate":"1.5"}"#,
             )
             .unwrap(),
         );
+        // Collection title differs from the indice collection (`into`) below, so
+        // the assertions prove the title flows from the Archive-It collection.
+        catalog.collections.insert(
+            8232i64,
+            serde_json::from_str::<Collection>(
+                // `private_access_token` (secret) and `created_by` (PII) are the
+                // kind of fields the allowlist must keep out of the WACZ.
+                r#"{"id":8232,"name":"City Government Archive","state":"INACTIVE","private_access_token":"SECRET","created_by":"alice@example.edu","topics":null}"#,
+            )
+            .unwrap(),
+        );
         let out = import_crawls(
-            &client, home, "City Gov", &plans, &fields, &jobs, false, None,
+            &client, home, "City Gov", &plans, &fields, &catalog, false, None,
         )
         .unwrap();
         assert_eq!(out.imported, 1);
         assert_eq!(out.skipped, 0);
+        // The crawl is named after its Archive-It collection title, not `into`.
+        assert_eq!(out.crawls[0].1, "crawl 304244 · City Government Archive");
 
-        // The source crawl_job record travels inside datapackage.json under
-        // `archiveitCrawl` (the full record, via CrawlJob's flattened `extra`).
+        // The source crawl + collection records travel inside datapackage.json
+        // under `archiveit`; the collection's private_access_token is redacted.
         let wacz_path = crate::index::archive_dir(home)
             .join("city-gov")
             .join("ait-8232-304244.wacz");
@@ -819,10 +1045,26 @@ mod tests {
         )
         .unwrap();
         let v: serde_json::Value = serde_json::from_str(&dp).unwrap();
-        let crawl = &v["archiveitCrawl"];
+        let crawl = &v["archiveit"]["crawl"];
         assert_eq!(crawl["id"], 304244);
         assert_eq!(crawl["type"], "TEST_SAVED");
-        assert_eq!(crawl["doc_rate"], "1.5", "flattened extra fields preserved");
+        assert_eq!(crawl["status"], "FINISHED");
+        assert!(
+            crawl.get("doc_rate").is_none(),
+            "unvetted crawl fields are not embedded (allowlist, not denylist)"
+        );
+        let coll = &v["archiveit"]["collection"];
+        assert_eq!(coll["id"], 8232);
+        assert_eq!(coll["name"], "City Government Archive");
+        assert_eq!(coll["state"], "INACTIVE");
+        assert!(
+            coll.get("private_access_token").is_none(),
+            "collection secret must never reach the WACZ"
+        );
+        assert!(
+            coll.get("created_by").is_none(),
+            "operator PII is not embedded (allowlist keeps out unnamed fields)"
+        );
 
         // One WACZ filed under the collection's archive dir, and it indexed.
         let wacz = crate::index::archive_dir(home)
@@ -846,10 +1088,11 @@ mod tests {
         assert_eq!(ait.collection_id, 8232);
         assert_eq!(ait.crawl_id, 304244);
         assert_eq!(ait.warc_count, 2);
+        assert_eq!(ait.collection_title, "City Government Archive");
 
         // A re-run skips the already-imported crawl.
         let again = import_crawls(
-            &client, home, "City Gov", &plans, &fields, &jobs, false, None,
+            &client, home, "City Gov", &plans, &fields, &catalog, false, None,
         )
         .unwrap();
         assert_eq!(again.imported, 0);

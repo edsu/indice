@@ -187,8 +187,9 @@ pub struct WaczBuildMeta {
     pub keywords: Vec<String>,
     pub licenses: Vec<String>,
     pub creator: Option<String>, // datapackage top-level `organization`
-    /// Extra top-level keys to merge into `datapackage.json` — e.g.
-    /// `"archiveitCrawl"` carrying the source Archive-It crawl record. Frictionless
+    /// Extra top-level keys to merge into `datapackage.json` — e.g. an
+    /// `"archiveit"` object carrying the source Archive-It crawl + collection
+    /// records. Frictionless
     /// Data Package allows custom properties, so this travels the provenance in the
     /// file indice already parses (rather than an opaque sidecar), where it can be
     /// read back and displayed later.
@@ -238,7 +239,7 @@ struct DataPackage {
     #[serde(skip_serializing_if = "Option::is_none")]
     organization: Option<String>,
     resources: Vec<Resource>,
-    /// Custom top-level properties (e.g. `archiveitCrawl`), merged in verbatim.
+    /// Custom top-level properties (e.g. an `archiveit` object), merged in verbatim.
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -449,7 +450,7 @@ pub fn build_wacz(
     });
 
     // 4. datapackage.json (browsertrix shape + additive descriptive fields +
-    //    any custom top-level properties like `archiveitCrawl`).
+    //    any custom top-level properties like an `archiveit` object).
     let datapackage = DataPackage {
         profile: "data-package",
         wacz_version: "1.1.1",

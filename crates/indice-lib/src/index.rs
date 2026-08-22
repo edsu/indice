@@ -1003,6 +1003,7 @@ pub fn set_archiveit_provenance_by_id(
     ait_collection_id: i64,
     ait_crawl_id: i64,
     warc_count: u64,
+    collection_title: &str,
 ) -> Result<()> {
     let mut manifest = Manifest::open(&index_dir(home))?;
     let wacz = manifest
@@ -1015,6 +1016,7 @@ pub fn set_archiveit_provenance_by_id(
         collection_id: ait_collection_id,
         crawl_id: ait_crawl_id,
         warc_count,
+        collection_title: collection_title.to_string(),
     });
     manifest.save()?;
     Ok(())
