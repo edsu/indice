@@ -1289,18 +1289,40 @@ async fn ait_crawls(State(state): State<Arc<AppState>>, Query(q): Query<AitBrows
                     .collect()
             })
             .unwrap_or_default();
+        // Per-crawl WARC totals (bytes + file count) from WASAPI — the Partner
+        // API's crawl list carries no byte totals, so sum the file records.
+        let mut totals: std::collections::HashMap<i64, (u64, u64)> =
+            std::collections::HashMap::new();
+        for f in c.webdata(&crate::archiveit::WasapiQuery {
+            collection: Some(collection),
+            crawl: None,
+            crawl_time_after: None,
+            crawl_time_before: None,
+        })? {
+            if let Some(cr) = f.crawl {
+                let e = totals.entry(cr).or_default();
+                e.0 += f.size;
+                e.1 += 1;
+            }
+        }
         let jobs = c.crawl_jobs(Some(collection))?;
         Ok(serde_json::json!(jobs
             .iter()
             .filter(|j| j.importable())
-            .map(|j| serde_json::json!({
-                "id": j.id,
-                "status": j.status,
-                "type": j.kind,
-                "start": j.original_start_date,
-                "end": j.end_date,
-                "imported": imported.contains(&j.id),
-            }))
+            .map(|j| {
+                let (bytes, warcs) = totals.get(&j.id).copied().unwrap_or((0, 0));
+                serde_json::json!({
+                    "id": j.id,
+                    "status": j.status,
+                    "type": j.kind,
+                    "start": j.original_start_date,
+                    "end": j.end_date,
+                    "size": bytes,
+                    "size_h": if bytes > 0 { human_size(bytes) } else { String::new() },
+                    "warcs": warcs,
+                    "imported": imported.contains(&j.id),
+                })
+            })
             .collect::<Vec<_>>()))
     })
     .await

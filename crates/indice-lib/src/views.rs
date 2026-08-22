@@ -1266,12 +1266,14 @@ function aitRender() {
     // Already in the library — can't be re-imported, so it's shown disabled.
     if (c.imported) cb.disabled = true;
     const nm = document.createElement('span'); nm.className = 'bx-name'; nm.textContent = 'crawl ' + c.id;
-    const days = [c.start, c.end].filter(Boolean).map(d => String(d).slice(0, 10));
-    const range = days.length === 2 && days[0] !== days[1] ? days[0] + ' → ' + days[1] : (days[0] || '');
-    const date = document.createElement('span'); date.className = 'bx-date'; date.textContent = range;
+    // A single (start) date keeps the column within its width; the crawl page
+    // shows the full capture-date range.
+    const date = document.createElement('span'); date.className = 'bx-date';
+    date.textContent = (c.start || c.end || '').slice(0, 10);
+    const size = document.createElement('span'); size.className = 'bx-size'; size.textContent = c.size_h || '';
     label.append(cb, nm);
     if (c.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = 'in library'; label.append(b); }
-    label.append(date);
+    label.append(date, size);
     box.appendChild(label);
   }
 }
