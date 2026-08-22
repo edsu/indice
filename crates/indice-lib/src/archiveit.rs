@@ -618,7 +618,7 @@ pub fn import_crawls<T: Transport>(
         // Narrate the downloads (the slow part): start the spinner *before* the
         // first fetch — `phase()` only updates an already-active bar — and also
         // log at INFO for the no-bar (piped/CI) case.
-        let display = format!("crawl {} · {}", plan.crawl_id, coll_title.unwrap_or(into));
+        let display = format!("{} - crawl {}", coll_title.unwrap_or(into), plan.crawl_id);
         if let Some(p) = progress {
             p.begin(&display);
         }
@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(out.imported, 1);
         assert_eq!(out.skipped, 0);
         // The crawl is named after its Archive-It collection title, not `into`.
-        assert_eq!(out.crawls[0].1, "crawl 304244 · City Government Archive");
+        assert_eq!(out.crawls[0].1, "City Government Archive - crawl 304244");
 
         // The source crawl + collection records travel inside datapackage.json
         // under `archiveit`; the collection's private_access_token is redacted.
