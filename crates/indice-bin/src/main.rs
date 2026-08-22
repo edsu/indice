@@ -1841,7 +1841,7 @@ fn short_hash(hash: &str) -> &str {
 }
 
 fn run_search_url(url: &str, home: &std::path::Path) -> Result<()> {
-    use indice_lib::collections::{Manifest, Source};
+    use indice_lib::collections::Manifest;
     use indice_lib::wacz::search_cdx;
 
     let index_dir = indice_lib::index::index_dir(home);
@@ -1853,9 +1853,11 @@ fn run_search_url(url: &str, home: &std::path::Path) -> Result<()> {
 
     let mut found_any = false;
     for col in &manifest.waczs {
-        // This debugging aid reads the CDX from the local WACZ; skip remote
-        // sources rather than re-downloading them.
-        if matches!(col.source, Source::Url(_)) {
+        // This debugging aid reads the CDX from the local WACZ; skip every remote
+        // source (URL / Browsertrix), which has no local file to read — not just
+        // `Source::Url`. (Missing this is what made `resolve().unwrap()` below
+        // panic on a Browsertrix-sourced crawl.)
+        if col.source.is_remote() {
             eprintln!(
                 "skipping remote collection {} ({})",
                 col.name,
@@ -1863,7 +1865,9 @@ fn run_search_url(url: &str, home: &std::path::Path) -> Result<()> {
             );
             continue;
         }
-        let path = col.source.resolve(home).unwrap();
+        let Some(path) = col.source.resolve(home) else {
+            continue; // only remote sources lack a local path, and those are skipped above
+        };
         if !path.exists() {
             eprintln!("warning: {} not found at {}", col.name, path.display());
             continue;
