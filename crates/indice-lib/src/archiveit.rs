@@ -586,6 +586,13 @@ pub fn import_crawls<T: Transport>(
     let dest_dir = crate::index::archive_dir(home).join(&slug);
     let mut out = ImportOutcome::default();
 
+    // Self-heal: sweep any stale staging from a previous run before we start.
+    // The per-crawl `DirGuard` cleans up on a normal error, but a hard
+    // Ctrl-C/SIGKILL skips `Drop`, orphaning partial WARC downloads under
+    // `.import-tmp/` that would otherwise accumulate. Everything there is dead —
+    // each crawl re-creates its own fresh staging below. Best-effort.
+    let _ = std::fs::remove_dir_all(home.join(".import-tmp"));
+
     for plan in plans {
         // The crawl's own Archive-It collection (0 = uncollected) — the dedup key
         // and the provenance we record, independent of which indice collection
@@ -1036,12 +1043,23 @@ mod tests {
             )
             .unwrap(),
         );
+
+        // Stale staging from a previous interrupted (Ctrl-C'd) run: import_crawls
+        // should sweep it at the start so it doesn't accumulate.
+        let stale = home.join(".import-tmp").join("ait-999-999999");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("partial.warc.gz.part"), b"junk").unwrap();
+
         let out = import_crawls(
             &client, home, "City Gov", &plans, &fields, &catalog, false, None,
         )
         .unwrap();
         assert_eq!(out.imported, 1);
         assert_eq!(out.skipped, 0);
+        assert!(
+            !stale.exists(),
+            "stale staging from a prior run should be swept at import start"
+        );
         // The crawl is named after its Archive-It collection title, not `into`.
         assert_eq!(out.crawls[0].1, "City Government Archive - crawl 304244");
 
