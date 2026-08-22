@@ -1051,17 +1051,22 @@ async fn main() -> Result<()> {
             let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> =
                 std::sync::Arc::new(BrowsertrixResolver::new());
 
-            // Browsertrix import (management UI) is available only when credentials
-            // are configured; otherwise the import endpoints report it unconfigured.
-            let browsertrix: Option<
-                std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>,
-            > = browsertrix_configured().then(|| {
-                std::sync::Arc::new(EnvBrowsertrix)
-                    as std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>
-            });
+            // Import providers (management UI): each is wired in only when its
+            // credentials are configured; otherwise that import endpoint reports
+            // itself unconfigured.
+            let providers = indice_lib::server::Providers {
+                browsertrix: browsertrix_configured().then(|| {
+                    std::sync::Arc::new(EnvBrowsertrix)
+                        as std::sync::Arc<dyn indice_lib::browsertrix::BrowsertrixProvider>
+                }),
+                archiveit: archiveit_configured().then(|| {
+                    std::sync::Arc::new(EnvArchiveIt)
+                        as std::sync::Arc<dyn indice_lib::archiveit::ArchiveItProvider>
+                }),
+            };
 
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage, browsertrix) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage, providers) => {
                     result?;
                 }
                 _ = ctrl_c => {}
@@ -2508,22 +2513,27 @@ fn connect_archiveit(host: &str) -> Result<indice_lib::archiveit::Client> {
     }
 }
 
-/// The calendar-year span (e.g. `2019–2023`) across a set of crawls' WARC
-/// times, for the collection's `dates` finding-aid field.
-fn crawl_year_range(plans: &[indice_lib::archiveit::CrawlPlan]) -> Option<String> {
-    let years: Vec<String> = plans
-        .iter()
-        .flat_map(|p| &p.files)
-        .filter_map(|f| f.crawl_time.as_deref())
-        .filter_map(indice_lib::index::year_prefix)
-        .collect();
-    let min = years.iter().min()?;
-    let max = years.iter().max()?;
-    Some(if min == max {
-        min.clone()
-    } else {
-        format!("{min}\u{2013}{max}")
-    })
+/// Whether Archive-It credentials are present, so the server only mounts a
+/// working import endpoint when it can actually authenticate.
+fn archiveit_configured() -> bool {
+    let set = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).is_some();
+    set("ARCHIVEIT_USER") && set("ARCHIVEIT_PASSWORD")
+}
+
+/// Supplies authenticated Archive-It clients to the server's import UI from the
+/// same env credentials as [`connect_archiveit`], keeping secrets in the binary.
+/// The host is server-configured (`ARCHIVEIT_HOST`, default the public host), so
+/// the browser can't point the server's credentials at an arbitrary instance.
+struct EnvArchiveIt;
+
+impl indice_lib::archiveit::ArchiveItProvider for EnvArchiveIt {
+    fn client(&self) -> Result<indice_lib::archiveit::Client> {
+        let host = std::env::var("ARCHIVEIT_HOST")
+            .ok()
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| indice_lib::archiveit::DEFAULT_HOST.to_string());
+        connect_archiveit(&host)
+    }
 }
 
 /// Drive an Archive-It import: resolve the target collection(s), list their WARC
@@ -2703,7 +2713,7 @@ fn run_archiveit(
         } else {
             indice_lib::collections::CollectionFields::default()
         };
-        fields.dates = crawl_year_range(group);
+        fields.dates = archiveit::crawl_year_range(group);
         let outcome = archiveit::import_crawls(
             &client, home, into, group, &fields, &catalog, opts.force, progress,
         )?;

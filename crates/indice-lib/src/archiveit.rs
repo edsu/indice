@@ -521,6 +521,26 @@ pub fn collection_fields(c: &Collection) -> crate::collections::CollectionFields
     }
 }
 
+/// The calendar-year span (e.g. `2019–2023`) across a set of crawls' WARC times,
+/// for the collection's `dates` finding-aid field. `None` if no crawl-time is
+/// known. Shared by the CLI and the management-UI import so both seed `dates`
+/// the same way.
+pub fn crawl_year_range(plans: &[CrawlPlan]) -> Option<String> {
+    let years: Vec<String> = plans
+        .iter()
+        .flat_map(|p| &p.files)
+        .filter_map(|f| f.crawl_time.as_deref())
+        .filter_map(crate::index::year_prefix)
+        .collect();
+    let min = years.iter().min()?;
+    let max = years.iter().max()?;
+    Some(if min == max {
+        min.clone()
+    } else {
+        format!("{min}\u{2013}{max}")
+    })
+}
+
 /// Removes a directory (best-effort) when dropped — so a crawl's download
 /// staging is cleaned up even if the build/index step errors out mid-crawl.
 struct DirGuard(std::path::PathBuf);
