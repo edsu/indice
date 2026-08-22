@@ -453,6 +453,45 @@ impl SearchIndex {
             }
         }
 
+        // Expunge deletes (pkvm): the count-based pass above stops once we're at
+        // or under `target`, so a segment still carrying tombstoned docs (e.g.
+        // from deleted crawls) keeps their data on disk — a delete never frees
+        // space until its segment is rewritten. Merge each delete-carrying
+        // segment on its own (a single-segment merge drops its tombstones), so
+        // `optimize` reclaims delete space regardless of `--max-segments`, without
+        // over-collapsing clean segments into one big one.
+        let with_deletes: Vec<_> = self
+            .index
+            .searchable_segment_metas()?
+            .into_iter()
+            .filter(|m| m.num_deleted_docs() > 0)
+            .map(|m| m.id())
+            .collect();
+        if !with_deletes.is_empty() {
+            if let Some(p) = progress {
+                p.phase(&format!(
+                    "expunging deletes ({} segment(s))",
+                    with_deletes.len()
+                ));
+            }
+            for id in with_deletes {
+                let mut retries = 0;
+                loop {
+                    match self.writer_mut().merge(&[id]).wait() {
+                        Ok(_) => break,
+                        Err(e) => {
+                            retries += 1;
+                            if retries > 8 {
+                                return Err(e)
+                                    .context("expunging deletes while optimizing the index");
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                    }
+                }
+            }
+        }
+
         // Delete the now-orphaned input segment files and persist the tidy meta.
         self.writer_mut()
             .garbage_collect_files()
@@ -1715,6 +1754,57 @@ mod tests {
         assert!(dir.join("meta.json").exists(), "meta.json must survive");
         // The live doc is intact and searchable — the sweep didn't touch it.
         assert_eq!(idx.search("hello", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn optimize_expunges_deletes_at_default_target() {
+        // Deleting a crawl leaves tombstones whose data stays on disk until the
+        // segment is rewritten. With few segments the count-based merge does
+        // nothing at the default target, so the expunge pass must reclaim it.
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        for i in 0..100 {
+            let crawl = if i < 50 { "keep" } else { "drop" };
+            let url = format!("https://ex.com/{i}");
+            idx.index_page(&Page {
+                url: &url,
+                title: "T",
+                body: "hello world",
+                crawl_id: crawl,
+                crawl_name: "C",
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        idx.commit().unwrap();
+        idx.delete_crawl_docs("drop");
+        idx.commit().unwrap();
+
+        let deleted_before: u32 = idx
+            .index
+            .searchable_segment_metas()
+            .unwrap()
+            .iter()
+            .map(|m| m.num_deleted_docs())
+            .sum();
+        assert!(deleted_before > 0, "expected tombstones before optimize");
+        assert!(
+            idx.segment_count().unwrap() <= 8,
+            "under the default target, so the count-based merge alone would reclaim nothing"
+        );
+
+        idx.optimize(8, None).unwrap();
+
+        let deleted_after: u32 = idx
+            .index
+            .searchable_segment_metas()
+            .unwrap()
+            .iter()
+            .map(|m| m.num_deleted_docs())
+            .sum();
+        assert_eq!(deleted_after, 0, "deletes should be expunged");
+        assert_eq!(idx.num_docs().unwrap(), 50, "only the kept crawl remains");
+        assert_eq!(idx.search("hello", 100).unwrap().len(), 50);
     }
 
     #[test]
