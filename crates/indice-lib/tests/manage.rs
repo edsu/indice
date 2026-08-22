@@ -260,6 +260,15 @@ async fn manage_page_gated_on_management_mode() {
     let (status, body) = get(format!("{base}/manage/add")).await;
     assert_eq!(status, 200);
     assert!(body.contains("Add crawls"), "accession desk renders");
+    // All four import-source tabs, including the Archive-It browse wizard.
+    for needle in [
+        r#"data-src="bx""#,
+        r#"data-src="ait""#,
+        "ait-collection",
+        "/api/archiveit/collections",
+    ] {
+        assert!(body.contains(needle), "accession desk wires up: {needle}");
+    }
     // Empty homepage shows the management CTA, not the CLI hint.
     let (_, home) = get(format!("{base}/")).await;
     assert!(home.contains("Add your first archive"), "empty-state CTA");
