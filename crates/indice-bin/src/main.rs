@@ -204,6 +204,10 @@ enum Commands {
         /// indice home directory (holds archive/ and index/).
         #[arg(long, default_value = ".")]
         home: PathBuf,
+        /// Also break down the doc store by stored field (which fields' text
+        /// dominate). Sampled + uncompressed; the on-disk store is compressed.
+        #[arg(long)]
+        fields: bool,
     },
     /// Show the resolved operator config and the path to `config.yaml` (edit that
     /// file to change settings; changes apply on the next index/reindex).
@@ -840,6 +844,10 @@ async fn main() -> Result<()> {
             // buries our clean per-request logs under `-v`; keep only its warnings.
             .add_directive("ureq=info".parse().unwrap())
             .add_directive("ureq_proto=info".parse().unwrap())
+            // Tantivy logs internal bookkeeping at INFO ("Meta file … was
+            // modified", "committing", "garbage collect"); it surfaces on any
+            // command that opens the index (e.g. `stats`). Keep only warnings.
+            .add_directive("tantivy=warn".parse().unwrap())
     });
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -1114,10 +1122,27 @@ async fn main() -> Result<()> {
             let progress = bar
                 .as_ref()
                 .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            // Measure the on-disk footprint before/after so we can report the
+            // disk reclaimed — this includes orphaned segment files swept away
+            // (leftovers from an interrupted merge/ingest), not just the merge.
+            let before_bytes = indice_lib::index::index_stats(&home)
+                .map(|s| s.total_bytes)
+                .unwrap_or(0);
             let result = indice_lib::index::optimize(&home, max_segments, progress);
             match result {
                 Ok((before, after)) => {
                     eprintln!("compacted index: {before} → {after} segment(s)");
+                    let after_bytes = indice_lib::index::index_stats(&home)
+                        .map(|s| s.total_bytes)
+                        .unwrap_or(before_bytes);
+                    if after_bytes < before_bytes {
+                        eprintln!(
+                            "reclaimed {} ({} → {})",
+                            indice_lib::server::human_size(before_bytes - after_bytes),
+                            indice_lib::server::human_size(before_bytes),
+                            indice_lib::server::human_size(after_bytes),
+                        );
+                    }
                 }
                 Err(e) => {
                     if let Some(b) = &bar {
@@ -1139,7 +1164,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Stats { home } => run_stats(&home)?,
+        Commands::Stats { home, fields } => run_stats(&home, fields)?,
 
         Commands::Config { home } => run_config(&home)?,
 
@@ -1679,7 +1704,7 @@ fn run_config(home: &std::path::Path) -> Result<()> {
 /// Print the search-index footprint (the size/scale model): total bytes, a
 /// breakdown by Tantivy file type with per-doc cost, and projections to larger
 /// corpora at today's bytes-per-doc. Re-run after a change to compare.
-fn run_stats(home: &std::path::Path) -> Result<()> {
+fn run_stats(home: &std::path::Path, fields: bool) -> Result<()> {
     use indice_lib::server::human_size;
     let s = indice_lib::index::index_stats(home)?;
     if s.docs == 0 {
@@ -1712,6 +1737,43 @@ fn run_stats(home: &std::path::Path) -> Result<()> {
     );
     for (n, label) in [(1_000_000u64, "1M"), (100_000_000, "100M")] {
         println!("    {:>4} docs  ->  {}", label, human_size(s.project(n)));
+    }
+
+    // `--fields`: go one level into the doc store — which stored fields' text
+    // dominates. Sampled (decompressing every doc would be slow on a big index),
+    // and reported as uncompressed bytes (the on-disk .store is compressed).
+    if fields {
+        const SCAN_CAP: usize = 20_000;
+        let full_text = indice_lib::index::index_dir(home).join("full_text");
+        let idx = indice_lib::search::SearchIndex::open_read_only(&full_text)?;
+        let fs = idx.stored_field_sizes(SCAN_CAP)?;
+        let grand: u64 = fs.fields.iter().map(|(_, b, _)| *b).sum();
+        let scope = if fs.scanned as u64 >= s.docs {
+            "all docs".to_string()
+        } else {
+            format!("sampled {} of {} docs", fs.scanned, s.docs)
+        };
+        println!("\n  Stored text by field ({scope}, uncompressed):");
+        println!(
+            "  {:<14} {:>11} {:>7}  {:>10}",
+            "field", "total", "%", "per doc"
+        );
+        println!("  {:-<14} {:->11} {:->7}  {:->10}", "", "", "", "");
+        for (name, bytes, count) in &fs.fields {
+            let pct = if grand > 0 {
+                100.0 * *bytes as f64 / grand as f64
+            } else {
+                0.0
+            };
+            let avg = bytes.checked_div(*count).unwrap_or(0);
+            println!(
+                "  {:<14} {:>11} {:>6.1}%  {:>10}",
+                name,
+                human_size(*bytes),
+                pct,
+                human_size(avg)
+            );
+        }
     }
     Ok(())
 }

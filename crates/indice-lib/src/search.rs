@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tantivy::aggregation::agg_req::Aggregations;
@@ -105,6 +105,9 @@ fn leading_excerpt(s: &str) -> String {
 
 pub struct SearchIndex {
     index: Index,
+    /// The index directory (`…/full_text`), kept so [`Self::optimize`] can sweep
+    /// orphaned segment files off disk.
+    index_dir: PathBuf,
     /// Present only when opened for writing. The server opens read-only so it
     /// does not hold Tantivy's exclusive write lock, letting `index` run while
     /// the server is serving.
@@ -131,6 +134,7 @@ impl SearchIndex {
         let writer = index.writer(writer_heap_bytes)?;
         Ok(Self {
             index,
+            index_dir: index_dir.to_path_buf(),
             writer: Some(writer),
             stored_body_cap: crate::config::DEFAULT_STORED_BODY_CAP_BYTES,
         })
@@ -142,6 +146,7 @@ impl SearchIndex {
         let index = Self::open_index(index_dir)?;
         Ok(Self {
             index,
+            index_dir: index_dir.to_path_buf(),
             writer: None,
             stored_body_cap: crate::config::DEFAULT_STORED_BODY_CAP_BYTES,
         })
@@ -327,6 +332,57 @@ impl SearchIndex {
         Ok(self.index.reader()?.searcher().num_docs())
     }
 
+    /// Uncompressed stored-text bytes per field, over up to `scan_cap` live docs
+    /// (`0` = all). Complements [`crate::index::index_stats`] (which breaks the
+    /// footprint down by Tantivy file *type*) by showing what fills the doc
+    /// *store* — i.e. which fields' stored text dominate. The `.store` on disk is
+    /// zstd-compressed, so these uncompressed sizes are a relative indicator, not
+    /// the exact on-disk split. Scans only live docs, so deleted-but-unmerged
+    /// docs don't skew it.
+    pub fn stored_field_sizes(&self, scan_cap: usize) -> Result<StoredFieldStats> {
+        let searcher = self.index.reader()?.searcher();
+        let schema = self.index.schema();
+        let mut by: std::collections::HashMap<String, (u64, u64)> =
+            std::collections::HashMap::new();
+        let mut scanned = 0usize;
+        'outer: for seg in searcher.segment_readers() {
+            let store = seg.get_store_reader(10)?;
+            let alive = seg.alive_bitset();
+            for doc_id in 0..seg.max_doc() {
+                if let Some(bs) = alive {
+                    if !bs.is_alive(doc_id) {
+                        continue;
+                    }
+                }
+                let doc: TantivyDocument = store.get(doc_id)?;
+                for (field, entry) in schema.fields() {
+                    if let Some(v) = doc.get_first(field) {
+                        let len = if let Some(s) = v.as_str() {
+                            s.len() as u64
+                        } else if v.as_u64().is_some() {
+                            8
+                        } else {
+                            0
+                        };
+                        if len > 0 {
+                            let e = by.entry(entry.name().to_string()).or_default();
+                            e.0 += len;
+                            e.1 += 1;
+                        }
+                    }
+                }
+                scanned += 1;
+                if scan_cap != 0 && scanned >= scan_cap {
+                    break 'outer;
+                }
+            }
+        }
+        let mut fields: Vec<(String, u64, u64)> =
+            by.into_iter().map(|(k, (b, c))| (k, b, c)).collect();
+        fields.sort_by_key(|(_, b, _)| std::cmp::Reverse(*b));
+        Ok(StoredFieldStats { scanned, fields })
+    }
+
     /// Compact the index by merging segments down toward `target_segments`
     /// (clamped to ≥ 1), so queries fan out across far fewer segments. Merges
     /// smallest-first in bounded batches, waiting for each merge before the next.
@@ -358,6 +414,7 @@ impl SearchIndex {
         }
 
         let mut prev = usize::MAX;
+        let mut retries = 0;
         loop {
             // Re-read each round: a merge replaces its inputs with one segment.
             let mut metas = self.index.searchable_segment_metas()?;
@@ -373,12 +430,26 @@ impl SearchIndex {
             metas.sort_by_key(|m| m.num_docs());
             let take = (n - target + 1).clamp(2, BATCH);
             let ids: Vec<_> = metas.iter().take(take).map(|m| m.id()).collect();
-            self.writer_mut()
-                .merge(&ids)
-                .wait()
-                .context("merging segments while optimizing the index")?;
-            if let Some(p) = progress {
-                p.phase(&format!("{} segments", n - (take - 1)));
+            match self.writer_mut().merge(&ids).wait() {
+                Ok(_) => {
+                    retries = 0;
+                    if let Some(p) = progress {
+                        p.phase(&format!("{} segments", n - (take - 1)));
+                    }
+                }
+                Err(e) => {
+                    // A background merge scheduled during a prior ingest can still
+                    // be in flight and consume some of the segments we just chose
+                    // ("segments … could not be found in the SegmentManager").
+                    // Let it settle and retry with a freshly-read segment set,
+                    // bounded so a genuinely stuck merge still surfaces.
+                    retries += 1;
+                    if retries > 8 {
+                        return Err(e).context("merging segments while optimizing the index");
+                    }
+                    prev = usize::MAX; // re-arm the no-progress guard for the retry
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
             }
         }
 
@@ -388,6 +459,32 @@ impl SearchIndex {
             .wait()
             .context("garbage-collecting merged segment files")?;
         self.writer_mut().commit().context("committing optimize")?;
+
+        // Tantivy's GC only removes files it *managed*. Segment files left behind
+        // by a hard-killed merge or ingest (Ctrl-C mid-write) were never
+        // registered, so GC skips them and they accumulate forever. Now that the
+        // meta is committed, sweep any segment file not referenced by a live
+        // segment — safe because we hold the exclusive write lock.
+        // A segment's uuid as it appears in on-disk filenames: hyphens stripped,
+        // lowercased (Tantivy names segment files `<uuid>.<ext>`).
+        let live: std::collections::HashSet<String> = self
+            .index
+            .searchable_segment_ids()?
+            .iter()
+            .map(|id| id.uuid_string().replace('-', "").to_ascii_lowercase())
+            .collect();
+        let (orphans, freed) = sweep_orphan_segment_files(&self.index_dir, &live);
+        if orphans > 0 {
+            tracing::info!(
+                orphans,
+                freed_bytes = freed,
+                "removed orphaned segment files (leftovers from an interrupted merge/ingest)"
+            );
+            if let Some(p) = progress {
+                p.phase(&format!("removed {orphans} orphaned file(s)"));
+            }
+        }
+
         let after = self.index.searchable_segment_ids()?.len();
         if let Some(p) = progress {
             p.finish();
@@ -1026,6 +1123,64 @@ fn text_no_positions() -> TextOptions {
     )
 }
 
+/// Per-field stored-text sizes from [`SearchIndex::stored_field_sizes`].
+#[derive(Debug, Clone)]
+pub struct StoredFieldStats {
+    /// How many live docs were scanned to produce these totals.
+    pub scanned: usize,
+    /// `(field name, total uncompressed bytes, doc count)`, largest field first.
+    pub fields: Vec<(String, u64, u64)>,
+}
+
+/// Remove orphaned segment files from `index_dir`: `<uuid>.<ext>` files whose
+/// uuid is not a `live` (meta-referenced) segment. These accumulate when a merge
+/// or ingest is hard-killed mid-write — the partial segment files are left behind
+/// and were never registered in Tantivy's managed set, so `garbage_collect_files`
+/// never removes them. Returns `(files_removed, bytes_freed)`. Best-effort: an IO
+/// error on one file is skipped, not fatal.
+///
+/// Caller MUST hold the write lock and have just committed, so every segment file
+/// not in `live` is genuinely dead. Bookkeeping files (`meta.json`,
+/// `.managed.json`, `*.lock`) and non-segment names are left untouched.
+fn sweep_orphan_segment_files(
+    index_dir: &Path,
+    live: &std::collections::HashSet<String>,
+) -> (usize, u64) {
+    let Ok(entries) = std::fs::read_dir(index_dir) else {
+        return (0, 0);
+    };
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Segment component files are `<uuid>.<ext>` (store/pos/term/idx/fast/
+        // fieldnorm) or `<uuid>.<n>.del`. Bookkeeping is *.json / *.lock.
+        let Some((stem, ext)) = name.rsplit_once('.') else {
+            continue;
+        };
+        if ext == "json" || ext == "lock" {
+            continue;
+        }
+        // The uuid is the first dotted component (handles `<uuid>.<n>.del`).
+        let uuid = stem.split('.').next().unwrap_or(stem);
+        let norm = uuid.replace('-', "").to_ascii_lowercase();
+        // Only touch things that actually look like a 32-hex segment uuid.
+        if norm.len() != 32 || !norm.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        if live.contains(&norm) {
+            continue;
+        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+            freed += size;
+        }
+    }
+    (removed, freed)
+}
+
 fn build_schema() -> Schema {
     let mut builder = Schema::builder();
     builder.add_text_field(FIELD_DOC_TYPE, STRING | STORED);
@@ -1512,6 +1667,80 @@ mod tests {
         assert_eq!(idx.segment_count().unwrap(), 1);
         // All four docs survive the merge and are still searchable.
         assert_eq!(idx.search("snow", 10).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn optimize_sweeps_orphaned_segment_files() {
+        // Files left behind by a hard-killed (Ctrl-C) merge/ingest: `<uuid>.<ext>`
+        // segment files that aren't referenced by any live segment and were never
+        // registered with Tantivy's GC, so they'd otherwise linger forever.
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mut idx = SearchIndex::open(&dir).unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/a",
+            title: "Alpha",
+            body: "hello world",
+            crawl_id: "c1",
+            crawl_name: "C",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        // Plant orphans (32-hex uuid that matches no live segment) + a file that
+        // must be preserved (not a segment name).
+        let orphans = [
+            "deadbeefdeadbeefdeadbeefdeadbeef.pos",
+            "deadbeefdeadbeefdeadbeefdeadbeef.store",
+            "0123456789abcdef0123456789abcdef.1.del",
+        ];
+        for name in orphans {
+            std::fs::write(dir.join(name), b"garbage").unwrap();
+        }
+        std::fs::write(dir.join("keep-me.txt"), b"not a segment").unwrap();
+
+        idx.optimize(1, None).unwrap();
+
+        for name in orphans {
+            assert!(
+                !dir.join(name).exists(),
+                "orphaned segment file should be swept: {name}"
+            );
+        }
+        assert!(
+            dir.join("keep-me.txt").exists(),
+            "non-segment files must be left alone"
+        );
+        assert!(dir.join("meta.json").exists(), "meta.json must survive");
+        // The live doc is intact and searchable — the sweep didn't touch it.
+        assert_eq!(idx.search("hello", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stored_field_sizes_shows_body_snip_dominant_and_omits_full_body() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        idx.index_page(&Page {
+            url: "https://ex.com/a",
+            title: "Title",
+            body: &"word ".repeat(500),
+            description: "a short description",
+            crawl_id: "c1",
+            crawl_name: "Crawl",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.commit().unwrap();
+
+        let fs = idx.stored_field_sizes(0).unwrap();
+        assert_eq!(fs.scanned, 1);
+        // The capped body snippet is the largest stored field.
+        assert_eq!(fs.fields[0].0, "body_snip");
+        let names: Vec<&str> = fs.fields.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(names.contains(&"title") && names.contains(&"url"));
+        // The full `body` is indexed but NOT stored, so it never shows here.
+        assert!(!names.contains(&"body"), "full body must not be stored");
     }
 
     #[test]
