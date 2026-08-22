@@ -414,6 +414,7 @@ impl SearchIndex {
         }
 
         let mut prev = usize::MAX;
+        let mut retries = 0;
         loop {
             // Re-read each round: a merge replaces its inputs with one segment.
             let mut metas = self.index.searchable_segment_metas()?;
@@ -429,12 +430,26 @@ impl SearchIndex {
             metas.sort_by_key(|m| m.num_docs());
             let take = (n - target + 1).clamp(2, BATCH);
             let ids: Vec<_> = metas.iter().take(take).map(|m| m.id()).collect();
-            self.writer_mut()
-                .merge(&ids)
-                .wait()
-                .context("merging segments while optimizing the index")?;
-            if let Some(p) = progress {
-                p.phase(&format!("{} segments", n - (take - 1)));
+            match self.writer_mut().merge(&ids).wait() {
+                Ok(_) => {
+                    retries = 0;
+                    if let Some(p) = progress {
+                        p.phase(&format!("{} segments", n - (take - 1)));
+                    }
+                }
+                Err(e) => {
+                    // A background merge scheduled during a prior ingest can still
+                    // be in flight and consume some of the segments we just chose
+                    // ("segments … could not be found in the SegmentManager").
+                    // Let it settle and retry with a freshly-read segment set,
+                    // bounded so a genuinely stuck merge still surfaces.
+                    retries += 1;
+                    if retries > 8 {
+                        return Err(e).context("merging segments while optimizing the index");
+                    }
+                    prev = usize::MAX; // re-arm the no-progress guard for the retry
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
             }
         }
 
