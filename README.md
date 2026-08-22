@@ -620,10 +620,14 @@ derived siblings under it.
   an index that has fragmented into hundreds of tiny segments (which happens when
   Tantivy's background merges fail — classically on a full disk) gets slow;
   `optimize` merges them back down. A lower `--max-segments` compacts more but
-  needs more free disk during the merge (roughly index size ÷ target). Reports the
-  `before → after` segment count. `index` runs this automatically when a batch
-  ingest leaves the index fragmented, so you mostly only reach for it by hand
-  after an interrupted run or an `index --no-optimize`.
+  needs more free disk during the merge (roughly index size ÷ target). It also
+  **reclaims disk from deleted crawls** — a delete only tombstones documents;
+  their bytes are freed when the segment is rewritten, which `optimize` now does
+  for any segment still carrying deletes (regardless of `--max-segments`) — and
+  **sweeps orphaned segment files** left by an interrupted (Ctrl-C'd) run.
+  Reports the `before → after` segment count and disk reclaimed. `index` runs
+  this automatically when a batch ingest leaves the index fragmented, so you
+  mostly only reach for it by hand to reclaim space after deleting crawls.
 - **`stats`** - reports the search index's on-disk footprint, broken down by
   Tantivy file type (`.store` doc store, `.pos` positions, `.term`/`.idx`
   inverted index, `.fast` columnar, …), with bytes-per-document and projected
