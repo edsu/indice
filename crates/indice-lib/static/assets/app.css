@@ -106,7 +106,7 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.
 .confirm-with-crawls input { width: auto; }
 
 /* Section heading with an optional action on the right (e.g. + New collection) */
-.section-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .section-head h2 { border: none; padding: 0; margin: 0; }
 
 /* Search tips disclosure */
