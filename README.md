@@ -78,18 +78,28 @@ expanded, with citations, in [DESIGN.md](DESIGN.md)):
 
 ## Install
 
-indice is a single self-contained binary. You need a
-[Rust toolchain](https://rustup.rs) (Rust 2021 / a recent stable compiler).
+indice is a single self-contained binary — ReplayWeb.page assets are embedded at
+build time, so there's nothing else to fetch or configure.
 
-### With cargo (recommended)
+### Prebuilt binary (fastest — no toolchain)
+
+Download the archive for your platform from the
+[latest release](https://github.com/edsu/indice/releases/latest) (macOS
+arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and you have the
+`indice` binary plus a small sample archive (`apod.wacz`) to try it on — see
+[Try it](#try-it-in-a-minute).
+
+> **macOS:** an unsigned download is quarantined by Gatekeeper. Clear it once
+> with `xattr -d com.apple.quarantine ./indice` (notarized builds are planned).
+
+### With cargo
 
 ```sh
 cargo install --git https://github.com/edsu/indice --locked indice
 ```
 
-This builds and installs the `indice` command into `~/.cargo/bin`. The
-ReplayWeb.page assets are embedded at build time, so there is nothing else to
-fetch or configure.
+Builds and installs the `indice` command into `~/.cargo/bin` (needs a
+[Rust toolchain](https://rustup.rs)).
 
 ### From a clone (for development)
 
@@ -103,6 +113,22 @@ cargo build --release
 The bundled ReplayWeb.page assets are committed to the repo, so a fresh clone
 builds and runs as-is. To upgrade them later, run `./scripts/fetch-replay.sh`
 and rebuild.
+
+## Try it in a minute
+
+The prebuilt archive includes `apod.wacz` — a small sample crawl of NASA's
+Astronomy Picture of the Day. Index it into a collection, then start the server:
+
+```sh
+indice index --collection "APOD" apod.wacz   # build the search index from the sample
+indice serve                                 # http://127.0.0.1:8080
+```
+
+Open <http://127.0.0.1:8080> and you can full-text search the captured pages,
+narrow by the facets, and replay the archived site in your browser. Point
+`indice index` at your own `.wacz` files the same way (local paths or
+`http(s)://` URLs); `indice serve --manage` adds an in-browser interface for
+adding and curating crawls.
 
 ## How it works
 
