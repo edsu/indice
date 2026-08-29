@@ -220,6 +220,7 @@ fn build_router(
 
     let mut app = Router::new()
         .route("/", get(homepage))
+        .route("/health", get(health))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
         .route("/collection/{id}/replay.json", get(collection_replay_json))
@@ -1619,6 +1620,16 @@ async fn delete_collection_handler(
 enum DeleteOutcome {
     Done,
     Refused(usize),
+}
+
+// ── Health ──────────────────────────────────────────────────────────────────
+
+/// Liveness/readiness probe for a reverse proxy or orchestrator (Docker
+/// HEALTHCHECK, Kubernetes, YunoHost, …). Deliberately trivial and un-gated: the
+/// server only starts once the index has opened, so a 200 here means the process
+/// is up and serving. Returns `ok` as plain text.
+async fn health() -> impl IntoResponse {
+    (StatusCode::OK, "ok")
 }
 
 // ── Homepage ──────────────────────────────────────────────────────────────────

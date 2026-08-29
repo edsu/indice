@@ -52,6 +52,17 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
             .unwrap();
     assert_eq!(home_status, 200, "homepage should render over the socket");
 
+    // Un-gated health probe for a proxy / orchestrator: 200 + "ok".
+    let health_url = format!("{base}/health");
+    let (health_status, health_body) = tokio::task::spawn_blocking(move || {
+        let mut r = ureq::get(&health_url).call().unwrap();
+        (r.status().as_u16(), r.body_mut().read_to_string().unwrap())
+    })
+    .await
+    .unwrap();
+    assert_eq!(health_status, 200, "/health should return 200");
+    assert_eq!(health_body.trim(), "ok", "/health body");
+
     // The WACZ bytes endpoint honors Range (206) — the request shape ReplayWeb.page
     // makes while replaying.
     let files_url = format!("{base}/files/{member}");
