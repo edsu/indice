@@ -1644,6 +1644,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ureq",
  "url",
 ]
 

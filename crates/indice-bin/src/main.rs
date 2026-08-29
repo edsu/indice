@@ -198,6 +198,14 @@ enum Commands {
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
+    /// Probe a running server's `/health` and exit 0 if healthy, non-zero
+    /// otherwise. Self-contained (no curl needed), so a distroless container's
+    /// HEALTHCHECK / a compose healthcheck can call the binary itself.
+    Health {
+        /// URL of the health endpoint to probe.
+        #[arg(long, default_value = "http://127.0.0.1:8080/health")]
+        url: String,
+    },
     /// Report the search-index footprint (bytes by file type + bytes/doc), with
     /// projections to larger corpora — the size/scale model.
     Stats {
@@ -1166,6 +1174,12 @@ async fn main() -> Result<()> {
 
         Commands::Stats { home, fields } => run_stats(&home, fields)?,
 
+        Commands::Health { url } => {
+            if !run_health(&url) {
+                std::process::exit(1);
+            }
+        }
+
         Commands::Config { home } => run_config(&home)?,
 
         Commands::Collection { action } => match action {
@@ -1776,6 +1790,28 @@ fn run_stats(home: &std::path::Path, fields: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Probe a running server's `/health` at `url`; returns true iff it responds 2xx.
+/// Self-contained (its own short-timeout HTTP client), so a container HEALTHCHECK
+/// can call the binary instead of needing curl in the image.
+fn run_health(url: &str) -> bool {
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    match agent.get(url).call() {
+        Ok(resp) if resp.status().is_success() => true,
+        Ok(resp) => {
+            eprintln!("health: {url} -> HTTP {}", resp.status());
+            false
+        }
+        Err(e) => {
+            eprintln!("health: {url} -> {e}");
+            false
+        }
+    }
 }
 
 /// Re-hash every WACZ registered in the manifest and compare against the SHA-256
