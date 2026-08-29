@@ -1,0 +1,106 @@
+name: Release
+
+# Build prebuilt binaries and attach them to a GitHub Release when a version tag
+# is pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
+#
+# Each target builds on a native runner (GitHub-hosted macOS-arm64 and
+# Linux-arm64), using actions/checkout, the pinned rustup toolchain
+# (rust-toolchain.toml), and the `gh` CLI to upload — no cross-compilation.
+# Linux uses the glibc (gnu) targets on Ubuntu 22.04 for a low glibc floor (broad
+# portability). Each archive is self-contained (ReplayWeb.page assets are
+# embedded at build time) and bundles a small sample archive (apod.wacz) — see
+# the README Quickstart. Per-artifact SHA-256 checksums are published alongside.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the Release and upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: indice
+
+jobs:
+  # Create the Release once, up front, so the parallel build jobs just upload to
+  # it. It's created as a DRAFT (not public) so that if any build fails the
+  # release never goes live half-populated; the `publish` job below flips it to
+  # public only after every build succeeds. `|| true` keeps a re-run idempotent
+  # if the draft already exists.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the draft Release (if absent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --draft || true
+
+  build:
+    needs: create-release
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs the toolchain pinned in rust-toolchain.toml (matches CI), then
+      # adds the target (a no-op when it's the runner's native triple).
+      - name: Rust toolchain
+        run: |
+          rustup show
+          rustup target add ${{ matrix.target }}
+
+      # Use the GitHub expression (not a shell var) so it expands the same under
+      # bash (macOS/Linux) and PowerShell (Windows) — a bare `$BIN` is empty in
+      # pwsh, which made the Windows build fail with an empty `--bin`.
+      - name: Build
+        run: cargo build --release --locked --bin ${{ env.BIN }} --target ${{ matrix.target }}
+
+      # Package (tar.gz), checksum, and upload with GitHub's own gh CLI.
+      - name: Package and upload (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="${BIN}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/${BIN}" apod.wacz README.md LICENSE "$name/"
+          tar czf "${name}.tar.gz" "$name"
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          gh release upload "$GITHUB_REF_NAME" "${name}.tar.gz" "${name}.tar.gz.sha256" --clobber
+
+      - name: Package and upload (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "$env:BIN-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/$env:BIN.exe", apod.wacz, README.md, LICENSE $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash | Out-File -Encoding ascii "$name.zip.sha256"
+          gh release upload $env:GITHUB_REF_NAME "$name.zip" "$name.zip.sha256" --clobber
+
+  # Flip the draft Release to public only after every build+upload succeeded. If
+  # any build failed, `needs: build` fails and this is skipped — so the release
+  # stays a private draft (delete it and retry) rather than going live partial.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
