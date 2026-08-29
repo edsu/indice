@@ -10,17 +10,16 @@
 #   ADMIN_PASSWORD_HASH      bcrypt hash (must start with $2a$/$2b$, 60 chars)
 #   INDICE_AUTH_PROXY_SECRET long random string, shared between Caddy and indice
 #
-# IMPORTANT — the bcrypt hash contains `$`, which compose interpolates. If you put
-# it in a .env file, double every `$` (`$` -> `$$`). Generate + escape in one step:
+# IMPORTANT — the bcrypt hash contains `$`, which compose interpolates and would
+# corrupt (Caddy then fails with "base64-decoding password: illegal base64 data").
+# In a .env file, wrap the hash in SINGLE QUOTES so it's taken literally:
 #
-#   docker run --rm caddy:2 caddy hash-password --plaintext 'yourpass' | sed 's/\$/\$\$/g'
+#   ADMIN_PASSWORD_HASH='$2a$14$....'      # single quotes; double quotes do NOT work
 #
-# Paste that (unquoted) as ADMIN_PASSWORD_HASH in .env. Verify Caddy got it right:
+# (Bare or double-quoted values get mangled; if you can't single-quote, double
+# every `$` instead: `$` -> `$$`.) Verify Caddy received a valid 60-char hash:
 #
 #   docker compose exec caddy printenv ADMIN_PASSWORD_HASH   # -> $2a$14$...  (single $)
-#
-# (Exporting the hash in your shell with SINGLE QUOTES instead of a .env file also
-# works and needs no doubling: export ADMIN_PASSWORD_HASH='$2a$14$...')
 #
 # Note: --manage's local-trust mode can't run in a container (it refuses
 # non-loopback binds), so a networked deployment must use forward-auth, which is
