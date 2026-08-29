@@ -1,0 +1,13 @@
+# indice behind Caddy. SITE_ADDRESS is supplied by compose: it defaults to :80
+# (plain HTTP, for local/dev); set it to your domain (e.g. archive.example.org)
+# and Caddy obtains and auto-renews a Let's Encrypt certificate — no certbot.
+{$SITE_ADDRESS} {
+	# Pass the WACZ bytes straight through. Caddy's reverse_proxy preserves
+	# Range / Accept-Ranges / Content-Range and streams responses (it doesn't
+	# buffer the whole body), so ReplayWeb.page's ranged reads of /files/{id}
+	# work unchanged — the critical requirement for WACZ replay through a proxy.
+	#
+	# Note there is deliberately no `encode` directive: indice already compresses
+	# in-process, and gzipping a byte-range response would break replay.
+	reverse_proxy indice:8080
+}

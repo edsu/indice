@@ -1,0 +1,34 @@
+# Management overlay — run WITH the base file:
+#
+#   docker compose -f compose.yaml -f compose.manage.yaml up -d
+#
+# The public site stays read-only; /manage/* and the write APIs are gated by
+# Caddy Basic auth, which forwards the authenticated user and the shared secret
+# indice's forward-auth requires. Provide these (e.g. in a .env file):
+#
+#   ADMIN_USER               admin username
+#   ADMIN_PASSWORD_HASH      bcrypt hash — generate with:
+#                              docker run --rm caddy:2 caddy hash-password --plaintext 'yourpass'
+#   INDICE_AUTH_PROXY_SECRET long random string, shared between Caddy and indice
+#
+# Note: --manage's local-trust mode can't run in a container (it refuses
+# non-loopback binds), so a networked deployment must use forward-auth, which is
+# exactly what this overlay wires up.
+services:
+  indice:
+    command: ["serve", "--manage", "--bind", "0.0.0.0:8080", "--home", "/data",
+              "--auth-proxy-header", "X-Forwarded-User"]
+    environment:
+      # indice reads the shared secret from the env, keeping it out of process args.
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
+
+  caddy:
+    # Swap in the gated Caddyfile (mounted at a distinct path so it doesn't clash
+    # with the base file's bind mount) and point Caddy at it.
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.manage", "--adapter", "caddyfile"]
+    volumes:
+      - ./Caddyfile.manage:/etc/caddy/Caddyfile.manage:ro
+    environment:
+      ADMIN_USER: ${ADMIN_USER:?set ADMIN_USER}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?set ADMIN_PASSWORD_HASH}
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}

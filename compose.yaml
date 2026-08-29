@@ -1,0 +1,45 @@
+# Self-host indice behind Caddy, which terminates TLS for you.
+#
+#   # local / dev — plain HTTP on :80
+#   docker compose up -d
+#
+#   # production — set your domain and Caddy fetches + renews a Let's Encrypt cert
+#   SITE_ADDRESS=archive.example.org docker compose up -d
+#
+# This serves the read-only public site. For management (write) mode, indice must
+# sit behind an authenticating proxy — see the Deployment section of the README.
+services:
+  indice:
+    build: .
+    # Once images are published you can drop `build:` above and just pull:
+    #   image: ghcr.io/edsu/indice:latest
+    image: indice:local
+    command: ["serve", "--bind", "0.0.0.0:8080", "--home", "/data"]
+    volumes:
+      - indice-data:/data # archive/ + index/, persisted across restarts
+    restart: unless-stopped
+    # The image already declares a HEALTHCHECK (via `indice health`), so Caddy
+    # can wait for indice to be healthy before it starts (below).
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      indice:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Defaults to :80 (plain HTTP) for local use; set SITE_ADDRESS to a domain
+      # for automatic HTTPS.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # ACME account + issued certs — persist to avoid re-issuing
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  indice-data:
+  caddy-data:
+  caddy-config:
