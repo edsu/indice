@@ -1,56 +1,95 @@
 name: Release
 
-# Build prebuilt binaries and attach them to a GitHub Release when a version
-# tag is pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`). Each archive
-# is self-contained (ReplayWeb.page assets are embedded at build time) and also
-# bundles a small sample archive (samples/apod.wacz) so `indice` has something to
-# index and show on first run — see the Quickstart in the README.
+# Build prebuilt binaries and attach them to a GitHub Release when a version tag
+# is pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
+#
+# Supply-chain stance: this workflow deliberately uses NO third-party actions in
+# the build/upload path — only GitHub's own `actions/checkout`, the pinned Rust
+# toolchain (`rust-toolchain.toml`), and GitHub's `gh` CLI for the upload. Every
+# target builds on a *native* runner (GitHub offers hosted macOS-arm64 and
+# Linux-arm64), so there's no cross-compilation / Docker `cross` to trust either.
+# Each archive is self-contained (ReplayWeb.page assets are embedded at build
+# time) and bundles a small sample archive (apod.wacz) — see the README
+# Quickstart. Per-artifact SHA-256 checksums are published alongside.
 on:
   push:
     tags: ["v*"]
 
-# The job creates/updates the Release and uploads assets to it.
 permissions:
-  contents: write
+  contents: write # create the Release and upload assets
 
 env:
   CARGO_TERM_COLOR: always
+  BIN: indice
 
 jobs:
-  release:
+  # Create the Release once, up front, so the parallel build jobs just upload to
+  # it. `|| true` keeps a re-run idempotent if the Release already exists.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the GitHub Release (if absent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag || true
+
+  build:
+    needs: create-release
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
       - uses: actions/checkout@v7
 
-      # Installs the toolchain pinned in rust-toolchain.toml, matching CI.
-      - name: Install Rust toolchain (from rust-toolchain.toml)
-        run: rustup show
+      # Installs the toolchain pinned in rust-toolchain.toml (matches CI), then
+      # adds the target (a no-op when it's the runner's native triple).
+      - name: Rust toolchain
+        run: |
+          rustup show
+          rustup target add ${{ matrix.target }}
 
-      # Cross-compiles the `indice` binary for the target (using `cross` for the
-      # Linux targets), packages it as a .tar.gz (or .zip on Windows) named
-      # `indice-<tag>-<target>`, bundles the sample + docs, writes a SHA-256
-      # checksum, and uploads everything to the tag's GitHub Release.
-      - name: Build and upload
-        uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: indice
-          target: ${{ matrix.target }}
-          archive: indice-$tag-$target
-          include: apod.wacz,README.md,LICENSE
-          checksum: sha256
-          token: ${{ secrets.GITHUB_TOKEN }}
+      # musl targets need the musl C toolchain; on the arm64 runner this provides
+      # the aarch64 musl-gcc, on x86_64 the x86_64 one — each native, no cross.
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --bin "$BIN" --target ${{ matrix.target }}
+
+      # Package (tar.gz), checksum, and upload with GitHub's own gh CLI.
+      - name: Package and upload (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="${BIN}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/${BIN}" apod.wacz README.md LICENSE "$name/"
+          tar czf "${name}.tar.gz" "$name"
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          gh release upload "$GITHUB_REF_NAME" "${name}.tar.gz" "${name}.tar.gz.sha256" --clobber
+
+      - name: Package and upload (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "$env:BIN-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/$env:BIN.exe", apod.wacz, README.md, LICENSE $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash | Out-File -Encoding ascii "$name.zip.sha256"
+          gh release upload $env:GITHUB_REF_NAME "$name.zip" "$name.zip.sha256" --clobber
