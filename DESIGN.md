@@ -111,6 +111,7 @@ it still resolves.
 | Route | Handler |
 |---|---|
 | `GET /` | Homepage: search box, browse-by-facet entry points, and the collection overview |
+| `GET /health` | Liveness/readiness probe (200 + `ok`); un-gated, for a reverse proxy / orchestrator |
 | `GET /search?q=...&page=N` | Server-rendered results with a facet sidebar, month timeline, snippets, and pagination |
 | `GET /collection/{id}` | Collection detail: metadata, a scoped facet overview, and member crawls |
 | `GET /crawl/{id}` | Crawl detail: provenance, file metadata, a scoped facet overview, and seed pages (a crawl is one WACZ) |
