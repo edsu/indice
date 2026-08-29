@@ -1,0 +1,13 @@
+# Keep the Docker build context small and reproducible: never ship host build
+# artifacts or local data into the image.
+/target
+/.git
+# Local indice home / data (the repo root doubles as a dev home).
+/index
+/archive
+/.import-tmp
+*.wacz
+# Local tooling / secrets / scratch.
+/chrome
+/chromedriver
+env.sh
