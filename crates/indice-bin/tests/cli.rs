@@ -61,3 +61,18 @@ fn search_url_skips_remote_sources_without_panicking() {
         "should note the skipped remote crawl; got: {combined}"
     );
 }
+
+/// `indice health` exits non-zero when the server is unreachable — the signal a
+/// container HEALTHCHECK / compose healthcheck relies on. (The success path is
+/// covered by the `/health` route's integration test.)
+#[test]
+fn health_fails_on_unreachable_server() {
+    let out = Command::new(env!("CARGO_BIN_EXE_indice"))
+        .args(["health", "--url", "http://127.0.0.1:59997/health"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "health should fail when nothing is listening"
+    );
+}
