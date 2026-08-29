@@ -23,15 +23,18 @@ env:
 
 jobs:
   # Create the Release once, up front, so the parallel build jobs just upload to
-  # it. `|| true` keeps a re-run idempotent if the Release already exists.
+  # it. It's created as a DRAFT (not public) so that if any build fails the
+  # release never goes live half-populated; the `publish` job below flips it to
+  # public only after every build succeeds. `|| true` keeps a re-run idempotent
+  # if the draft already exists.
   create-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Create the GitHub Release (if absent)
+      - name: Create the draft Release (if absent)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag || true
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --draft || true
 
   build:
     needs: create-release
@@ -89,3 +92,15 @@ jobs:
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash | Out-File -Encoding ascii "$name.zip.sha256"
           gh release upload $env:GITHUB_REF_NAME "$name.zip" "$name.zip.sha256" --clobber
+
+  # Flip the draft Release to public only after every build+upload succeeded. If
+  # any build failed, `needs: build` fails and this is skipped — so the release
+  # stays a private draft (delete it and retry) rather than going live partial.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
