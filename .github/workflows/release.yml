@@ -8,9 +8,13 @@ name: Release
 # toolchain (`rust-toolchain.toml`), and GitHub's `gh` CLI for the upload. Every
 # target builds on a *native* runner (GitHub offers hosted macOS-arm64 and
 # Linux-arm64), so there's no cross-compilation / Docker `cross` to trust either.
-# Each archive is self-contained (ReplayWeb.page assets are embedded at build
-# time) and bundles a small sample archive (apod.wacz) — see the README
-# Quickstart. Per-artifact SHA-256 checksums are published alongside.
+#
+# Linux uses the glibc (gnu) targets built on Ubuntu 22.04 — a low glibc floor
+# (2.35) for broad portability, and a "boring" build with no extra C toolchain
+# (musl was considered but its aws-lc-rs/zstd static builds are a needless first-
+# release risk). Each archive is self-contained (ReplayWeb.page assets are
+# embedded at build time) and bundles a small sample archive (apod.wacz) — see
+# the README Quickstart. Per-artifact SHA-256 checksums are published alongside.
 on:
   push:
     tags: ["v*"]
@@ -44,8 +48,8 @@ jobs:
         include:
           - { target: aarch64-apple-darwin, os: macos-latest }
           - { target: x86_64-apple-darwin, os: macos-latest }
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
       - uses: actions/checkout@v7
@@ -56,12 +60,6 @@ jobs:
         run: |
           rustup show
           rustup target add ${{ matrix.target }}
-
-      # musl targets need the musl C toolchain; on the arm64 runner this provides
-      # the aarch64 musl-gcc, on x86_64 the x86_64 one — each native, no cross.
-      - name: Install musl tools
-        if: contains(matrix.target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
         run: cargo build --release --locked --bin "$BIN" --target ${{ matrix.target }}
