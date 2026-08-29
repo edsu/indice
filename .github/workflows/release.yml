@@ -56,8 +56,11 @@ jobs:
           rustup show
           rustup target add ${{ matrix.target }}
 
+      # Use the GitHub expression (not a shell var) so it expands the same under
+      # bash (macOS/Linux) and PowerShell (Windows) — a bare `$BIN` is empty in
+      # pwsh, which made the Windows build fail with an empty `--bin`.
       - name: Build
-        run: cargo build --release --locked --bin "$BIN" --target ${{ matrix.target }}
+        run: cargo build --release --locked --bin ${{ env.BIN }} --target ${{ matrix.target }}
 
       # Package (tar.gz), checksum, and upload with GitHub's own gh CLI.
       - name: Package and upload (Unix)
