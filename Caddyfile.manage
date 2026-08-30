@@ -1,0 +1,35 @@
+# Management variant of the Caddyfile (used by compose.manage.yaml).
+#
+# The public read-only site stays open; the management surface — /manage/* and the
+# write APIs (everything under /api/ EXCEPT the public /api/search) — is gated by
+# HTTP Basic auth. Caddy forwards the authenticated username to indice as
+# X-Forwarded-User and adds the shared secret indice's forward-auth requires, so
+# only requests that passed Basic auth can reach the write surface.
+#
+# This is a simple stopgap for one or a few admins. For real SSO (Google, GitHub,
+# OIDC…), replace the `basic_auth` block with an auth proxy such as oauth2-proxy
+# that performs the login and sets X-Forwarded-User — indice's forward-auth is
+# unchanged either way.
+{$SITE_ADDRESS} {
+	@manage {
+		path /manage/* /api/*
+		not path /api/search*
+	}
+	handle @manage {
+		basic_auth {
+			{$ADMIN_USER} {$ADMIN_PASSWORD_HASH}
+		}
+		reverse_proxy indice:8080 {
+			# Forward the authenticated identity + the shared secret. header_up
+			# replaces any client-supplied copies, so these can't be spoofed.
+			header_up X-Forwarded-User {http.auth.user.id}
+			header_up X-Indice-Auth-Secret {$INDICE_AUTH_PROXY_SECRET}
+		}
+	}
+	handle {
+		# Public read-only site (homepage, search, replay, /files, /health) — no
+		# secret injected, so indice's forward-auth still rejects any management
+		# request that somehow arrives here.
+		reverse_proxy indice:8080
+	}
+}

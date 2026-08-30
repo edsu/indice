@@ -1,0 +1,44 @@
+# Management overlay — run WITH the base file:
+#
+#   docker compose -f compose.yaml -f compose.manage.yaml up -d
+#
+# The public site stays read-only; /manage/* and the write APIs are gated by
+# Caddy Basic auth, which forwards the authenticated user and the shared secret
+# indice's forward-auth requires. Provide these (e.g. in a .env file):
+#
+#   ADMIN_USER               admin username
+#   ADMIN_PASSWORD_HASH      bcrypt hash (must start with $2a$/$2b$, 60 chars)
+#   INDICE_AUTH_PROXY_SECRET long random string, shared between Caddy and indice
+#
+# IMPORTANT — the bcrypt hash contains `$`, which compose interpolates and would
+# corrupt (Caddy then fails with "base64-decoding password: illegal base64 data").
+# In a .env file, wrap the hash in SINGLE QUOTES so it's taken literally:
+#
+#   ADMIN_PASSWORD_HASH='$2a$14$....'      # single quotes; double quotes do NOT work
+#
+# (Bare or double-quoted values get mangled; if you can't single-quote, double
+# every `$` instead: `$` -> `$$`.) Verify Caddy received a valid 60-char hash:
+#
+#   docker compose exec caddy printenv ADMIN_PASSWORD_HASH   # -> $2a$14$...  (single $)
+#
+# Note: --manage's local-trust mode can't run in a container (it refuses
+# non-loopback binds), so a networked deployment must use forward-auth, which is
+# exactly what this overlay wires up.
+services:
+  indice:
+    command: ["serve", "--manage", "--bind", "0.0.0.0:8080", "--home", "/data",
+              "--auth-proxy-header", "X-Forwarded-User"]
+    environment:
+      # indice reads the shared secret from the env, keeping it out of process args.
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
+
+  caddy:
+    # Swap in the gated Caddyfile (mounted at a distinct path so it doesn't clash
+    # with the base file's bind mount) and point Caddy at it.
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.manage", "--adapter", "caddyfile"]
+    volumes:
+      - ./Caddyfile.manage:/etc/caddy/Caddyfile.manage:ro
+    environment:
+      ADMIN_USER: ${ADMIN_USER:?set ADMIN_USER}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?set ADMIN_PASSWORD_HASH}
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
