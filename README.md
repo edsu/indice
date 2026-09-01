@@ -551,6 +551,93 @@ example.org {
 
 [oauth2-proxy]: https://oauth2-proxy.github.io/oauth2-proxy/
 
+## Deployment
+
+Two options, depending on who is running indice:
+
+- **On your laptop** you can grab a prebuilt binary and run `indice serve`. That's the
+  whole story for local use; see [Install](#install) and
+  [Try it](#try-it-in-a-minute).
+- **As a server** — run the container image behind a TLS-terminating proxy. The
+  batteries-included [`compose.yaml`](compose.yaml) does this in one command with
+  [Caddy](https://caddyserver.com), which fetches and renews a Let's Encrypt
+  certificate for you.
+
+### Container image
+
+A multi-arch image (`linux/amd64` + `linux/arm64`) is published to the GitHub
+Container Registry on every release:
+
+```sh
+docker run -p 8080:8080 -v indice-data:/data ghcr.io/edsu/indice:latest
+```
+
+`/data` is indice's home (`archive/` + `index/`) — mount a volume so it survives
+restarts. The image runs the read-only server by default.
+
+### One command with Caddy (recommended)
+
+[`compose.yaml`](compose.yaml) runs indice behind Caddy:
+
+```sh
+# local / dev — plain HTTP on :80
+docker compose up -d
+
+# production — set your domain and Caddy provisions HTTPS automatically
+SITE_ADDRESS=archive.example.org docker compose up -d
+```
+
+Caddy passes byte-range requests straight through so ReplayWeb.page's ranged
+reads of large WACZs replay correctly through the proxy. Named volumes persist
+indice's `/data` and Caddy's certificates. (`compose.yaml` builds the image
+from the repo by default; to pull the published image instead, follow the
+comment in the file.)
+
+Load archives by indexing into the running container:
+
+```sh
+docker compose cp your.wacz indice:/data/your.wacz
+docker compose exec indice indice index --collection "Your Collection" /data/your.wacz
+```
+
+### Management over the network
+
+[`compose.manage.yaml`](compose.manage.yaml) is an overlay that adds the write
+surface. It keeps the public site read-only and gates `/manage` + the write APIs
+behind HTTP Basic auth, forwarding the authenticated user to indice via the
+[forward-auth](#running-as-a-service-forward-auth) mechanism described above. Run
+it alongside the base file:
+
+```sh
+docker compose -f compose.yaml -f compose.manage.yaml up -d
+```
+
+It needs three values, e.g. in a `.env` file next to `compose.yaml`:
+
+```sh
+ADMIN_USER=you
+ADMIN_PASSWORD_HASH='$2a$14$...'          # single-quoted — see the note below
+INDICE_AUTH_PROXY_SECRET=a-long-random-string
+```
+
+Generate the password hash with Caddy:
+
+```sh
+docker run --rm caddy:2 caddy hash-password --plaintext 'yourpassword'
+```
+
+> **The bcrypt hash contains `$`, which docker compose interpolates.** In a
+> `.env` file, wrap it in **single quotes** so it's taken literally — bare and
+> double-quoted values get mangled and Caddy then fails to start with a
+> `base64-decoding password` error. (If you can't single-quote, double every `$`
+> instead: `$` → `$$`.) Confirm the container got a valid 60-character hash with
+> `docker compose exec caddy printenv ADMIN_PASSWORD_HASH`.
+
+Basic auth is a simple stopgap for one or a few admins. For real single sign-on
+(Google, GitHub, OIDC…), put [oauth2-proxy] in front instead — the forward-auth
+wiring is identical, so it's a drop-in replacement for the `basic_auth` block in
+[`Caddyfile.manage`](Caddyfile.manage).
+
 ## Command line
 
 ```
