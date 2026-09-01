@@ -1,7 +1,8 @@
 name: Release
 
 # Build prebuilt binaries and attach them to a GitHub Release when a version tag
-# is pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
+# is pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`), and publish a
+# multi-arch container image to GHCR.
 #
 # Each target builds on a native runner (GitHub-hosted macOS-arm64 and
 # Linux-arm64), using actions/checkout, the pinned rustup toolchain
@@ -10,6 +11,11 @@ name: Release
 # portability). Each archive is self-contained (ReplayWeb.page assets are
 # embedded at build time) and bundles a small sample archive (apod.wacz) — see
 # the README Quickstart. Per-artifact SHA-256 checksums are published alongside.
+#
+# The image (ghcr.io/<owner>/indice) is built for linux/amd64 and linux/arm64,
+# each on its own native runner (no QEMU), pushed by digest, then stitched into
+# one multi-arch tag — using only the docker CLI and GitHub's own artifact
+# actions. `:latest` tracks final releases only, not prereleases (v*-rc etc.).
 on:
   push:
     tags: ["v*"]
@@ -92,6 +98,85 @@ jobs:
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           (Get-FileHash "$name.zip" -Algorithm SHA256).Hash | Out-File -Encoding ascii "$name.zip.sha256"
           gh release upload $env:GITHUB_REF_NAME "$name.zip" "$name.zip.sha256" --clobber
+
+  # ── Container image ─────────────────────────────────────────────────────────
+  # Build the image for each architecture on its NATIVE runner (no QEMU
+  # emulation), pushing each by digest to GHCR. buildx is bundled with the docker
+  # CLI, so no third-party actions are needed; `docker-manifest` (below) combines
+  # the digests into the user-visible tags.
+  docker:
+    needs: create-release
+    name: image ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, os: ubuntu-22.04 }
+          - { platform: linux/arm64, os: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push by digest
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx create --use --name indice-builder >/dev/null
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --provenance=false \
+            --output "type=image,name=${image},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json \
+            .
+          digest=$(jq -r '."containerimage.digest"' metadata.json)
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.os }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  # Assemble the per-arch digests into one multi-arch tag. `needs: [build, docker]`
+  # so the visible tags appear only after the binaries AND both images built —
+  # matching the draft→publish gate so a release never goes live half-built.
+  docker-manifest:
+    needs: [build, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - name: Create and push the multi-arch manifest
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="$GITHUB_REF_NAME"
+          # Always tag the version; add :latest only for a final release (a tag
+          # with no `-` suffix — so v0.1.0 does, v0.1.0-rc1 / v0.0.1-test do not).
+          tags=(-t "${image}:${version}")
+          case "$version" in
+            *-*) echo "prerelease ${version}: not tagging :latest" ;;
+            *)   tags+=(-t "${image}:latest") ;;
+          esac
+          refs=()
+          for d in /tmp/digests/*; do refs+=("${image}@sha256:$(basename "$d")"); done
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+          docker buildx imagetools inspect "${image}:${version}"
 
   # Flip the draft Release to public only after every build+upload succeeded. If
   # any build failed, `needs: build` fails and this is skipped — so the release
