@@ -96,6 +96,15 @@ impl ManageConfig {
 /// The fixed header carrying the proxy↔indice shared secret in forward-auth mode.
 const AUTH_SECRET_HEADER: &str = "x-indice-auth-secret";
 
+/// Cookie indice sets to remember a signed-in identity for **display** on the
+/// ungated public pages — the browser won't send the proxy's Basic-auth
+/// credentials to `/`, so the workroom chrome would otherwise never appear there.
+/// HMAC-signed with the forward-auth secret (see [`sign_session`]); it drives
+/// *rendering only* — every write is still re-checked against the proxy headers.
+const SESSION_COOKIE: &str = "indice_session";
+/// How long the display cookie stays valid; refreshed on every gated request.
+const SESSION_TTL_SECS: u64 = 12 * 60 * 60;
+
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 struct AppState {
@@ -245,6 +254,9 @@ fn build_router(
             .route("/manage/collections/new", get(new_collection_form))
             .route("/manage/edit/{id}", get(edit_collection_form))
             .route("/manage/add", get(accession_desk_page))
+            // A login entry point: being gated, visiting it forces the proxy's
+            // login, then bounces back to where the user came from.
+            .route("/manage/login", get(manage_login))
             .route("/api/archives", post(add_archive))
             // File upload can be large (a whole WACZ), so lift axum's 2 MB default
             // body limit on this route only.
@@ -288,6 +300,9 @@ fn build_router(
     }
 
     let app = app
+        // Mark rendered HTML non-cacheable (it varies by auth); innermost so it
+        // tags the handler's response before compression. Runs before with_state.
+        .layer(axum::middleware::from_fn(html_no_cache))
         .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
@@ -397,14 +412,24 @@ async fn forward_auth(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if check_forward_auth(fa, req.headers()).is_some() {
-        next.run(req).await
-    } else {
-        (
+    match check_forward_auth(fa, req.headers()) {
+        Some(user) => {
+            // Mark the display cookie Secure when the external hop was HTTPS (Caddy
+            // sets X-Forwarded-Proto), so it's never sent in the clear in prod.
+            let secure = req
+                .headers()
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+            let mut res = next.run(req).await;
+            set_session_cookie(&mut res, fa, &user, secure);
+            res
+        }
+        None => (
             StatusCode::FORBIDDEN,
             "forbidden: this management surface requires authentication via its front proxy",
         )
-            .into_response()
+            .into_response(),
     }
 }
 
@@ -439,10 +464,17 @@ fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<String>) {
     }
     match &state.forward_auth {
         None => (true, None),
-        Some(fa) => match check_forward_auth(fa, headers) {
-            Some(user) => (true, Some(user)),
-            None => (false, None),
-        },
+        Some(fa) => {
+            // The live proxy-injected identity (management routes), or — on the
+            // ungated public pages the browser can't send proxy creds to — the
+            // display cookie indice set at login. The cookie drives *rendering*
+            // only; write routes always re-check the proxy headers.
+            let user = check_forward_auth(fa, headers).or_else(|| session_cookie_user(fa, headers));
+            match user {
+                Some(u) => (true, Some(u)),
+                None => (false, None),
+            }
+        }
     }
 }
 
@@ -457,6 +489,153 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// HMAC-SHA256 — the standard construction over the `sha2` hash already used for
+/// WACZ fixity, so we don't pull in a separate hmac crate. Pinned by an RFC 4231
+/// known-answer test (see the tests module).
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        k[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; BLOCK];
+    let mut opad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+    let inner = Sha256::new()
+        .chain_update(ipad)
+        .chain_update(msg)
+        .finalize();
+    let outer = Sha256::new()
+        .chain_update(opad)
+        .chain_update(inner)
+        .finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&outer);
+    out
+}
+
+/// Build a signed display-cookie value for `user`, valid until `exp` (unix secs):
+/// `b64url(user)|exp|b64url(hmac)`, where the HMAC covers `b64url(user)|exp`.
+fn sign_session(secret: &str, user: &str, exp: u64) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let payload = format!("{}|{}", b64.encode(user), exp);
+    let sig = b64.encode(hmac_sha256(secret.as_bytes(), payload.as_bytes()));
+    format!("{payload}|{sig}")
+}
+
+/// Verify a display-cookie value against `secret` at time `now`; returns the
+/// identity iff the signature matches (constant-time) and it hasn't expired.
+fn verify_session(secret: &str, value: &str, now: u64) -> Option<String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload, sig) = value.rsplit_once('|')?;
+    let expected = b64.encode(hmac_sha256(secret.as_bytes(), payload.as_bytes()));
+    if !constant_time_eq(sig.as_bytes(), expected.as_bytes()) {
+        return None;
+    }
+    let (user_b64, exp) = payload.split_once('|')?;
+    if exp.parse::<u64>().ok()? <= now {
+        return None;
+    }
+    let user = b64.decode(user_b64).ok()?;
+    String::from_utf8(user).ok().filter(|s| !s.is_empty())
+}
+
+/// Seconds since the Unix epoch (0 if the clock is before it, which won't happen).
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Attach the signed display cookie to a management response, so subsequent
+/// requests to the ungated public pages can render the workroom chrome.
+fn set_session_cookie(res: &mut Response, fa: &ForwardAuth, user: &str, secure: bool) {
+    let value = sign_session(&fa.secret, user, now_secs() + SESSION_TTL_SECS);
+    let mut cookie = format!(
+        "{SESSION_COOKIE}={value}; Path=/; Max-Age={SESSION_TTL_SECS}; HttpOnly; SameSite=Lax"
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
+        res.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+    }
+}
+
+/// Read + verify the display cookie from a request's `Cookie` header, if present.
+fn session_cookie_user(fa: &ForwardAuth, headers: &HeaderMap) -> Option<String> {
+    let cookies = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    let value = cookies
+        .split(';')
+        .filter_map(|c| c.trim().split_once('='))
+        .find(|(name, _)| *name == SESSION_COOKIE)
+        .map(|(_, v)| v)?;
+    verify_session(&fa.secret, value, now_secs())
+}
+
+/// `GET /manage/login` — a login entry point for forward-auth deployments. It is
+/// mounted under the gated management routes, so merely reaching it forces the
+/// front proxy's login (a Basic-auth prompt, or an SSO redirect). Once
+/// authenticated it bounces the browser back to the page it came from (the
+/// `Referer`, if it's a local path) so that page re-renders with its management
+/// chrome. In local-trust mode there is no login, so it just redirects home.
+async fn manage_login(headers: HeaderMap) -> Response {
+    let dest = headers
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(local_redirect_target)
+        .unwrap_or_else(|| "/".to_string());
+    axum::response::Redirect::to(&dest).into_response()
+}
+
+/// Extract a safe **same-site path** from a `Referer` so `/manage/login` can't be
+/// turned into an open redirect. Takes only the path (+query) of an absolute
+/// Referer and requires a single leading slash — never an off-site URL, and never
+/// a protocol-relative `//host`. Returns `None` if it can't (caller falls to `/`).
+fn local_redirect_target(referer: &str) -> Option<String> {
+    // Absolute Referer: scheme://host[:port]/path?query — drop scheme+host, keep
+    // from the first '/' of the path onward.
+    let after_scheme = referer.split_once("://")?.1;
+    let path = &after_scheme[after_scheme.find('/')?..];
+    (path.starts_with('/') && !path.starts_with("//")).then(|| path.to_string())
+}
+
+/// Mark server-rendered HTML pages non-cacheable. Their content varies by
+/// authentication (the workroom chrome + signed-in identity), so a cached copy
+/// could show the wrong variant — e.g. an anonymous homepage lingering after you
+/// sign in. `no-cache` forces the browser to revalidate (a full refetch, since we
+/// send no validators); `private` keeps shared caches from storing an admin
+/// variant. Only text/html is touched — WACZ bytes (`/files`) and static assets
+/// stay cacheable.
+async fn html_no_cache(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut res = next.run(req).await;
+    let is_html = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    if is_html
+        && !res
+            .headers()
+            .contains_key(axum::http::header::CACHE_CONTROL)
+    {
+        res.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-cache"),
+        );
+    }
+    res
 }
 
 // ── Management mode: add-archive ────────────────────────────────────────────
@@ -1686,7 +1865,8 @@ async fn homepage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
     };
 
     let (manage, who) = admin_ctx(&state, &headers);
-    views::home(&cards, &browse, manage, who.as_deref()).into_response()
+    let can_login = state.forward_auth.is_some() && who.is_none();
+    views::home(&cards, &browse, manage, who.as_deref(), can_login).into_response()
 }
 
 /// Build homepage browse links from one facet dimension: `field` is the facet
@@ -2021,6 +2201,7 @@ async fn search_page(
         .collect();
 
     let (manage, who) = admin_ctx(&state, &headers);
+    let can_login = state.forward_auth.is_some() && who.is_none();
     views::search_results(
         &q,
         &page_nav,
@@ -2029,6 +2210,7 @@ async fn search_page(
         &rows,
         manage,
         who.as_deref(),
+        can_login,
     )
     .into_response()
 }
@@ -2095,6 +2277,7 @@ async fn collection_page(
     let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
 
     let (manage, who) = admin_ctx(&state, &headers);
+    let can_login = state.forward_auth.is_some() && who.is_none();
     let page = views::CollectionPage {
         name: c.name.clone(),
         description: c.description.clone(),
@@ -2110,6 +2293,7 @@ async fn collection_page(
         id: id.clone(),
         management: manage,
         signed_in: who,
+        can_login,
     };
     views::collection(&page).into_response()
 }
@@ -2448,6 +2632,7 @@ async fn crawl_page(
     }
 
     let (manage, who) = admin_ctx(&state, &headers);
+    let can_login = state.forward_auth.is_some() && who.is_none();
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,
@@ -2486,6 +2671,7 @@ async fn crawl_page(
         pages,
         management: manage,
         signed_in: who,
+        can_login,
     };
 
     views::crawl(&page).into_response()
@@ -3163,6 +3349,96 @@ mod tests {
         assert!(ids.contains("streamed-1"), "detects streamed source id");
         assert!(ids.contains("downloaded-1"), "detects provenance item id");
         assert_eq!(ids.len(), 2, "the plain URL crawl adds nothing");
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc4231_vector() {
+        // RFC 4231, Test Case 2.
+        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn session_cookie_roundtrips_and_rejects_tampering() {
+        let secret = "shared-proxy-secret";
+        let now = 1_000_000u64;
+        let cookie = sign_session(secret, "ed@example.org", now + 100);
+
+        // Valid + unexpired → the identity comes back.
+        assert_eq!(
+            verify_session(secret, &cookie, now).as_deref(),
+            Some("ed@example.org")
+        );
+        // Expired → rejected.
+        assert_eq!(verify_session(secret, &cookie, now + 200), None);
+        // Wrong secret (forged by someone without it) → rejected.
+        assert_eq!(verify_session("other-secret", &cookie, now), None);
+        // Tampered signature → rejected.
+        let mut bad = cookie.clone();
+        bad.pop();
+        bad.push(if cookie.ends_with('A') { 'B' } else { 'A' });
+        assert_eq!(verify_session(secret, &bad, now), None);
+        // Tampered identity (re-encode a different user, keep the old sig) → rejected.
+        let forged = {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            let sig = cookie.rsplit_once('|').unwrap().1;
+            format!("{}|{}|{}", b64.encode("root"), now + 100, sig)
+        };
+        assert_eq!(verify_session(secret, &forged, now), None);
+        // Garbage → None, not a panic.
+        assert_eq!(verify_session(secret, "nonsense", now), None);
+    }
+
+    #[test]
+    fn local_redirect_target_keeps_same_site_paths_only() {
+        // A normal same-site Referer → its path (+query) is kept.
+        assert_eq!(
+            local_redirect_target("http://localhost/collection/x?y=1").as_deref(),
+            Some("/collection/x?y=1")
+        );
+        assert_eq!(
+            local_redirect_target("https://archive.example.org/crawl/abc").as_deref(),
+            Some("/crawl/abc")
+        );
+        // Root path.
+        assert_eq!(local_redirect_target("http://host/").as_deref(), Some("/"));
+        // A Referer from another host still only yields a *path* (never off-site),
+        // so this can't be an open redirect.
+        assert_eq!(
+            local_redirect_target("https://evil.example/collection/x").as_deref(),
+            Some("/collection/x")
+        );
+        // No path component, or something we can't parse → None (caller uses "/").
+        assert_eq!(local_redirect_target("http://host"), None);
+        assert_eq!(local_redirect_target("not a url"), None);
+        // Protocol-relative smuggling is rejected (would navigate off-site).
+        assert_eq!(local_redirect_target("http://host//evil.example"), None);
+    }
+
+    #[test]
+    fn appbar_offers_login_when_anonymous_under_forward_auth() {
+        use maud::html;
+        // Forward-auth configured, request anonymous → a "Log in" link, no name.
+        let anon = views::layout("t", false, None, true, None, html! {}).into_string();
+        assert!(
+            anon.contains(r#"href="/manage/login""#) && anon.contains("Log in"),
+            "anonymous + can_login should show a login link: {anon}"
+        );
+        assert!(!anon.contains("signed in as"));
+
+        // Signed in → the identity, and no login link.
+        let authed = views::layout("t", true, Some("ed"), false, None, html! {}).into_string();
+        assert!(authed.contains("signed in as") && authed.contains("ed"));
+        assert!(!authed.contains("/manage/login"));
+
+        // Plain read-only server (no forward-auth): neither affordance.
+        let plain = views::layout("t", false, None, false, None, html! {}).into_string();
+        assert!(!plain.contains("/manage/login") && !plain.contains("signed in as"));
     }
 
     #[test]

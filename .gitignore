@@ -40,6 +40,9 @@
 # some environment vars for testing
 env.sh
 
+# Local docker-compose secrets (ADMIN_PASSWORD_HASH, INDICE_AUTH_PROXY_SECRET, …).
+.env
+
 # Archive-It import staging (created under the indice home; shows up here when
 # the home dir is the repo root during local testing).
 /.import-tmp/

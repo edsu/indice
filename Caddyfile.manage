@@ -6,10 +6,15 @@
 # X-Forwarded-User and adds the shared secret indice's forward-auth requires, so
 # only requests that passed Basic auth can reach the write surface.
 #
+# A signed-in admin also sees the workroom chrome on the *public* pages (home,
+# collection, crawl): browsers won't send Basic-auth credentials to those parent
+# paths, so indice sets its own signed, display-only session cookie at login and
+# reads it there. No Caddy config is needed for that — just the gating below.
+#
 # This is a simple stopgap for one or a few admins. For real SSO (Google, GitHub,
 # OIDC…), replace the `basic_auth` block with an auth proxy such as oauth2-proxy
-# that performs the login and sets X-Forwarded-User — indice's forward-auth is
-# unchanged either way.
+# that performs the login and sets X-Forwarded-User — indice's forward-auth (and
+# the display cookie) are unchanged either way.
 {$SITE_ADDRESS} {
 	@manage {
 		path /manage/* /api/*
