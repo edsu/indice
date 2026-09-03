@@ -65,6 +65,7 @@ pub fn layout(
                     }
                     @if let Some(u) = signed_in {
                         span.who { "signed in as " b { (u) } }
+                        a.logout href="/logout" { "Log out" }
                     } @else if can_login {
                         // Forward-auth is configured but this request is anonymous:
                         // offer a login. /manage/login is gated, so following it

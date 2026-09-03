@@ -531,8 +531,10 @@ everywhere. The cookie only drives *rendering* — every write is still re-check
 against the proxy's identity header + secret, so a stolen or forged cookie grants
 no access. Pages served without an identity show a **Log in** link (it points at
 the gated `/manage/login`, so following it trips the proxy's login and returns you
-to where you were). There's no logout yet with the Basic-auth stopgap; that comes
-with SSO.
+to where you were). A **Log out** link clears the display cookie — but note that
+with the Basic-auth stopgap the browser keeps its cached credentials until it's
+closed, so logout only hides the chrome; a full sign-out (and single sign-on)
+comes with the SSO path.
 
 **Deploy checklist**
 

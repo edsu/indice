@@ -230,6 +230,9 @@ fn build_router(
     let mut app = Router::new()
         .route("/", get(homepage))
         .route("/health", get(health))
+        // Public: clears the display session cookie (logout). Harmless when no
+        // cookie is set; deliberately outside the forward-auth-gated routes.
+        .route("/logout", get(logout))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
         .route("/collection/{id}/replay.json", get(collection_replay_json))
@@ -416,11 +419,7 @@ async fn forward_auth(
         Some(user) => {
             // Mark the display cookie Secure when the external hop was HTTPS (Caddy
             // sets X-Forwarded-Proto), so it's never sent in the clear in prod.
-            let secure = req
-                .headers()
-                .get("x-forwarded-proto")
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+            let secure = forwarded_https(req.headers());
             let mut res = next.run(req).await;
             set_session_cookie(&mut res, fa, &user, secure);
             res
@@ -558,6 +557,15 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether the external hop reached the proxy over HTTPS (Caddy sets
+/// `X-Forwarded-Proto`) — used to mark the session cookie `Secure` in production.
+fn forwarded_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"))
+}
+
 /// Attach the signed display cookie to a management response, so subsequent
 /// requests to the ungated public pages can render the workroom chrome.
 fn set_session_cookie(res: &mut Response, fa: &ForwardAuth, user: &str, secure: bool) {
@@ -565,6 +573,18 @@ fn set_session_cookie(res: &mut Response, fa: &ForwardAuth, user: &str, secure: 
     let mut cookie = format!(
         "{SESSION_COOKIE}={value}; Path=/; Max-Age={SESSION_TTL_SECS}; HttpOnly; SameSite=Lax"
     );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    if let Ok(hv) = axum::http::HeaderValue::from_str(&cookie) {
+        res.headers_mut().append(axum::http::header::SET_COOKIE, hv);
+    }
+}
+
+/// Expire the display cookie (logout). Mirrors the attributes used when setting it
+/// so browsers reliably drop it.
+fn clear_session_cookie(res: &mut Response, secure: bool) {
+    let mut cookie = format!("{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
     if secure {
         cookie.push_str("; Secure");
     }
@@ -609,6 +629,19 @@ fn local_redirect_target(referer: &str) -> Option<String> {
     let after_scheme = referer.split_once("://")?.1;
     let path = &after_scheme[after_scheme.find('/')?..];
     (path.starts_with('/') && !path.starts_with("//")).then(|| path.to_string())
+}
+
+/// `GET /logout` — clear the display session cookie so the public pages show the
+/// anonymous view again. Public and un-gated on purpose: logging out shouldn't
+/// require auth, and it must NOT pass through the forward-auth middleware (which
+/// would immediately re-set the cookie). Note: with HTTP Basic auth the browser
+/// keeps its cached credentials until it's closed, so a later visit to `/manage`
+/// can silently re-authenticate; a full logout needs closing the browser (SSO
+/// gets a real sign-out — see the deployment docs).
+async fn logout(headers: HeaderMap) -> Response {
+    let mut res = Redirect::to("/").into_response();
+    clear_session_cookie(&mut res, forwarded_https(&headers));
+    res
 }
 
 /// Mark server-rendered HTML pages non-cacheable. Their content varies by
@@ -3395,6 +3428,20 @@ mod tests {
     }
 
     #[test]
+    fn clear_session_cookie_expires_the_cookie() {
+        let mut res = axum::response::Response::new(axum::body::Body::empty());
+        clear_session_cookie(&mut res, true);
+        let sc = res
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(sc.starts_with("indice_session=;"), "{sc}");
+        assert!(sc.contains("Max-Age=0") && sc.contains("HttpOnly") && sc.contains("Secure"));
+    }
+
+    #[test]
     fn local_redirect_target_keeps_same_site_paths_only() {
         // A normal same-site Referer → its path (+query) is kept.
         assert_eq!(
@@ -3431,9 +3478,10 @@ mod tests {
         );
         assert!(!anon.contains("signed in as"));
 
-        // Signed in → the identity, and no login link.
+        // Signed in → the identity + a logout link, and no login link.
         let authed = views::layout("t", true, Some("ed"), false, None, html! {}).into_string();
         assert!(authed.contains("signed in as") && authed.contains("ed"));
+        assert!(authed.contains(r#"href="/logout""#) && authed.contains("Log out"));
         assert!(!authed.contains("/manage/login"));
 
         // Plain read-only server (no forward-auth): neither affordance.
