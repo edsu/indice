@@ -102,7 +102,11 @@ const AUTH_SECRET_HEADER: &str = "x-indice-auth-secret";
 /// HMAC-signed with the forward-auth secret (see [`sign_session`]); it drives
 /// *rendering only* — every write is still re-checked against the proxy headers.
 const SESSION_COOKIE: &str = "indice_session";
-/// How long the display cookie stays valid; refreshed on every gated request.
+/// How long a signed display cookie is honored (the expiry baked into its
+/// signature; refreshed on every gated request). The cookie itself is a *session*
+/// cookie — no `Max-Age` — so it's dropped when the browser closes, matching the
+/// lifetime of the browser's cached Basic-auth credentials and avoiding a stale
+/// cookie that outlives them.
 const SESSION_TTL_SECS: u64 = 12 * 60 * 60;
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -477,6 +481,13 @@ fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<String>) {
     }
 }
 
+/// Whether to offer a "Log in" link: forward-auth is configured but this request
+/// is anonymous. Centralizes the rule the four page handlers share (`who` is the
+/// identity from [`admin_ctx`]).
+fn login_available(state: &AppState, who: &Option<String>) -> bool {
+    state.forward_auth.is_some() && who.is_none()
+}
+
 /// Constant-time byte comparison, to avoid leaking the secret via timing. The
 /// length check can leak length, which is fine for a shared secret.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -570,9 +581,7 @@ fn forwarded_https(headers: &HeaderMap) -> bool {
 /// requests to the ungated public pages can render the workroom chrome.
 fn set_session_cookie(res: &mut Response, fa: &ForwardAuth, user: &str, secure: bool) {
     let value = sign_session(&fa.secret, user, now_secs() + SESSION_TTL_SECS);
-    let mut cookie = format!(
-        "{SESSION_COOKIE}={value}; Path=/; Max-Age={SESSION_TTL_SECS}; HttpOnly; SameSite=Lax"
-    );
+    let mut cookie = format!("{SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax");
     if secure {
         cookie.push_str("; Secure");
     }
@@ -622,13 +631,15 @@ async fn manage_login(headers: HeaderMap) -> Response {
 /// Extract a safe **same-site path** from a `Referer` so `/manage/login` can't be
 /// turned into an open redirect. Takes only the path (+query) of an absolute
 /// Referer and requires a single leading slash — never an off-site URL, and never
-/// a protocol-relative `//host`. Returns `None` if it can't (caller falls to `/`).
+/// a protocol-relative `//host` (nor its `/\host` backslash variant, which some
+/// browsers normalize to `//`). Returns `None` if it can't (caller falls to `/`).
 fn local_redirect_target(referer: &str) -> Option<String> {
     // Absolute Referer: scheme://host[:port]/path?query — drop scheme+host, keep
     // from the first '/' of the path onward.
     let after_scheme = referer.split_once("://")?.1;
     let path = &after_scheme[after_scheme.find('/')?..];
-    (path.starts_with('/') && !path.starts_with("//")).then(|| path.to_string())
+    let offsite = path.starts_with("//") || path.starts_with("/\\");
+    (path.starts_with('/') && !offsite).then(|| path.to_string())
 }
 
 /// `GET /logout` — clear the display session cookie so the public pages show the
@@ -647,10 +658,11 @@ async fn logout(headers: HeaderMap) -> Response {
 /// Mark server-rendered HTML pages non-cacheable. Their content varies by
 /// authentication (the workroom chrome + signed-in identity), so a cached copy
 /// could show the wrong variant — e.g. an anonymous homepage lingering after you
-/// sign in. `no-cache` forces the browser to revalidate (a full refetch, since we
-/// send no validators); `private` keeps shared caches from storing an admin
-/// variant. Only text/html is touched — WACZ bytes (`/files`) and static assets
-/// stay cacheable.
+/// sign in, or (via the back/forward cache) a signed-in page restored after
+/// logout. `no-store` is used rather than `no-cache` precisely because it also
+/// makes the page ineligible for bfcache, so Back after logout refetches the
+/// anonymous view. Only text/html is touched — WACZ bytes (`/files`) and static
+/// assets stay cacheable.
 async fn html_no_cache(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let mut res = next.run(req).await;
     let is_html = res
@@ -665,7 +677,7 @@ async fn html_no_cache(req: axum::extract::Request, next: axum::middleware::Next
     {
         res.headers_mut().insert(
             axum::http::header::CACHE_CONTROL,
-            axum::http::HeaderValue::from_static("private, no-cache"),
+            axum::http::HeaderValue::from_static("no-store"),
         );
     }
     res
@@ -1898,7 +1910,7 @@ async fn homepage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> imp
     };
 
     let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = state.forward_auth.is_some() && who.is_none();
+    let can_login = login_available(&state, &who);
     views::home(&cards, &browse, manage, who.as_deref(), can_login).into_response()
 }
 
@@ -2234,7 +2246,7 @@ async fn search_page(
         .collect();
 
     let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = state.forward_auth.is_some() && who.is_none();
+    let can_login = login_available(&state, &who);
     views::search_results(
         &q,
         &page_nav,
@@ -2310,7 +2322,7 @@ async fn collection_page(
     let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
 
     let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = state.forward_auth.is_some() && who.is_none();
+    let can_login = login_available(&state, &who);
     let page = views::CollectionPage {
         name: c.name.clone(),
         description: c.description.clone(),
@@ -2665,7 +2677,7 @@ async fn crawl_page(
     }
 
     let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = state.forward_auth.is_some() && who.is_none();
+    let can_login = login_available(&state, &who);
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,
@@ -3463,8 +3475,11 @@ mod tests {
         // No path component, or something we can't parse → None (caller uses "/").
         assert_eq!(local_redirect_target("http://host"), None);
         assert_eq!(local_redirect_target("not a url"), None);
-        // Protocol-relative smuggling is rejected (would navigate off-site).
+        // Protocol-relative smuggling is rejected (would navigate off-site),
+        // including the backslash variant some browsers normalize to `//`.
         assert_eq!(local_redirect_target("http://host//evil.example"), None);
+        assert_eq!(local_redirect_target("http://host/\\evil.example"), None);
+        assert_eq!(local_redirect_target("http://host/\\/evil.example"), None);
     }
 
     #[test]
