@@ -1,0 +1,44 @@
+/* Design tokens copied from indice's app.css so the site echoes the app.
+   One system, two accent modes: reading-room blue (default) and workroom clay
+   (the `.mode-workroom` section). Kraft/manila neutrals from the archive's own
+   materials; the small-caps "eyebrow" is the finding-aid typographic motif. */
+:root {
+  /* text */
+  --ink: #1a1a1a;
+  --muted: #6b6b6b;
+  --faint: #8f8b83;
+  /* warm hairlines */
+  --line: #e7e3db;
+  --line-soft: #f1eee8;
+  /* surfaces: reading white + kraft tints */
+  --bg: #ffffff;
+  --paper: #faf8f3;
+  --paper-2: #f4f0e8;
+  /* reading-room accent (blue) */
+  --blue: #0066cc;
+  --blue-dk: #0053a6;
+  --blue-tint: #e6effb;
+  /* workroom accent (clay / "red tape") */
+  --clay: #a85644;
+  --clay-dk: #834234;
+  --clay-tint: #f6e7e1;
+  /* semantic */
+  --ok: #2a7f5f;
+  --danger: #c5221f;
+  /* shape + measure */
+  --radius: 6px;
+  --col: 960px;
+
+  /* default accent = reading room */
+  --accent: var(--blue);
+  --accent-dk: var(--blue-dk);
+  --accent-tint: var(--blue-tint);
+}
+
+/* The workroom section flips the accent to clay — the site demonstrating
+   indice's two-mode identity. */
+.mode-workroom {
+  --accent: var(--clay);
+  --accent-dk: var(--clay-dk);
+  --accent-tint: var(--clay-tint);
+}
