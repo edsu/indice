@@ -1037,7 +1037,14 @@ async fn main() -> Result<()> {
                     );
                     std::process::exit(2);
                 };
-                indice_lib::server::ManageConfig::forward_auth(header, secret)
+                let mut mc = indice_lib::server::ManageConfig::forward_auth(header, secret);
+                // Optional: where /logout sends the browser after clearing indice's
+                // display cookie. Set to the SSO proxy's sign-out URL (e.g.
+                // `/oauth2/sign_out?rd=/`) for a real single-click logout.
+                mc.logout_redirect = std::env::var("INDICE_LOGOUT_REDIRECT")
+                    .ok()
+                    .filter(|s| !s.is_empty());
+                mc
             } else {
                 indice_lib::server::ManageConfig::local()
             };

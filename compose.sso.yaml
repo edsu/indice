@@ -1,0 +1,65 @@
+# SSO overlay — management behind oauth2-proxy (GitHub). Run WITH the base file:
+#
+#   docker compose -f compose.yaml -f compose.sso.yaml up -d
+#
+# Provide these (e.g. in a .env file):
+#   GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET  — a GitHub OAuth App (Settings →
+#       Developer settings → OAuth Apps) whose Authorization callback URL is
+#       <SITE>/oauth2/callback (e.g. http://localhost/oauth2/callback locally).
+#   OAUTH2_PROXY_COOKIE_SECRET               — a 32-char secret: openssl rand -hex 16
+#   INDICE_AUTH_PROXY_SECRET                 — shared Caddy↔indice secret
+#
+# Optional:
+#   GITHUB_USER                 — allow-list a single GitHub login (default edsu);
+#                                 use OAUTH2_PROXY_GITHUB_ORG/_TEAM to widen.
+#   OAUTH2_PROXY_REDIRECT_URL   — the callback URL (default http://localhost/oauth2/callback);
+#                                 set to https://your-domain/oauth2/callback in prod.
+#   OAUTH2_PROXY_COOKIE_SECURE  — "true" in production (HTTPS); default "false" for
+#                                 local HTTP.
+services:
+  indice:
+    command: ["serve", "--manage", "--bind", "0.0.0.0:8080", "--home", "/data",
+              "--auth-proxy-header", "X-Forwarded-User"]
+    environment:
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
+      # Real single-click logout: clear indice's display cookie, then bounce to
+      # oauth2-proxy's sign-out (which clears its session) and back to /.
+      INDICE_LOGOUT_REDIRECT: "/oauth2/sign_out?rd=/"
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    depends_on:
+      indice:
+        condition: service_healthy
+    environment:
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      OAUTH2_PROXY_PROVIDER: github
+      OAUTH2_PROXY_CLIENT_ID: ${GITHUB_CLIENT_ID:?set GITHUB_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?set GITHUB_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_PROXY_COOKIE_SECRET:?a 32-char secret from: openssl rand -hex 16}"
+      # Restrict who may sign in. github-user is an allow-list of GitHub logins.
+      OAUTH2_PROXY_GITHUB_USER: ${GITHUB_USER:-edsu}
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      # Only request the email scope — the default GitHub provider also asks for
+      # `read:org`, which is only needed to restrict by org/team. If you switch to
+      # OAUTH2_PROXY_GITHUB_ORG / _TEAM, set OAUTH2_PROXY_SCOPE to include read:org.
+      OAUTH2_PROXY_SCOPE: ${OAUTH2_PROXY_SCOPE:-user:email}
+      # Auth-request mode: oauth2-proxy only serves /oauth2/*; Caddy calls
+      # /oauth2/auth and proxies the app itself.
+      OAUTH2_PROXY_UPSTREAMS: static://200
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_COOKIE_SECURE: "${OAUTH2_PROXY_COOKIE_SECURE:-false}"
+      OAUTH2_PROXY_REDIRECT_URL: "${OAUTH2_PROXY_REDIRECT_URL:-http://localhost/oauth2/callback}"
+    restart: unless-stopped
+
+  caddy:
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.sso", "--adapter", "caddyfile"]
+    depends_on:
+      oauth2-proxy:
+        condition: service_started
+    volumes:
+      - ./Caddyfile.sso:/etc/caddy/Caddyfile.sso:ro
+    environment:
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
