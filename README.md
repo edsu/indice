@@ -520,8 +520,21 @@ indice serve --manage \
 Every management request must carry both the identity header and the secret;
 anything else is rejected. The public read-only site (search, browse, replay) is
 **not** gated — only the management routes are. "Who is an admin" is delegated
-entirely to your proxy/SSO: anyone it logs in can administer, and the signed-in
-identity is shown in the workroom strip at the top of every management page.
+entirely to your proxy/SSO: anyone it logs in can administer.
+
+The management routes show the workroom chrome + signed-in identity from the
+proxy's identity header. The public pages (home, collection, crawl) are ungated,
+and browsers won't send the proxy's credentials there — so at login indice sets a
+small **signed, display-only session cookie** (HMAC'd with the shared secret) and
+reads it on those pages, so a signed-in admin gets the edit-in-place controls
+everywhere. The cookie only drives *rendering* — every write is still re-checked
+against the proxy's identity header + secret, so a stolen or forged cookie grants
+no access. Pages served without an identity show a **Log in** link (it points at
+the gated `/manage/login`, so following it trips the proxy's login and returns you
+to where you were). A **Log out** link clears the display cookie — but note that
+with the Basic-auth stopgap the browser keeps its cached credentials until it's
+closed, so logout only hides the chrome; a full sign-out (and single sign-on)
+comes with the SSO path.
 
 **Deploy checklist**
 

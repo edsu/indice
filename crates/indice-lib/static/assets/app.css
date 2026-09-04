@@ -63,6 +63,10 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.
 .appbar .search-form button { padding: 0.4rem 0.85rem; font-size: 0.9rem; }
 .appbar .who { margin-left: auto; font-size: 0.82rem; color: var(--muted); white-space: nowrap; }
 .appbar .who b { color: var(--ink); font-weight: 650; }
+.appbar .login { margin-left: auto; font-size: 0.82rem; color: var(--muted); white-space: nowrap; text-decoration: none; }
+.appbar .login:hover { color: var(--ink); text-decoration: underline; }
+.appbar .logout { margin-left: 0.75rem; font-size: 0.82rem; color: var(--muted); white-space: nowrap; text-decoration: none; }
+.appbar .logout:hover { color: var(--ink); text-decoration: underline; }
 /* Workroom: same bar, clay-tinted with a top rule (the accent itself flips via
    the .mode-manage body class). */
 .mode-manage .appbar { background: var(--clay-tint); border-top: 3px solid var(--clay); }

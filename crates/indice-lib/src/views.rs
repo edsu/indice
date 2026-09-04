@@ -25,12 +25,14 @@ pub struct SearchBox {
 /// page — wordmark + (optional) search — then the page `body` centered in
 /// `.wrap`. `manage` puts the page in "workroom" mode: the `.mode-manage` accent
 /// flip plus the header's clay treatment, Manage chip, and signed-in name.
-/// `search` is the header search box (`None` omits it — the homepage, whose hero
-/// carries the search instead).
+/// `can_login` (forward-auth configured but this request anonymous) shows a
+/// "Log in" link in place of the signed-in name. `search` is the header search
+/// box (`None` omits it — the homepage, whose hero carries the search instead).
 pub fn layout(
     title: &str,
     manage: bool,
     signed_in: Option<&str>,
+    can_login: bool,
     search: Option<&SearchBox>,
     body: Markup,
 ) -> Markup {
@@ -63,6 +65,13 @@ pub fn layout(
                     }
                     @if let Some(u) = signed_in {
                         span.who { "signed in as " b { (u) } }
+                        a.logout href="/logout" { "Log out" }
+                    } @else if can_login {
+                        // Forward-auth is configured but this request is anonymous:
+                        // offer a login. /manage/login is gated, so following it
+                        // trips the proxy's login (a Basic-auth prompt, or an SSO
+                        // redirect) and bounces back to the current page.
+                        a.login href="/manage/login" { "Log in" }
                     }
                 }
                 main.wrap { (body) }
@@ -202,6 +211,7 @@ pub fn home(
     browse: &HomeBrowse,
     management: bool,
     signed_in: Option<&str>,
+    can_login: bool,
 ) -> Markup {
     let body = html! {
         // The brand "indice" lives in the header now; the hero leads with what
@@ -301,7 +311,7 @@ pub fn home(
         }
     };
     // No header search on the homepage — the hero below carries it.
-    layout("indice", management, signed_in, None, body)
+    layout("indice", management, signed_in, can_login, None, body)
 }
 
 // ── Search results ─────────────────────────────────────────────────────────
@@ -411,6 +421,9 @@ pub struct TimelineBar {
 /// The search results page: top bar, tips, a count line, an active-filter row,
 /// a month timeline, then a facet sidebar beside the results table with
 /// prev/next pagination.
+// The trailing (management, signed_in, can_login) are the shared header-chrome
+// flags every page threads; bundling them isn't worth a struct here.
+#[allow(clippy::too_many_arguments)]
 pub fn search_results(
     query: &str,
     nav: &PageNav,
@@ -419,6 +432,7 @@ pub fn search_results(
     rows: &[SearchResultRow],
     management: bool,
     signed_in: Option<&str>,
+    can_login: bool,
 ) -> Markup {
     // Preserve the query when linking to another page.
     let page_href = |p: usize| format!("/search?q={}&page={}", nav.query_encoded, p);
@@ -546,6 +560,7 @@ pub fn search_results(
         &format!("{query} - indice"),
         management,
         signed_in,
+        can_login,
         Some(&search),
         body,
     )
@@ -657,6 +672,8 @@ pub struct CollectionPage {
     pub management: bool,
     /// Signed-in user (forward-auth), shown in the workroom strip.
     pub signed_in: Option<String>,
+    /// Forward-auth configured but this request anonymous — show a "Log in" link.
+    pub can_login: bool,
 }
 
 impl CollectionPage {
@@ -835,6 +852,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
         &format!("{} - indice", p.name),
         p.management,
         p.signed_in.as_deref(),
+        p.can_login,
         Some(&search),
         body,
     )
@@ -882,6 +900,8 @@ pub struct CrawlPage {
     pub management: bool,
     /// Signed-in user (forward-auth), shown in the workroom strip.
     pub signed_in: Option<String>,
+    /// Forward-auth configured but this request anonymous — show a "Log in" link.
+    pub can_login: bool,
 }
 
 /// The crawl detail page: provenance panel, file metadata, and seed-page list.
@@ -964,6 +984,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
         &format!("{} - indice", p.name),
         p.management,
         p.signed_in.as_deref(),
+        p.can_login,
         Some(&search),
         body,
     )
@@ -1053,7 +1074,14 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
     } else {
         SearchBox::default()
     };
-    layout("Manage - indice", true, signed_in, Some(&search), body)
+    layout(
+        "Manage - indice",
+        true,
+        signed_in,
+        false,
+        Some(&search),
+        body,
+    )
 }
 
 /// Progressive-enhancement script for the accession desk: source tabs, the
@@ -1466,5 +1494,12 @@ pub fn accession_desk(
             ..Default::default()
         }
     };
-    layout("Add crawls - indice", true, signed_in, Some(&search), body)
+    layout(
+        "Add crawls - indice",
+        true,
+        signed_in,
+        false,
+        Some(&search),
+        body,
+    )
 }
