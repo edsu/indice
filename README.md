@@ -92,6 +92,16 @@ arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and you have the
 > **macOS:** an unsigned download is quarantined by Gatekeeper. Clear it once
 > with `xattr -d com.apple.quarantine ./indice` (notarized builds are planned).
 
+### With Homebrew (macOS / Linux)
+
+```sh
+brew install edsu/indice/indice
+```
+
+Installs the latest release binary from the
+[tap](https://github.com/edsu/homebrew-indice); `brew upgrade indice` picks up new
+releases. No Gatekeeper prompt — Homebrew's downloads aren't quarantined.
+
 ### With cargo
 
 ```sh
