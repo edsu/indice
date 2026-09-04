@@ -1,0 +1,51 @@
+# SSO variant of the Caddyfile (used by compose.sso.yaml): management behind
+# oauth2-proxy, so admins log in with GitHub (or any OIDC provider) instead of a
+# shared password.
+#
+# The public read-only site stays open. The management surface — /manage/* and the
+# write APIs (everything under /api/ EXCEPT the public /api/search) — requires an
+# SSO login: Caddy asks oauth2-proxy whether the request is authenticated, and on
+# success forwards the identity to indice as X-Forwarded-User plus the shared
+# secret indice's forward-auth requires. Chrome on the public pages is handled by
+# indice's own signed display cookie (set at login), so no auth is needed there.
+{$SITE_ADDRESS} {
+	# oauth2-proxy's own endpoints: login start, OAuth callback, sign_out, and the
+	# /oauth2/auth check used below.
+	handle /oauth2/* {
+		reverse_proxy oauth2-proxy:4180
+	}
+
+	@manage {
+		path /manage/* /api/*
+		not path /api/search*
+	}
+	handle @manage {
+		# Auth subrequest to oauth2-proxy. On 2xx (authenticated) copy the identity
+		# onto the original request and fall through to indice; a header-only
+		# handle_response lets the request continue. On anything else (401, not
+		# logged in) send the browser to the login, returning here afterwards.
+		reverse_proxy oauth2-proxy:4180 {
+			method GET
+			rewrite /oauth2/auth
+			@ok status 2xx
+			handle_response @ok {
+				request_header X-Forwarded-User {rp.header.X-Auth-Request-User}
+			}
+			handle_response {
+				redir * /oauth2/start?rd={http.request.uri}
+			}
+		}
+		# Reached only when the auth check passed. header_up replaces any
+		# client-supplied secret, and X-Forwarded-User was set above from the
+		# verified identity, so neither can be spoofed.
+		reverse_proxy indice:8080 {
+			header_up X-Indice-Auth-Secret {$INDICE_AUTH_PROXY_SECRET}
+		}
+	}
+
+	handle {
+		# Public read-only site; indice's display cookie renders the workroom chrome
+		# for a signed-in admin here.
+		reverse_proxy indice:8080
+	}
+}

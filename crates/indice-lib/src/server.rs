@@ -54,6 +54,11 @@ pub struct ManageConfig {
     /// Whether the management routes are mounted at all (`--manage`).
     pub enabled: bool,
     pub forward_auth: Option<ForwardAuth>,
+    /// Where `/logout` sends the browser after clearing indice's display cookie.
+    /// `None` → `/` (the basic-auth stopgap). Behind an SSO proxy, set this to the
+    /// proxy's sign-out URL (e.g. `/oauth2/sign_out?rd=/`) so a single click ends
+    /// both indice's display session and the proxy's login session.
+    pub logout_redirect: Option<String>,
 }
 
 /// Forward-auth settings: which header carries the authenticated user, and the
@@ -79,6 +84,7 @@ impl ManageConfig {
         Self {
             enabled: true,
             forward_auth: None,
+            logout_redirect: None,
         }
     }
     /// Management on, gated behind a trusted auth proxy.
@@ -89,6 +95,7 @@ impl ManageConfig {
                 user_header: user_header.into(),
                 secret: secret.into(),
             }),
+            logout_redirect: None,
         }
     }
 }
@@ -145,6 +152,9 @@ struct AppState {
     /// read the `user_header` to show who's signed in; the route middleware does
     /// the actual enforcement.
     forward_auth: Option<ForwardAuth>,
+    /// Where `/logout` redirects after clearing the display cookie (`None` → `/`).
+    /// Set to the SSO proxy's sign-out URL for a real single-click logout.
+    logout_redirect: Option<String>,
     /// Builds authenticated Browsertrix clients for the import UI (binary-provided
     /// with env credentials). `None` when no Browsertrix credentials are set —
     /// the import endpoints then report that it's unconfigured.
@@ -227,6 +237,7 @@ fn build_router(
         job_counter: AtomicU64::new(0),
         management: manage.enabled,
         forward_auth: manage.forward_auth.clone(),
+        logout_redirect: manage.logout_redirect.clone(),
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
     });
@@ -642,15 +653,17 @@ fn local_redirect_target(referer: &str) -> Option<String> {
     (path.starts_with('/') && !offsite).then(|| path.to_string())
 }
 
-/// `GET /logout` — clear the display session cookie so the public pages show the
-/// anonymous view again. Public and un-gated on purpose: logging out shouldn't
-/// require auth, and it must NOT pass through the forward-auth middleware (which
-/// would immediately re-set the cookie). Note: with HTTP Basic auth the browser
-/// keeps its cached credentials until it's closed, so a later visit to `/manage`
-/// can silently re-authenticate; a full logout needs closing the browser (SSO
-/// gets a real sign-out — see the deployment docs).
-async fn logout(headers: HeaderMap) -> Response {
-    let mut res = Redirect::to("/").into_response();
+/// `GET /logout` — clear the display session cookie, then redirect. Public and
+/// un-gated on purpose: logging out shouldn't require auth, and it must NOT pass
+/// through the forward-auth middleware (which would immediately re-set the
+/// cookie). By default it redirects to `/`; behind an SSO proxy `logout_redirect`
+/// points at the proxy's sign-out (e.g. `/oauth2/sign_out?rd=/`) so one click ends
+/// both sessions. With the HTTP Basic stopgap there's no proxy sign-out, so the
+/// browser keeps its cached credentials until it's closed — logout only hides the
+/// chrome there.
+async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let dest = state.logout_redirect.as_deref().unwrap_or("/");
+    let mut res = Redirect::to(dest).into_response();
     clear_session_cookie(&mut res, forwarded_https(&headers));
     res
 }
