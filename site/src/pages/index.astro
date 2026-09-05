@@ -18,17 +18,17 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>indice — a reading room for web archives</title>
+    <title>indice: a reading room for web archives</title>
     <meta
       name="description"
       content="indice is a single self-contained binary that turns WACZ files into a searchable, browsable, replayable web archive: full-text search with faceted and temporal browsing, provenance up front, and in-browser replay."
     />
     <meta name="color-scheme" content="light" />
     <link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
-    <meta property="og:title" content="indice — a reading room for web archives" />
+    <meta property="og:title" content="indice: a reading room for web archives" />
     <meta
       property="og:description"
-      content="Full-text search, faceted and temporal browsing, provenance up front, and in-browser replay — from one self-contained binary."
+      content="Full-text search, faceted and temporal browsing, provenance up front, and in-browser replay, from one self-contained binary."
     />
     <meta property="og:type" content="website" />
   </head>
@@ -42,6 +42,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
         <a href="#how">How it works</a>
         <a href="#sources">Sources</a>
         <a href="#install">Install</a>
+        <a href="#colophon">Colophon</a>
         <a class="nav-cta" href={repo}>GitHub ↗</a>
       </nav>
     </header>
@@ -60,11 +61,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <span class="tagline">A reading room for web archives.</span>
           </h1>
           <p class="lede">
-            indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
-            into an archive you can actually use: full-text search with faceted,
-            temporal browsing; the provenance of every crawl; and faithful
-            in-browser replay. One self-contained binary that scales from your laptop to an institution.
-          </p>
+             indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
+             into an archive you can actually use: full-text search with
+             faceted, temporal browsing; the provenance of every crawl; and
+             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling. One
+             self-contained binary that scales from you on your laptop to
+             multiuser organizational setups.</p>
           <div class="cta-row">
             <a class="btn primary" href="#install">Get started</a>
             <a class="btn" href={repo}>View on GitHub</a>
@@ -90,7 +92,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <div class="feature">
               <h3>Full-text search, faceted &amp; temporal</h3>
               <p>
-                Hit-highlighted snippets across page text, titles, and metadata — then narrow
+                Hit-highlighted snippets across page text, titles, and metadata; then narrow
                 by collection, site, date, type, or language, with a month timeline for moving
                 through time.
               </p>
@@ -98,8 +100,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <div class="feature">
               <h3>Provenance up front</h3>
               <p>
-                See how each crawl was made — software, operator, dates, seeds, page counts —
-                and verify each WACZ's fixity, instead of taking the archive on faith.
+               See how each crawl was made, including software, operator, dates, seeds, page counts.
               </p>
             </div>
             <div class="feature">
@@ -132,7 +133,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <div class="frame">
                   <Image src={findingAid} alt="A collection page rendered as a finding aid with creator, dates, rights, subjects, and crawl provenance" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
-                <figcaption><b>Finding aids, not folders.</b> Each collection reads like an archival description — with fixity and crawl provenance.</figcaption>
+                <figcaption><b>Finding aids, not folders.</b> Each collection reads like an archival description, with fixity and crawl provenance stored as Markdown files you can edit.</figcaption>
               </figure>
             </div>
             <div class="shot">
@@ -150,16 +151,16 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
       <!-- How it works -->
       <section id="how">
         <div class="wrap">
-          <p class="eyebrow">How it works</p>
+          <p class="eyebrow">How it works at the command line</p>
           <div class="steps">
             <div class="step">
               <h3>Index</h3>
               <p>Point indice at local or remote WACZ files. It builds an embedded full-text index and reads each crawl's provenance.</p>
-              <p><code>indice index --collection "…" *.wacz</code></p>
+              <p><code>indice index --collection "Example" *.wacz</code></p>
             </div>
             <div class="step">
               <h3>Serve</h3>
-              <p>Run the single binary. It serves the read-only reading room over HTTP — nothing else to install.</p>
+              <p>Run the single binary. It serves the read-only reading room over HTTP.</p>
               <p><code>indice serve</code></p>
             </div>
             <div class="step">
@@ -180,7 +181,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <h3>Browsertrix</h3>
               <p>
                 Browse your <a href="https://browsertrix.com/">Browsertrix</a> org and import
-                collections and crawls in a few clicks — or index and replay them
+                collections and crawls in a few clicks, or index and replay them
                 <strong>straight from Browsertrix's cloud storage, without downloading a thing</strong>.
                 indice serves the very same ReplayWeb.page engine Browsertrix does, so replay is
                 identical.
@@ -196,9 +197,9 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <div class="feature">
               <h3>Cloud &amp; remote storage</h3>
               <p>
-                Point indice at a WACZ hosted over HTTP(S) — in object storage, or behind a
-                presigned URL — and it indexes and replays it with byte-range reads, without
-                copying the whole file down.
+                 Point indice at a WACZ hosted over HTTP(S), in object storage, or behind a
+                 presigned URL, and it indexes and replays it with byte-range reads, without
+                 needing to download the entire file.
               </p>
             </div>
           </div>
@@ -213,9 +214,9 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <p class="eyebrow">Built for range</p>
               <h2>One tool, laptop to institution.</h2>
               <p>
-                indice ships as a single self-contained binary — no Solr, no Elasticsearch, no
-                separate database. The same model that indexes a handful of your own WACZ files
-                on a laptop scales up toward institutional collections. It aims to fit both ends
+                indice ships as a single self-contained binary that uses the embedded <a href="https://github.com/quickwit-oss/tantivy">Tantivy</a> search engine library.
+                So there's no Solr, Elasticsearch, or separate database to keep online. The same model that indexes a handful of your own WACZ files
+                on a laptop should scale up towards institution sized collections. It aims to fit both ends
                 of that range, rather than assuming the infrastructure of a large web archive.
               </p>
             </div>
@@ -241,11 +242,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <p class="eyebrow">Curate in the workroom</p>
               <h2 style="font-size:1.8rem;margin:0 0 0.8rem;">Turn the reading room into a workroom.</h2>
               <p style="color:#3a3a3a;">
-                Run <code style="font-family:var(--mono);background:var(--bg);padding:.1rem .35rem;border-radius:3px;">serve --manage</code>
+                Run in management mode or behind a SSO provider 
                 and a warm clay "red-tape" accent marks write mode: add archives, import from
-                Browsertrix or Archive-It, and write finding aids in place — no command line
-                needed. Local on loopback it needs no login; over the network it sits behind
-                your proxy (Basic auth or single sign-on).
+                Browsertrix or Archive-It, and write finding aids in place. No command line
+                needed.
               </p>
               <a class="btn" href={`${repo}/blob/main/README.md#management-mode`}>Management docs →</a>
             </div>
@@ -270,7 +270,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <p>
               An <em>indice</em> is a sign that points beyond itself. Suzanne Briet argued that a
               wild antelope becomes a <em>document</em> once it is captured, catalogued, and set
-              aside as evidence — a
+              aside as evidence, an
             </p>
             <blockquote>
               “indice concret ou symbolique, conservé ou enregistré.”
@@ -301,7 +301,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <h3>Prebuilt binary</h3>
               <pre><span class="c"># macOS · Linux · Windows</span>
 Download from the releases page</pre>
-              <p class="note"><a href={releases}>Latest release ↗</a> — unpack and run; a sample archive is included.</p>
+              <p class="note"><a href={releases}>Latest release ↗</a> unpack and run; a sample archive is included.</p>
             </div>
             <div class="card">
               <h3>Cargo</h3>
@@ -317,6 +317,38 @@ Download from the releases page</pre>
   ghcr.io/edsu/indice:latest</pre>
               <p class="note">Or the <a href={`${repo}/blob/main/README.md#deployment`}>compose stack</a> with automatic HTTPS.</p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Colophon: how indice was made -->
+      <section id="colophon" class="colophon">
+        <div class="wrap">
+          <p class="eyebrow">Colophon</p>
+          <h2 class="sec-title">How indice was made — and why that's part of the record.</h2>
+          <div class="prose">
+            <p>
+              indice has been built in the open over the course of 2026, in small increments,
+              with substantial help from <a href="https://www.anthropic.com/claude-code">Claude
+              Code</a>, Anthropic's AI coding assistant. It is the work of a single developer
+              working alongside a language model, not the product of an institution or a large
+              team. It is alpha software: expect rough edges, and know that careful technical
+              review is genuinely welcome.
+            </p>
+            <p>
+              It stands on the web archiving community's shoulders. Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s ReplayWeb.page and wabac.js;
+              the <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> format,
+              <a href="https://browsertrix.com/">Browsertrix</a>, and Archive-It's WASAPI shape
+              how archives come in. Its framing is borrowed from documentation theory — Suzanne
+              Briet's antelope, Peirce's index — and from the archival tradition of the finding aid.
+            </p>
+            <p>
+              Why say all this out loud? Because a web archive is a claim about what the web once
+              was, and it asks you to trust that claim. Software that serves such claims should be
+              just as legible about its own provenance — how it was written, by whom and by what,
+              and what it does and does not guarantee. Naming that isn't a disclaimer; it's the
+              same commitment to authenticity that indice asks of every crawl it holds.
+            </p>
           </div>
         </div>
       </section>
@@ -337,10 +369,9 @@ Download from the releases page</pre>
           </div>
         </div>
         <p class="fine">
-          indice is alpha software, written extensively with the support of Claude Code — it may
-          contain bugs, and technical reviews are welcome. Web-archive replay is entirely
-          <a href="https://webrecorder.net/">Webrecorder</a>'s work; indice bundles ReplayWeb.page
-          and wabac.js and adds a thin Rust layer for indexing, search, and serving. The
+          Web-archive replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s
+          work; indice bundles ReplayWeb.page and wabac.js and adds a thin Rust layer for
+          indexing, search, and serving. The
           antelope beside “Why indice” is the (extinct) bluebuck from
           <a href="https://commons.wikimedia.org/wiki/File:The_book_of_antelopes_(1894)_Hippotragus_leucophaeus.png">The
           Book of Antelopes</a> (1894), public domain.

@@ -226,6 +226,13 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .why cite { display: block; margin-top: 0.5rem; font-size: 0.85rem; color: var(--faint); font-style: normal; }
 
 /* ── Install ──────────────────────────────────────────────────────────────── */
+/* ── Colophon: how indice was made (a set-apart, bookish note) ────────────── */
+.colophon { background: var(--paper-2); }
+.colophon .sec-title { max-width: 28ch; }
+.colophon .prose { max-width: 66ch; }
+.colophon .prose p { font-family: var(--serif); font-size: 1.12rem; line-height: 1.62; color: #2f2f2f; margin: 0 0 1.05rem; }
+.colophon .prose p:last-child { margin-bottom: 0; }
+
 .install .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; }
 .install .card { border: 1px solid var(--line); border-radius: var(--radius); padding: 1.2rem; background: var(--paper); }
 .install .card h3 { margin: 0 0 0.6rem; font-size: 1.05rem; }
