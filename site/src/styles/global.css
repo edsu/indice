@@ -189,6 +189,11 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .range .endpoint { flex: 1; border: 1px solid var(--line); border-radius: var(--radius); padding: 1.1rem; background: var(--bg); }
 .range .endpoint .eyebrow { margin-bottom: 0.35rem; }
 .range .endpoint p { font-size: 0.9rem; color: var(--muted); margin: 0; }
+.range .endpoint .stat {
+  margin-top: 0.7rem; padding-top: 0.6rem; border-top: 1px solid var(--line);
+  font-size: 0.82rem; line-height: 1.5;
+}
+.range .endpoint .stat b { color: var(--ink); font-weight: 650; }
 
 /* ── Workroom section: the two-mode signature (clay accent) ───────────────── */
 .mode-workroom { background: var(--clay-tint); }
