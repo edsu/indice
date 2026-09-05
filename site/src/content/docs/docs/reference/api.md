@@ -1,5 +1,5 @@
 ---
-title: HTTP API
+title: REST API
 description: The read-only JSON search API, the health check, and the machine-readable endpoints indice serves for replay.
 ---
 

@@ -235,18 +235,16 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <p class="eyebrow">Small &amp; private</p>
                 <p>Index a few crawls on your laptop. Nothing is sent to a hosted service; it runs offline.</p>
                 <p class="stat">
-                  <b>One binary</b>, no database. Crawls index in <b>seconds</b>,
-                  and search results return in <b>~20&nbsp;ms</b>.{' '}
-                  <a href={`${base}/docs/quickstart/`}>Try it &rarr;</a>
+                  One binary, no database. WACZ files index in seconds,
+                   and search results return in milliseconds. <a href={`${base}/docs/quickstart/`}>Try it &rarr;</a>
                 </p>
               </div>
               <div class="endpoint">
                 <p class="eyebrow">Scaled up</p>
                 <p>Serve an institutional reading room behind a proxy, with the same single binary.</p>
                 <p class="stat">
-                  <b>~1.7&nbsp;KB</b> per page &mdash; about <b>1.6&nbsp;GB</b> at 1M pages,
-                  full-text search still <b>under ~40&nbsp;ms</b>.{' '}
-                  <a href={`${base}/docs/guides/scale/`}>How it scales &rarr;</a>
+                   The index is compact. Adding a million pages results in an index that is about 1.5 GB on 
+                   disk. <a href={`${base}/docs/guides/scale/`}>How it scales &rarr;</a>
                 </p>
               </div>
             </div>
