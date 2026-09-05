@@ -98,20 +98,15 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
     radial-gradient(1200px 400px at 15% -5%, var(--accent-tint), transparent 60%),
     linear-gradient(var(--paper), var(--bg));
 }
-/* A faint public-domain manicule — the pointing hand printers literally called
-   an "index", and a Peircean index (a sign bound to its object). It lives in the
-   world of marginalia and finding aids, and gestures back toward the wordmark.
-   Flipped to point left toward the text; toned warm and faded into the kraft
-   palette. Source: typographic pointing hand, c.1850, public domain (CC0). */
+/* A faint pointer arrow — the on-screen "index". The cursor is the modern
+   descendant of the manicule; here it drifts outward (up and to the right) as
+   ambient hero art. Rounded-join variant, mirrored to point outward, toned
+   faint. Drawn in-house (no attribution needed). */
 .hero-art {
   position: absolute; z-index: 0; pointer-events: none; user-select: none;
-  right: 2%; bottom: 4%; width: min(42%, 520px); height: auto;
-  opacity: 0.14;
-  transform: scaleX(-1);
-  filter: sepia(0.4) saturate(0.7) contrast(1.02);
-  /* Fade the leading (finger) edge so the gesture dissolves toward the text. */
-  -webkit-mask-image: linear-gradient(to right, #000 80%, transparent 100%);
-  mask-image: linear-gradient(to right, #000 80%, transparent 100%);
+  right: 8%; top: 8rem; width: min(24%, 280px); height: auto;
+  opacity: 0.16;
+  transform: scaleX(-1); /* mirror so the classic up-left arrow points up-right */
 }
 .hero .wrap { position: relative; z-index: 1; }
 @media (max-width: 900px) { .hero-art { display: none; } }
