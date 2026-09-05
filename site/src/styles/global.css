@@ -94,12 +94,28 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .hero { padding: 5.5rem 0 4rem; background:
     radial-gradient(1200px 400px at 15% -5%, var(--accent-tint), transparent 60%),
     linear-gradient(var(--paper), var(--bg)); }
-.hero h1 {
-  font-size: clamp(2.4rem, 5.2vw, 4rem);
-  line-height: 1.04; margin: 0 0 1.1rem; max-width: 16ch;
+.hero-title { margin: 0 0 1.1rem; }
+.hero-title .brand {
+  display: block;
+  font-family: var(--sans); font-weight: 800;
+  font-size: clamp(3.4rem, 9vw, 6rem); line-height: 0.95; letter-spacing: -0.035em;
+  color: var(--ink);
+}
+.hero-title .tagline {
+  display: block; margin-top: 0.5rem;
+  font-family: var(--serif); font-weight: 600;
+  font-size: clamp(1.5rem, 3.4vw, 2.5rem); line-height: 1.08; letter-spacing: -0.01em;
+  color: var(--ink);
 }
 .hero .lede { font-size: clamp(1.05rem, 1.8vw, 1.3rem); color: #3a3a3a; max-width: 60ch; margin: 0 0 1.8rem; }
 .hero .cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.hero-install { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; margin-top: 1.4rem; }
+.hero-install .cmd {
+  font-family: var(--mono); font-size: 0.9rem;
+  background: #1e1c1a; color: #f4f0e8; padding: 0.55rem 0.85rem; border-radius: var(--radius);
+}
+.hero-install .cmd::before { content: "$ "; color: #8f887c; }
+.hero-install .or { font-size: 0.9rem; color: var(--muted); }
 .hero .meta { margin-top: 1.6rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; }
 .hero .meta span { font-size: 0.82rem; color: var(--faint); font-family: var(--mono); }
 

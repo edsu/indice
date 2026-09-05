@@ -49,9 +49,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
       <section class="hero">
         <div class="wrap">
           <p class="eyebrow">Web archive server · written in Rust</p>
-          <h1>A reading room for web archives.</h1>
+          <h1 class="hero-title">
+            <span class="brand">indice</span>
+            <span class="tagline">A reading room for web archives.</span>
+          </h1>
           <p class="lede">
-            indice turns a pile of <a href="https://replayweb.page/docs/wacz-format/">WACZ</a> files
+            indice turns your <a href="https://replayweb.page/docs/wacz-format/">WACZ</a> files
             into an archive you can actually use — full-text search with faceted,
             temporal browsing; the provenance of every crawl up front; and faithful
             in-browser replay. One self-contained binary, from a laptop to an institution.
@@ -59,7 +62,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
           <div class="cta-row">
             <a class="btn primary" href="#install">Get started</a>
             <a class="btn" href={repo}>View on GitHub</a>
-            <a class="btn" href={releases}>Download ↓</a>
+          </div>
+          <div class="hero-install">
+            <code class="cmd">brew install edsu/indice/indice</code>
+            <span class="or">or a <a href="#install">prebuilt binary, Docker, or cargo →</a></span>
           </div>
           <div class="meta">
             <span>single binary</span>
