@@ -98,25 +98,20 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
     radial-gradient(1200px 400px at 15% -5%, var(--accent-tint), transparent 60%),
     linear-gradient(var(--paper), var(--bg));
 }
-/* A faint public-domain engraving of the (extinct) bluebuck antelope — Briet's
-   documentation-theory example, and a nod to preservation. Toned into the kraft
-   palette, low opacity, faded toward the text so it reads as delicate marginalia.
-   Source: The Book of Antelopes (1894), public domain. */
+/* A faint public-domain manicule — the pointing hand printers literally called
+   an "index", and a Peircean index (a sign bound to its object). It lives in the
+   world of marginalia and finding aids, and gestures back toward the wordmark.
+   Flipped to point left toward the text; toned warm and faded into the kraft
+   palette. Source: typographic pointing hand, c.1850, public domain (CC0). */
 .hero-art {
   position: absolute; z-index: 0; pointer-events: none; user-select: none;
-  right: -1.5%; bottom: 0; width: min(50%, 660px); height: auto;
-  opacity: 0.26;
-  filter: grayscale(0.42) sepia(0.3) contrast(0.96);
-  /* Fade the far-left edge (toward the text) and the bottom (the grass + the
-     small grazing heads at their feet), leaving the two standing antelopes. */
-  -webkit-mask-image:
-    linear-gradient(to left, #000 88%, transparent 100%),
-    linear-gradient(to top, transparent 34%, #000 60%);
-  -webkit-mask-composite: source-in;
-  mask-image:
-    linear-gradient(to left, #000 88%, transparent 100%),
-    linear-gradient(to top, transparent 34%, #000 60%);
-  mask-composite: intersect;
+  right: 2%; bottom: 4%; width: min(42%, 520px); height: auto;
+  opacity: 0.14;
+  transform: scaleX(-1);
+  filter: sepia(0.4) saturate(0.7) contrast(1.02);
+  /* Fade the leading (finger) edge so the gesture dissolves toward the text. */
+  -webkit-mask-image: linear-gradient(to right, #000 80%, transparent 100%);
+  mask-image: linear-gradient(to right, #000 80%, transparent 100%);
 }
 .hero .wrap { position: relative; z-index: 1; }
 @media (max-width: 900px) { .hero-art { display: none; } }
@@ -206,7 +201,27 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: center; }
 
 /* ── Why indice ───────────────────────────────────────────────────────────── */
-.why { }
+.why { position: relative; overflow: hidden; }
+/* Briet's (extinct) bluebuck — a wild antelope that becomes a *document* once
+   catalogued as evidence. Kept here, beside the story that explains it. Toned
+   into the kraft palette and faded toward the text so the prose stays readable.
+   Source: The Book of Antelopes (1894), public domain. */
+.why-art {
+  position: absolute; z-index: 0; pointer-events: none; user-select: none;
+  right: -2%; bottom: 0; width: min(44%, 520px); height: auto;
+  opacity: 0.2;
+  filter: grayscale(0.42) sepia(0.3) contrast(0.96);
+  -webkit-mask-image:
+    linear-gradient(to left, #000 82%, transparent 100%),
+    linear-gradient(to top, transparent 20%, #000 52%);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to left, #000 82%, transparent 100%),
+    linear-gradient(to top, transparent 20%, #000 52%);
+  mask-composite: intersect;
+}
+.why .wrap { position: relative; z-index: 1; }
+@media (max-width: 900px) { .why-art { display: none; } }
 .why .prose { max-width: 62ch; }
 .why .prose p { font-size: 1.05rem; color: #333; }
 .why blockquote {
