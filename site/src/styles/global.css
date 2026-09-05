@@ -98,16 +98,14 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
     radial-gradient(1200px 400px at 15% -5%, var(--accent-tint), transparent 60%),
     linear-gradient(var(--paper), var(--bg));
 }
-/* A crafted "index page": faint ruled lines (like a catalog card / finding aid),
-   fading out downward so they never fight the hero text. Pure CSS — no image,
-   no licensing, crisp at any size. */
+/* A faint ledger/register grid behind the hero — an accession-register /
+   records-management nod (rather than a library catalog card), fading out
+   downward so it never fights the text. Pure CSS: no image, no licensing. */
 .hero::before {
   content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 33px,
-    color-mix(in srgb, var(--faint) 30%, transparent) 33px 34px
-  );
+  background-image:
+    repeating-linear-gradient(to bottom, transparent 0 33px, color-mix(in srgb, var(--faint) 26%, transparent) 33px 34px),
+    repeating-linear-gradient(to right, transparent 0 33px, color-mix(in srgb, var(--faint) 26%, transparent) 33px 34px);
   -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 58%, transparent 92%);
   mask-image: linear-gradient(to bottom, #000 0, #000 58%, transparent 92%);
 }
