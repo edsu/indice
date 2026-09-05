@@ -4,6 +4,7 @@ import readingRoom from '../assets/screenshots/reading-room.png';
 import findingAid from '../assets/screenshots/finding-aid.png';
 import search from '../assets/screenshots/search.png';
 import workroom from '../assets/screenshots/workroom.png';
+import bluebuck from '../assets/bluebuck.png';
 import '../styles/global.css';
 
 const repo = 'https://github.com/edsu/indice';
@@ -48,6 +49,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
     <main id="top">
       <!-- Hero -->
       <section class="hero">
+        <Image src={bluebuck} alt="" aria-hidden="true" class="hero-art" widths={[660, 1320]} sizes="660px" />
         <div class="wrap">
           <p class="eyebrow">Web archive server · written in Rust</p>
           <a class="os-badge" href={repo}>Free &amp; open source · AGPL-3.0</a>
@@ -57,9 +59,9 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
           </h1>
           <p class="lede">
             indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
-            into an archive you can actually use — full-text search with faceted,
-            temporal browsing; the provenance of every crawl up front; and faithful
-            in-browser replay. One self-contained binary, from a laptop to an institution.
+            into an archive you can actually use: full-text search with faceted,
+            temporal browsing; the provenance of every crawl; and faithful
+            in-browser replay. One self-contained binary that scales from your laptop to an institution.
           </p>
           <div class="cta-row">
             <a class="btn primary" href="#install">Get started</a>
@@ -335,7 +337,10 @@ Download from the releases page</pre>
           indice is alpha software, written extensively with the support of Claude Code — it may
           contain bugs, and technical reviews are welcome. Web-archive replay is entirely
           <a href="https://webrecorder.net/">Webrecorder</a>'s work; indice bundles ReplayWeb.page
-          and wabac.js and adds a thin Rust layer for indexing, search, and serving.
+          and wabac.js and adds a thin Rust layer for indexing, search, and serving. The
+          hero engraving is the (extinct) bluebuck from
+          <a href="https://commons.wikimedia.org/wiki/File:The_book_of_antelopes_(1894)_Hippotragus_leucophaeus.png">The
+          Book of Antelopes</a> (1894), public domain.
         </p>
       </div>
     </footer>
