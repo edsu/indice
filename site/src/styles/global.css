@@ -105,8 +105,8 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .hero-art {
   position: absolute; z-index: 0; pointer-events: none; user-select: none;
   right: -1.5%; bottom: 0; width: min(50%, 660px); height: auto;
-  opacity: 0.16;
-  filter: grayscale(0.5) sepia(0.35) contrast(0.95);
+  opacity: 0.26;
+  filter: grayscale(0.42) sepia(0.3) contrast(0.96);
   -webkit-mask-image: linear-gradient(to left, #000 34%, transparent 86%);
   mask-image: linear-gradient(to left, #000 34%, transparent 86%);
 }
