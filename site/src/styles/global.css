@@ -107,8 +107,16 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
   right: -1.5%; bottom: 0; width: min(50%, 660px); height: auto;
   opacity: 0.26;
   filter: grayscale(0.42) sepia(0.3) contrast(0.96);
-  -webkit-mask-image: linear-gradient(to left, #000 88%, transparent 100%);
-  mask-image: linear-gradient(to left, #000 88%, transparent 100%);
+  /* Fade the far-left edge (toward the text) and the bottom (the grass + the
+     small grazing heads at their feet), leaving the two standing antelopes. */
+  -webkit-mask-image:
+    linear-gradient(to left, #000 88%, transparent 100%),
+    linear-gradient(to top, transparent 34%, #000 60%);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to left, #000 88%, transparent 100%),
+    linear-gradient(to top, transparent 34%, #000 60%);
+  mask-composite: intersect;
 }
 .hero .wrap { position: relative; z-index: 1; }
 @media (max-width: 900px) { .hero-art { display: none; } }
