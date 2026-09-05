@@ -39,6 +39,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
         <a href="#features">Features</a>
         <a href="#screens">Screens</a>
         <a href="#how">How it works</a>
+        <a href="#sources">Sources</a>
         <a href="#install">Install</a>
         <a class="nav-cta" href={repo}>GitHub ↗</a>
       </nav>
@@ -49,12 +50,13 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
       <section class="hero">
         <div class="wrap">
           <p class="eyebrow">Web archive server · written in Rust</p>
+          <a class="os-badge" href={repo}>Free &amp; open source · AGPL-3.0</a>
           <h1 class="hero-title">
             <span class="brand">indice</span>
             <span class="tagline">A reading room for web archives.</span>
           </h1>
           <p class="lede">
-            indice turns your <a href="https://replayweb.page/docs/wacz-format/">WACZ</a> files
+            indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
             into an archive you can actually use — full-text search with faceted,
             temporal browsing; the provenance of every crawl up front; and faithful
             in-browser replay. One self-contained binary, from a laptop to an institution.
@@ -71,7 +73,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <span>single binary</span>
             <span>macOS · Linux · Windows</span>
             <span>no database</span>
-            <span>AGPL-3.0</span>
+            <span>runs offline</span>
           </div>
         </div>
       </section>
@@ -159,6 +161,41 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <div class="step">
               <h3>Search &amp; replay</h3>
               <p>Readers search with facets and a timeline, then open any page and watch it replay in their browser.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sources: bring your archives -->
+      <section id="sources" class="features">
+        <div class="wrap">
+          <p class="eyebrow">Bring your archives</p>
+          <h2 class="sec-title">Works with the archives you already have.</h2>
+          <div class="grid">
+            <div class="feature">
+              <h3>Browsertrix</h3>
+              <p>
+                Browse your <a href="https://browsertrix.com/">Browsertrix</a> org and import
+                collections and crawls in a few clicks — or index and replay them
+                <strong>straight from Browsertrix's cloud storage, without downloading a thing</strong>.
+                indice serves the very same ReplayWeb.page engine Browsertrix does, so replay is
+                identical.
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Archive-It</h3>
+              <p>
+                Pull a collection's WARCs from Archive-It over WASAPI; indice builds the WACZ,
+                indexes it, and carries the descriptive metadata straight into a finding aid.
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Cloud &amp; remote storage</h3>
+              <p>
+                Point indice at a WACZ hosted over HTTP(S) — in object storage, or behind a
+                presigned URL — and it indexes and replays it with byte-range reads, without
+                copying the whole file down.
+              </p>
             </div>
           </div>
         </div>

@@ -91,9 +91,37 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .btn.primary:hover { background: var(--accent-dk); color: #fff; }
 
 /* ── Hero ─────────────────────────────────────────────────────────────────── */
-.hero { padding: 5.5rem 0 4rem; background:
+.hero {
+  position: relative; overflow: hidden;
+  padding: 5.5rem 0 4rem;
+  background:
     radial-gradient(1200px 400px at 15% -5%, var(--accent-tint), transparent 60%),
-    linear-gradient(var(--paper), var(--bg)); }
+    linear-gradient(var(--paper), var(--bg));
+}
+/* A crafted "index page": faint ruled lines (like a catalog card / finding aid),
+   fading out downward so they never fight the hero text. Pure CSS — no image,
+   no licensing, crisp at any size. */
+.hero::before {
+  content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0 33px,
+    color-mix(in srgb, var(--faint) 30%, transparent) 33px 34px
+  );
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 58%, transparent 92%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 58%, transparent 92%);
+}
+.hero .wrap { position: relative; z-index: 1; }
+.os-badge {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  margin: 0 0 1rem; padding: 0.28rem 0.7rem;
+  font-size: 0.78rem; font-weight: 650; letter-spacing: 0.01em;
+  color: var(--accent-dk); background: var(--accent-tint);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px; text-decoration: none; width: fit-content;
+}
+.os-badge:hover { background: color-mix(in srgb, var(--accent) 16%, #fff); color: var(--accent-dk); }
+.os-badge::before { content: "◆"; font-size: 0.7em; }
 .hero-title { margin: 0 0 1.1rem; }
 .hero-title .brand {
   display: block;
@@ -120,6 +148,7 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
 .hero .meta span { font-size: 0.82rem; color: var(--faint); font-family: var(--mono); }
 
 /* ── Features ─────────────────────────────────────────────────────────────── */
+.sec-title { font-size: clamp(1.6rem, 3vw, 2.1rem); margin: 0.2rem 0 1.4rem; letter-spacing: -0.01em; }
 .features .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; }
 .feature { padding: 1.4rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
 .feature h3 { margin: 0 0 0.5rem; font-size: 1.15rem; }
