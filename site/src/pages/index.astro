@@ -3,6 +3,7 @@ import { Image } from 'astro:assets';
 import readingRoom from '../assets/screenshots/reading-room.png';
 import findingAid from '../assets/screenshots/finding-aid.png';
 import search from '../assets/screenshots/search.png';
+import replay from '../assets/screenshots/replay.png';
 import workroom from '../assets/screenshots/workroom.png';
 import bluebuck from '../assets/bluebuck.png';
 import '../styles/global.css';
@@ -142,6 +143,14 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                   <Image src={search} alt="Search results with a faceted sidebar and hit-highlighted snippets" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
                 <figcaption><b>Slice and dice.</b> Facets for collection, year, site, type, and language beside hit-highlighted results.</figcaption>
+              </figure>
+            </div>
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={replay} alt="The webrecorder.net homepage replaying inside indice via ReplayWeb.page" widths={[520, 1040]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Replay in place.</b> Archived pages replay exactly as captured — here, webrecorder.net — wrapped in indice's chrome.</figcaption>
               </figure>
             </div>
           </div>
@@ -337,17 +346,9 @@ Download from the releases page</pre>
             </p>
             <p>
               It stands on the web archiving community's shoulders. Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s ReplayWeb.page and wabac.js;
-              the <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> format,
-              <a href="https://browsertrix.com/">Browsertrix</a>, and Archive-It's WASAPI shape
-              how archives come in. Its framing is borrowed from documentation theory — Suzanne
-              Briet's antelope, Peirce's index — and from the archival tradition of the finding aid.
-            </p>
-            <p>
-              Why say all this out loud? Because a web archive is a claim about what the web once
-              was, and it asks you to trust that claim. Software that serves such claims should be
-              just as legible about its own provenance — how it was written, by whom and by what,
-              and what it does and does not guarantee. Naming that isn't a disclaimer; it's the
-              same commitment to authenticity that indice asks of every crawl it holds.
+              the <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> format, <a href="https://browsertrix.com/">Browsertrix</a>, and Archive-It's WASAPI shape
+              how archives come in. Its framing is borrowed from documentation theory: Suzanne
+              Briet's antelope, Peirce's index, and from the archival tradition of the finding aid.
             </p>
           </div>
         </div>
@@ -372,8 +373,8 @@ Download from the releases page</pre>
           Web-archive replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s
           work; indice bundles ReplayWeb.page and wabac.js and adds a thin Rust layer for
           indexing, search, and serving. The
-          antelope beside “Why indice” is the (extinct) bluebuck from
-          <a href="https://commons.wikimedia.org/wiki/File:The_book_of_antelopes_(1894)_Hippotragus_leucophaeus.png">The
+          antelope beside “Why indice” is the (extinct) bluebuck
+          from <a href="https://commons.wikimedia.org/wiki/File:The_book_of_antelopes_(1894)_Hippotragus_leucophaeus.png">The
           Book of Antelopes</a> (1894), public domain.
         </p>
       </div>
