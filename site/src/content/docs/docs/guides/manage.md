@@ -9,11 +9,17 @@ By default `indice serve` is **read-only** — it never writes, so you curate fr
 indice serve --manage        # http://127.0.0.1:8080
 ```
 
+![The indice homepage in management mode: a clay "MANAGE" chip in the app bar, a clay accent throughout, and a "+ New collection" button above the collection cards](../../../../assets/docs/workroom-home.png)
+
 With `--manage` on:
 
 - **The homepage** — its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance greets you with "add your first archive."
 - **Each collection page** — gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
 - **Add crawls** (the accession desk) — upload a `.wacz` from your computer, or point indice at a local path or an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader — no restart). Uploaded/local files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
+
+![The Edit collection finding-aid form: name (fixed), description, creator, dates, curator, rights, comma-separated subjects, and a Markdown narrative field, with a Save changes button](../../../../assets/docs/edit-collection.png)
+
+![The Add crawls accession desk: a collection selector and source tabs — Upload, Path / URL, Browsertrix, and Archive-It — with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
 
 The default `serve` (without `--manage`) mounts none of this, so a public, read-only deployment can never mutate the archive.
 

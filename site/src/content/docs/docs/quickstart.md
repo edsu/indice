@@ -14,6 +14,8 @@ indice serve                                 # http://127.0.0.1:8080
 
 Open <http://127.0.0.1:8080> and you can full-text search the captured pages, narrow by the facets, and replay the archived site in your browser. Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve --manage` adds an in-browser interface for adding and curating crawls — see [Manage &amp; curate](/indice/docs/guides/manage/).
 
+![The indice reading-room homepage: a search box, browse-by-year and top-sites entry points, and collection cards](../../../assets/docs/reading-room-home.png)
+
 ## The home directory
 
 indice keeps everything under a **home directory** (default: the current directory):
