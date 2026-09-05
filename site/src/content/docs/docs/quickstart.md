@@ -27,7 +27,7 @@ indice keeps everything under a **home directory** (default: the current directo
 └── index/              search index + derived metadata (rebuildable; git-ignore it)
 ```
 
-The `collections/` folder is the part worth keeping in version control — the prose and images a curator writes. `index/` is derived from the WACZs and rebuilt by `indice reindex`, so a home in git typically `.gitignore`s `/index`.
+The `collections/` folder is the part worth keeping in version control — the prose and images a curator writes. `index/` is derived from the WACZs and rebuilt by `indice reindex`, so a home in git typically `.gitignore`s `/index`. See [The home directory](/indice/docs/reference/home-directory/) for the full layout, what to version-control, and how backup works.
 
 ## Index and serve
 

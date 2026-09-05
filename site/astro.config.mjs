@@ -46,6 +46,8 @@ export default defineConfig({
           label: 'Reference',
           items: [
             'docs/reference/cli',
+            'docs/reference/api',
+            'docs/reference/home-directory',
             'docs/reference/configuration',
             'docs/reference/how-it-works',
           ],

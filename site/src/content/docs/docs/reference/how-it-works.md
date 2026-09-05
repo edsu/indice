@@ -5,20 +5,7 @@ description: WACZ-direct replay, how indexing reads a WACZ, and the discovery/pr
 
 indice runs [ReplayWeb.page](https://replayweb.page/) in **WACZ-direct mode**. Rather than reimplementing web replay on the server (URL rewriting, redirect handling, fuzzy matching, serving individual archived resources), indice hands the whole job to the well-tested [wabac.js](https://github.com/webrecorder/wabac.js) service worker running in the browser:
 
-```text
- indice index <files>                 indice serve
-        │                                      │
-        ▼                                      ▼
-  [ Indexing ]                        [ Axum HTTP server ]
-        │                                      │
-        ├── page HTML ──► Tantivy      GET /             homepage + collections
-        ├── WACZ metadata ─► Tantivy   GET /search?q=    search results + snippets
-        └── datapackage ─► collections GET /api/search   search results as JSON
-                             .json      GET /files/{id}   the WACZ, with byte-range
-                                        GET /replay/…     ReplayWeb.page assets + viewer
-                                        GET /collection/{id}/replay.json  collection replay manifest
-                                        GET /collection/{id}/pages        page list + URL resolution
-```
+![indice data flow: `indice index` reads each WACZ via its CDX and extracts page text, WACZ metadata, and datapackage.json into a Tantivy full-text index and per-collection JSON; `indice serve` runs an Axum HTTP server exposing routes for the homepage, search, the WACZ files, and ReplayWeb.page replay](../../../../assets/docs/how-it-works.svg)
 
 When you open a page for replay, the browser fetches the WACZ directly from `GET /files/{id}` using HTTP range requests, reads the CDX index embedded inside the WACZ, and serves every resource from the WARC records — all client-side. indice's job during replay is simply to serve bytes efficiently. Everything else (search, metadata, the collection homepage) is what indice is actually good at.
 

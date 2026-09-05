@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 456" role="img"
+     aria-labelledby="hiw-title hiw-desc"
+     font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  <title id="hiw-title">How indice works</title>
+  <desc id="hiw-desc">Indexing reads each WACZ via its CDX and extracts page text, WACZ metadata, and datapackage.json into a Tantivy full-text index and collections; serving runs an Axum HTTP server that exposes routes for the homepage, search, the WACZ files, and ReplayWeb.page replay.</desc>
+  <defs>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#8f8b83"/>
+    </marker>
+  </defs>
+
+  <!-- ── Indexing pipeline ─────────────────────────────────────────── -->
+  <text x="24" y="46" font-size="12" font-weight="700" letter-spacing="0.12em" fill="#8f8b83">INDEXING</text>
+
+  <!-- command chip -->
+  <rect x="24" y="78" width="206" height="34" rx="6" fill="#1f2430"/>
+  <text x="38" y="100" font-size="13" fill="#e8eefc"
+        font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">indice index &lt;files&gt;</text>
+
+  <line x1="230" y1="95" x2="260" y2="95" stroke="#8f8b83" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <!-- Indexing box -->
+  <rect x="262" y="72" width="196" height="46" rx="6" fill="#faf8f3" stroke="#e7e3db"/>
+  <text x="360" y="92" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1a1a1a">Indexing</text>
+  <text x="360" y="108" text-anchor="middle" font-size="11" fill="#6b6b6b">reads each WACZ via its CDX</text>
+
+  <line x1="458" y1="95" x2="488" y2="95" stroke="#8f8b83" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <!-- extracts -->
+  <rect x="490" y="66" width="158" height="66" rx="6" fill="#ffffff" stroke="#e7e3db"/>
+  <text x="504" y="88" font-size="11.5" fill="#1a1a1a">• page text (HTML · PDF)</text>
+  <text x="504" y="105" font-size="11.5" fill="#1a1a1a">• WACZ metadata</text>
+  <text x="504" y="122" font-size="11.5" fill="#1a1a1a">• datapackage.json</text>
+
+  <!-- extract → targets -->
+  <line x1="648" y1="94" x2="694" y2="90" stroke="#8f8b83" stroke-width="1.5" marker-end="url(#arw)"/>
+  <line x1="648" y1="116" x2="694" y2="125" stroke="#8f8b83" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <rect x="696" y="70" width="182" height="38" rx="6" fill="#e6effb" stroke="#0066cc" stroke-opacity="0.4"/>
+  <text x="787" y="94" text-anchor="middle" font-size="12.5" font-weight="650" fill="#0053a6">Tantivy full-text index</text>
+
+  <rect x="696" y="114" width="182" height="32" rx="6" fill="#faf8f3" stroke="#e7e3db"/>
+  <text x="787" y="134" text-anchor="middle" font-size="11.5" fill="#6b6b6b"
+        font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">collections/*.json</text>
+
+  <!-- divider -->
+  <line x1="24" y1="200" x2="876" y2="200" stroke="#f1eee8" stroke-width="1"/>
+
+  <!-- ── Serving pipeline ──────────────────────────────────────────── -->
+  <text x="24" y="240" font-size="12" font-weight="700" letter-spacing="0.12em" fill="#8f8b83">SERVING</text>
+
+  <rect x="24" y="308" width="150" height="34" rx="6" fill="#1f2430"/>
+  <text x="38" y="330" font-size="13" fill="#e8eefc"
+        font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">indice serve</text>
+
+  <line x1="174" y1="325" x2="204" y2="325" stroke="#8f8b83" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <rect x="206" y="302" width="180" height="46" rx="6" fill="#faf8f3" stroke="#e7e3db"/>
+  <text x="296" y="322" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1a1a1a">Axum HTTP server</text>
+  <text x="296" y="338" text-anchor="middle" font-size="11" fill="#6b6b6b">serves the reading room</text>
+
+  <line x1="386" y1="325" x2="416" y2="325" stroke="#8f8b83" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <!-- routes -->
+  <rect x="418" y="250" width="460" height="180" rx="6" fill="#ffffff" stroke="#e7e3db"/>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" fill="#0053a6">
+    <text x="434" y="276">GET /</text>
+    <text x="434" y="299">GET /search?q=…</text>
+    <text x="434" y="322">GET /api/search</text>
+    <text x="434" y="345">GET /files/{id}</text>
+    <text x="434" y="368">GET /replay/…</text>
+    <text x="434" y="391">GET /collection/{id}/replay.json</text>
+    <text x="434" y="414">GET /collection/{id}/pages</text>
+  </g>
+  <g font-size="11.5" fill="#6b6b6b">
+    <text x="690" y="276">homepage + collections</text>
+    <text x="690" y="299">results + snippets</text>
+    <text x="690" y="322">results as JSON</text>
+    <text x="690" y="345">the WACZ (byte-range)</text>
+    <text x="690" y="368">ReplayWeb.page viewer</text>
+    <text x="690" y="391">replay manifest</text>
+    <text x="690" y="414">page list + resolution</text>
+  </g>
+</svg>
