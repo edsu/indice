@@ -98,16 +98,15 @@ h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01e
     radial-gradient(1200px 400px at 15% -5%, var(--accent-tint), transparent 60%),
     linear-gradient(var(--paper), var(--bg));
 }
-/* A faint pointer arrow — the on-screen "index". The cursor is the modern
-   descendant of the manicule; here it drifts outward (up and to the right) as
-   ambient hero art. Rounded-join variant, mirrored to point outward, toned
-   faint. Drawn in-house (no attribution needed). */
-.hero-art {
-  position: absolute; z-index: 0; pointer-events: none; user-select: none;
-  right: 8%; top: 8rem; width: min(24%, 280px); height: auto;
-  opacity: 0.16;
-  transform: scaleX(-1); /* mirror so the classic up-left arrow points up-right */
-}
+/* A small constellation of faint pointer arrows — the on-screen "index". The
+   cursor is the modern descendant of the manicule; here three of them point in
+   different directions, like an archive being pointed at from several angles.
+   Rounded-join variant, toned faint. Drawn in-house (no attribution needed).
+   The canonical arrow points up-left; scaleX(-1) turns it up-right. */
+.hero-art { position: absolute; z-index: 0; pointer-events: none; user-select: none; height: auto; }
+.hero-art--lead { right: 8%;  top: 8rem;  width: min(24%, 280px); opacity: 0.16; transform: scaleX(-1); }
+.hero-art--down { right: 30%; top: 5rem;  width: min(9%, 96px);   opacity: 0.12; transform: scaleX(-1) rotate(84deg); }
+.hero-art--back { right: 24%; top: 19rem; width: min(7%, 74px);   opacity: 0.10; transform: rotate(0deg); }
 .hero .wrap { position: relative; z-index: 1; }
 @media (max-width: 900px) { .hero-art { display: none; } }
 .os-badge {
