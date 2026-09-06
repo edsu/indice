@@ -253,6 +253,7 @@ fn build_router(
         .route("/collection/{id}", get(collection_page))
         .route("/collection/{id}/replay.json", get(collection_replay_json))
         .route("/collection/{id}/pages", get(collection_pages))
+        .route("/collection/{id}/annotations", get(collection_annotations))
         .route("/crawl/{id}", get(crawl_page))
         .route("/thumb/{id}", get(thumb_handler))
         .route("/collection-thumb/{id}", get(collection_thumb_handler))
@@ -2360,8 +2361,69 @@ async fn collection_page(
         management: manage,
         signed_in: who,
         can_login,
+        annotation_count: annotations::load(&state.home, &id)
+            .map(|v| v.len())
+            .unwrap_or(0),
     };
     views::collection(&page).into_response()
+}
+
+/// GET /collection/{id}/annotations — a public browse of every annotation in the
+/// collection, each linking into the collection replay (where it re-anchors).
+async fn collection_annotations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e),
+    };
+    let Some(c) = manifest.collection_by_id(&id) else {
+        return (StatusCode::NOT_FOUND, "collection not found").into_response();
+    };
+    let (manage, who) = admin_ctx(&state, &headers);
+    let can_login = login_available(&state, &who);
+    let anns = annotations::load(&state.home, &id).unwrap_or_default();
+    let items = anns
+        .iter()
+        .map(|a| {
+            let region = a.target.selector.as_ref().map(|s| match s {
+                annotations::Selector::TextQuoteSelector { exact, .. } => exact.clone(),
+            });
+            views::AnnoLink {
+                author: a
+                    .creator
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "anonymous".to_string()),
+                date: a
+                    .modified
+                    .clone()
+                    .unwrap_or_else(|| a.created.clone())
+                    .chars()
+                    .take(10)
+                    .collect(),
+                note_html: crate::markdown::render(&a.body.value),
+                page_url: a.target.source.clone(),
+                replay_href: collection_replay_href(
+                    &id,
+                    &c.name,
+                    Some((a.target.source.clone(), a.target.timestamp.clone())),
+                ),
+                region,
+            }
+        })
+        .collect();
+    let page = views::AnnotationsIndexPage {
+        collection_name: c.name.clone(),
+        collection_id: id.clone(),
+        items,
+        management: manage,
+        signed_in: who,
+        can_login,
+    };
+    views::annotations_index(&page).into_response()
 }
 
 /// A wabac (ReplayWeb.page) multi-WACZ collection manifest for a collection: the

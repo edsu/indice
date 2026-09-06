@@ -386,3 +386,17 @@ nav.pagination .page-info { color: var(--muted); }
   aside.facets { flex-basis: auto; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Annotations: the per-collection index/browse and the collection-page summary. */
+.crumb { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
+.annotations-summary { margin: 1.4rem 0; }
+.anno-index { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.8rem; }
+.anno-index-item { border: 1px solid var(--line); border-radius: var(--radius, 6px); background: var(--paper); padding: 0.7rem 0.85rem; }
+.anno-index-meta { font-size: 0.78rem; color: var(--faint); margin-bottom: 0.35rem; }
+.anno-index-meta .anno-author { font-weight: 650; color: var(--muted); }
+.anno-quote { font-size: 0.9rem; color: var(--muted); font-style: italic; border-left: 2px solid var(--line); padding-left: 0.6rem; margin: 0 0 0.45rem; }
+.anno-index-body { line-height: 1.55; }
+.anno-index-body > :first-child { margin-top: 0; }
+.anno-index-body > :last-child { margin-bottom: 0; }
+.anno-index-loc { font-size: 0.82rem; margin: 0.5rem 0 0; }
+.anno-index-loc .muted { color: var(--faint); word-break: break-all; }

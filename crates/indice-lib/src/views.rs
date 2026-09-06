@@ -674,6 +674,8 @@ pub struct CollectionPage {
     pub signed_in: Option<String>,
     /// Forward-auth configured but this request anonymous — show a "Log in" link.
     pub can_login: bool,
+    /// How many page annotations this collection has (drives the summary link).
+    pub annotation_count: usize,
 }
 
 impl CollectionPage {
@@ -813,6 +815,17 @@ pub fn collection(p: &CollectionPage) -> Markup {
             }
         }
 
+        @if p.annotation_count > 0 {
+            @let plural = if p.annotation_count == 1 { "note" } else { "notes" };
+            section.annotations-summary {
+                h2 { "Annotations" }
+                p.muted {
+                    (p.annotation_count) " page " (plural) " in this collection. "
+                    a href=(format!("/collection/{}/annotations", p.id)) { "Browse annotations →" }
+                }
+            }
+        }
+
         @if !p.meta.is_empty() { (meta_table(&p.meta)) }
         (facet_browse(&p.facets))
         h2 { "Crawls" }
@@ -854,6 +867,71 @@ pub fn collection(p: &CollectionPage) -> Markup {
         p.signed_in.as_deref(),
         p.can_login,
         Some(&search),
+        body,
+    )
+}
+
+// ── Annotations index (per collection) ──────────────────────────────────────
+
+/// One annotation as shown on the per-collection index, with a deep link that
+/// opens its page in the collection replay (where it re-anchors + highlights).
+pub struct AnnoLink {
+    pub author: String,
+    pub date: String,
+    pub note_html: PreEscaped<String>,
+    pub page_url: String,
+    pub replay_href: String,
+    /// The quoted passage, for a region note; `None` for a whole-page note.
+    pub region: Option<String>,
+}
+
+pub struct AnnotationsIndexPage {
+    pub collection_name: String,
+    pub collection_id: String,
+    pub items: Vec<AnnoLink>,
+    pub management: bool,
+    pub signed_in: Option<String>,
+    pub can_login: bool,
+}
+
+/// A public browse of every annotation in a collection.
+pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
+    let plural = if p.items.len() == 1 { "note" } else { "notes" };
+    let body = html! {
+        p.crumb {
+            a href=(format!("/collection/{}", p.collection_id)) { (p.collection_name) }
+            " / Annotations"
+        }
+        h1.page-title { "Annotations" }
+        p.desc { (p.items.len()) " " (plural) " on pages in this collection." }
+        @if p.items.is_empty() {
+            p.muted { "No annotations yet." }
+        } @else {
+            ul.anno-index {
+                @for a in &p.items {
+                    li.anno-index-item {
+                        div.anno-index-meta {
+                            span.anno-author { (a.author) } " · " (a.date)
+                        }
+                        @if let Some(q) = &a.region {
+                            p.anno-quote { "“" (q) "”" }
+                        }
+                        div.anno-index-body { (a.note_html) }
+                        p.anno-index-loc {
+                            a href=(a.replay_href) { "Open page →" }
+                            " " span.muted { (a.page_url) }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    layout(
+        &format!("Annotations - {} - indice", p.collection_name),
+        p.management,
+        p.signed_in.as_deref(),
+        p.can_login,
+        None,
         body,
     )
 }
