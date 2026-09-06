@@ -20,7 +20,7 @@ use tokio_util::io::ReaderStream;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::annotations::{self, EditOutcome};
+use crate::annotations::{self, EditOutcome, UpdateResult};
 use crate::collections::{Manifest, Wacz};
 use crate::search::SearchIndex;
 use crate::views;
@@ -3288,12 +3288,30 @@ async fn list_annotations(
     Query(q): Query<AnnotationListQuery>,
 ) -> Response {
     let author = annotation_author(&state, &headers);
-    let loaded = match (q.url.as_deref(), q.ts.as_deref()) {
-        (Some(url), Some(ts)) => annotations::list_by_page(&state.home, &q.collection, url, ts),
-        _ => annotations::load(&state.home, &q.collection),
-    };
+    // url and ts pin a capture; require both, or neither (whole collection).
+    match (q.url.is_some(), q.ts.is_some()) {
+        (true, true) | (false, false) => {}
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "url and ts must be provided together",
+            )
+                .into_response();
+        }
+    }
+    let st = state.clone();
+    let AnnotationListQuery {
+        collection,
+        url,
+        ts,
+    } = q;
+    let loaded = tokio::task::spawn_blocking(move || match (url.as_deref(), ts.as_deref()) {
+        (Some(u), Some(t)) => annotations::list_by_page(&st.home, &collection, u, t),
+        _ => annotations::load(&st.home, &collection),
+    })
+    .await;
     match loaded {
-        Ok(list) => {
+        Ok(Ok(list)) => {
             let views = list
                 .iter()
                 .map(|a| annotation_view(a, author.as_deref()))
@@ -3304,7 +3322,8 @@ async fn list_annotations(
             })
             .into_response()
         }
-        Err(e) => error_response(e),
+        Ok(Err(e)) => error_response(e),
+        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }
 
@@ -3314,6 +3333,9 @@ async fn create_annotation(
     headers: HeaderMap,
     Json(req): Json<AnnotationCreateReq>,
 ) -> Response {
+    if req.note.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "note is empty").into_response();
+    }
     let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
     let creator = annotations::Creator::person(author.clone(), author.clone());
     let ann = match req.selector {
@@ -3330,13 +3352,18 @@ async fn create_annotation(
         ),
         None => annotations::Annotation::page(req.url, req.timestamp, req.note, creator),
     };
-    match annotations::create(&state.home, &req.collection, &ann) {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(annotation_view(&ann, Some(&author))),
-        )
-            .into_response(),
-        Err(e) => error_response(e),
+    let view = annotation_view(&ann, Some(&author));
+    let st = state.clone();
+    let collection = req.collection;
+    let saved = tokio::task::spawn_blocking(move || {
+        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        annotations::create(&st.home, &collection, &ann)
+    })
+    .await;
+    match saved {
+        Ok(Ok(())) => (StatusCode::CREATED, Json(view)).into_response(),
+        Ok(Err(e)) => error_response(e),
+        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }
 
@@ -3347,18 +3374,30 @@ async fn update_annotation(
     headers: HeaderMap,
     Json(req): Json<AnnotationUpdateReq>,
 ) -> Response {
+    if req.note.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "note is empty").into_response();
+    }
     let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
-    match annotations::update(&state.home, &req.collection, &id, &req.note, &author) {
-        Ok(EditOutcome::Done) => match annotations::get(&state.home, &req.collection, &id) {
-            Ok(Some(a)) => Json(annotation_view(&a, Some(&author))).into_response(),
-            Ok(None) => StatusCode::NOT_FOUND.into_response(),
-            Err(e) => error_response(e),
-        },
-        Ok(EditOutcome::NotFound) => (StatusCode::NOT_FOUND, "no such annotation").into_response(),
-        Ok(EditOutcome::Forbidden) => {
+    let st = state.clone();
+    let AnnotationUpdateReq { collection, note } = req;
+    let author_key = author.clone();
+    let done = tokio::task::spawn_blocking(move || {
+        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        annotations::update(&st.home, &collection, &id, &note, &author_key)
+    })
+    .await;
+    match done {
+        Ok(Ok(UpdateResult::Updated(a))) => {
+            Json(annotation_view(&a, Some(&author))).into_response()
+        }
+        Ok(Ok(UpdateResult::NotFound)) => {
+            (StatusCode::NOT_FOUND, "no such annotation").into_response()
+        }
+        Ok(Ok(UpdateResult::Forbidden)) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
-        Err(e) => error_response(e),
+        Ok(Err(e)) => error_response(e),
+        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }
 
@@ -3370,13 +3409,23 @@ async fn delete_annotation(
     Json(req): Json<AnnotationDeleteReq>,
 ) -> Response {
     let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
-    match annotations::delete(&state.home, &req.collection, &id, &author) {
-        Ok(EditOutcome::Done) => StatusCode::NO_CONTENT.into_response(),
-        Ok(EditOutcome::NotFound) => (StatusCode::NOT_FOUND, "no such annotation").into_response(),
-        Ok(EditOutcome::Forbidden) => {
+    let st = state.clone();
+    let AnnotationDeleteReq { collection } = req;
+    let done = tokio::task::spawn_blocking(move || {
+        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        annotations::delete(&st.home, &collection, &id, &author)
+    })
+    .await;
+    match done {
+        Ok(Ok(EditOutcome::Done)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(EditOutcome::NotFound)) => {
+            (StatusCode::NOT_FOUND, "no such annotation").into_response()
+        }
+        Ok(Ok(EditOutcome::Forbidden)) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
-        Err(e) => error_response(e),
+        Ok(Err(e)) => error_response(e),
+        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }
 

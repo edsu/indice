@@ -176,7 +176,7 @@ impl Annotation {
     }
 }
 
-/// Outcome of an author-gated edit or delete.
+/// Outcome of an author-gated delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditOutcome {
     /// The change was applied.
@@ -184,6 +184,15 @@ pub enum EditOutcome {
     /// No annotation with that id exists in the collection.
     NotFound,
     /// The annotation exists but belongs to a different author.
+    Forbidden,
+}
+
+/// Outcome of an author-gated update: the updated annotation on success (so the
+/// caller needn't reload the store), or why it was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateResult {
+    Updated(Box<Annotation>),
+    NotFound,
     Forbidden,
 }
 
@@ -196,6 +205,7 @@ pub fn annotations_path(home: &Path, collection: &str) -> PathBuf {
 /// preserving file order. A malformed line aborts the load with context, rather
 /// than being silently dropped.
 pub fn load(home: &Path, collection: &str) -> Result<Vec<Annotation>> {
+    ensure_safe_collection(collection)?;
     let path = annotations_path(home, collection);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -235,19 +245,16 @@ pub fn get(home: &Path, collection: &str, id: &str) -> Result<Option<Annotation>
 /// Append a new annotation to the collection's store, creating the file (and the
 /// collection directory) if needed. The note body must be non-empty.
 pub fn create(home: &Path, collection: &str, annotation: &Annotation) -> Result<()> {
+    ensure_safe_collection(collection)?;
     if annotation.body.value.trim().is_empty() {
         bail!("annotation body is empty");
     }
     let path = annotations_path(home, collection);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
     let mut line = serde_json::to_string(annotation)?;
     line.push('\n');
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&line);
-    std::fs::write(&path, existing).with_context(|| format!("writing {}", path.display()))?;
+    write_atomic(&path, &existing)?;
     Ok(())
 }
 
@@ -259,21 +266,21 @@ pub fn update(
     id: &str,
     new_note: &str,
     author: &str,
-) -> Result<EditOutcome> {
+) -> Result<UpdateResult> {
     if new_note.trim().is_empty() {
         bail!("annotation body is empty");
     }
     let mut all = load(home, collection)?;
     let Some(pos) = all.iter().position(|a| a.id == id) else {
-        return Ok(EditOutcome::NotFound);
+        return Ok(UpdateResult::NotFound);
     };
     if all[pos].author_key() != Some(author) {
-        return Ok(EditOutcome::Forbidden);
+        return Ok(UpdateResult::Forbidden);
     }
     all[pos].body = Body::markdown(new_note);
     all[pos].modified = Some(now_rfc3339());
     write_all(home, collection, &all)?;
-    Ok(EditOutcome::Done)
+    Ok(UpdateResult::Updated(Box::new(all[pos].clone())))
 }
 
 /// Delete an annotation, if it exists and `author` wrote it.
@@ -292,17 +299,49 @@ pub fn delete(home: &Path, collection: &str, id: &str, author: &str) -> Result<E
 
 /// Rewrite the whole store (used by update/delete). One JSON object per line.
 fn write_all(home: &Path, collection: &str, annotations: &[Annotation]) -> Result<()> {
+    ensure_safe_collection(collection)?;
     let path = annotations_path(home, collection);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
     let mut buf = String::new();
     for a in annotations {
         buf.push_str(&serde_json::to_string(a)?);
         buf.push('\n');
     }
-    std::fs::write(&path, buf).with_context(|| format!("writing {}", path.display()))?;
+    write_atomic(&path, &buf)?;
+    Ok(())
+}
+
+/// Reject a collection slug that could escape the collections tree. Real slugs
+/// are [`crate::collections::slugify`] output — ASCII alphanumerics and hyphens —
+/// so anything containing a path separator or `.` is invalid. This closes the
+/// path-traversal vector (CodeQL rust/path-injection) at the storage boundary,
+/// before the value reaches `collection_dir`.
+fn ensure_safe_collection(collection: &str) -> Result<()> {
+    let safe = !collection.is_empty()
+        && collection
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !safe {
+        bail!("invalid collection id: {collection:?}");
+    }
+    Ok(())
+}
+
+/// Write `contents` to `path` atomically: a temp file in the same directory is
+/// fully written, then renamed over `path` (a rename is atomic on one
+/// filesystem), so a crash mid-write can never truncate the store. Creates the
+/// parent directory if needed.
+fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating a temp file in {}", parent.display()))?;
+    tmp.write_all(contents.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    tmp.flush().ok();
+    tmp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("finalizing {}", path.display()))?;
     Ok(())
 }
 
@@ -401,7 +440,7 @@ mod tests {
         // wrong author can't edit or delete
         assert_eq!(
             update(home, col, &id, "hacked", "mailto:eve@example.org").unwrap(),
-            EditOutcome::Forbidden
+            UpdateResult::Forbidden
         );
         assert_eq!(
             delete(home, col, &id, "mailto:eve@example.org").unwrap(),
@@ -410,10 +449,10 @@ mod tests {
         assert_eq!(get(home, col, &id).unwrap().unwrap().body.value, "first");
 
         // author can edit (sets modified) then delete
-        assert_eq!(
+        assert!(matches!(
             update(home, col, &id, "second", "mailto:ada@example.org").unwrap(),
-            EditOutcome::Done
-        );
+            UpdateResult::Updated(_)
+        ));
         let edited = get(home, col, &id).unwrap().unwrap();
         assert_eq!(edited.body.value, "second");
         assert!(edited.modified.is_some());
@@ -435,6 +474,18 @@ mod tests {
     fn load_of_missing_store_is_empty() {
         let home = tempfile::tempdir().unwrap();
         assert!(load(home.path(), "nascent").unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_unsafe_collection() {
+        let home = tempfile::tempdir().unwrap();
+        let a = Annotation::page("u", "t", "x", creator());
+        // path-traversal / separators in the collection id are refused before
+        // any filesystem access.
+        assert!(create(home.path(), "../evil", &a).is_err());
+        assert!(load(home.path(), "../evil").is_err());
+        assert!(load(home.path(), "a/b").is_err());
+        assert!(load(home.path(), "").is_err());
     }
 
     #[test]
