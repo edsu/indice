@@ -74,8 +74,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
              indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
              into an archive you can actually use: full-text search with
              faceted, temporal browsing; the provenance of every crawl; and
-             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling. One
-             self-contained binary that scales from you on your laptop to
+             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling.
+             <strong>Import straight from <a href="https://browsertrix.com/">Browsertrix</a> and
+             Archive-It</strong>, and let readers <strong>annotate the pages they find</strong>.
+             One self-contained binary that scales from you on your laptop to
              multiuser organizational setups.</p>
           <div class="cta-row">
             <a class="btn primary" href="#install">Get started</a>
@@ -120,6 +122,22 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 browser.
               </p>
               <p class="credit">Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s work (ReplayWeb.page / wabac.js).</p>
+            </div>
+            <div class="feature">
+              <h3>Import from Browsertrix &amp; Archive-It</h3>
+              <p>
+                Bring collections in from <a href="https://browsertrix.com/">Browsertrix</a> or
+                Archive-It, or index any WACZ over HTTP — descriptive metadata carries straight
+                into a finding aid. <a href="#sources">See the sources ↓</a>
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Annotations on the record</h3>
+              <p>
+                Signed-in users attach Markdown notes to a whole page or a selected passage;
+                they're public to read, highlight in place on replay, and turn up in search.
+                <a href={`${base}/docs/guides/annotations/`}>How annotations work →</a>
+              </p>
             </div>
           </div>
         </div>
