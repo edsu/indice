@@ -1,0 +1,10 @@
+---
+// indice's docs are light-only, matching the landing page. Override Starlight's
+// ThemeProvider so it always renders in the native light theme (which keeps all
+// of Starlight's own light colours — asides, code, borders — internally
+// consistent) instead of following the system preference.
+---
+
+<script is:inline>
+  document.documentElement.dataset.theme = 'light';
+</script>

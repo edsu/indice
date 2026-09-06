@@ -43,6 +43,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
         <a href="#how">How it works</a>
         <a href="#sources">Sources</a>
         <a href="#install">Install</a>
+        <a href={`${base}/docs/`}>Docs</a>
         <a href="#colophon">Colophon</a>
         <a class="nav-cta" href={repo}>GitHub ↗</a>
       </nav>
@@ -150,7 +151,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <div class="frame">
                   <Image src={replay} alt="The webrecorder.net homepage replaying inside indice via ReplayWeb.page" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
-                <figcaption><b>Replay in place.</b> Archived pages replay exactly as captured — here, webrecorder.net — wrapped in indice's chrome.</figcaption>
+                <figcaption><b>Replay in place.</b> Archived pages replay exactly as captured. Here is webrecorder.net being replayed, wrapped in indice's chrome.</figcaption>
               </figure>
             </div>
           </div>
@@ -233,10 +234,18 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <div class="endpoint">
                 <p class="eyebrow">Small &amp; private</p>
                 <p>Index a few crawls on your laptop. Nothing is sent to a hosted service; it runs offline.</p>
+                <p class="stat">
+                  One binary, no database. WACZ files index in seconds,
+                   and search results return in milliseconds. <a href={`${base}/docs/quickstart/`}>Try it &rarr;</a>
+                </p>
               </div>
               <div class="endpoint">
                 <p class="eyebrow">Scaled up</p>
                 <p>Serve an institutional reading room behind a proxy, with the same single binary.</p>
+                <p class="stat">
+                   The index is compact. Adding a million pages results in an index that is about 1.5 GB on 
+                   disk. <a href={`${base}/docs/guides/scale/`}>How it scales &rarr;</a>
+                </p>
               </div>
             </div>
           </div>
@@ -256,7 +265,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 Browsertrix or Archive-It, and write finding aids in place. No command line
                 needed.
               </p>
-              <a class="btn" href={`${repo}/blob/main/README.md#management-mode`}>Management docs →</a>
+              <a class="btn" href={`${base}/docs/guides/manage/`}>Management docs →</a>
             </div>
             <div class="shot">
               <figure>
@@ -278,8 +287,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
           <div class="prose">
             <p>
               An <em>indice</em> is a sign that points beyond itself. Suzanne Briet argued that a
-              wild antelope becomes a <em>document</em> once it is captured, catalogued, and set
-              aside as evidence, an
+              wild antelope becomes a <em>document</em> once it is captured, catalogued, and placed
+              in a zoo, an 
             </p>
             <blockquote>
               “indice concret ou symbolique, conservé ou enregistré.”
@@ -324,7 +333,7 @@ Download from the releases page</pre>
               <pre>docker run -p 8080:8080 \
   -v indice-data:/data \
   ghcr.io/edsu/indice:latest</pre>
-              <p class="note">Or the <a href={`${repo}/blob/main/README.md#deployment`}>compose stack</a> with automatic HTTPS.</p>
+              <p class="note">Or the <a href={`${base}/docs/guides/deploy/`}>compose stack</a> with automatic HTTPS.</p>
             </div>
           </div>
         </div>
@@ -365,7 +374,7 @@ Download from the releases page</pre>
           <div class="links">
             <a href={repo}>GitHub</a>
             <a href={releases}>Releases</a>
-            <a href={`${repo}/blob/main/README.md`}>Docs</a>
+            <a href={`${base}/docs/`}>Docs</a>
             <a href={`${repo}/blob/main/LICENSE`}>License (AGPL-3.0)</a>
           </div>
         </div>

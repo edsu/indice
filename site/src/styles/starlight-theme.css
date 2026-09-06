@@ -1,0 +1,59 @@
+/* Theme Starlight to match the indice landing page: reuse the same design tokens
+   (reading-room blue accent, kraft neutrals, serif headings, the eyebrow motif).
+   The docs are forced to Starlight's native LIGHT theme (see ThemeProvider), so
+   here we only tweak accent, type, and a few warm surfaces — leaving Starlight's
+   own light colours (asides, code, borders) internally consistent. */
+@import './tokens.css';
+
+:root {
+  color-scheme: light;
+
+  /* Reading-room blue accent */
+  --sl-color-accent: var(--blue);
+  --sl-color-accent-low: var(--blue-tint);
+  --sl-color-accent-high: var(--blue-dk);
+  --sl-color-text-accent: var(--blue-dk);
+
+  /* Warm kraft surfaces for the chrome (nav, sidebar, inline code) + hairlines */
+  --sl-color-bg-nav: var(--paper);
+  --sl-color-bg-sidebar: var(--paper);
+  --sl-color-bg-inline-code: var(--paper-2);
+  --sl-color-hairline: var(--line);
+  --sl-color-hairline-light: var(--line-soft);
+  --sl-color-hairline-shade: var(--line);
+
+  /* Type — same system stacks as the landing (no webfonts) */
+  --sl-font: var(--sans);
+  --sl-font-mono: var(--mono);
+}
+
+/* Serif display for headings, echoing the landing's finding-aid feel. */
+.sl-markdown-content :is(h1, h2, h3, h4),
+.content-panel h1,
+h1#_top,
+.page-title {
+  font-family: var(--serif);
+  letter-spacing: -0.01em;
+}
+
+/* The eyebrow motif on sidebar group labels: uppercase, tracked-out, faint. */
+nav.sidebar .sidebar-content summary .group-label span,
+nav.sidebar .top-level > li > details > summary .group-label,
+.sidebar-content > ul > li > details > summary {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--faint);
+}
+
+.sl-markdown-content a { color: var(--accent-dk); }
+
+/* Frame screenshots so their light backgrounds don't bleed into the page —
+   matching the landing's .frame (hairline border, rounded corners, soft lift).
+   SVG diagrams bring their own boxes, so exclude them. */
+.sl-markdown-content img:not([src$=".svg"]) {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 30px -18px rgba(0, 0, 0, 0.28);
+}
