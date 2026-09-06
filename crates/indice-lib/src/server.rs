@@ -20,6 +20,7 @@ use tokio_util::io::ReaderStream;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::annotations::{self, EditOutcome};
 use crate::collections::{Manifest, Wacz};
 use crate::search::SearchIndex;
 use crate::views;
@@ -258,6 +259,8 @@ fn build_router(
         .route("/files/{id}", get(serve_file))
         .route("/replay/viewer", get(replay_viewer))
         .route("/api/search", get(search_api))
+        // Public read of page annotations (display is public; writes are gated below).
+        .route("/api/annotations", get(list_annotations))
         .route("/assets/{*path}", get(asset_handler))
         .route("/replay/", get(replay_index))
         .route("/replay/{*path}", get(replay_handler));
@@ -300,7 +303,12 @@ fn build_router(
             // binary-supplied credentials, then import selected crawls as a job.
             .route("/api/archiveit/collections", get(ait_collections))
             .route("/api/archiveit/crawls", get(ait_crawls))
-            .route("/api/archiveit/import", post(ait_import));
+            .route("/api/archiveit/import", post(ait_import))
+            // Page annotations: create/edit/delete, gated like the rest. The
+            // public GET /api/annotations lives in the read block above.
+            .route("/api/annotations", post(create_annotation))
+            .route("/api/annotations/{id}", post(update_annotation))
+            .route("/api/annotations/{id}/delete", post(delete_annotation));
 
         // Forward-auth: reject any management request that doesn't carry the
         // trusted proxy's shared secret + a non-empty identity header. Layered
@@ -3162,6 +3170,214 @@ fn collection_default_page(members: &[&Wacz]) -> Option<(String, String)> {
         .iter()
         .find_map(|w| w.seed_pages.first())
         .map(|p| (p.url.clone(), ts_to_14digit(&p.ts)))
+}
+
+// ── Page annotations API (gnqf.3) ───────────────────────────────────────────
+//
+// Display is public, authoring is gated — the same pattern as finding aids and
+// crawl notes. The public `GET /api/annotations` returns a capture's notes (or
+// a whole collection's); create/update/delete live in the management block and
+// so inherit its auth gate. Unlike the other write handlers, these also read
+// the author identity (via `admin_ctx`) to attribute notes and gate edits.
+
+/// A `TextQuoteSelector` on the wire (used in both requests and responses).
+#[derive(Serialize, Deserialize)]
+struct SelectorDto {
+    exact: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    suffix: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AnnotationListQuery {
+    collection: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AnnotationCreateReq {
+    collection: String,
+    url: String,
+    timestamp: String,
+    note: String,
+    #[serde(default)]
+    selector: Option<SelectorDto>,
+}
+
+#[derive(Deserialize)]
+struct AnnotationUpdateReq {
+    collection: String,
+    note: String,
+}
+
+#[derive(Deserialize)]
+struct AnnotationDeleteReq {
+    collection: String,
+}
+
+#[derive(Serialize)]
+struct AnnotationView {
+    id: String,
+    created: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    url: String,
+    timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selector: Option<SelectorDto>,
+    note_md: String,
+    note_html: String,
+    /// Whether the current request's author may edit/delete this note.
+    editable: bool,
+}
+
+#[derive(Serialize)]
+struct AnnotationListResp {
+    /// Whether the current request may create annotations (signed in / local admin).
+    can_annotate: bool,
+    annotations: Vec<AnnotationView>,
+}
+
+/// The author key for the current request: the signed-in identity, or `"local"`
+/// on a loopback `--manage` instance (a single trusted admin, no distinct
+/// identity). `None` when the request may not annotate.
+fn annotation_author(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let (can, who) = admin_ctx(state, headers);
+    can.then(|| who.unwrap_or_else(|| "local".to_string()))
+}
+
+fn annotation_view(a: &annotations::Annotation, author_key: Option<&str>) -> AnnotationView {
+    let selector = a.target.selector.as_ref().map(|s| match s {
+        annotations::Selector::TextQuoteSelector {
+            exact,
+            prefix,
+            suffix,
+        } => SelectorDto {
+            exact: exact.clone(),
+            prefix: prefix.clone(),
+            suffix: suffix.clone(),
+        },
+    });
+    let editable = author_key.is_some() && a.creator.id.as_deref() == author_key;
+    AnnotationView {
+        id: a.id.clone(),
+        created: a.created.clone(),
+        modified: a.modified.clone(),
+        author: a.creator.name.clone(),
+        url: a.target.source.clone(),
+        timestamp: a.target.timestamp.clone(),
+        selector,
+        note_md: a.body.value.clone(),
+        note_html: crate::markdown::render(&a.body.value).0,
+        editable,
+    }
+}
+
+/// GET /api/annotations — public. A capture's notes (with `url` + `ts`), or all
+/// notes in the collection when they're omitted.
+async fn list_annotations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<AnnotationListQuery>,
+) -> Response {
+    let author = annotation_author(&state, &headers);
+    let loaded = match (q.url.as_deref(), q.ts.as_deref()) {
+        (Some(url), Some(ts)) => annotations::list_by_page(&state.home, &q.collection, url, ts),
+        _ => annotations::load(&state.home, &q.collection),
+    };
+    match loaded {
+        Ok(list) => {
+            let views = list
+                .iter()
+                .map(|a| annotation_view(a, author.as_deref()))
+                .collect();
+            Json(AnnotationListResp {
+                can_annotate: author.is_some(),
+                annotations: views,
+            })
+            .into_response()
+        }
+        Err(e) => error_response(e),
+    }
+}
+
+/// POST /api/annotations — create (management-gated).
+async fn create_annotation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<AnnotationCreateReq>,
+) -> Response {
+    let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
+    let creator = annotations::Creator::person(author.clone(), author.clone());
+    let ann = match req.selector {
+        Some(s) => annotations::Annotation::region(
+            req.url,
+            req.timestamp,
+            annotations::Selector::TextQuoteSelector {
+                exact: s.exact,
+                prefix: s.prefix,
+                suffix: s.suffix,
+            },
+            req.note,
+            creator,
+        ),
+        None => annotations::Annotation::page(req.url, req.timestamp, req.note, creator),
+    };
+    match annotations::create(&state.home, &req.collection, &ann) {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(annotation_view(&ann, Some(&author))),
+        )
+            .into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+/// POST /api/annotations/{id} — update the note text (author only).
+async fn update_annotation(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AnnotationUpdateReq>,
+) -> Response {
+    let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
+    match annotations::update(&state.home, &req.collection, &id, &req.note, &author) {
+        Ok(EditOutcome::Done) => match annotations::get(&state.home, &req.collection, &id) {
+            Ok(Some(a)) => Json(annotation_view(&a, Some(&author))).into_response(),
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(e) => error_response(e),
+        },
+        Ok(EditOutcome::NotFound) => (StatusCode::NOT_FOUND, "no such annotation").into_response(),
+        Ok(EditOutcome::Forbidden) => {
+            (StatusCode::FORBIDDEN, "not your annotation").into_response()
+        }
+        Err(e) => error_response(e),
+    }
+}
+
+/// POST /api/annotations/{id}/delete — delete (author only).
+async fn delete_annotation(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<AnnotationDeleteReq>,
+) -> Response {
+    let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
+    match annotations::delete(&state.home, &req.collection, &id, &author) {
+        Ok(EditOutcome::Done) => StatusCode::NO_CONTENT.into_response(),
+        Ok(EditOutcome::NotFound) => (StatusCode::NOT_FOUND, "no such annotation").into_response(),
+        Ok(EditOutcome::Forbidden) => {
+            (StatusCode::FORBIDDEN, "not your annotation").into_response()
+        }
+        Err(e) => error_response(e),
+    }
 }
 
 fn error_response(e: anyhow::Error) -> Response {
