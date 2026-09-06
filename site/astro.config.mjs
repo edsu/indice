@@ -2,12 +2,12 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// Published on GitHub Pages under the custom domain https://indice.inkdroid.org/
+// Published on GitHub Pages under the custom domain https://indice.page/
 // (set in Settings → Pages), so the site is served from the root — no base path.
 // The custom landing page (src/pages/index.astro) owns `/`; the Starlight manual
 // lives under `/docs/` because its content is nested in src/content/docs/docs/**.
 export default defineConfig({
-  site: 'https://indice.inkdroid.org',
+  site: 'https://indice.page',
   integrations: [
     starlight({
       title: 'indice',
