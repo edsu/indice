@@ -4,6 +4,7 @@ import readingRoom from '../assets/screenshots/reading-room.png';
 import findingAid from '../assets/screenshots/finding-aid.png';
 import search from '../assets/screenshots/search.png';
 import replay from '../assets/screenshots/replay.png';
+import annotate from '../assets/docs/annotations-replay.png';
 import workroom from '../assets/screenshots/workroom.png';
 import bluebuck from '../assets/bluebuck.png';
 import '../styles/global.css';
@@ -71,11 +72,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <span class="tagline">A reading room for web archives.</span>
           </h1>
           <p class="lede">
-             indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
+             indice turns your collection of <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
              into an archive you can actually use: full-text search with
              faceted, temporal browsing; the provenance of every crawl; and
-             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling. One
-             self-contained binary that scales from you on your laptop to
+             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling.
+             Import straight from your file system, cloud storage, <a href="https://browsertrix.com/">Browsertrix</a> or <a href="https://archive.org">Archive-It</a>. You can even annotate the pages you find.
+             One self-contained binary that scales from your laptop to
              multiuser organizational setups.</p>
           <div class="cta-row">
             <a class="btn primary" href="#install">Get started</a>
@@ -121,6 +123,22 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               </p>
               <p class="credit">Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s work (ReplayWeb.page / wabac.js).</p>
             </div>
+            <div class="feature">
+              <h3>Import from Browsertrix &amp; Archive-It</h3>
+              <p>
+                Bring collections in from <a href="https://browsertrix.com/">Browsertrix</a> or
+                Archive-It, or index any WACZ over HTTP — descriptive metadata carries straight
+                into a finding aid. <a href="#sources">See the sources ↓</a>
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Annotations on the record</h3>
+              <p>
+                Signed-in users attach Markdown notes to a whole page or a selected passage;
+                they're public to read, highlight in place on replay, and turn up in search.
+                <a href={`${base}/docs/guides/annotations/`}>How annotations work →</a>
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -160,6 +178,14 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                   <Image src={replay} alt="The webrecorder.net homepage replaying inside indice via ReplayWeb.page" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
                 <figcaption><b>Replay in place.</b> Archived pages replay exactly as captured. Here is webrecorder.net being replayed, wrapped in indice's chrome.</figcaption>
+              </figure>
+            </div>
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={annotate} alt="The replay viewer with a Notes panel: a passage is highlighted in the replayed page and two Markdown notes are listed beside it" widths={[520, 1040]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Notes on the record.</b> Signed-in readers annotate a whole page or a selected passage; the note highlights in place, and is public to read and searchable.</figcaption>
               </figure>
             </div>
           </div>

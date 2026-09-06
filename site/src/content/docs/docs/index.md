@@ -9,6 +9,7 @@ description: A reading room for web archives — full-text search, provenance, a
 - **Provenance up front** — see how each crawl was made (software, operator, dates, seeds, page counts) and verify each WACZ's fixity, instead of taking the archive on faith.
 - **In-browser replay** of archived pages via [ReplayWeb.page](https://replayweb.page/) / wabac.js.
 - **A management workroom** where authenticated users edit collection metadata and descriptions.
+- **Page annotations** — signed-in users attach Markdown notes to a whole page or a selected passage; they're public to read, highlight in place on replay, and turn up in search.
 
 It ships as a single self-contained binary — no Solr, no Elasticsearch, no separate database server. That's a deliberate design goal: indice is built for **small, local, and private** use (a person indexing a handful of their own WACZ files on a laptop, with nothing sent to a hosted service) and uses the same model to **scale up** toward institutional collections. It aims to fit both ends of that range, rather than assuming the infrastructure of a large web archive.
 
@@ -21,6 +22,7 @@ The web-archive replay is entirely [Webrecorder](https://webrecorder.net/)'s wor
 - **New here?** [Install](/docs/install/) indice, then [try it in a minute](/docs/quickstart/).
 - **Bringing archives in?** Import from [Browsertrix](/docs/guides/import-browsertrix/) or [Archive-It](/docs/guides/import-archive-it/).
 - **Curating?** [Manage &amp; curate in the workroom](/docs/guides/manage/).
+- **Annotating pages?** [Add notes to captures](/docs/guides/annotations/).
 - **Running a server?** [Deploy indice](/docs/guides/deploy/).
 - **Digging deeper?** The [command-line reference](/docs/reference/cli/) and [how indice works](/docs/reference/how-it-works/).
 

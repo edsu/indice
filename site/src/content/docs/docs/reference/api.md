@@ -57,8 +57,28 @@ curl 'http://127.0.0.1:8080/api/search?q=climate+site:example.com&limit=5'
 **Fields**
 
 - `total` — number of matching documents; `capped` is `true` when that count is approximate (very large result sets).
-- `results[]` — up to `limit` hits, each with: `doc_type` (media bucket, e.g. `html`, `pdf`), `url`, `domain`, `timestamp` (the capture time), `title`, `crawl_id` (8-char id) and `crawl_name`, `collection` (slug), `snippet` (a hit-highlighted excerpt, with `<mark>` around matches), `capture_count` (how many times this URL was captured, grouped into one result), and `status` (the archived HTTP status).
+- `results[]` — up to `limit` hits, each with: `doc_type` (media bucket, e.g. `html`, `pdf`, or `annotation` for a [note](/docs/guides/annotations/)), `url`, `domain`, `timestamp` (the capture time), `title`, `author` (set for annotation hits), `crawl_id` (8-char id) and `crawl_name`, `collection` (slug), `snippet` (a hit-highlighted excerpt, with `<mark>` around matches), `capture_count` (how many times this URL was captured, grouped into one result), and `status` (the archived HTTP status).
 - `facets[]` — facet groups, each `{ field, label, buckets: [{ value, count }] }`, matching the sidebar on the search page.
+
+## `GET /api/annotations`
+
+The public read side of [annotations](/docs/guides/annotations/) — the notes on one capture, or every note in a collection.
+
+**Query parameters**
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `collection` | yes | The collection slug. |
+| `url` | no | A capture URL. Provide with `ts` to get the notes on that one capture; omit both for every note in the collection. |
+| `ts` | no | The 14-digit capture timestamp. Must be given together with `url`. |
+
+```sh
+curl 'http://127.0.0.1:8080/api/annotations?collection=example-collection'
+```
+
+**Response** (abbreviated): `{ "can_annotate": false, "annotations": [ … ] }`, where each note carries its `id`, `author`, `created`/`modified`, the target `url` + `timestamp`, the `selector` (the quoted passage, for a passage note), and the note body as both `note_md` (Markdown) and `note_html` (sanitized). `can_annotate` reflects whether the current request is allowed to write.
+
+Creating, editing, and deleting notes are management-gated write endpoints (`POST /api/annotations`, `POST /api/annotations/{id}`, `POST /api/annotations/{id}/delete`) — see the [management write API](#management-write-api) below.
 
 ## `GET /health`
 
