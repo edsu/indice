@@ -3420,6 +3420,17 @@ async fn create_annotation(
     if req.note.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "note is empty").into_response();
     }
+    if req.url.trim().is_empty() || req.timestamp.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "url and timestamp are required").into_response();
+    }
+    // A note must attach to a collection the manifest knows about; otherwise a
+    // well-formed but unknown slug would create an orphan collections/<slug>/ dir
+    // and an orphan search doc for a collection that isn't listed anywhere.
+    match Manifest::open(&state.index_dir) {
+        Ok(m) if m.collection_by_id(&req.collection).is_some() => {}
+        Ok(_) => return (StatusCode::NOT_FOUND, "collection not found").into_response(),
+        Err(e) => return error_response(e),
+    }
     let author = annotation_author(&state, &headers).unwrap_or_else(|| "local".to_string());
     let creator = annotations::Creator::person(author.clone(), author.clone());
     let ann = match req.selector {

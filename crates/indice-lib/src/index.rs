@@ -1007,6 +1007,15 @@ pub fn delete_collection(home: &Path, id: &str, with_crawls: bool) -> Result<Col
         }
     }
 
+    // Drop the collection's annotation docs from the search index. They carry no
+    // crawl_id, so deleting member crawls above doesn't remove them; collect
+    // their ids now, before the on-disk annotations.jsonl is deleted with the dir.
+    let ann_ids: Vec<String> = crate::annotations::load(home, id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+
     // Remove the grouping last: the manifest entry, then its finding-aid dir.
     let mut manifest = Manifest::open(&index_dir(home))?;
     let removed = manifest.remove_collection(id);
@@ -1015,6 +1024,20 @@ pub fn delete_collection(home: &Path, id: &str, with_crawls: bool) -> Result<Col
         .context("saving the manifest after deleting a collection")?;
     if removed.is_some() {
         let _ = std::fs::remove_dir_all(crate::collections::collection_dir(home, id));
+    }
+
+    if !ann_ids.is_empty() {
+        let full_text = index_dir(home).join("full_text");
+        if full_text.join("meta.json").exists() {
+            let mut search = SearchIndex::open(&full_text)
+                .context("opening the search index to delete collection annotations")?;
+            for aid in &ann_ids {
+                search.delete_annotation_doc(aid);
+            }
+            search
+                .commit()
+                .context("committing collection annotation deletion")?;
+        }
     }
 
     info!(collection = %id, with_crawls, deleted = plan.crawls_deleted.len(), "collection deleted");

@@ -249,6 +249,10 @@
       }
     }
     try {
+      // Also clear any focused (click-emphasized) highlight: this runs on every
+      // reload/navigation, so a stale HL_ACTIVE from the previous page doesn't
+      // linger over unrelated content.
+      w.CSS.highlights.delete(HL_ACTIVE);
       w.CSS.highlights.delete(HL);
       if (ranges.length) w.CSS.highlights.set(HL, new w.Highlight(...ranges));
     } catch (e) {
@@ -453,7 +457,15 @@
     state.collection = p.get("collection_id") || p.get("collection") || "";
     state.url = p.get("url") || "";
     state.ts = p.get("ts") || "";
-    if (!state.collection) return; // nothing to scope annotations to
+    if (!state.collection) {
+      // No collection context to scope notes to: hide the panel + toggle so a
+      // plain replay isn't left with an empty 340px strip and an inert button.
+      const panel = document.getElementById("anno-panel");
+      if (panel) panel.hidden = true;
+      const toggle = document.getElementById("anno-toggle");
+      if (toggle) toggle.hidden = true;
+      return;
+    }
     buildPanel();
     reload();
     watchReplayDoc();
