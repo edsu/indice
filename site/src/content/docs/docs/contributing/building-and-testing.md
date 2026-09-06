@@ -3,7 +3,7 @@ title: Building & testing
 description: Build indice from source and run its test suite, including the headless-browser replay test.
 ---
 
-Build from a clone (see also [Install → From a clone](/indice/docs/install/#from-a-clone-for-development)):
+Build from a clone (see also [Install → From a clone](/docs/install/#from-a-clone-for-development)):
 
 ```sh
 git clone https://github.com/edsu/indice

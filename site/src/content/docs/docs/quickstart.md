@@ -12,7 +12,7 @@ indice index --collection "APOD" apod.wacz   # build the search index from the s
 indice serve                                 # http://127.0.0.1:8080
 ```
 
-Open <http://127.0.0.1:8080> and you can full-text search the captured pages, narrow by the facets, and replay the archived site in your browser. Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve --manage` adds an in-browser interface for adding and curating crawls — see [Manage &amp; curate](/indice/docs/guides/manage/).
+Open <http://127.0.0.1:8080> and you can full-text search the captured pages, narrow by the facets, and replay the archived site in your browser. Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve --manage` adds an in-browser interface for adding and curating crawls — see [Manage &amp; curate](/docs/guides/manage/).
 
 ![The indice reading-room homepage: a search box, browse-by-year and top-sites entry points, and collection cards](../../../assets/docs/reading-room-home.png)
 
@@ -27,7 +27,7 @@ indice keeps everything under a **home directory** (default: the current directo
 └── index/              search index + derived metadata (rebuildable; git-ignore it)
 ```
 
-The `collections/` folder is the part worth keeping in version control — the prose and images a curator writes. `index/` is derived from the WACZs and rebuilt by `indice reindex`, so a home in git typically `.gitignore`s `/index`. See [The home directory](/indice/docs/reference/home-directory/) for the full layout, what to version-control, and how backup works.
+The `collections/` folder is the part worth keeping in version control — the prose and images a curator writes. `index/` is derived from the WACZs and rebuilt by `indice reindex`, so a home in git typically `.gitignore`s `/index`. See [The home directory](/docs/reference/home-directory/) for the full layout, what to version-control, and how backup works.
 
 ## Index and serve
 
@@ -38,7 +38,7 @@ indice index my-archive.wacz --collection "My Web Archive"   # files it into arc
 indice serve                                                 # http://127.0.0.1:8080
 ```
 
-Every crawl belongs to a **collection**, so `index` requires `--collection <NAME>` (created if new). This is a deliberate nudge to say what a crawl is a part of and why you're keeping it — the curatorial context indice is built to surface. Describe a collection further (creator, dates, rights, a scope note) with [`indice collection set`](/indice/docs/reference/cli/), which writes a git-committable finding aid at `collections/<slug>/README.md`.
+Every crawl belongs to a **collection**, so `index` requires `--collection <NAME>` (created if new). This is a deliberate nudge to say what a crawl is a part of and why you're keeping it — the curatorial context indice is built to surface. Describe a collection further (creator, dates, rights, a scope note) with [`indice collection set`](/docs/reference/cli/), which writes a git-committable finding aid at `collections/<slug>/README.md`.
 
 A local WACZ can live anywhere — `indice index path/to/foo.wacz --collection "Bar"` files it into `<home>/archive/bar/` for you (**moving** it if it's already under `archive/`, **copying** it otherwise, so your original is left intact). The source is stored relative to home, so you can move or copy the whole `<home>` directory to another disk or machine and it still works. Point at a different home with `--home <DIR>` (every command takes it).
 
@@ -49,7 +49,7 @@ indice index archive/my-archive.wacz --collection "My Web Archive"
 indice index https://example.org/site.wacz --collection "My Web Archive"
 ```
 
-To rebuild the index later from what you've already indexed, use [`indice reindex`](/indice/docs/reference/cli/) instead of re-listing everything.
+To rebuild the index later from what you've already indexed, use [`indice reindex`](/docs/reference/cli/) instead of re-listing everything.
 
 Open <http://127.0.0.1:8080/>, search, and click a result to replay it.
 
@@ -80,4 +80,4 @@ This fetches the WACZ into `<home>/archive`, indexes it as a local file, and rec
 
 Streaming a large remote WACZ makes one HTTP range request per page record. Those requests are latency-bound and independent, so indice fetches them concurrently (4 at a time by default — gentle on arbitrary hosts; raise it, e.g. `--concurrency 16`, for object stores like S3). Fetches retry transient failures (rate limits and `5xx`) with backoff, honoring `Retry-After`, so a long ingest survives blips and stays gentle on the host — be mindful that a high `--concurrency` all hits a single host, so dial it down for small servers. As a backstop the worker count is capped at 64 per host, so a mis-typed value can't flood a single server. `index` shows a progress bar — a spinner while it reads the CDX, then a bar with the throughput and an ETA once it knows how many records there are. Add `-v`/`--verbose` for detailed logs instead of the bar; when output isn't a terminal (piping to a file or CI) it prints plain log lines and no bar.
 
-For the details of how indice reads a WACZ (CDX-guided vs. full scan), see [How indice works](/indice/docs/reference/how-it-works/#how-indexing-reads-a-wacz).
+For the details of how indice reads a WACZ (CDX-guided vs. full scan), see [How indice works](/docs/reference/how-it-works/#how-indexing-reads-a-wacz).

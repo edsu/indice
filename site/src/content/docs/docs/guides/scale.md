@@ -14,7 +14,7 @@ indice stats            # size by index file type, bytes/doc, projections to 1M/
 indice stats --fields   # what fills the doc store, by stored field
 ```
 
-At ~1.7 KB/doc the index projects to roughly **1.6 GB at 1M docs** and **~160 GB at 100M**. If that's still too much, the `stored_body_cap_kb` knob (see [Operator configuration](/indice/docs/reference/configuration/)) trades snippet depth for a smaller store — a laptop keeps generous snippets, an institution dials it down.
+At ~1.7 KB/doc the index projects to roughly **1.6 GB at 1M docs** and **~160 GB at 100M**. If that's still too much, the `stored_body_cap_kb` knob (see [Operator configuration](/docs/reference/configuration/)) trades snippet depth for a smaller store — a laptop keeps generous snippets, an institution dials it down.
 
 ## Query latency
 
