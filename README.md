@@ -7,8 +7,8 @@ archives. Point it at a pile of local or remote [WACZ] files and it gives you
 full-text faceted search, provenance up front, faithful in-browser replay, and a
 management workroom — all from a single self-contained binary.
 
-- 🌐 **Website & tour:** <https://edsu.github.io/indice>
-- 📖 **Documentation:** <https://edsu.github.io/indice/docs/>
+- 🌐 **Website & tour:** <https://indice.inkdroid.org>
+- 📖 **Documentation:** <https://indice.inkdroid.org/docs/>
 
 > **Nota bene:** *indice is alpha software and has been written extensively with
 > the support of Claude Code. Like any piece of software it may contain bugs, and
@@ -50,7 +50,7 @@ cargo install --git https://github.com/edsu/indice --locked indice  # cargo
 ```
 
 Docker, building from source, and the macOS Gatekeeper note are covered in the
-[install docs](https://edsu.github.io/indice/docs/install/).
+[install docs](https://indice.inkdroid.org/docs/install/).
 
 ## Try it in a minute
 
@@ -69,21 +69,21 @@ your own `.wacz` files the same way (local paths or `http(s)://` URLs);
 
 ## Documentation
 
-The full manual lives at **<https://edsu.github.io/indice/docs/>**:
+The full manual lives at **<https://indice.inkdroid.org/docs/>**:
 
-- [Install](https://edsu.github.io/indice/docs/install/) ·
-  [Quick start](https://edsu.github.io/indice/docs/quickstart/) ·
-  [Searching](https://edsu.github.io/indice/docs/guides/searching/)
+- [Install](https://indice.inkdroid.org/docs/install/) ·
+  [Quick start](https://indice.inkdroid.org/docs/quickstart/) ·
+  [Searching](https://indice.inkdroid.org/docs/guides/searching/)
 - Importing from
-  [Browsertrix](https://edsu.github.io/indice/docs/guides/import-browsertrix/) and
-  [Archive-It](https://edsu.github.io/indice/docs/guides/import-archive-it/)
-- [Manage & curate](https://edsu.github.io/indice/docs/guides/manage/) ·
-  [Deploy & run](https://edsu.github.io/indice/docs/guides/deploy/) ·
-  [Scale up](https://edsu.github.io/indice/docs/guides/scale/)
+  [Browsertrix](https://indice.inkdroid.org/docs/guides/import-browsertrix/) and
+  [Archive-It](https://indice.inkdroid.org/docs/guides/import-archive-it/)
+- [Manage & curate](https://indice.inkdroid.org/docs/guides/manage/) ·
+  [Deploy & run](https://indice.inkdroid.org/docs/guides/deploy/) ·
+  [Scale up](https://indice.inkdroid.org/docs/guides/scale/)
 - Reference:
-  [Command line](https://edsu.github.io/indice/docs/reference/cli/) ·
-  [Operator configuration](https://edsu.github.io/indice/docs/reference/configuration/) ·
-  [How indice works](https://edsu.github.io/indice/docs/reference/how-it-works/)
+  [Command line](https://indice.inkdroid.org/docs/reference/cli/) ·
+  [Operator configuration](https://indice.inkdroid.org/docs/reference/configuration/) ·
+  [How indice works](https://indice.inkdroid.org/docs/reference/how-it-works/)
 
 Architecture and design rationale: [DESIGN.md](DESIGN.md).
 

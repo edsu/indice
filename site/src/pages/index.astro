@@ -32,6 +32,14 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
       content="Full-text search, faceted and temporal browsing, provenance up front, and in-browser replay, from one self-contained binary."
     />
     <meta property="og:type" content="website" />
+
+    <!-- Privacy-friendly analytics by Plausible. is:inline keeps both tags
+         verbatim in <head> instead of letting Astro bundle/hoist them. -->
+    <script is:inline async src="https://plausible.io/js/pa-lPSq4HYaeHRGZU-nYOYio.js"></script>
+    <script is:inline>
+      window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+      plausible.init()
+    </script>
   </head>
 
   <body>

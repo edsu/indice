@@ -23,7 +23,7 @@ A **remote** WACZ indexed by URL is *not* copied here by default — indice stre
 
 This is the curatorial layer: plain files a person writes, meant for version control. It's the part of a home worth committing to git.
 
-- **`collections/<slug>/README.md`** — the collection's **finding aid**: a small YAML front-matter block (creator, dates, rights, subjects) followed by a Markdown narrative (scope & content, custodial history, and so on). indice writes it from [`indice collection set`](/indice/docs/reference/cli/) or the workroom's [Edit collection](/indice/docs/guides/manage/) form — and because it's just Markdown, you can also edit it by hand in any editor and review the change as a diff.
+- **`collections/<slug>/README.md`** — the collection's **finding aid**: a small YAML front-matter block (creator, dates, rights, subjects) followed by a Markdown narrative (scope & content, custodial history, and so on). indice writes it from [`indice collection set`](/docs/reference/cli/) or the workroom's [Edit collection](/docs/guides/manage/) form — and because it's just Markdown, you can also edit it by hand in any editor and review the change as a diff.
 - **`collections/<slug>/crawls/<id>.md`** — an optional per-crawl note (via `indice crawl set <id> --note`, or by hand).
 - **Thumbnails / images** — a pinned collection or crawl image lives here too, so it survives reindexing.
 
@@ -31,11 +31,11 @@ Everything under `collections/` is authored, not derived — the same files whet
 
 ## `index/` — derived and disposable
 
-The embedded [Tantivy](https://github.com/quickwit-oss/tantivy) full-text index plus a manifest of every source (its path or URL, and the SHA-256 of each local WACZ). It's **rebuilt from the WACZs** by [`indice reindex`](/indice/docs/reference/cli/), so you never need to back it up — treat it as a cache and **git-ignore it**.
+The embedded [Tantivy](https://github.com/quickwit-oss/tantivy) full-text index plus a manifest of every source (its path or URL, and the SHA-256 of each local WACZ). It's **rebuilt from the WACZs** by [`indice reindex`](/docs/reference/cli/), so you never need to back it up — treat it as a cache and **git-ignore it**.
 
 ## `config.yaml` — optional settings
 
-Home-level operator settings (index footprint knobs). Everything has a default, so the file is optional. See [Operator configuration](/indice/docs/reference/configuration/).
+Home-level operator settings (index footprint knobs). Everything has a default, so the file is optional. See [Operator configuration](/docs/reference/configuration/).
 
 ## Version control & backup
 

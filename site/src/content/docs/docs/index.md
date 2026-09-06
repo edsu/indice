@@ -18,11 +18,11 @@ The web-archive replay is entirely [Webrecorder](https://webrecorder.net/)'s wor
 
 ## Where to start
 
-- **New here?** [Install](/indice/docs/install/) indice, then [try it in a minute](/indice/docs/quickstart/).
-- **Bringing archives in?** Import from [Browsertrix](/indice/docs/guides/import-browsertrix/) or [Archive-It](/indice/docs/guides/import-archive-it/).
-- **Curating?** [Manage &amp; curate in the workroom](/indice/docs/guides/manage/).
-- **Running a server?** [Deploy indice](/indice/docs/guides/deploy/).
-- **Digging deeper?** The [command-line reference](/indice/docs/reference/cli/) and [how indice works](/indice/docs/reference/how-it-works/).
+- **New here?** [Install](/docs/install/) indice, then [try it in a minute](/docs/quickstart/).
+- **Bringing archives in?** Import from [Browsertrix](/docs/guides/import-browsertrix/) or [Archive-It](/docs/guides/import-archive-it/).
+- **Curating?** [Manage &amp; curate in the workroom](/docs/guides/manage/).
+- **Running a server?** [Deploy indice](/docs/guides/deploy/).
+- **Digging deeper?** The [command-line reference](/docs/reference/cli/) and [how indice works](/docs/reference/how-it-works/).
 
 ## Why "indice"?
 

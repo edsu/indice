@@ -11,13 +11,13 @@ indice is alpha software — these shapes may still change. The read-only endpoi
 
 ## `GET /api/search`
 
-Full-text search as JSON — the same engine behind the [search page](/indice/docs/guides/searching/).
+Full-text search as JSON — the same engine behind the [search page](/docs/guides/searching/).
 
 **Query parameters**
 
 | Param | Required | Description |
 |-------|----------|-------------|
-| `q` | yes | The query. Supports the full [search syntax](/indice/docs/guides/searching/) — including field filters like `site:example.com`, `year:2021`, `type:pdf`, `lang:en`, and `collection:<slug>`, so facets are expressed inside `q`. |
+| `q` | yes | The query. Supports the full [search syntax](/docs/guides/searching/) — including field filters like `site:example.com`, `year:2021`, `type:pdf`, `lang:en`, and `collection:<slug>`, so facets are expressed inside `q`. |
 | `limit` | no | Max results to return. Default `20`, capped at `200`. |
 
 ```sh
@@ -72,8 +72,8 @@ These serve ReplayWeb.page and are handy for tooling, though their primary consu
 - **`GET /collection/{id}/replay.json`** — a multi-WACZ replay manifest for a collection (every member crawl), handed to wabac.js so cross-crawl links resolve.
 - **`GET /collection/{id}/pages`** — the collection's page list and URL→capture resolution, scoped to the collection.
 
-See [How indice works](/indice/docs/reference/how-it-works/) for how these fit together.
+See [How indice works](/docs/reference/how-it-works/) for how these fit together.
 
 ## Management write API
 
-When you run [`serve --manage`](/indice/docs/guides/manage/), indice additionally mounts write endpoints under `/api/` (add archives, create/edit collections, delete crawls, and Browsertrix/Archive-It import), plus SSE progress streams. These **power the workroom UI** and are gated by the same auth as the rest of management (loopback trust, or a forward-auth proxy). They are an implementation detail of that UI rather than a stable public API, and are never mounted by the default read-only `serve`.
+When you run [`serve --manage`](/docs/guides/manage/), indice additionally mounts write endpoints under `/api/` (add archives, create/edit collections, delete crawls, and Browsertrix/Archive-It import), plus SSE progress streams. These **power the workroom UI** and are gated by the same auth as the rest of management (loopback trust, or a forward-auth proxy). They are an implementation detail of that UI rather than a stable public API, and are never mounted by the default read-only `serve`.

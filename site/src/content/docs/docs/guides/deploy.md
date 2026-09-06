@@ -5,7 +5,7 @@ description: Run indice as a server — the container image, a one-command Caddy
 
 Two options, depending on who is running indice:
 
-- **On your laptop** you can grab a prebuilt binary and run `indice serve`. That's the whole story for local use; see [Install](/indice/docs/install/) and [Try it in a minute](/indice/docs/quickstart/).
+- **On your laptop** you can grab a prebuilt binary and run `indice serve`. That's the whole story for local use; see [Install](/docs/install/) and [Try it in a minute](/docs/quickstart/).
 - **As a server** — run the container image behind a TLS-terminating proxy. The batteries-included [`compose.yaml`](https://github.com/edsu/indice/blob/main/compose.yaml) does this in one command with [Caddy](https://caddyserver.com), which fetches and renews a Let's Encrypt certificate for you.
 
 ## Container image
@@ -41,7 +41,7 @@ docker compose exec indice indice index --collection "Your Collection" /data/you
 
 ## Management over the network
 
-The simplest management needs none of this: `indice serve --manage` on loopback (the [local case](/indice/docs/guides/manage/#local-use)) trusts every request — it's just you on your machine, no login. `docker compose up` alone is **read-only**. To open the in-browser management surface to authenticated admins *over the network*, add one of two overlays, both built on the same [forward-auth](/indice/docs/guides/manage/#running-as-a-service-forward-auth) mechanism:
+The simplest management needs none of this: `indice serve --manage` on loopback (the [local case](/docs/guides/manage/#local-use)) trusts every request — it's just you on your machine, no login. `docker compose up` alone is **read-only**. To open the in-browser management surface to authenticated admins *over the network*, add one of two overlays, both built on the same [forward-auth](/docs/guides/manage/#running-as-a-service-forward-auth) mechanism:
 
 - **Basic auth** (below) — a single admin password, nothing else to run. The quickest way to get management over the network.
 - **Single sign-on** ([next section](#single-sign-on-oauth2-proxy)) — log in with GitHub / Google / OIDC via oauth2-proxy, with a real logout. The upgrade for multiple admins or existing SSO.

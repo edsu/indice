@@ -35,4 +35,4 @@ indice import archive-it --crawl 2626199 --into "Stephen Ratcliffe Papers" --hom
 - **Durable.** Because indice downloads the WARCs and builds a local WACZ, replay works offline and needs no Archive-It credentials at replay time. Downloads are staged under `<home>` (one crawl at a time, cleaned up as it goes) so a large crawl uses your disk, not `/tmp`. `--host <URL>` targets a non-default host.
 - **Grouping &amp; metadata.** Without `--into`, each Archive-It collection maps to an indice collection of the same name, and its title/description seed the finding aid. `--into <NAME>` groups everything into one named collection (and is how to reach crawls that aren't in any Archive-It collection). `--limit <N>` caps how many crawls per collection.
 
-Both importers are also available in [management mode](/indice/docs/guides/manage/) as browse-and-import wizards on the accession desk, using the server's configured credentials.
+Both importers are also available in [management mode](/docs/guides/manage/) as browse-and-import wizards on the accession desk, using the server's configured credentials.

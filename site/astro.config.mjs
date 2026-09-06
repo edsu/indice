@@ -2,17 +2,29 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// Published as a GitHub Pages *project* site at https://edsu.github.io/indice/,
-// so everything is served under the `/indice` base path. The custom landing page
-// (src/pages/index.astro) owns `/`; the Starlight manual lives under `/docs/`
-// because its content is nested in src/content/docs/docs/**.
+// Published on GitHub Pages under the custom domain https://indice.inkdroid.org/
+// (set in Settings → Pages), so the site is served from the root — no base path.
+// The custom landing page (src/pages/index.astro) owns `/`; the Starlight manual
+// lives under `/docs/` because its content is nested in src/content/docs/docs/**.
 export default defineConfig({
-  site: 'https://edsu.github.io',
-  base: '/indice',
+  site: 'https://indice.inkdroid.org',
   integrations: [
     starlight({
       title: 'indice',
       favicon: '/favicon.svg',
+      // Same Plausible analytics as the landing page (src/pages/index.astro);
+      // Starlight renders its own <head>, so the tags have to be declared here.
+      head: [
+        {
+          tag: 'script',
+          attrs: { src: 'https://plausible.io/js/pa-lPSq4HYaeHRGZU-nYOYio.js', async: true },
+        },
+        {
+          tag: 'script',
+          content:
+            'window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()',
+        },
+      ],
       customCss: ['./src/styles/starlight-theme.css'],
       components: {
         ThemeProvider: './src/components/ThemeProvider.astro',

@@ -7,7 +7,7 @@ indice is a single self-contained binary — ReplayWeb.page assets are embedded 
 
 ## Prebuilt binary (fastest — no toolchain)
 
-Download the archive for your platform from the [latest release](https://github.com/edsu/indice/releases/latest) (macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and you have the `indice` binary plus a small sample archive (`apod.wacz`) to try it on — see [Try it in a minute](/indice/docs/quickstart/).
+Download the archive for your platform from the [latest release](https://github.com/edsu/indice/releases/latest) (macOS arm64/x86_64, Linux x86_64/arm64, Windows x86_64), unpack it, and you have the `indice` binary plus a small sample archive (`apod.wacz`) to try it on — see [Try it in a minute](/docs/quickstart/).
 
 :::caution[macOS Gatekeeper]
 An unsigned download is quarantined by Gatekeeper. Clear it once with `xattr -d com.apple.quarantine ./indice` (notarized builds are planned).
