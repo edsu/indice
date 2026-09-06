@@ -1,0 +1,400 @@
+---
+import { Image } from 'astro:assets';
+import readingRoom from '../assets/screenshots/reading-room.png';
+import findingAid from '../assets/screenshots/finding-aid.png';
+import search from '../assets/screenshots/search.png';
+import replay from '../assets/screenshots/replay.png';
+import workroom from '../assets/screenshots/workroom.png';
+import bluebuck from '../assets/bluebuck.png';
+import '../styles/global.css';
+
+const repo = 'https://github.com/edsu/indice';
+const releases = `${repo}/releases/latest`;
+const shotSizes = '(max-width: 820px) 92vw, 520px';
+const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>indice: a reading room for web archives</title>
+    <meta
+      name="description"
+      content="indice is a single self-contained binary that turns WACZ files into a searchable, browsable, replayable web archive: full-text search with faceted and temporal browsing, provenance up front, and in-browser replay."
+    />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href={`${base}/favicon.svg`} type="image/svg+xml" />
+    <meta property="og:title" content="indice: a reading room for web archives" />
+    <meta
+      property="og:description"
+      content="Full-text search, faceted and temporal browsing, provenance up front, and in-browser replay, from one self-contained binary."
+    />
+    <meta property="og:type" content="website" />
+
+    <!-- Privacy-friendly analytics by Plausible. is:inline keeps both tags
+         verbatim in <head> instead of letting Astro bundle/hoist them. -->
+    <script is:inline async src="https://plausible.io/js/pa-lPSq4HYaeHRGZU-nYOYio.js"></script>
+    <script is:inline>
+      window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+      plausible.init()
+    </script>
+  </head>
+
+  <body>
+    <header class="appbar">
+      <a class="wordmark" href="#top">indice</a>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#screens">Screens</a>
+        <a href="#how">How it works</a>
+        <a href="#sources">Sources</a>
+        <a href="#install">Install</a>
+        <a href={`${base}/docs/`}>Docs</a>
+        <a href="#colophon">Colophon</a>
+        <a class="nav-cta" href={repo}>GitHub ↗</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <!-- Hero -->
+      <section class="hero">
+        <img src={`${base}/arrow.svg`} alt="" aria-hidden="true" class="hero-art hero-art--lead" />
+        <img src={`${base}/arrow.svg`} alt="" aria-hidden="true" class="hero-art hero-art--down" />
+        <img src={`${base}/arrow.svg`} alt="" aria-hidden="true" class="hero-art hero-art--back" />
+        <div class="wrap">
+          <p class="eyebrow">Web archive server · written in Rust</p>
+          <a class="os-badge" href={repo}>Free &amp; open source · AGPL-3.0</a>
+          <h1 class="hero-title">
+            <span class="brand">indice</span>
+            <span class="tagline">A reading room for web archives.</span>
+          </h1>
+          <p class="lede">
+             indice turns your <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
+             into an archive you can actually use: full-text search with
+             faceted, temporal browsing; the provenance of every crawl; and
+             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling. One
+             self-contained binary that scales from you on your laptop to
+             multiuser organizational setups.</p>
+          <div class="cta-row">
+            <a class="btn primary" href="#install">Get started</a>
+            <a class="btn" href={repo}>View on GitHub</a>
+          </div>
+          <div class="hero-install">
+            <code class="cmd">brew install edsu/indice/indice</code>
+            <span class="or">or a <a href="#install">prebuilt binary, Docker, or cargo →</a></span>
+          </div>
+          <div class="meta">
+            <span>single binary</span>
+            <span>macOS · Linux · Windows</span>
+            <span>no database</span>
+            <span>runs offline</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Features -->
+      <section id="features" class="features">
+        <div class="wrap">
+          <p class="eyebrow">What you get</p>
+          <div class="grid">
+            <div class="feature">
+              <h3>Full-text search, faceted &amp; temporal</h3>
+              <p>
+                Hit-highlighted snippets across page text, titles, and metadata; then narrow
+                by collection, site, date, type, or language, with a month timeline for moving
+                through time.
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Provenance up front</h3>
+              <p>
+               See how each crawl was made, including software, operator, dates, seeds, page counts.
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Faithful in-browser replay</h3>
+              <p>
+                Archived pages replay client-side, exactly as captured, right in the reader's
+                browser.
+              </p>
+              <p class="credit">Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s work (ReplayWeb.page / wabac.js).</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Screenshots (reading room) -->
+      <section id="screens">
+        <div class="wrap">
+          <p class="eyebrow">The reading room</p>
+          <div class="shots">
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={readingRoom} alt="indice homepage: search box, browse-by-year and top-sites, and a collection card" widths={[520, 1040]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Search &amp; browse.</b> A calm front page: search, browse by year or site, and collection cards.</figcaption>
+              </figure>
+            </div>
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={findingAid} alt="A collection page rendered as a finding aid with creator, dates, rights, subjects, and crawl provenance" widths={[520, 1040]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Finding aids, not folders.</b> Each collection reads like an archival description, with fixity and crawl provenance stored as Markdown files you can edit.</figcaption>
+              </figure>
+            </div>
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={search} alt="Search results with a faceted sidebar and hit-highlighted snippets" widths={[520, 1040]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Slice and dice.</b> Facets for collection, year, site, type, and language beside hit-highlighted results.</figcaption>
+              </figure>
+            </div>
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={replay} alt="The webrecorder.net homepage replaying inside indice via ReplayWeb.page" widths={[520, 1040]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Replay in place.</b> Archived pages replay exactly as captured. Here is webrecorder.net being replayed, wrapped in indice's chrome.</figcaption>
+              </figure>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section id="how">
+        <div class="wrap">
+          <p class="eyebrow">How it works at the command line</p>
+          <div class="steps">
+            <div class="step">
+              <h3>Index</h3>
+              <p>Point indice at local or remote WACZ files. It builds an embedded full-text index and reads each crawl's provenance.</p>
+              <p><code>indice index --collection "Example" *.wacz</code></p>
+            </div>
+            <div class="step">
+              <h3>Serve</h3>
+              <p>Run the single binary. It serves the read-only reading room over HTTP.</p>
+              <p><code>indice serve</code></p>
+            </div>
+            <div class="step">
+              <h3>Search &amp; replay</h3>
+              <p>Readers search with facets and a timeline, then open any page and watch it replay in their browser.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sources: bring your archives -->
+      <section id="sources" class="features">
+        <div class="wrap">
+          <p class="eyebrow">Bring your archives</p>
+          <h2 class="sec-title">Works with the archives you already have.</h2>
+          <div class="grid">
+            <div class="feature">
+              <h3>Browsertrix</h3>
+              <p>
+                Browse your <a href="https://browsertrix.com/">Browsertrix</a> org and import
+                collections and crawls in a few clicks, or index and replay them
+                <strong>straight from Browsertrix's cloud storage, without downloading a thing</strong>.
+                indice serves the very same ReplayWeb.page engine Browsertrix does, so replay is
+                identical.
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Archive-It</h3>
+              <p>
+                Pull a collection's WARCs from Archive-It over WASAPI; indice builds the WACZ,
+                indexes it, and carries the descriptive metadata straight into a finding aid.
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Cloud &amp; remote storage</h3>
+              <p>
+                 Point indice at a WACZ hosted over HTTP(S), in object storage, or behind a
+                 presigned URL, and it indexes and replays it with byte-range reads, without
+                 needing to download the entire file.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- The range pitch -->
+      <section class="range">
+        <div class="wrap">
+          <div class="cols">
+            <div>
+              <p class="eyebrow">Built for range</p>
+              <h2>One tool, laptop to institution.</h2>
+              <p>
+                indice ships as a single self-contained binary that uses the embedded <a href="https://github.com/quickwit-oss/tantivy">Tantivy</a> search engine library.
+                So there's no Solr, Elasticsearch, or separate database to keep online. The same model that indexes a handful of your own WACZ files
+                on a laptop should scale up towards institution sized collections. It aims to fit both ends
+                of that range, rather than assuming the infrastructure of a large web archive.
+              </p>
+            </div>
+            <div class="endpoints">
+              <div class="endpoint">
+                <p class="eyebrow">Small &amp; private</p>
+                <p>Index a few crawls on your laptop. Nothing is sent to a hosted service; it runs offline.</p>
+                <p class="stat">
+                  One binary, no database. WACZ files index in seconds,
+                   and search results return in milliseconds. <a href={`${base}/docs/quickstart/`}>Try it &rarr;</a>
+                </p>
+              </div>
+              <div class="endpoint">
+                <p class="eyebrow">Scaled up</p>
+                <p>Serve an institutional reading room behind a proxy, with the same single binary.</p>
+                <p class="stat">
+                   The index is compact. Adding a million pages results in an index that is about 1.5 GB on 
+                   disk. <a href={`${base}/docs/guides/scale/`}>How it scales &rarr;</a>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Workroom (clay: the two-mode signature) -->
+      <section class="mode-workroom">
+        <div class="wrap">
+          <div class="split">
+            <div>
+              <p class="eyebrow">Curate in the workroom</p>
+              <h2 style="font-size:1.8rem;margin:0 0 0.8rem;">Turn the reading room into a workroom.</h2>
+              <p style="color:#3a3a3a;">
+                Run in management mode or behind a SSO provider 
+                and a warm clay "red-tape" accent marks write mode: add archives, import from
+                Browsertrix or Archive-It, and write finding aids in place. No command line
+                needed.
+              </p>
+              <a class="btn" href={`${base}/docs/guides/manage/`}>Management docs →</a>
+            </div>
+            <div class="shot">
+              <figure>
+                <div class="frame">
+                  <Image src={workroom} alt="indice in management mode: a clay-accented app bar with a Manage chip and a New collection button" widths={[560, 1120]} sizes={shotSizes} />
+                </div>
+                <figcaption><b>Workroom mode.</b> The clay accent and “Manage” chip signal you're editing the archive.</figcaption>
+              </figure>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Why indice -->
+      <section id="why" class="why">
+        <Image src={bluebuck} alt="" aria-hidden="true" class="why-art" widths={[520, 1040]} sizes="520px" />
+        <div class="wrap">
+          <p class="eyebrow">Why “indice”?</p>
+          <div class="prose">
+            <p>
+              An <em>indice</em> is a sign that points beyond itself. Suzanne Briet argued that a
+              wild antelope becomes a <em>document</em> once it is captured, catalogued, and placed
+              in a zoo, an 
+            </p>
+            <blockquote>
+              “indice concret ou symbolique, conservé ou enregistré.”
+              <cite>Suzanne Briet, <em>Qu'est-ce que la documentation ?</em> (1951)</cite>
+            </blockquote>
+            <p>
+              Charles Sanders Peirce used <em>index</em> for the same family of sign — one bound
+              to its object by a real connection, like smoke to fire. A web capture is like that
+              too: a trace connected to a moment of the live web. And, of course, indice builds a
+              full-text <strong>index</strong> over the archives it serves. Three senses of the
+              same idea.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Install -->
+      <section id="install" class="install">
+        <div class="wrap">
+          <p class="eyebrow">Install</p>
+          <div class="grid">
+            <div class="card">
+              <h3>Homebrew (macOS / Linux)</h3>
+              <pre>brew install edsu/indice/indice</pre>
+              <p class="note"><code>brew upgrade indice</code> tracks new releases.</p>
+            </div>
+            <div class="card">
+              <h3>Prebuilt binary</h3>
+              <pre><span class="c"># macOS · Linux · Windows</span>
+Download from the releases page</pre>
+              <p class="note"><a href={releases}>Latest release ↗</a> unpack and run; a sample archive is included.</p>
+            </div>
+            <div class="card">
+              <h3>Cargo</h3>
+              <pre>cargo install --git \
+  https://github.com/edsu/indice \
+  --locked indice</pre>
+              <p class="note">Needs a <a href="https://rustup.rs">Rust toolchain</a>.</p>
+            </div>
+            <div class="card">
+              <h3>Docker</h3>
+              <pre>docker run -p 8080:8080 \
+  -v indice-data:/data \
+  ghcr.io/edsu/indice:latest</pre>
+              <p class="note">Or the <a href={`${base}/docs/guides/deploy/`}>compose stack</a> with automatic HTTPS.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Colophon: how indice was made -->
+      <section id="colophon" class="colophon">
+        <div class="wrap">
+          <p class="eyebrow">Colophon</p>
+          <h2 class="sec-title">How indice was made — and why that's part of the record.</h2>
+          <div class="prose">
+            <p>
+              indice has been built in the open over the course of 2026, in small increments,
+              with substantial help from <a href="https://www.anthropic.com/claude-code">Claude
+              Code</a>, Anthropic's AI coding assistant. It is the work of a single developer
+              working alongside a language model, not the product of an institution or a large
+              team. It is alpha software: expect rough edges, and know that careful technical
+              review is genuinely welcome.
+            </p>
+            <p>
+              It stands on the web archiving community's shoulders. Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s ReplayWeb.page and wabac.js;
+              the <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> format, <a href="https://browsertrix.com/">Browsertrix</a>, and Archive-It's WASAPI shape
+              how archives come in. Its framing is borrowed from documentation theory: Suzanne
+              Briet's antelope, Peirce's index, and from the archival tradition of the finding aid.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <div class="cols">
+          <div>
+            <a class="wordmark" href="#top" style="font-weight:800;font-size:1.1rem;color:var(--ink);text-decoration:none;">indice</a>
+            <p class="note" style="margin:.4rem 0 0;color:var(--faint);font-size:.85rem;">A reading room for web archives.</p>
+          </div>
+          <div class="links">
+            <a href={repo}>GitHub</a>
+            <a href={releases}>Releases</a>
+            <a href={`${base}/docs/`}>Docs</a>
+            <a href={`${repo}/blob/main/LICENSE`}>License (AGPL-3.0)</a>
+          </div>
+        </div>
+        <p class="fine">
+          Web-archive replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s
+          work; indice bundles ReplayWeb.page and wabac.js and adds a thin Rust layer for
+          indexing, search, and serving. The
+          antelope beside “Why indice” is the (extinct) bluebuck
+          from <a href="https://commons.wikimedia.org/wiki/File:The_book_of_antelopes_(1894)_Hippotragus_leucophaeus.png">The
+          Book of Antelopes</a> (1894), public domain.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
