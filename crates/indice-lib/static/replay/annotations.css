@@ -1,0 +1,266 @@
+/* Page-annotation panel for the replay viewer. Standalone (the viewer has no CSS
+   vars), so colours mirror app.css tokens by hand: kraft surfaces, reading-room
+   blue accent, clay danger. */
+
+#anno-panel {
+  flex: 0 0 340px;
+  min-width: 0;
+  overflow-y: auto;
+  background: #faf8f3;
+  border-left: 1px solid #e7e3db;
+  font-family: sans-serif;
+  color: #1a1a1a;
+  font-size: 0.9rem;
+}
+#anno-panel[hidden] {
+  display: none;
+}
+
+.anno-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid #e7e3db;
+  position: sticky;
+  top: 0;
+  background: #faf8f3;
+}
+.anno-count {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #6b6b6b;
+  background: #f4f0e8;
+  border: 1px solid #e7e3db;
+  border-radius: 999px;
+  padding: 0 0.45rem;
+}
+.anno-close {
+  margin-left: auto;
+  border: none;
+  background: none;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: #8f8b83;
+  cursor: pointer;
+}
+
+.anno-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.7rem 0.8rem 0;
+}
+.anno-tools button {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #cdd7e6;
+  border-radius: 6px;
+  background: #fff;
+  color: #0053a6;
+  cursor: pointer;
+  text-align: left;
+}
+.anno-tools button[disabled] {
+  color: #b8b2a6;
+  border-color: #e7e3db;
+  cursor: default;
+}
+.anno-tools button:hover:not([disabled]) {
+  background: #e6effb;
+}
+
+.anno-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem 0.8rem 1rem;
+}
+.anno-empty,
+.anno-hint {
+  color: #6b6b6b;
+  font-size: 0.82rem;
+}
+.anno-empty {
+  padding: 0.6rem 0.2rem;
+}
+.anno-hint {
+  padding: 0.5rem 0.8rem 0;
+}
+
+.anno-item {
+  border: 1px solid #e7e3db;
+  border-radius: 8px;
+  background: #fff;
+  padding: 0.55rem 0.65rem;
+  margin-top: 0.6rem;
+}
+.anno-item.has-region {
+  cursor: pointer;
+}
+.anno-item.has-region:hover {
+  border-color: #cdd7e6;
+}
+.anno-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: #8f8b83;
+  margin-bottom: 0.3rem;
+}
+.anno-author {
+  font-weight: 650;
+  color: #6b6b6b;
+}
+.anno-body {
+  line-height: 1.5;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.anno-body > :first-child {
+  margin-top: 0;
+}
+.anno-body > :last-child {
+  margin-bottom: 0;
+}
+/* Markdown-rendered note body in the narrow (340px) panel: keep headings,
+   lists and code from ballooning or over-indenting. */
+.anno-body p {
+  margin: 0.5rem 0;
+}
+.anno-body h1,
+.anno-body h2,
+.anno-body h3,
+.anno-body h4,
+.anno-body h5,
+.anno-body h6 {
+  font-size: 0.95rem;
+  font-weight: 650;
+  margin: 0.7rem 0 0.3rem;
+  line-height: 1.3;
+}
+.anno-body ul,
+.anno-body ol {
+  margin: 0.5rem 0;
+  padding-left: 1.2rem;
+}
+.anno-body a {
+  color: #0053a6;
+}
+.anno-body hr {
+  border: none;
+  border-top: 1px solid #e7e3db;
+  margin: 0.7rem 0;
+}
+.anno-body blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.7rem;
+  border-left: 3px solid #e7e3db;
+  color: #555;
+}
+.anno-body code {
+  background: #f4f0e8;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+.anno-body pre {
+  background: #f4f0e8;
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+/* A code block's <code> shouldn't double the background/padding. */
+.anno-body pre code {
+  background: none;
+  padding: 0;
+}
+.anno-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+.anno-actions button {
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid #e7e3db;
+  border-radius: 6px;
+  background: #faf8f3;
+  color: #6b6b6b;
+  cursor: pointer;
+}
+.anno-actions button.danger:hover {
+  color: #c5221f;
+  border-color: #e6b8b6;
+  background: #fbeeed;
+}
+
+.anno-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+.anno-composer textarea {
+  font: inherit;
+  font-size: 0.85rem;
+  width: 100%;
+  padding: 0.4rem;
+  border: 1px solid #cdd7e6;
+  border-radius: 6px;
+  resize: vertical;
+}
+.anno-composer-row {
+  display: flex;
+  gap: 0.4rem;
+}
+.anno-composer button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #cdd7e6;
+  border-radius: 6px;
+  background: #fff;
+  color: #0053a6;
+  cursor: pointer;
+}
+.anno-composer button.primary {
+  background: #0066cc;
+  color: #fff;
+  border-color: #0066cc;
+}
+.anno-composer button.primary:hover {
+  background: #0053a6;
+}
+
+/* Banner toggle button (lives in #banner). */
+#anno-toggle {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #e7e3db;
+  border-radius: 6px;
+  background: #fff;
+  color: #0053a6;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#anno-toggle:hover {
+  background: #e6effb;
+}
+
+@media (max-width: 720px) {
+  #anno-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 85%;
+    max-width: 340px;
+    z-index: 2;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+  }
+}

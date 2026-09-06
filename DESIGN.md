@@ -541,10 +541,58 @@ match set; the result total counts distinct URLs and is bounded by `CANDIDATE_CA
 measure different things, so a facet count is generally larger than the number of grouped
 results it yields.
 
+### Annotations as provenance (planned)
+
+indice already treats provenance as part of the record and renders collections as finding
+aids; **page-level annotations** extend that from the collection down to the individual
+capture. The design is grounded in Light & Hyry's *Colophons and Annotations* (2002): the
+finding aid conventionally presents one seemingly-objective view and hides the archivist's
+mediating hand, so they propose making that hand visible — a **colophon** (the processor's
+own account of appraisal / arrangement / description decisions) and **annotations** (many
+voices adding perspectives, corrections, and re-readings over time, so the finding aid
+becomes an accumulating, living record — in their words, "the center for the accumulation
+of knowledge about a collection").
+
+indice carries that *annotations* idea into web archives: any signed-in member attaches a
+freeform Markdown note to a **specific capture** (page URL + timestamp) — whole-page, or a
+highlighted passage anchored with a W3C **TextQuoteSelector**. Notes are **public,
+attributed, and discoverable**, so a later reader meets others' context serendipitously —
+the second user story: not only depositing traces to re-find a document, but harvesting
+others' through search and browse. Each note is a small colophon (who, when, what
+observation), and the committed JSONL's git history is its audit trail.
+
+**Model.** Display is public (same pattern as finding aids and crawl notes: public read,
+gated write); authoring/editing is authenticated (any signed-in user; edit/delete own only).
+Stored as W3C Web Annotation JSON-LD, one per line, at `collections/<slug>/annotations.jsonl`,
+keyed by URL + timestamp so annotations survive reindexing. Surfaced beside the replay (with
+the passage highlighted), on crawl/collection pages, in search (a distinct annotation result
+type), and in a per-collection annotations index. In-place highlighting reaches
+ReplayWeb.page's *same-origin* replay frame (spike-verified; coupled to RWP internals, so it
+must be re-tested on RWP upgrades).
+
+**Search.** Each note is its own Tantivy document (`doc_type = "annotation"`, keyed by the
+annotation id in a new `annotation_id` field) whose body is the note text — so notes are
+found by full-text search and rendered as a distinct "Note by …" result linking to the
+annotated page. Create/edit/delete upsert or drop that one document by id and reload the
+searcher, so search tracks notes live; `reindex` re-adds every collection's notes from its
+JSONL. The `annotation_id` field (and making `author` stored) is a schema addition, so an
+index built before this needs one `indice reindex` — `serve`/`index` fail with that exact
+instruction until it's run.
+
+The governance questions Light & Hyry raise — who may comment, abuse, verification — are
+answered for v1 by authenticated authorship, edit-own-only, and flat (unthreaded) notes.
+Cryptographic signing of annotations (cf. the COLLATE project they cite, and indice's own
+fixity/authenticity work) is a natural later step; a self-conscious per-collection
+**colophon** — the other half of their proposal — is a complementary future extension that
+indice's finding aid plus crawl provenance already lean toward. Tracked by
+`rustyweb-page-annotations-gnqf`.
+
 ### Planned / not yet built
 
 - **Authenticity**: verify `datapackage-digest.json` signatures (WACZ auth spec), surfaced
   alongside fixity. Tracked by `rustyweb-authenticity-671`.
+- **Page annotations**: public, per-capture curator notes (Web Annotation JSON-LD) — see
+  *Annotations as provenance* above. Tracked by `rustyweb-page-annotations-gnqf`.
 - **Search enrichment**: keywords/author, language-detection fallback, the `site:`
   registrable-domain facet, HTTP `status:`, and `modified:` (Last-Modified year) have
   shipped. Still open under `rustyweb-search-enrichment-6by`: outbound-link fields (deferred
@@ -560,6 +608,8 @@ results it yields.
 - Costa & Silva, *Understanding the Information Needs of Web Archive Users*, IWAW 2010.
 - Maemura, Worby, Milligan & Becker, *If These Crawls Could Talk: Studying and Documenting
   Web Archives Provenance*, JASIST 2018.
+- Light & Hyry, *Colophons and Annotations: New Directions for the Finding Aid*,
+  The American Archivist 65:2 (Fall/Winter 2002): 216–230.
 - SHINE (`github.com/ukwa/shine`) and SolrWayback (`github.com/netarchivesuite/solrwayback`),
   both on the UK Web Archive's warc-indexer / webarchive-discovery
   (`github.com/ukwa/webarchive-discovery`).

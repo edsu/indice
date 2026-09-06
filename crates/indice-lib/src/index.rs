@@ -586,6 +586,35 @@ pub fn reindex(
         }
     }
 
+    // Re-index every collection's page annotations into the fresh index, so
+    // notes are searchable after a rebuild just like pages. Annotations live in
+    // committable JSONL (not the WACZs), so they're indexed here rather than in
+    // `index_one`. A collection whose annotations file is missing/unreadable is
+    // simply skipped (an empty or absent file is the common case).
+    {
+        let mut si = search.lock().unwrap();
+        for coll in &manifest.collections {
+            let anns = match crate::annotations::load(home, &coll.id) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(collection = %coll.id, "skipping annotations: {e:#}");
+                    continue;
+                }
+            };
+            for a in &anns {
+                let author = a.creator.name.as_deref().unwrap_or("");
+                si.index_annotation(
+                    &a.id,
+                    &coll.id,
+                    &a.target.source,
+                    &a.target.timestamp,
+                    author,
+                    &a.body.value,
+                )?;
+            }
+        }
+    }
+
     // The rebuild always runs to completion and the (possibly partial) index is
     // committed, so it's usable even if some sources were skipped.
     search.into_inner().unwrap().commit()?;
@@ -884,6 +913,51 @@ pub fn delete_crawl(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
     Ok(plan)
 }
 
+/// Upsert a single annotation into the live search index by its id (delete any
+/// prior doc for that id, then add the current one) and commit. Keeps search in
+/// step with a create or edit without a full reindex. A no-op if the index
+/// hasn't been built yet (nothing to keep in step with). The caller holds the
+/// server write lock; pair with `reload_searcher` to publish the change.
+pub fn index_annotation_upsert(
+    home: &Path,
+    collection: &str,
+    annotation: &crate::annotations::Annotation,
+) -> Result<()> {
+    let full_text = index_dir(home).join("full_text");
+    if !full_text.join("meta.json").exists() {
+        return Ok(());
+    }
+    let mut search =
+        SearchIndex::open(&full_text).context("opening the search index to index an annotation")?;
+    search.delete_annotation_doc(&annotation.id);
+    search.index_annotation(
+        &annotation.id,
+        collection,
+        &annotation.target.source,
+        &annotation.target.timestamp,
+        annotation.creator.name.as_deref().unwrap_or(""),
+        &annotation.body.value,
+    )?;
+    search.commit().context("committing the annotation index")?;
+    Ok(())
+}
+
+/// Remove a single annotation from the live search index by its id and commit.
+/// A no-op if the index hasn't been built yet.
+pub fn delete_annotation_from_index(home: &Path, annotation_id: &str) -> Result<()> {
+    let full_text = index_dir(home).join("full_text");
+    if !full_text.join("meta.json").exists() {
+        return Ok(());
+    }
+    let mut search = SearchIndex::open(&full_text)
+        .context("opening the search index to delete an annotation")?;
+    search.delete_annotation_doc(annotation_id);
+    search
+        .commit()
+        .context("committing the annotation deletion")?;
+    Ok(())
+}
+
 /// What deleting a collection removes.
 #[derive(Debug, Clone)]
 pub struct CollectionDeletion {
@@ -933,6 +1007,15 @@ pub fn delete_collection(home: &Path, id: &str, with_crawls: bool) -> Result<Col
         }
     }
 
+    // Drop the collection's annotation docs from the search index. They carry no
+    // crawl_id, so deleting member crawls above doesn't remove them; collect
+    // their ids now, before the on-disk annotations.jsonl is deleted with the dir.
+    let ann_ids: Vec<String> = crate::annotations::load(home, id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+
     // Remove the grouping last: the manifest entry, then its finding-aid dir.
     let mut manifest = Manifest::open(&index_dir(home))?;
     let removed = manifest.remove_collection(id);
@@ -941,6 +1024,20 @@ pub fn delete_collection(home: &Path, id: &str, with_crawls: bool) -> Result<Col
         .context("saving the manifest after deleting a collection")?;
     if removed.is_some() {
         let _ = std::fs::remove_dir_all(crate::collections::collection_dir(home, id));
+    }
+
+    if !ann_ids.is_empty() {
+        let full_text = index_dir(home).join("full_text");
+        if full_text.join("meta.json").exists() {
+            let mut search = SearchIndex::open(&full_text)
+                .context("opening the search index to delete collection annotations")?;
+            for aid in &ann_ids {
+                search.delete_annotation_doc(aid);
+            }
+            search
+                .commit()
+                .context("committing collection annotation deletion")?;
+        }
     }
 
     info!(collection = %id, with_crawls, deleted = plan.crawls_deleted.len(), "collection deleted");
