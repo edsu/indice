@@ -58,6 +58,10 @@ const FIELD_STATUS: &str = "status";
 /// Year from the HTTP `Last-Modified` header, for `modified:2015` filtering
 /// (when the content was authored, vs `year:` = when it was crawled).
 const FIELD_MODIFIED: &str = "modified";
+/// Stable id of an annotation document (`urn:indice:annotation:…`). Empty on
+/// page/collection docs; set only on `doc_type = "annotation"` docs so a single
+/// note can be upserted/deleted in the index by its id.
+const FIELD_ANNOTATION_ID: &str = "annotation_id";
 
 /// How much more a title match counts than a body/url match when ranking.
 const TITLE_BOOST: tantivy::Score = 3.0;
@@ -312,6 +316,52 @@ impl SearchIndex {
         doc.add_text(schema.get_field(FIELD_LANG).unwrap(), "");
         self.writer_mut().add_document(doc)?;
         Ok(())
+    }
+
+    /// Index one page annotation so notes are discoverable in full-text search.
+    /// The note text is the searchable body (+ snippet); `author` is searchable
+    /// via `author:`. `url`/`timestamp` point at the annotated capture, and
+    /// `collection` scopes it (so `collection:` filtering still works). The note
+    /// keeps its own `doc_type = "annotation"` so results can render it as a note
+    /// rather than a page. Idempotent per id when paired with
+    /// [`delete_annotation_doc`](Self::delete_annotation_doc): delete then add.
+    pub fn index_annotation(
+        &mut self,
+        annotation_id: &str,
+        collection: &str,
+        url: &str,
+        timestamp: &str,
+        author: &str,
+        note: &str,
+    ) -> Result<()> {
+        let schema = self.index.schema();
+        let mut doc = TantivyDocument::default();
+        doc.add_text(schema.get_field(FIELD_DOC_TYPE).unwrap(), "annotation");
+        doc.add_text(
+            schema.get_field(FIELD_ANNOTATION_ID).unwrap(),
+            annotation_id,
+        );
+        doc.add_text(schema.get_field(FIELD_COLLECTION).unwrap(), collection);
+        doc.add_text(schema.get_field(FIELD_URL).unwrap(), url);
+        doc.add_text(schema.get_field(FIELD_TS).unwrap(), timestamp);
+        doc.add_text(schema.get_field(FIELD_AUTHOR).unwrap(), author);
+        doc.add_text(schema.get_field(FIELD_BODY).unwrap(), note);
+        doc.add_text(
+            schema.get_field(FIELD_BODY_SNIP).unwrap(),
+            truncate_on_char_boundary(note, self.stored_body_cap),
+        );
+        self.writer_mut().add_document(doc)?;
+        Ok(())
+    }
+
+    /// Remove a single annotation document by its id (the write takes effect on
+    /// [`commit`](Self::commit)). Pairs with [`index_annotation`](Self::index_annotation)
+    /// for an upsert; a crawl delete/reindex never touches it (annotation docs
+    /// carry no `crawl_id`).
+    pub fn delete_annotation_doc(&mut self, annotation_id: &str) {
+        let field = self.index.schema().get_field(FIELD_ANNOTATION_ID).unwrap();
+        self.writer_mut()
+            .delete_term(Term::from_field_text(field, annotation_id));
     }
 
     pub fn commit(&mut self) -> Result<()> {
@@ -706,6 +756,7 @@ impl SearchIndex {
                 domain: get_text(&doc, domain_f),
                 timestamp: get_text(&doc, ts_f),
                 title: get_text(&doc, title_f),
+                author: get_text(&doc, author_f),
                 description: get_text(&doc, description_f),
                 snippet: snippet.to_html(),
                 body_excerpt: leading_excerpt(&body_snip),
@@ -906,6 +957,9 @@ pub struct SearchResult {
     pub domain: String,
     pub timestamp: String,
     pub title: String,
+    /// The note author, for `doc_type = "annotation"` results (empty otherwise —
+    /// pages rarely carry a usable `<meta author>`, so it's only surfaced for notes).
+    pub author: String,
     /// Page description (`<meta description>` / og:description), if any.
     pub description: String,
     pub snippet: String,
@@ -1244,7 +1298,9 @@ fn build_schema() -> Schema {
     // phrase queries against author/keywords text that isn't in `body`.
     builder.add_text_field(FIELD_HEADINGS, text_no_positions());
     builder.add_text_field(FIELD_KEYWORDS, TEXT);
-    builder.add_text_field(FIELD_AUTHOR, TEXT);
+    // STORED so an annotation result can show its note author (pages rarely set
+    // a useful `<meta author>`, so this is cheap for the corpus at large).
+    builder.add_text_field(FIELD_AUTHOR, TEXT | STORED);
     // Exact host, for `domain:host` filtering and results display.
     builder.add_text_field(FIELD_DOMAIN, facet_string());
     // Registrable domain, for the cross-subdomain `site:` filter and Site facet.
@@ -1264,6 +1320,9 @@ fn build_schema() -> Schema {
     builder.add_u64_field(FIELD_STATUS, INDEXED | STORED);
     // Last-Modified year, for `modified:2015` / range filtering.
     builder.add_u64_field(FIELD_MODIFIED, INDEXED | STORED);
+    // Annotation id: a single indexed term (like crawl_id) so one note doc can be
+    // upserted/deleted by id. STORED so results can link back to the note.
+    builder.add_text_field(FIELD_ANNOTATION_ID, STRING | STORED);
     builder.build()
 }
 
@@ -1706,6 +1765,64 @@ mod tests {
         assert_eq!(idx.segment_count().unwrap(), 1);
         // All four docs survive the merge and are still searchable.
         assert_eq!(idx.search("snow", 10).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn annotation_is_searchable_and_upsertable_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let mut idx = SearchIndex::open(tmp.path()).unwrap();
+        // A page and a note on it.
+        idx.index_page(&Page {
+            url: "https://ex.com/a",
+            title: "Alpha",
+            body: "hello world",
+            collection: "coll",
+            crawl_id: "c1",
+            crawl_name: "C",
+            ..Default::default()
+        })
+        .unwrap();
+        idx.index_annotation(
+            "urn:indice:annotation:aaa",
+            "coll",
+            "https://ex.com/a",
+            "20240101000000",
+            "grace",
+            "a note about widgets",
+        )
+        .unwrap();
+        idx.commit().unwrap();
+
+        // The note matches on its body text and comes back as an annotation doc,
+        // distinct from the page (they share a URL but don't collapse together).
+        let hits = idx.search("widgets", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_type, "annotation");
+        assert_eq!(hits[0].author, "grace");
+        assert_eq!(hits[0].url, "https://ex.com/a");
+        assert_eq!(hits[0].collection, "coll");
+
+        // Upsert by id: delete then re-add replaces the note text in place, no
+        // duplicate left behind.
+        idx.delete_annotation_doc("urn:indice:annotation:aaa");
+        idx.index_annotation(
+            "urn:indice:annotation:aaa",
+            "coll",
+            "https://ex.com/a",
+            "20240101000000",
+            "grace",
+            "now about gadgets",
+        )
+        .unwrap();
+        idx.commit().unwrap();
+        assert_eq!(idx.search("widgets", 10).unwrap().len(), 0);
+        assert_eq!(idx.search("gadgets", 10).unwrap().len(), 1);
+
+        // Deleting the note drops it from search; the page is untouched.
+        idx.delete_annotation_doc("urn:indice:annotation:aaa");
+        idx.commit().unwrap();
+        assert_eq!(idx.search("gadgets", 10).unwrap().len(), 0);
+        assert_eq!(idx.search("hello", 10).unwrap().len(), 1);
     }
 
     #[test]

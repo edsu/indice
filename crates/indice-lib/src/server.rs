@@ -2093,15 +2093,7 @@ async fn search_page(
         .iter()
         .map(|r| {
             let is_collection = r.doc_type == "collection";
-            let title = if r.title.is_empty() {
-                if is_collection {
-                    r.crawl_name.clone()
-                } else {
-                    r.url.clone()
-                }
-            } else {
-                r.title.clone()
-            };
+            let is_annotation = r.doc_type == "annotation";
 
             // The curated collection this result belongs to (falls back to the
             // slug/id if the name isn't found).
@@ -2111,25 +2103,52 @@ async fn search_page(
                 .unwrap_or(&r.collection)
                 .to_string();
             let coll_href = url_encode(&r.collection);
-            let name_enc = url_encode(&r.crawl_name);
-            let source_enc = url_encode(&source_for(&r.crawl_id));
-            // Carry the breadcrumb into the replay viewer: the collection (name +
-            // id) and the crawl id (so its crumb links to the crawl page).
-            let coll_q = format!(
-                "&collection={}&collection_id={coll_href}&crawl={}",
-                url_encode(&coll_display),
-                url_encode(&r.crawl_id)
-            );
 
-            let href = if is_collection {
-                // Link to the collection's root in the viewer.
-                format!("/replay/viewer?source={source_enc}&name={name_enc}{coll_q}")
+            let title = if is_annotation {
+                // A note has no page title; show the annotated page's URL.
+                if r.url.is_empty() {
+                    "Note".to_string()
+                } else {
+                    r.url.clone()
+                }
+            } else if r.title.is_empty() {
+                if is_collection {
+                    r.crawl_name.clone()
+                } else {
+                    r.url.clone()
+                }
             } else {
-                format!(
-                    "/replay/viewer?source={source_enc}&url={}&ts={}&name={name_enc}{coll_q}",
-                    url_encode(&r.url),
-                    r.timestamp
+                r.title.clone()
+            };
+
+            let href = if is_annotation {
+                // Notes carry no crawl; open the annotated page in the collection
+                // replay (where the note re-anchors + highlights via the panel).
+                collection_replay_href(
+                    &r.collection,
+                    &coll_display,
+                    Some((r.url.clone(), r.timestamp.clone())),
                 )
+            } else {
+                let name_enc = url_encode(&r.crawl_name);
+                let source_enc = url_encode(&source_for(&r.crawl_id));
+                // Carry the breadcrumb into the replay viewer: the collection
+                // (name + id) and the crawl id (so its crumb links to the crawl).
+                let coll_q = format!(
+                    "&collection={}&collection_id={coll_href}&crawl={}",
+                    url_encode(&coll_display),
+                    url_encode(&r.crawl_id)
+                );
+                if is_collection {
+                    // Link to the collection's root in the viewer.
+                    format!("/replay/viewer?source={source_enc}&name={name_enc}{coll_q}")
+                } else {
+                    format!(
+                        "/replay/viewer?source={source_enc}&url={}&ts={}&name={name_enc}{coll_q}",
+                        url_encode(&r.url),
+                        r.timestamp
+                    )
+                }
             };
 
             // Prefer the hit-highlighted body snippet; if the query didn't match
@@ -2162,6 +2181,8 @@ async fn search_page(
                 href,
                 title,
                 is_collection,
+                is_annotation,
+                author: r.author.clone(),
                 url: r.url.clone(),
                 timestamp_display,
                 snippet_html,
@@ -2983,6 +3004,7 @@ async fn search_api(
                     "domain": r.domain,
                     "timestamp": r.timestamp,
                     "title": r.title,
+                    "author": r.author,
                     "crawl_id": r.crawl_id,
                     "crawl_name": r.crawl_name,
                     "collection": r.collection,
@@ -3419,7 +3441,11 @@ async fn create_annotation(
     let collection = req.collection;
     let saved = tokio::task::spawn_blocking(move || {
         let _guard = st.write_lock.lock().expect("write lock poisoned");
-        annotations::create(&st.home, &collection, &ann)
+        annotations::create(&st.home, &collection, &ann)?;
+        // Keep full-text search in step with the new note, then publish it.
+        crate::index::index_annotation_upsert(&st.home, &collection, &ann)?;
+        st.reload_searcher()?;
+        Ok::<_, anyhow::Error>(())
     })
     .await;
     match saved {
@@ -3445,7 +3471,13 @@ async fn update_annotation(
     let author_key = author.clone();
     let done = tokio::task::spawn_blocking(move || {
         let _guard = st.write_lock.lock().expect("write lock poisoned");
-        annotations::update(&st.home, &collection, &id, &note, &author_key)
+        let res = annotations::update(&st.home, &collection, &id, &note, &author_key)?;
+        // Re-index the edited note (upsert by id) and publish, when it changed.
+        if let UpdateResult::Updated(a) = &res {
+            crate::index::index_annotation_upsert(&st.home, &collection, a)?;
+            st.reload_searcher()?;
+        }
+        Ok::<_, anyhow::Error>(res)
     })
     .await;
     match done {
@@ -3475,7 +3507,13 @@ async fn delete_annotation(
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {
         let _guard = st.write_lock.lock().expect("write lock poisoned");
-        annotations::delete(&st.home, &collection, &id, &author)
+        let outcome = annotations::delete(&st.home, &collection, &id, &author)?;
+        // Drop the note from search and publish, when it was actually removed.
+        if let EditOutcome::Done = outcome {
+            crate::index::delete_annotation_from_index(&st.home, &id)?;
+            st.reload_searcher()?;
+        }
+        Ok::<_, anyhow::Error>(outcome)
     })
     .await;
     match done {

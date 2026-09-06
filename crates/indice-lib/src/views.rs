@@ -349,6 +349,11 @@ pub struct SearchResultRow {
     pub href: String,
     pub title: String,
     pub is_collection: bool,
+    /// True for a `doc_type = "annotation"` hit: a curator's note, shown with a
+    /// "Note" badge + author instead of a page URL, linking to the annotated page.
+    pub is_annotation: bool,
+    /// The note author, for an annotation hit (empty otherwise).
+    pub author: String,
     /// Display URL (empty for a collection-level hit, which shows a badge).
     pub url: String,
     /// Pre-formatted timestamp, empty when there is none to show.
@@ -500,6 +505,11 @@ pub fn search_results(
                                         div.result-meta {
                                             @if r.is_collection {
                                                 span.result-coll-badge { "Collection" }
+                                            } @else if r.is_annotation {
+                                                span.result-note-badge { "Note" }
+                                                @if !r.author.is_empty() {
+                                                    span.result-note-author { " by " (r.author) }
+                                                }
                                             } @else {
                                                 div.result-url { (r.url) }
                                             }

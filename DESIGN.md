@@ -570,6 +570,15 @@ type), and in a per-collection annotations index. In-place highlighting reaches
 ReplayWeb.page's *same-origin* replay frame (spike-verified; coupled to RWP internals, so it
 must be re-tested on RWP upgrades).
 
+**Search.** Each note is its own Tantivy document (`doc_type = "annotation"`, keyed by the
+annotation id in a new `annotation_id` field) whose body is the note text — so notes are
+found by full-text search and rendered as a distinct "Note by …" result linking to the
+annotated page. Create/edit/delete upsert or drop that one document by id and reload the
+searcher, so search tracks notes live; `reindex` re-adds every collection's notes from its
+JSONL. The `annotation_id` field (and making `author` stored) is a schema addition, so an
+index built before this needs one `indice reindex` — `serve`/`index` fail with that exact
+instruction until it's run.
+
 The governance questions Light & Hyry raise — who may comment, abuse, verification — are
 answered for v1 by authenticated authorship, edit-own-only, and flat (unthreaded) notes.
 Cryptographic signing of annotations (cf. the COLLATE project they cite, and indice's own

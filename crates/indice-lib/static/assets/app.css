@@ -215,6 +215,8 @@ table.results td { padding: 0.8rem 0.4rem; vertical-align: top; }
 .result-status { display: inline-block; font-size: 0.72rem; font-weight: 600; background: #fce8e6; color: var(--danger); border: 1px solid #f5c6c2; padding: 0.05rem 0.35rem; border-radius: 3px; margin-top: 0.15rem; }
 .result-coll { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
 .result-coll-badge { display: inline-block; font-size: 0.75rem; background: var(--paper-2); color: var(--accent-dk); padding: 0.1rem 0.4rem; border-radius: 3px; margin-bottom: 0.15rem; }
+.result-note-badge { display: inline-block; font-size: 0.75rem; background: var(--accent); color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; margin-bottom: 0.15rem; }
+.result-note-author { font-size: 0.8rem; color: var(--muted); }
 .snippet { font-size: 0.88rem; color: #444; margin: 0.4rem 0; line-height: 1.4; }
 .snippet b { background: #fff3cd; font-weight: 600; }
 .replay-col { width: 100px; text-align: right; white-space: nowrap; }
