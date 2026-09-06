@@ -29,6 +29,8 @@ Open any archived page in the replay viewer. With management on, a **Notes** pan
 
 Notes are written in Markdown and saved immediately — no rebuild or restart. A passage note shows its quoted text; on replay, the passage is **highlighted in place** in the page.
 
+![The replay viewer with the Notes panel open beside a replayed page: the phrase "Web archiving for" is highlighted in yellow in the page, and the panel lists two notes — a passage note and a whole-page note — each with Edit and Delete controls](../../../../assets/docs/annotations-replay.png)
+
 ## Where notes show up
 
 A note you write is surfaced in several places:
@@ -36,6 +38,8 @@ A note you write is surfaced in several places:
 - **The replay panel** — every note on the current capture, with passage notes highlighted in the page.
 - **The collection annotations index** — a per-collection browse at `/collection/<id>/annotations`, linked from the collection page, listing every note with its author, quoted passage, and a link back into replay.
 - **Full-text search** — each note is indexed as its own result (a "Note by …" row) so a search over the archive turns up relevant notes alongside pages. See [Searching](/docs/guides/searching/).
+
+![The per-collection annotations index: a page titled "Annotations — 2 notes on pages in this collection", listing each note with its author and date, the quoted passage for a passage note, the rendered Markdown body, and an "Open page" link back into replay](../../../../assets/docs/annotations-index.png)
 
 ## Markdown
 
