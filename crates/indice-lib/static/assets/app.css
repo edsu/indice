@@ -400,5 +400,14 @@ nav.pagination .page-info { color: var(--muted); }
 .anno-index-body { line-height: 1.55; }
 .anno-index-body > :first-child { margin-top: 0; }
 .anno-index-body > :last-child { margin-bottom: 0; }
+.anno-index-body p { margin: 0.5rem 0; }
+.anno-index-body h1, .anno-index-body h2, .anno-index-body h3, .anno-index-body h4, .anno-index-body h5, .anno-index-body h6 { font-size: 1.05rem; font-weight: 650; border: none; padding: 0; margin: 0.8rem 0 0.3rem; line-height: 1.3; }
+.anno-index-body ul, .anno-index-body ol { margin: 0.5rem 0; padding-left: 1.3rem; }
+.anno-index-body a { color: var(--accent-dk); }
+.anno-index-body hr { border: none; border-top: 1px solid var(--line); margin: 0.8rem 0; }
+.anno-index-body blockquote { margin: 0.6rem 0; padding-left: 0.8rem; border-left: 3px solid var(--line); color: var(--muted); }
+.anno-index-body code { background: var(--paper-2); padding: 0.05rem 0.3rem; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+.anno-index-body pre { background: var(--paper-2); padding: 0.5rem 0.7rem; border-radius: var(--radius, 6px); overflow-x: auto; }
+.anno-index-body pre code { background: none; padding: 0; }
 .anno-index-loc { font-size: 0.82rem; margin: 0.5rem 0 0; }
 .anno-index-loc .muted { color: var(--faint); word-break: break-all; }
