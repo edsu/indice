@@ -7,8 +7,8 @@ archives. Point it at a pile of local or remote [WACZ] files and it gives you
 full-text faceted search, provenance up front, faithful in-browser replay, and a
 management workroom — all from a single self-contained binary.
 
-- 🌐 **Website & tour:** <https://indice.inkdroid.org>
-- 📖 **Documentation:** <https://indice.inkdroid.org/docs/>
+- 🌐 **Website & tour:** <https://indice.page>
+- 📖 **Documentation:** <https://indice.page/docs/>
 
 > **Nota bene:** *indice is alpha software and has been written extensively with
 > the support of Claude Code. Like any piece of software it may contain bugs, and
@@ -50,7 +50,7 @@ cargo install --git https://github.com/edsu/indice --locked indice  # cargo
 ```
 
 Docker, building from source, and the macOS Gatekeeper note are covered in the
-[install docs](https://indice.inkdroid.org/docs/install/).
+[install docs](https://indice.page/docs/install/).
 
 ## Try it in a minute
 
@@ -69,21 +69,21 @@ your own `.wacz` files the same way (local paths or `http(s)://` URLs);
 
 ## Documentation
 
-The full manual lives at **<https://indice.inkdroid.org/docs/>**:
+The full manual lives at **<https://indice.page/docs/>**:
 
-- [Install](https://indice.inkdroid.org/docs/install/) ·
-  [Quick start](https://indice.inkdroid.org/docs/quickstart/) ·
-  [Searching](https://indice.inkdroid.org/docs/guides/searching/)
+- [Install](https://indice.page/docs/install/) ·
+  [Quick start](https://indice.page/docs/quickstart/) ·
+  [Searching](https://indice.page/docs/guides/searching/)
 - Importing from
-  [Browsertrix](https://indice.inkdroid.org/docs/guides/import-browsertrix/) and
-  [Archive-It](https://indice.inkdroid.org/docs/guides/import-archive-it/)
-- [Manage & curate](https://indice.inkdroid.org/docs/guides/manage/) ·
-  [Deploy & run](https://indice.inkdroid.org/docs/guides/deploy/) ·
-  [Scale up](https://indice.inkdroid.org/docs/guides/scale/)
+  [Browsertrix](https://indice.page/docs/guides/import-browsertrix/) and
+  [Archive-It](https://indice.page/docs/guides/import-archive-it/)
+- [Manage & curate](https://indice.page/docs/guides/manage/) ·
+  [Deploy & run](https://indice.page/docs/guides/deploy/) ·
+  [Scale up](https://indice.page/docs/guides/scale/)
 - Reference:
-  [Command line](https://indice.inkdroid.org/docs/reference/cli/) ·
-  [Operator configuration](https://indice.inkdroid.org/docs/reference/configuration/) ·
-  [How indice works](https://indice.inkdroid.org/docs/reference/how-it-works/)
+  [Command line](https://indice.page/docs/reference/cli/) ·
+  [Operator configuration](https://indice.page/docs/reference/configuration/) ·
+  [How indice works](https://indice.page/docs/reference/how-it-works/)
 
 Architecture and design rationale: [DESIGN.md](DESIGN.md).
 

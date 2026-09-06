@@ -1,11 +1,13 @@
 name: Pages
 
 # Build the landing site (site/, Astro) and deploy it to GitHub Pages at
-# https://indice.inkdroid.org/. Uses only GitHub's own actions.
+# https://indice.page/. Uses only GitHub's own actions.
 #
 # One-time setup: Settings → Pages → Build and deployment → Source: GitHub Actions,
-# and Settings → Pages → Custom domain: indice.inkdroid.org (with a DNS CNAME
-# record pointing indice.inkdroid.org at edsu.github.io).
+# and Settings → Pages → Custom domain: indice.page. Being an apex domain, it needs
+# A/AAAA (or ALIAS) records at GitHub's Pages addresses rather than a CNAME:
+# 185.199.108–111.153 and 2606:50c0:8000–8003::153. A `www` CNAME to edsu.github.io
+# is optional.
 
 on:
   push:
