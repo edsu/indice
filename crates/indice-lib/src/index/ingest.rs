@@ -1,3 +1,9 @@
+//! The ingest engine and its public entry points. `index_path` / `index_location`
+//! / `index_location_with_resolver` drive `index_one` and its private helpers
+//! (source placement, probing, extraction, nested-WACZ flattening, per-URL merge,
+//! CDX-guided streaming, thumbnailing). Only `index_one` is `pub(super)` (it's
+//! reused by `reindex`); everything else is private to this module.
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -6,148 +12,14 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use tracing::{debug, info};
 
-use crate::collections::{file_sha256, wacz_id, BrowsertrixRef, Manifest, Source, Wacz};
+use crate::collections::{file_sha256, wacz_id, Manifest, Source, Wacz};
 use crate::http_range::{RangeFetch, RangeReader};
 use crate::search::{extract_html_text, SearchIndex};
 use crate::wacz::{extract_warc_from_wacz, iter_warc_paths, read_datapackage};
 use crate::warc::{iter_records, WarcRecord, Warcinfo};
 
-/// Download a WACZ from a (presigned) URL to `dest`, atomically: stream into a
-/// sibling `.part` file, then rename into place. Returns bytes written. Shared
-/// by the `browsertrix` CLI import and the server's management import.
-pub fn download_wacz(url: &str, dest: &Path) -> Result<u64> {
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    // Unique temp name so two concurrent downloads to the same dest (e.g. two
-    // admins importing the same crawl at once) can't corrupt each other's
-    // partial file; the final rename is atomic, so either complete copy wins.
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let mut tmp = dest.as_os_str().to_owned();
-    tmp.push(format!(
-        ".part.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp = PathBuf::from(tmp);
-
-    let mut reader =
-        crate::http_range::get_reader(url).with_context(|| format!("fetching {url}"))?;
-    let mut file =
-        std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-    let mut buf = [0u8; 64 * 1024];
-    let mut written = 0u64;
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .with_context(|| format!("reading {url}"))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        written += n as u64;
-    }
-    file.sync_all().ok();
-    drop(file);
-    std::fs::rename(&tmp, dest).with_context(|| format!("finalizing {}", dest.display()))?;
-    Ok(written)
-}
-
-/// Sanitize a string into a single safe path component: keep `[A-Za-z0-9._-]`,
-/// map everything else (including separators) to `_`, and neutralize `.`/`..`
-/// so a hostile id can't traverse out of its directory.
-pub fn safe_component(s: &str) -> String {
-    let mapped: String = s
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    match mapped.as_str() {
-        "" => "_".to_string(),
-        "." => "_".to_string(),
-        ".." => "__".to_string(),
-        _ => mapped,
-    }
-}
-
-/// A safe `.wacz` filename from a resource name (falling back to `fallback`
-/// when blank), sanitized via [`safe_component`] with the extension ensured.
-pub fn safe_wacz_filename(name: &str, fallback: &str) -> String {
-    let base = if name.trim().is_empty() {
-        fallback
-    } else {
-        name.trim()
-    };
-    let mut out = safe_component(base);
-    if !out.to_ascii_lowercase().ends_with(".wacz") {
-        out.push_str(".wacz");
-    }
-    out
-}
-
-/// Paths derived from a indice home directory.
-pub fn index_dir(home: &Path) -> PathBuf {
-    home.join("index")
-}
-
-/// The 4-digit year prefix of an ISO-8601-ish date string (`2022-…` → `2022`),
-/// or `None` if the first four characters aren't all digits. Used to turn a
-/// datapackage `created` / a Browsertrix date range into a coverage-year for the
-/// finding aid. Panic-safe on short/multibyte input.
-pub fn year_prefix(s: &str) -> Option<String> {
-    s.get(..4)
-        .filter(|y| y.chars().all(|c| c.is_ascii_digit()))
-        .map(str::to_string)
-}
-pub fn archive_dir(home: &Path) -> PathBuf {
-    home.join("archive")
-}
-
-/// Progress sink for indexing, implemented by the binary (e.g. with a progress
-/// bar). The library stays UI- and dependency-free: it only reports counts.
-/// Streaming a remote WACZ can be slow (each page record is a separate HTTP
-/// range request, and reading the CDX up front takes a moment), so this makes
-/// both the setup and the per-record work visible.
-///
-/// Lifecycle per WACZ: `begin` once → optionally `set_total` then `set_records*`
-/// (streaming path, where a record count is known) → `finish` once.
-pub trait IndexProgress: Sync {
-    /// Work on a WACZ has begun. The record total isn't known yet (the ZIP
-    /// directory and CDX must be read first), so this is the cue for an
-    /// indeterminate spinner. `label` is the WACZ URL or path.
-    fn begin(&self, label: &str);
-    /// Describe the current setup activity (e.g. "downloading", "reading index"),
-    /// so the spinner reflects what's actually happening before the record total
-    /// is known.
-    fn phase(&self, phase: &str);
-    /// The CDX has been read: `total` page records will be streamed. Cue to
-    /// switch the spinner to a determinate bar.
-    fn set_total(&self, total: u64);
-    /// `done` of the current WACZ's page records have been fetched.
-    fn set_records(&self, done: u64);
-    /// A WACZ was indexed with `pages` pages, and the index has been committed.
-    /// Emits a persistent one-line summary (the bar itself is transient and, in
-    /// bar mode, the INFO logs that would otherwise report this are hushed).
-    fn wacz_indexed(&self, label: &str, pages: u64);
-    /// Work on the current WACZ finished (clear the spinner/bar).
-    fn finish(&self);
-}
-
-/// Resolves a refreshable remote [`Source`] — currently a
-/// [`Source::Browsertrix`] resource — to a fresh, directly-fetchable URL
-/// (Browsertrix presigned URLs expire, so they must be re-resolved each time we
-/// index or replay). Implemented by the **binary**, which holds the credentials,
-/// keeping auth/config out of the library. `Send + Sync` so it can be shared
-/// while indexing and held in the server's shared state for replay.
-pub trait SourceResolver: Send + Sync {
-    fn resolve(&self, source: &Source) -> Result<String>;
-}
+use super::paths::{archive_dir, index_dir, year_prefix};
+use super::{IndexProgress, SourceResolver};
 
 /// Index a local WACZ file into the given collection (it's filed into
 /// `<home>/archive/<slug>/`). Thin wrapper over [`index_location`].
@@ -315,815 +187,6 @@ pub fn index_location_with_resolver(
     Ok(())
 }
 
-/// Compact the search index in place by merging segments toward
-/// `target_segments` — **without** re-streaming any sources, so it's far
-/// cheaper than [`reindex`] when the index has fragmented into many small
-/// segments (e.g. after ingest merges failed on a full disk). A search fans out
-/// across every segment, so fewer segments = faster queries. `target_segments`
-/// (≥ 1) trades compaction against peak transient disk (~index_size / target).
-/// Returns `(segments_before, segments_after)`.
-pub fn optimize(
-    home: &Path,
-    target_segments: usize,
-    progress: Option<&dyn IndexProgress>,
-) -> Result<(usize, usize)> {
-    let full_text = index_dir(home).join("full_text");
-    if !full_text.join("meta.json").exists() {
-        anyhow::bail!(
-            "no search index at {} — nothing to optimize (run `indice index` first)",
-            full_text.display()
-        );
-    }
-    let mut search = crate::search::SearchIndex::open(&full_text)
-        .context("opening the search index to optimize")?;
-    search.optimize(target_segments, progress)
-}
-
-/// Default segment target for compaction — the `optimize` CLI default, and the
-/// target an automatic post-ingest compaction merges down to.
-pub const DEFAULT_OPTIMIZE_TARGET: usize = 8;
-
-/// Segment count above which the index counts as *fragmented*: a search fans out
-/// across every segment, so a large count slows every query (notably the
-/// homepage facet overview). Set well above a healthy, actively-merging index
-/// (`optimize` targets 8, and Tantivy's background merges keep a busy index in
-/// the low dozens) so it only trips on genuine fragmentation, not normal churn.
-pub const FRAGMENTED_SEGMENT_THRESHOLD: usize = 48;
-
-/// The full-text index's current segment count, or `None` when there's no index
-/// yet. Read-only (no writer, no exclusive lock), so it's safe to call from a
-/// running server or to cheaply gate an automatic compaction.
-pub fn segment_count(home: &Path) -> Result<Option<usize>> {
-    let full_text = index_dir(home).join("full_text");
-    if !full_text.join("meta.json").exists() {
-        return Ok(None);
-    }
-    let search = crate::search::SearchIndex::open_read_only(&full_text)
-        .context("opening the search index to count segments")?;
-    Ok(Some(search.segment_count()?))
-}
-
-/// Compact the index **only if** it has fragmented past
-/// [`FRAGMENTED_SEGMENT_THRESHOLD`], leaving a healthy index — or a single
-/// incremental add to a tidy one — untouched. Returns `Some((before, after))`
-/// when it compacted, `None` when nothing needed doing. Intended as an automatic
-/// post-ingest step so a big batch leaves a tidy index without the operator
-/// having to remember `optimize`.
-pub fn optimize_if_fragmented(
-    home: &Path,
-    progress: Option<&dyn IndexProgress>,
-) -> Result<Option<(usize, usize)>> {
-    match segment_count(home)? {
-        Some(n) if n > FRAGMENTED_SEGMENT_THRESHOLD => {
-            Ok(Some(optimize(home, DEFAULT_OPTIMIZE_TARGET, progress)?))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// The operator-facing nudge shown when the index has fragmented into `n`
-/// segments — centralized so every caller (the CLI, the server) words it
-/// identically.
-pub fn fragmentation_warning(n: usize) -> String {
-    format!(
-        "the search index has {n} segments and may be slow to search; \
-         run `indice optimize` to compact it"
-    )
-}
-
-/// Warn (via `tracing`) if the index at `home` has fragmented past
-/// [`FRAGMENTED_SEGMENT_THRESHOLD`]. Best-effort and read-only: for the paths
-/// that detect fragmentation but don't auto-compact (an `index --no-optimize`).
-/// A count error is logged at debug rather than surfaced — this is only a nudge.
-pub fn warn_if_fragmented(home: &Path) {
-    match segment_count(home) {
-        Ok(Some(n)) if n > FRAGMENTED_SEGMENT_THRESHOLD => {
-            tracing::warn!("{}", fragmentation_warning(n));
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!("could not check index fragmentation: {e:#}"),
-    }
-}
-
-/// The live full-text index and the two sibling paths `reindex` uses to swap a
-/// freshly-built index in atomically: `full_text.new` (the in-progress build)
-/// and `full_text.old` (the previous index, parked briefly during the swap).
-fn index_swap_paths(index_dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
-    (
-        index_dir.join("full_text"),
-        index_dir.join("full_text.new"),
-        index_dir.join("full_text.old"),
-    )
-}
-
-/// Clear leftover swap directories from a `reindex` that was interrupted (crash,
-/// kill, disk-full) before it finished. Recovers the live index if the crash
-/// landed in the small window between the two renames of a swap (`full_text`
-/// gone, previous index still parked as `full_text.old`), then discards any
-/// partial `full_text.new` build. A no-op when there's nothing to reconcile.
-fn reconcile_index_swap(index_dir: &Path) -> Result<()> {
-    let (full_text, new_dir, old_dir) = index_swap_paths(index_dir);
-    // Crash mid-swap: the old index was moved aside but the new one wasn't
-    // promoted yet, so the live path is missing — restore the previous index.
-    if !full_text.exists() && old_dir.exists() {
-        std::fs::rename(&old_dir, &full_text)
-            .with_context(|| format!("restoring index from {}", old_dir.display()))?;
-    }
-    // Otherwise the live index is authoritative; drop any stale parked copy.
-    if old_dir.exists() {
-        std::fs::remove_dir_all(&old_dir)
-            .with_context(|| format!("removing stale {}", old_dir.display()))?;
-    }
-    // A leftover `.new` is always an incomplete build from an interrupted run.
-    if new_dir.exists() {
-        std::fs::remove_dir_all(&new_dir)
-            .with_context(|| format!("removing partial {}", new_dir.display()))?;
-    }
-    Ok(())
-}
-
-/// Promote a fully-built `full_text.new` to the live `full_text`. Directories
-/// can't be renamed onto a non-empty target, so this is two renames: park the
-/// old index as `full_text.old`, move the new one into place, then delete the
-/// old — each rename is atomic on a single filesystem, so the new index is
-/// never half-written over the old. A crash between the two renames is
-/// recovered by [`reconcile_index_swap`] on the next run.
-fn swap_in_new_index(index_dir: &Path) -> Result<()> {
-    let (full_text, new_dir, old_dir) = index_swap_paths(index_dir);
-    if full_text.exists() {
-        std::fs::rename(&full_text, &old_dir)
-            .with_context(|| format!("parking old index as {}", old_dir.display()))?;
-    }
-    std::fs::rename(&new_dir, &full_text)
-        .with_context(|| format!("promoting {} to the live index", new_dir.display()))?;
-    if old_dir.exists() {
-        std::fs::remove_dir_all(&old_dir)
-            .with_context(|| format!("removing replaced index {}", old_dir.display()))?;
-    }
-    Ok(())
-}
-
-/// Rebuild the full-text index from the sources already recorded in
-/// `collections.json`, preserving the manifest (including each collection's
-/// display name).
-///
-/// Unlike [`index_location`] (which scans `<home>/archive`), this re-indexes
-/// every registered source - including remote URLs, which are re-fetched - and
-/// recreates the Tantivy index from scratch, so a schema change is picked up.
-/// Local files that have gone missing are skipped with a warning rather than
-/// aborting the whole run.
-pub fn reindex(
-    home: &Path,
-    // Concurrent record fetches per source for CDX-guided streaming; `None` picks
-    // a per-source default (see `default_concurrency`).
-    concurrency: Option<usize>,
-    // Resolves any Browsertrix sources in the manifest to fresh presigned URLs
-    // (binary-provided). `None` → such a source errors (needs credentials).
-    resolver: Option<&dyn SourceResolver>,
-    // Optional progress sink; drives the same per-WACZ bar as `index`.
-    progress: Option<&dyn IndexProgress>,
-) -> Result<()> {
-    let index_dir = index_dir(home);
-    let mut manifest = Manifest::open(&index_dir)?;
-    if manifest.waczs.is_empty() {
-        info!("no WACZs registered; nothing to reindex");
-        return Ok(());
-    }
-
-    // Snapshot each WACZ (source, name, collection id + name) before upserting
-    // back, so its collection membership and the collection's metadata survive.
-    let targets: Vec<(Source, String, String, String)> = manifest
-        .waczs
-        .iter()
-        .map(|w| {
-            let coll_name = manifest
-                .collection_by_id(&w.collection)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| w.name.clone());
-            (
-                w.source.clone(),
-                w.name.clone(),
-                w.collection.clone(),
-                coll_name,
-            )
-        })
-        .collect();
-
-    // Resolve config before destroying the old index, so a malformed config.yaml
-    // aborts the reindex rather than leaving no index. reindex re-streams every
-    // source, so honoring the writer heap here matters most.
-    let config = crate::config::Config::load(home)?;
-
-    // Atomic rebuild: build the fresh index into a sibling `full_text.new` and
-    // swap it in only once the rebuild fully succeeds, so a hard failure (crash,
-    // kill, disk-full) mid-rebuild leaves the existing `full_text` untouched —
-    // you are never left worse off than before the reindex, and a running
-    // `serve` keeps reading the old index until the swap. First clear any
-    // leftovers from a previously-interrupted run (recovering the live index if
-    // a crash landed mid-swap).
-    reconcile_index_swap(&index_dir)?;
-    let (_full_text, new_dir, _old_dir) = index_swap_paths(&index_dir);
-    let mut search_index =
-        SearchIndex::open_with_heap(new_dir.as_path(), config.writer_heap_bytes())
-            .with_context(|| format!("creating search index at {}", new_dir.display()))?;
-    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
-    let search = Mutex::new(search_index);
-
-    let total = targets.len();
-    let mut done = 0usize;
-    let mut skipped = 0usize;
-    for (source, name, collection_id, collection_name) in &targets {
-        // Skip local files that no longer exist rather than failing the run;
-        // their manifest entry is preserved (see `indice verify`). Only *file*
-        // sources get this on-disk check: URL and Browsertrix sources are remote
-        // and must flow to `index_one`, which re-resolves them (the resolver
-        // mints a fresh presigned URL for Browsertrix). Using `is_url()` here
-        // would misroute Browsertrix sources — `resolve()` returns None for them,
-        // so they'd be skipped as "missing" on every reindex (kx… / nk69).
-        if !source.is_remote() {
-            match source.resolve(home) {
-                Some(p) if p.exists() => {}
-                _ => {
-                    tracing::warn!(source = %source.location(), "skipping missing local WACZ");
-                    skipped += 1;
-                    continue;
-                }
-            }
-        }
-        info!(
-            source = %source.location(),
-            progress = format!("{}/{}", done + skipped + 1, total),
-            "reindexing"
-        );
-        // Resilient: a source that fails after retries (e.g. a remote host that's
-        // down or blocking) is skipped with a warning rather than aborting the
-        // whole rebuild — a long reindex over many remote sources shouldn't be
-        // torched by one bad source. Its manifest entry is preserved, and
-        // membership is re-supplied so the collection survives.
-        match index_one(
-            source,
-            home,
-            &mut manifest,
-            &search,
-            Some(name),
-            (collection_id, collection_name),
-            false,
-            concurrency,
-            resolver,
-            progress,
-        ) {
-            Ok((wacz_name, pages)) => {
-                done += 1;
-                // Print the per-WACZ summary as each one finishes, so the next
-                // WACZ's progress bar doesn't erase the record of it (the line
-                // persists above the new bar).
-                if let Some(p) = progress {
-                    p.wacz_indexed(&wacz_name, pages);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    source = %source.location(),
-                    "skipping WACZ that failed to reindex: {e:#}"
-                );
-                skipped += 1;
-            }
-        }
-    }
-
-    // Re-index every collection's page annotations into the fresh index, so
-    // notes are searchable after a rebuild just like pages. Annotations live in
-    // committable JSONL (not the WACZs), so they're indexed here rather than in
-    // `index_one`. A collection whose annotations file is missing/unreadable is
-    // simply skipped (an empty or absent file is the common case).
-    {
-        let mut si = search.lock().unwrap();
-        for coll in &manifest.collections {
-            let anns = match crate::annotations::load(home, &coll.id) {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::warn!(collection = %coll.id, "skipping annotations: {e:#}");
-                    continue;
-                }
-            };
-            for a in &anns {
-                let author = a.creator.name.as_deref().unwrap_or("");
-                si.index_annotation(
-                    &a.id,
-                    &coll.id,
-                    &a.target.source,
-                    &a.target.timestamp,
-                    author,
-                    &a.body.value,
-                )?;
-            }
-        }
-    }
-
-    // The rebuild always runs to completion and the (possibly partial) index is
-    // committed, so it's usable even if some sources were skipped.
-    search.into_inner().unwrap().commit()?;
-    // The fresh build succeeded; swap it in for the old index atomically, then
-    // persist the manifest so on-disk metadata matches the now-live index. A
-    // partial rebuild (some sources skipped) is still swapped in — it's usable
-    // and no worse than the old index — but we still exit non-zero below.
-    swap_in_new_index(&index_dir)?;
-    manifest.save()?;
-    if let Some(p) = progress {
-        p.finish();
-    }
-    if skipped > 0 {
-        // Usable but incomplete: return an error so the process exits non-zero and
-        // cron/CI notices, while leaving the mostly-rebuilt index in place.
-        anyhow::bail!(
-            "reindex finished but {skipped} of {total} source(s) were skipped \
-             (indexed {done}); the search index is missing them — fix the cause \
-             and run `indice reindex` again to include them"
-        );
-    }
-    info!(reindexed = done, total, "reindex complete");
-    Ok(())
-}
-
-/// Create or update a collection's curatorial (finding-aid) metadata (its id is
-/// the slug of `name`). Only fields set in `fields` change; the finding aid is
-/// written to `<home>/collections/<slug>/README.md`. Returns the collection id.
-pub fn set_collection(
-    home: &Path,
-    name: &str,
-    fields: &crate::collections::CollectionFields,
-) -> Result<String> {
-    let index_dir = index_dir(home);
-    std::fs::create_dir_all(&index_dir)
-        .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-    let mut manifest = Manifest::open(&index_dir)?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let id = manifest.apply_fields(name, fields, &now);
-    manifest.save()?;
-    info!(collection = %id, "collection metadata updated");
-    Ok(id)
-}
-
-/// Auto-seed a collection's finding-aid metadata from ingest (WACZ datapackage,
-/// Browsertrix API): fills only fields that are still empty, never clobbering a
-/// curator's edits (see [`crate::collections::Manifest::seed_fields`]). A no-op
-/// when `fields` is empty. Returns the collection id.
-pub fn seed_collection(
-    home: &Path,
-    name: &str,
-    fields: &crate::collections::CollectionFields,
-) -> Result<String> {
-    let index_dir = index_dir(home);
-    std::fs::create_dir_all(&index_dir)
-        .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-    let mut manifest = Manifest::open(&index_dir)?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let id = crate::collections::slugify(name);
-    manifest.seed_fields(&id, name, fields, &now);
-    manifest.save()?;
-    Ok(id)
-}
-
-/// Pin a curator-supplied local image as a collection's representative
-/// thumbnail, committed at `collections/<slug>/thumbnail.jpg`. The collection is
-/// identified by name (its slug); create it first with `collection set`.
-pub fn set_collection_thumbnail(home: &Path, name: &str, image_file: &Path) -> Result<()> {
-    let slug = crate::collections::slugify(name);
-    let dest = crate::collections::collection_thumb_path(home, &slug);
-    crate::thumbnail::set_manual(&dest, image_file)
-        .with_context(|| format!("setting thumbnail for collection {slug}"))?;
-    info!(collection = %slug, image = %image_file.display(), "pinned collection thumbnail");
-    Ok(())
-}
-
-/// A size/scale snapshot of the search index: total on-disk bytes, a breakdown
-/// by Tantivy segment-file type, the live doc count, and the derived
-/// bytes-per-doc — the inputs to the scale model (project bytes/doc to 1M / 100M
-/// docs). Re-run after any change to compare.
-#[derive(Debug, Clone)]
-pub struct IndexStats {
-    pub docs: u64,
-    pub total_bytes: u64,
-    /// `(file-type label, bytes)`, largest first. Labels are the Tantivy
-    /// segment-file extensions — `store` (stored fields / snippets), `pos`
-    /// (term positions), `term`/`idx` (inverted index), `fast` (columnar /
-    /// facets), `fieldnorm` — plus `del` (deletes) and `meta` (JSON bookkeeping).
-    pub by_type: Vec<(String, u64)>,
-}
-
-impl IndexStats {
-    /// Bytes per live document (0 for an empty index).
-    pub fn bytes_per_doc(&self) -> f64 {
-        if self.docs == 0 {
-            0.0
-        } else {
-            self.total_bytes as f64 / self.docs as f64
-        }
-    }
-
-    /// Projected total bytes at `docs` documents, at today's bytes-per-doc.
-    pub fn project(&self, docs: u64) -> u64 {
-        (self.bytes_per_doc() * docs as f64) as u64
-    }
-}
-
-/// Measure the on-disk footprint of the search index for the size/scale model:
-/// total bytes, a per-file-type breakdown, and the live doc count. Reads only
-/// file sizes + the doc count, so it's cheap to re-run.
-pub fn index_stats(home: &Path) -> Result<IndexStats> {
-    let full_text = index_dir(home).join("full_text");
-    let docs = if full_text.join("meta.json").exists() {
-        crate::search::SearchIndex::open_read_only(&full_text)?.num_docs()?
-    } else {
-        0
-    };
-
-    let mut by: BTreeMap<String, u64> = BTreeMap::new();
-    let mut total = 0u64;
-    if full_text.exists() {
-        for entry in std::fs::read_dir(&full_text)? {
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            // Skip Tantivy's write-lock file (0 bytes; not part of the footprint).
-            if !meta.is_file() || name.ends_with(".lock") {
-                continue;
-            }
-            total += meta.len();
-            // Segment files are `<uuid>.<ext>` (store/pos/term/idx/fast/fieldnorm)
-            // or `<uuid>.<n>.del`; bookkeeping is `*.json`.
-            let label = if name.ends_with(".json") {
-                "meta"
-            } else {
-                Path::new(name.as_ref())
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("other")
-            };
-            *by.entry(label.to_string()).or_default() += meta.len();
-        }
-    }
-    let mut by_type: Vec<(String, u64)> = by.into_iter().collect();
-    by_type.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
-    Ok(IndexStats {
-        docs,
-        total_bytes: total,
-        by_type,
-    })
-}
-
-/// Set a crawl's curator note at `<home>/collections/<slug>/crawls/<id>.md`. Manifest-
-/// only side effect (no reindex); errors if the crawl id is unknown.
-pub fn set_crawl_note(home: &Path, crawl_id: &str, note: &str) -> Result<()> {
-    let manifest = Manifest::open(&index_dir(home))?;
-    let Some(wacz) = manifest.wacz_by_id(crawl_id) else {
-        anyhow::bail!(
-            "no crawl with id \"{crawl_id}\" - it's the id in the crawl's page URL (/crawl/<id>)"
-        );
-    };
-    crate::collections::write_crawl_note(home, &wacz.collection, crawl_id, note)?;
-    info!(crawl = %crawl_id, "crawl note updated");
-    Ok(())
-}
-
-/// Pin a curator-supplied local image as a crawl's representative thumbnail,
-/// committed under the collection (`collections/<slug>/crawls/<id>.jpg`) so it's
-/// git-trackable and a later (re)index won't overwrite it. Manifest-only side
-/// effect (no reindex).
-pub fn set_crawl_thumbnail(home: &Path, crawl_id: &str, image_file: &Path) -> Result<()> {
-    let manifest = Manifest::open(&index_dir(home))?;
-    let Some(wacz) = manifest.wacz_by_id(crawl_id) else {
-        anyhow::bail!(
-            "no crawl with id \"{crawl_id}\" - it's the id in the crawl's page URL (/crawl/<id>)"
-        );
-    };
-    let dest = crate::collections::pinned_thumb_path(home, &wacz.collection, crawl_id);
-    crate::thumbnail::set_manual(&dest, image_file)
-        .with_context(|| format!("setting thumbnail for crawl {crawl_id}"))?;
-    info!(crawl = %crawl_id, image = %image_file.display(), "pinned crawl thumbnail");
-    Ok(())
-}
-
-/// What deleting a crawl removes — computed up front so a caller can confirm.
-#[derive(Debug, Clone)]
-pub struct CrawlDeletion {
-    pub id: String,
-    pub name: String,
-    /// The collection the crawl belonged to.
-    pub collection: String,
-    /// The local WACZ file that will be / was removed: a `File` source with a
-    /// copy on disk that no other entry references. `None` for a URL/streamed
-    /// source, or a file shared with another crawl.
-    pub local_file: Option<PathBuf>,
-    /// Whether this was the last member of its collection (the now-empty grouping
-    /// is left in place — collections are curated, so deletion is explicit).
-    pub last_in_collection: bool,
-}
-
-/// The local WACZ file removing `wacz` should delete: only a `File` source, only
-/// if it exists, and only if no *other* manifest entry references the same path
-/// (so a shared file is never pulled out from under another crawl).
-fn local_wacz_to_remove(manifest: &Manifest, wacz: &Wacz, home: &Path) -> Option<PathBuf> {
-    if wacz.source.is_remote() {
-        return None;
-    }
-    let path = wacz.source.resolve(home)?;
-    // Only ever remove files under <home>/archive, never a curator's original
-    // elsewhere. `place_local_wacz` already files every local WACZ into archive,
-    // so a stored File source is always under it — this makes that invariant an
-    // enforced guard, not just an assumption.
-    if !path.starts_with(archive_dir(home)) {
-        return None;
-    }
-    if !path.exists() {
-        return None;
-    }
-    let referenced_elsewhere = manifest
-        .waczs
-        .iter()
-        .any(|o| o.id != wacz.id && o.source == wacz.source);
-    (!referenced_elsewhere).then_some(path)
-}
-
-/// Inspect what [`delete_crawl`] would remove, changing nothing. Errors if the id
-/// is unknown.
-pub fn plan_crawl_deletion(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
-    let manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest.wacz_by_id(crawl_id).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no crawl with id \"{crawl_id}\" - it's the id in the crawl's page URL (/crawl/<id>)"
-        )
-    })?;
-    Ok(CrawlDeletion {
-        id: crawl_id.to_string(),
-        name: wacz.name.clone(),
-        collection: wacz.collection.clone(),
-        local_file: local_wacz_to_remove(&manifest, wacz, home),
-        last_in_collection: manifest.members_of(&wacz.collection).count() <= 1,
-    })
-}
-
-/// Delete a crawl: its index documents, manifest entry, local WACZ (a `File`
-/// source only, when unreferenced), and cached/pinned thumbnails + curator note.
-///
-/// Order (index docs → on-disk files → manifest entry) makes a crash mid-delete
-/// safe to re-run: the entry — the record of *what* to clean up — is removed
-/// last, so a retry can still find and finish any leftovers. Tantivy reclaims
-/// disk only on a later segment merge, so the index won't shrink immediately.
-pub fn delete_crawl(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
-    let plan = plan_crawl_deletion(home, crawl_id)?;
-
-    // 1. Drop the crawl's documents from the search index and commit.
-    let full_text = index_dir(home).join("full_text");
-    if full_text.join("meta.json").exists() {
-        let mut search =
-            SearchIndex::open(&full_text).context("opening the search index to delete a crawl")?;
-        search.delete_crawl_docs(crawl_id);
-        search.commit().context("committing the crawl deletion")?;
-    }
-
-    // 2. Remove on-disk files (best-effort; a re-run finishes any leftovers).
-    if let Some(path) = &plan.local_file {
-        let _ = std::fs::remove_file(path);
-        // Tidy an emptied per-item archive subdir (e.g. from a Browsertrix import).
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::remove_dir(parent);
-        }
-    }
-    let _ = std::fs::remove_file(
-        index_dir(home)
-            .join("thumbs")
-            .join(format!("{crawl_id}.jpg")),
-    );
-    let _ = std::fs::remove_file(crate::collections::pinned_thumb_path(
-        home,
-        &plan.collection,
-        crawl_id,
-    ));
-    let _ = std::fs::remove_file(crate::collections::crawl_note_path(
-        home,
-        &plan.collection,
-        crawl_id,
-    ));
-
-    // 3. Remove the manifest entry last.
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    manifest.remove_wacz(crawl_id);
-    manifest
-        .save()
-        .context("saving the manifest after deletion")?;
-
-    info!(crawl = %crawl_id, "crawl deleted");
-    Ok(plan)
-}
-
-/// Upsert a single annotation into the live search index by its id (delete any
-/// prior doc for that id, then add the current one) and commit. Keeps search in
-/// step with a create or edit without a full reindex. A no-op if the index
-/// hasn't been built yet (nothing to keep in step with). The caller holds the
-/// server write lock; pair with `reload_searcher` to publish the change.
-pub fn index_annotation_upsert(
-    home: &Path,
-    collection: &str,
-    annotation: &crate::annotations::Annotation,
-) -> Result<()> {
-    let full_text = index_dir(home).join("full_text");
-    if !full_text.join("meta.json").exists() {
-        return Ok(());
-    }
-    let mut search =
-        SearchIndex::open(&full_text).context("opening the search index to index an annotation")?;
-    search.delete_annotation_doc(&annotation.id);
-    search.index_annotation(
-        &annotation.id,
-        collection,
-        &annotation.target.source,
-        &annotation.target.timestamp,
-        annotation.creator.name.as_deref().unwrap_or(""),
-        &annotation.body.value,
-    )?;
-    search.commit().context("committing the annotation index")?;
-    Ok(())
-}
-
-/// Remove a single annotation from the live search index by its id and commit.
-/// A no-op if the index hasn't been built yet.
-pub fn delete_annotation_from_index(home: &Path, annotation_id: &str) -> Result<()> {
-    let full_text = index_dir(home).join("full_text");
-    if !full_text.join("meta.json").exists() {
-        return Ok(());
-    }
-    let mut search = SearchIndex::open(&full_text)
-        .context("opening the search index to delete an annotation")?;
-    search.delete_annotation_doc(annotation_id);
-    search
-        .commit()
-        .context("committing the annotation deletion")?;
-    Ok(())
-}
-
-/// What deleting a collection removes.
-#[derive(Debug, Clone)]
-pub struct CollectionDeletion {
-    pub id: String,
-    pub name: String,
-    pub member_count: usize,
-    /// Ids of member crawls deleted — non-empty only with `with_crawls`.
-    pub crawls_deleted: Vec<String>,
-}
-
-/// Inspect what [`delete_collection`] would remove, changing nothing. Errors if
-/// the id is unknown.
-pub fn plan_collection_deletion(home: &Path, id: &str) -> Result<CollectionDeletion> {
-    let manifest = Manifest::open(&index_dir(home))?;
-    let coll = manifest
-        .collection_by_id(id)
-        .ok_or_else(|| anyhow::anyhow!("no collection with id \"{id}\""))?;
-    Ok(CollectionDeletion {
-        id: id.to_string(),
-        name: coll.name.clone(),
-        member_count: manifest.members_of(id).count(),
-        crawls_deleted: Vec::new(),
-    })
-}
-
-/// Delete a collection grouping (its finding aid). Without `with_crawls` a
-/// non-empty collection is refused; with it, every member crawl is deleted first
-/// (files + index docs + manifest entries), then the grouping.
-pub fn delete_collection(home: &Path, id: &str, with_crawls: bool) -> Result<CollectionDeletion> {
-    let mut plan = plan_collection_deletion(home, id)?;
-    if plan.member_count > 0 && !with_crawls {
-        anyhow::bail!(
-            "collection \"{id}\" still has {} crawl(s); pass --with-crawls to delete them too, \
-             or move/delete the crawls first",
-            plan.member_count
-        );
-    }
-
-    if with_crawls {
-        let members: Vec<String> = Manifest::open(&index_dir(home))?
-            .members_of(id)
-            .map(|w| w.id.clone())
-            .collect();
-        for cid in members {
-            delete_crawl(home, &cid)?;
-            plan.crawls_deleted.push(cid);
-        }
-    }
-
-    // Drop the collection's annotation docs from the search index. They carry no
-    // crawl_id, so deleting member crawls above doesn't remove them; collect
-    // their ids now, before the on-disk annotations.jsonl is deleted with the dir.
-    let ann_ids: Vec<String> = crate::annotations::load(home, id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|a| a.id)
-        .collect();
-
-    // Remove the grouping last: the manifest entry, then its finding-aid dir.
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let removed = manifest.remove_collection(id);
-    manifest
-        .save()
-        .context("saving the manifest after deleting a collection")?;
-    if removed.is_some() {
-        let _ = std::fs::remove_dir_all(crate::collections::collection_dir(home, id));
-    }
-
-    if !ann_ids.is_empty() {
-        let full_text = index_dir(home).join("full_text");
-        if full_text.join("meta.json").exists() {
-            let mut search = SearchIndex::open(&full_text)
-                .context("opening the search index to delete collection annotations")?;
-            for aid in &ann_ids {
-                search.delete_annotation_doc(aid);
-            }
-            search
-                .commit()
-                .context("committing collection annotation deletion")?;
-        }
-    }
-
-    info!(collection = %id, with_crawls, deleted = plan.crawls_deleted.len(), "collection deleted");
-    Ok(plan)
-}
-
-/// Record Browsertrix import provenance on an already-indexed WACZ. `wacz_file`
-/// is the local file (under `<home>/archive`) that was just indexed; it's looked
-/// up by the same id indexing assigns (a hash of its home-relative path). Used
-/// by the importer for provenance display and incremental re-sync. Manifest-only
-/// side effect (no reindex).
-pub fn set_browsertrix_provenance(
-    home: &Path,
-    wacz_file: &Path,
-    host: &str,
-    item_id: &str,
-    resource_hash: &str,
-    review_status: Option<u8>,
-) -> Result<()> {
-    let abs = wacz_file
-        .canonicalize()
-        .with_context(|| format!("resolving {}", wacz_file.display()))?;
-    let id = wacz_id(&Source::for_file(&abs, home));
-    set_browsertrix_provenance_by_id(home, &id, host, item_id, resource_hash, review_status)
-}
-
-/// As [`set_browsertrix_provenance`], but for a crawl identified by its id — used
-/// by the streaming importer, whose source is a [`Source::Browsertrix`] with no
-/// local file (its id is `wacz_id(&source)`).
-pub fn set_browsertrix_provenance_by_id(
-    home: &Path,
-    crawl_id: &str,
-    host: &str,
-    item_id: &str,
-    resource_hash: &str,
-    review_status: Option<u8>,
-) -> Result<()> {
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest
-        .waczs
-        .iter_mut()
-        .find(|w| w.id == crawl_id)
-        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
-    wacz.browsertrix = Some(BrowsertrixRef {
-        host: host.to_string(),
-        item_id: item_id.to_string(),
-        resource_hash: resource_hash.to_string(),
-        review_status,
-    });
-    manifest.save()?;
-    Ok(())
-}
-
-/// Record Archive-It import provenance on an already-indexed crawl (by its id),
-/// so a re-run can skip it. Mirrors [`set_browsertrix_provenance_by_id`].
-pub fn set_archiveit_provenance_by_id(
-    home: &Path,
-    crawl_id: &str,
-    host: &str,
-    ait_collection_id: i64,
-    ait_crawl_id: i64,
-    warc_count: u64,
-    collection_title: &str,
-) -> Result<()> {
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest
-        .waczs
-        .iter_mut()
-        .find(|w| w.id == crawl_id)
-        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
-    wacz.archive_it = Some(crate::collections::ArchiveItRef {
-        host: host.to_string(),
-        collection_id: ait_collection_id,
-        crawl_id: ait_crawl_id,
-        warc_count,
-        collection_title: collection_title.to_string(),
-    });
-    manifest.save()?;
-    Ok(())
-}
-
 /// Turn one `index` argument into a source to index, filing local WACZs into the
 /// collection's archive folder. An `http(s)://` URL yields a URL source. A local
 /// `.wacz` file may live anywhere: it's brought into `<home>/archive/<slug>/` —
@@ -1273,7 +336,7 @@ fn place_local_wacz(
 /// to a temp file), index its pages and metadata, and upsert its manifest entry.
 /// Returns the WACZ's display name and page count, for a post-commit summary.
 #[allow(clippy::too_many_arguments)]
-fn index_one(
+pub(super) fn index_one(
     source: &Source,
     home: &Path,
     manifest: &mut Manifest,
@@ -2554,34 +1617,8 @@ fn file_display_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn safe_component_neutralizes_traversal_and_separators() {
-        // A hostile/compromised Browsertrix item id must not escape its subdir.
-        assert_eq!(safe_component(".."), "__");
-        assert_eq!(safe_component("."), "_");
-        // Embedded separators are mapped, leaving a single contained component.
-        assert_eq!(safe_component("../../etc"), ".._.._etc");
-        assert_eq!(safe_component("a/b"), "a_b");
-        assert_eq!(safe_component(""), "_");
-        // A normal id is untouched.
-        assert_eq!(safe_component("manual-20250101-abc"), "manual-20250101-abc");
-    }
-
-    #[test]
-    fn safe_wacz_filename_sanitizes_and_ensures_extension() {
-        assert_eq!(safe_wacz_filename("my crawl.wacz", "id1"), "my_crawl.wacz");
-        // Path separators and other unsafe chars become '_'; extension appended.
-        assert_eq!(
-            safe_wacz_filename("../etc/passwd", "id1"),
-            ".._etc_passwd.wacz"
-        );
-        assert_eq!(safe_wacz_filename("plain", "id1"), "plain.wacz");
-        // Empty name falls back to the item id.
-        assert_eq!(safe_wacz_filename("   ", "abc123"), "abc123.wacz");
-        // Already-correct names are preserved (case-insensitive extension check).
-        assert_eq!(safe_wacz_filename("a-b_c.WACZ", "id1"), "a-b_c.WACZ");
-    }
+    use crate::index::testsupport::*;
+    use tempfile::TempDir;
 
     /// Index a fixture WACZ either by scanning (default) or CDX-guided streaming,
     /// returning the page count for a parity comparison. (Per-record extraction
@@ -2609,137 +1646,6 @@ mod tests {
         };
         stats.pages
     }
-
-    /// Create a directory standing in for a Tantivy index, with a marker file
-    /// whose contents identify which build it is.
-    fn fake_index(dir: &Path, tag: &str) {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join("marker"), tag).unwrap();
-    }
-    fn marker(dir: &Path) -> String {
-        std::fs::read_to_string(dir.join("marker")).unwrap()
-    }
-
-    #[test]
-    fn swap_promotes_new_index_and_clears_siblings() {
-        let tmp = TempDir::new().unwrap();
-        let (full_text, new_dir, old_dir) = index_swap_paths(tmp.path());
-        fake_index(&full_text, "old");
-        fake_index(&new_dir, "new");
-
-        swap_in_new_index(tmp.path()).unwrap();
-
-        assert_eq!(marker(&full_text), "new", "new build is now live");
-        assert!(!new_dir.exists(), ".new consumed by the swap");
-        assert!(!old_dir.exists(), ".old cleaned up after the swap");
-    }
-
-    #[test]
-    fn swap_works_with_no_prior_live_index() {
-        // First-ever reindex: no `full_text` yet, just the fresh build.
-        let tmp = TempDir::new().unwrap();
-        let (full_text, new_dir, old_dir) = index_swap_paths(tmp.path());
-        fake_index(&new_dir, "new");
-
-        swap_in_new_index(tmp.path()).unwrap();
-
-        assert_eq!(marker(&full_text), "new");
-        assert!(!new_dir.exists());
-        assert!(!old_dir.exists());
-    }
-
-    #[test]
-    fn reconcile_discards_partial_build_keeps_live_index() {
-        // Crash before the swap: a partial `.new` lingers, live index intact.
-        let tmp = TempDir::new().unwrap();
-        let (full_text, new_dir, old_dir) = index_swap_paths(tmp.path());
-        fake_index(&full_text, "live");
-        fake_index(&new_dir, "partial");
-
-        reconcile_index_swap(tmp.path()).unwrap();
-
-        assert_eq!(marker(&full_text), "live", "live index untouched");
-        assert!(!new_dir.exists(), "partial build discarded");
-        assert!(!old_dir.exists());
-    }
-
-    #[test]
-    fn reconcile_recovers_live_index_from_mid_swap_crash() {
-        // Crash between the two renames: `full_text` gone, previous index parked
-        // as `.old`. Recovery restores it (and drops any lingering `.new`).
-        let tmp = TempDir::new().unwrap();
-        let (full_text, new_dir, old_dir) = index_swap_paths(tmp.path());
-        fake_index(&old_dir, "recovered");
-        fake_index(&new_dir, "partial");
-
-        reconcile_index_swap(tmp.path()).unwrap();
-
-        assert_eq!(marker(&full_text), "recovered", "old index restored");
-        assert!(!new_dir.exists());
-        assert!(!old_dir.exists());
-    }
-
-    #[test]
-    fn reconcile_drops_stale_old_when_live_index_present() {
-        // A `.old` lingering next to a healthy live index (crash right after the
-        // second rename, before cleanup) is simply discarded.
-        let tmp = TempDir::new().unwrap();
-        let (full_text, _new_dir, old_dir) = index_swap_paths(tmp.path());
-        fake_index(&full_text, "live");
-        fake_index(&old_dir, "stale");
-
-        reconcile_index_swap(tmp.path()).unwrap();
-
-        assert_eq!(marker(&full_text), "live");
-        assert!(!old_dir.exists(), "stale parked copy removed");
-    }
-
-    #[test]
-    fn optimize_if_fragmented_compacts_only_when_over_threshold() {
-        use crate::search::{Page, SearchIndex};
-        let tmp = TempDir::new().unwrap();
-        let home = tmp.path();
-        let full_text = index_dir(home).join("full_text");
-
-        // No index yet → nothing to count, nothing to compact.
-        assert_eq!(segment_count(home).unwrap(), None);
-        assert_eq!(optimize_if_fragmented(home, None).unwrap(), None);
-
-        // Build a deliberately fragmented index just past the threshold (one
-        // segment per commit, background merges disabled).
-        {
-            let mut idx = SearchIndex::open(&full_text).unwrap();
-            idx.disable_auto_merge();
-            for i in 0..(FRAGMENTED_SEGMENT_THRESHOLD + 2) {
-                let cid = format!("c{i}");
-                idx.index_page(&Page {
-                    url: "https://ex.com/x",
-                    title: "T",
-                    body: "body",
-                    crawl_id: &cid,
-                    crawl_name: "C",
-                    ..Default::default()
-                })
-                .unwrap();
-                idx.commit().unwrap();
-            }
-            assert!(idx.segment_count().unwrap() > FRAGMENTED_SEGMENT_THRESHOLD);
-        } // drop the writer before optimize re-opens the index
-
-        // Fragmented → compacts down toward the default target.
-        let (before, after) = optimize_if_fragmented(home, None)
-            .unwrap()
-            .expect("a fragmented index is compacted");
-        assert!(before > FRAGMENTED_SEGMENT_THRESHOLD);
-        assert!(
-            after <= DEFAULT_OPTIMIZE_TARGET,
-            "compacted to {after} segments, expected ≤ {DEFAULT_OPTIMIZE_TARGET}"
-        );
-
-        // Now healthy → a second call is a no-op.
-        assert_eq!(optimize_if_fragmented(home, None).unwrap(), None);
-    }
-
     #[test]
     fn streaming_matches_scan_on_a_stored_wacz() {
         // a.wacz stores its WARCs uncompressed, so streaming can seek into them.
@@ -2751,7 +1657,6 @@ mod tests {
             "CDX-guided streaming must index the same page count as scanning"
         );
     }
-
     #[test]
     fn local_warcs_streamable_gates_the_default_extraction() {
         // The auto-decision for a local file: CDX-guided when WARCs are Stored,
@@ -2759,7 +1664,6 @@ mod tests {
         assert!(local_warcs_streamable(&fixture("a.wacz")).unwrap());
         assert!(!local_warcs_streamable(&fixture("simple.wacz")).unwrap());
     }
-
     #[test]
     fn streaming_refuses_a_deflated_wacz() {
         use crate::search::SearchIndex;
@@ -2786,7 +1690,6 @@ mod tests {
             "unexpected error: {err}"
         );
     }
-
     #[test]
     fn last_modified_year_parses_http_date() {
         let headers = vec![
@@ -2810,27 +1713,6 @@ mod tests {
             None
         );
     }
-    use tempfile::TempDir;
-
-    const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
-
-    fn fixture(name: &str) -> std::path::PathBuf {
-        Path::new(FIXTURES).join(name)
-    }
-
-    /// Copy a fixture WACZ into `<home>/archive` and index it from there, which
-    /// the archive requirement demands for local files. Returns the copied path.
-    fn index_fixture(name: &str, home: &Path, display: Option<&str>) -> std::path::PathBuf {
-        let archive = home.join("archive");
-        std::fs::create_dir_all(&archive).unwrap();
-        let staged = archive.join(name);
-        std::fs::copy(fixture(name), &staged).unwrap();
-        index_path(&staged, home, display, "test").unwrap();
-        // index files the WACZ into the collection's folder (collection "test"),
-        // so its resting place is archive/test/<name>.
-        archive.join("test").join(name)
-    }
-
     #[test]
     fn index_path_wacz_writes_manifest() {
         let tmp = TempDir::new().unwrap();
@@ -2843,7 +1725,6 @@ mod tests {
         assert!(!col.sha256.is_empty());
         assert!(col.file_size > 0);
     }
-
     #[test]
     fn index_records_capture_status_histogram() {
         // a.wacz is a real Browsertrix WACZ whose CDX carries HTTP statuses; the
@@ -2858,7 +1739,6 @@ mod tests {
             "a normal crawl is mostly 2xx; got {counts:?}"
         );
     }
-
     #[test]
     fn index_path_name_defaults_to_stem() {
         // simple.wacz has no title in its datapackage, so the name falls back
@@ -2869,7 +1749,6 @@ mod tests {
         let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
         assert_eq!(manifest.waczs[0].name, "simple");
     }
-
     #[test]
     fn indexed_local_wacz_is_filed_under_its_collection_relative_to_home() {
         let tmp = TempDir::new().unwrap();
@@ -2886,7 +1765,6 @@ mod tests {
             "the WACZ was moved into its collection folder"
         );
     }
-
     #[test]
     fn provenance_is_recorded_on_the_manifest() {
         // a.wacz carries crawler software (datapackage + warcinfo) and real
@@ -2905,44 +1783,6 @@ mod tests {
         );
         assert!(col.page_count.is_some(), "page_count should be recorded");
     }
-
-    #[test]
-    fn browsertrix_provenance_is_recorded_and_survives_reindex() {
-        let tmp = TempDir::new().unwrap();
-        let dest = index_fixture("simple.wacz", tmp.path(), None);
-
-        set_browsertrix_provenance(
-            tmp.path(),
-            &dest,
-            "https://app.browsertrix.com",
-            "item-1",
-            "sha256:aa",
-            Some(4),
-        )
-        .unwrap();
-
-        let recorded = |home: &Path| {
-            Manifest::open(&home.join("index")).unwrap().waczs[0]
-                .browsertrix
-                .clone()
-        };
-        let b = recorded(tmp.path()).expect("provenance recorded");
-        assert_eq!(b.item_id, "item-1");
-        assert_eq!(b.resource_hash, "sha256:aa");
-        assert_eq!(b.review_status, Some(4));
-
-        // A reindex rebuilds each manifest entry from scratch; provenance set
-        // out-of-band by the importer must be carried over, not wiped.
-        reindex(tmp.path(), None, None, None).unwrap();
-        let after = recorded(tmp.path()).expect("provenance after reindex");
-        assert_eq!(after.item_id, "item-1");
-        assert_eq!(
-            after.review_status,
-            Some(4),
-            "review rating survives reindex"
-        );
-    }
-
     /// Build a nested multi-WACZ that wraps the `a.wacz` fixture, mirroring a
     /// real Browsertrix combined download: no top-level archive/ WARCs, the inner
     /// .wacz a top-level *Stored* entry, and a multi-wacz-package datapackage.
@@ -2965,7 +1805,6 @@ mod tests {
         zw.finish().unwrap(); // consumes zw, releasing the borrow of `outer`
         outer
     }
-
     /// In-memory [`RangeFetch`], a stand-in for a remote `HttpFetch`.
     #[derive(Clone)]
     struct MemFetch(std::sync::Arc<Vec<u8>>);
@@ -2977,7 +1816,6 @@ mod tests {
             Ok(self.0[start as usize..end as usize].to_vec())
         }
     }
-
     #[test]
     fn nested_multi_wacz_is_indexed() {
         let outer = nested_multi_wacz();
@@ -3008,7 +1846,6 @@ mod tests {
             "the entry should record how many inner WACZs it bundles"
         );
     }
-
     #[test]
     fn nested_multi_wacz_streams_over_a_range_fetch() {
         // Drive index_nested through an in-memory RangeFetch (a stand-in for a
@@ -3026,7 +1863,6 @@ mod tests {
             "inner pages should be indexed by streaming in place"
         );
     }
-
     #[test]
     fn browsertrix_source_without_resolver_errors_clearly() {
         // A Browsertrix source can't be indexed without a resolver to turn its
@@ -3042,7 +1878,6 @@ mod tests {
             "{err}"
         );
     }
-
     #[test]
     fn index_into_named_collection_groups_the_wacz() {
         let tmp = TempDir::new().unwrap();
@@ -3076,7 +1911,6 @@ mod tests {
             "WACZ should reference the collection"
         );
     }
-
     #[test]
     fn index_copies_external_wacz_into_the_collection_archive() {
         // A WACZ from anywhere is brought into archive/<slug>/ — copied when it's
@@ -3102,7 +1936,6 @@ mod tests {
             Source::File(PathBuf::from("archive/my-coll/simple.wacz"))
         );
     }
-
     #[test]
     fn index_seeds_collection_finding_aid_from_the_wacz() {
         // Indexing a WACZ pre-seeds its collection's finding aid (fill-gaps) from
@@ -3116,62 +1949,6 @@ mod tests {
             "collection dates seeded from the WACZ datapackage `created` year"
         );
     }
-
-    #[test]
-    fn reindex_does_not_rewrite_an_already_seeded_finding_aid() {
-        // Once a collection's finding aid is seeded, a reindex must not rewrite it
-        // (no new empty field to fill) — so a curator's hand formatting / comments
-        // survive.
-        let tmp = TempDir::new().unwrap();
-        index_fixture("a.wacz", tmp.path(), None); // collection "test", seeds `dates`
-        let readme = tmp.path().join("collections/test/README.md");
-        // Curator adds a YAML comment, keeping the seeded field.
-        let edited = std::fs::read_to_string(&readme)
-            .unwrap()
-            .replace("name: test", "name: test  # hand-labelled");
-        std::fs::write(&readme, &edited).unwrap();
-
-        reindex(tmp.path(), None, None, None).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(&readme).unwrap(),
-            edited,
-            "reindex must leave an already-seeded finding aid byte-for-byte intact"
-        );
-    }
-
-    #[test]
-    fn reindex_after_rename_does_not_spawn_a_phantom_collection() {
-        // Editing the display `name:` must not create a second collection on the
-        // next reindex — seeding is keyed on the stable id, not the slug of name.
-        let tmp = TempDir::new().unwrap();
-        index_fixture("a.wacz", tmp.path(), None); // id "test"
-        let readme = tmp.path().join("collections/test/README.md");
-        let renamed = std::fs::read_to_string(&readme)
-            .unwrap()
-            .replace("name: test", "name: Test Archive");
-        std::fs::write(&readme, renamed).unwrap();
-
-        reindex(tmp.path(), None, None, None).unwrap();
-
-        let entries: Vec<_> = std::fs::read_dir(tmp.path().join("collections"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name())
-            .collect();
-        assert_eq!(entries.len(), 1, "no phantom collection dir: {entries:?}");
-        assert!(!tmp.path().join("collections/test-archive").exists());
-    }
-
-    #[test]
-    fn year_prefix_extracts_or_rejects() {
-        assert_eq!(year_prefix("2022-01-02T00:00:00Z").as_deref(), Some("2022"));
-        assert_eq!(year_prefix("2022").as_deref(), Some("2022"));
-        assert_eq!(year_prefix("not-a-date"), None);
-        assert_eq!(year_prefix("22"), None); // too short, no panic
-        assert_eq!(year_prefix(""), None);
-    }
-
     #[test]
     fn index_does_not_clobber_two_different_wacz_with_the_same_basename() {
         // The `index a/report.wacz b/report.wacz --collection X` workflow: two
@@ -3205,7 +1982,6 @@ mod tests {
             "re-indexing an identical file must not duplicate"
         );
     }
-
     #[test]
     fn index_refuses_to_recollect_a_registered_crawl() {
         // Indexing a WACZ that's already filed in one collection into a different
@@ -3222,7 +1998,6 @@ mod tests {
             "error should explain the crawl is already collected: {err:#}"
         );
     }
-
     #[test]
     fn index_rejects_a_directory() {
         let tmp = TempDir::new().unwrap();
@@ -3237,7 +2012,6 @@ mod tests {
             "error should say it is a directory: {msg}"
         );
     }
-
     #[test]
     fn index_name_comes_from_datapackage_title() {
         // pdf-doc.wacz has "title": "PDF Test Collection" in its datapackage,
@@ -3248,7 +2022,6 @@ mod tests {
         let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
         assert_eq!(manifest.waczs[0].name, "PDF Test Collection");
     }
-
     #[test]
     fn explicit_name_overrides_datapackage_title() {
         // --name wins even when the WACZ has a title.
@@ -3258,147 +2031,6 @@ mod tests {
         let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
         assert_eq!(manifest.waczs[0].name, "Custom Name");
     }
-
-    #[test]
-    fn reindex_rebuilds_from_manifest() {
-        // Index once with a custom name, then blow away just the full-text index
-        // (as a schema change / corruption would require) and reindex from the
-        // manifest.
-        let tmp = TempDir::new().unwrap();
-        index_fixture("simple.wacz", tmp.path(), Some("keepname"));
-
-        let full_text = tmp.path().join("index").join("full_text");
-        std::fs::remove_dir_all(&full_text).unwrap();
-
-        reindex(tmp.path(), None, None, None).unwrap();
-
-        // The manifest (custom name + collection membership) is preserved...
-        let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
-        assert_eq!(manifest.waczs.len(), 1);
-        assert_eq!(manifest.waczs[0].name, "keepname");
-        assert_eq!(
-            manifest.waczs[0].collection, "test",
-            "collection membership must survive a reindex"
-        );
-
-        // ...and the content is searchable again.
-        let idx = crate::search::SearchIndex::open(full_text.as_path()).unwrap();
-        assert!(
-            !idx.search("example", 10).unwrap().is_empty(),
-            "reindexed content should be searchable"
-        );
-    }
-
-    #[test]
-    fn reindex_with_no_collections_is_ok() {
-        let tmp = TempDir::new().unwrap();
-        // No collections.json yet: reindex should be a no-op, not an error.
-        reindex(tmp.path(), None, None, None).unwrap();
-    }
-
-    #[test]
-    fn reindex_skips_a_failing_source_and_keeps_going() {
-        // A resilient reindex: one good WACZ plus one that exists but isn't a
-        // valid WACZ. The bad source is skipped (warned) rather than aborting the
-        // whole rebuild, so the good source is still indexed and searchable, and
-        // the skipped source's manifest entry is preserved for a later re-run.
-        let tmp = TempDir::new().unwrap();
-        index_fixture("simple.wacz", tmp.path(), None);
-
-        // Plant a corrupt WACZ and register it as a member alongside the good one.
-        std::fs::write(tmp.path().join("archive/bad.wacz"), b"not a zip file").unwrap();
-        let waczs_path = tmp.path().join("index/waczs.json");
-        let mut entries: Vec<serde_json::Value> =
-            serde_json::from_str(&std::fs::read_to_string(&waczs_path).unwrap()).unwrap();
-        entries.push(serde_json::json!({
-            "id": "deadbeef",
-            "collection": "deadbeef",
-            "source": "archive/bad.wacz",
-            "name": "BadOne",
-            "date_indexed": "2026-01-01T00:00:00Z",
-            "file_size": 14,
-            "sha256": "00"
-        }));
-        std::fs::write(&waczs_path, serde_json::to_string(&entries).unwrap()).unwrap();
-
-        // Rebuild from the manifest: the run completes over the good source but
-        // reports a non-zero exit (an error) because one source was skipped.
-        let err = reindex(tmp.path(), None, None, None)
-            .expect_err("a skipped source should surface as a non-zero exit, not abort mid-run");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("skipped") && msg.contains("reindex"),
-            "error should summarize the skipped source(s) and suggest re-running: {msg}"
-        );
-
-        // ...yet the good source is still fully indexed and searchable.
-        let idx =
-            crate::search::SearchIndex::open(tmp.path().join("index").join("full_text").as_path())
-                .unwrap();
-        assert!(
-            !idx.search("example", 10).unwrap().is_empty(),
-            "the good source should still be indexed after skipping the bad one"
-        );
-
-        // ...and the skipped source's manifest entry is preserved (not dropped),
-        // so `indice reindex` can pick it up again once the cause is fixed.
-        let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
-        assert_eq!(
-            manifest.waczs.len(),
-            2,
-            "skipped source's manifest entry should be preserved"
-        );
-    }
-
-    #[test]
-    fn reindex_does_not_skip_browsertrix_sources_at_the_guard() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        // Regression for rustyweb-reindex-skips-browsertrix-nk69. The reindex
-        // "skip missing local file" guard used `!source.is_url()`, which is true
-        // for a Browsertrix source (only Url counts as a url); `resolve()` returns
-        // None for it, so it was skipped as "missing local WACZ" *before*
-        // index_one ran — silently dropping every Browsertrix member on each
-        // reindex. The guard is now `!source.is_remote()` (file sources only), so
-        // a Browsertrix source flows to index_one, which resolves it. A spy
-        // resolver proves it's reached (with the bug, resolve is never called).
-        let tmp = TempDir::new().unwrap();
-        index_fixture("simple.wacz", tmp.path(), None);
-
-        // Rewrite the member's source to a public Browsertrix locator — remote,
-        // but not a plain Url: exactly the shape the old guard mis-skipped.
-        let waczs_path = tmp.path().join("index/waczs.json");
-        let mut entries: Vec<serde_json::Value> =
-            serde_json::from_str(&std::fs::read_to_string(&waczs_path).unwrap()).unwrap();
-        entries[0]["source"] =
-            serde_json::Value::String("browsertrix-public|example.com|org1|coll1|file.wacz".into());
-        std::fs::write(&waczs_path, serde_json::to_string(&entries).unwrap()).unwrap();
-
-        struct Spy {
-            called: AtomicBool,
-        }
-        impl SourceResolver for Spy {
-            fn resolve(&self, _s: &Source) -> Result<String> {
-                self.called.store(true, Ordering::SeqCst);
-                // Fail the fetch on purpose — we only care that index_one got far
-                // enough to ask the resolver, not that a real WACZ is streamed.
-                anyhow::bail!("spy resolver: not actually fetching")
-            }
-        }
-        let spy = Spy {
-            called: AtomicBool::new(false),
-        };
-
-        // reindex ends in an error (the stub resolve fails, so the source is
-        // skipped *downstream*), but the resolver having been called proves the
-        // source reached index_one instead of being dropped by the guard.
-        let _ = reindex(tmp.path(), None, Some(&spy), None);
-        assert!(
-            spy.called.load(Ordering::SeqCst),
-            "a Browsertrix source must reach index_one (resolver called), \
-             not be skipped by the reindex guard"
-        );
-    }
-
     #[test]
     fn pages_jsonl_text_is_indexed_when_absent_from_html() {
         use std::io::Write;
@@ -3489,7 +2121,6 @@ mod tests {
             "the HTML <title> is still indexed"
         );
     }
-
     #[test]
     fn og_image_thumbnail_is_cached() {
         use std::io::Write;
@@ -3594,7 +2225,6 @@ mod tests {
             "thumbnail should be downscaled"
         );
     }
-
     #[test]
     fn browsertrix_screenshot_is_preferred_over_og_image() {
         use std::io::Write;
@@ -3719,7 +2349,6 @@ mod tests {
             "the thumbnail should come from the 4:3 screenshot, not the 3:2 og:image"
         );
     }
-
     #[test]
     fn thumbnail_falls_back_to_largest_page_image() {
         use std::io::Write;
@@ -3833,7 +2462,6 @@ mod tests {
             "with no og:image, a thumbnail should be generated from the largest embedded image"
         );
     }
-
     #[test]
     fn thumbnail_falls_back_to_largest_on_site_captured_image() {
         use std::io::Write;
@@ -3943,7 +2571,6 @@ mod tests {
             "the on-site landscape image should be chosen, not the larger off-site portrait one"
         );
     }
-
     #[test]
     fn pdf_pages_are_filterable_by_type() {
         // End-to-end: a PDF response in the WACZ should be tagged type:pdf so
@@ -3960,7 +2587,6 @@ mod tests {
             "PDF page should be reachable via type:pdf"
         );
     }
-
     #[test]
     fn index_wacz_html_is_searchable() {
         let tmp = TempDir::new().unwrap();
@@ -3973,7 +2599,6 @@ mod tests {
         assert!(!results.is_empty(), "should find HTML content from WACZ");
         assert_eq!(results[0].crawl_name, "simple");
     }
-
     #[test]
     fn index_wacz_stores_seed_pages_in_manifest() {
         let tmp = TempDir::new().unwrap();
@@ -3987,7 +2612,6 @@ mod tests {
         );
         assert_eq!(col.seed_pages[0].url, "http://example.com/");
     }
-
     #[test]
     fn index_wacz_collection_is_searchable() {
         let tmp = TempDir::new().unwrap();
@@ -4003,7 +2627,6 @@ mod tests {
             "collection document should be searchable"
         );
     }
-
     #[test]
     fn reindexing_does_not_duplicate_documents() {
         let tmp = TempDir::new().unwrap();
@@ -4017,7 +2640,6 @@ mod tests {
         let pages = results.iter().filter(|r| r.doc_type == "page").count();
         assert_eq!(pages, 1, "re-indexing should upsert, not duplicate pages");
     }
-
     #[test]
     fn mime_display_name_strips_extension() {
         let p = Path::new("/data/my-archive.wacz");
