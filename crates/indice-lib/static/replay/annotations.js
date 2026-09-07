@@ -186,7 +186,13 @@
     save.className = "primary";
     const cancel = button("Cancel", () => form.remove());
     row.append(save, cancel);
-    form.append(ta, row);
+    // Notes are stored in the clear and shown publicly (public read, gated
+    // write); say so at the point of authoring so a "note" isn't mistaken for a
+    // private one. See rustyweb-annotation-public-warning-yrxe.
+    const pub = document.createElement("p");
+    pub.className = "anno-public-note";
+    pub.textContent = "Notes are public, so anyone who can read this archive can read them.";
+    form.append(ta, pub, row);
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const text = ta.value.trim();

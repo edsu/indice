@@ -213,6 +213,11 @@
   border-radius: 6px;
   resize: vertical;
 }
+.anno-public-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: #8f8b83;
+}
 .anno-composer-row {
   display: flex;
   gap: 0.4rem;
