@@ -1,5 +1,8 @@
-
 use super::*;
+// Phase internals these tests exercise directly (the pipeline's own surface
+// comes in via `use super::*`).
+use super::acquire::{file_display_name, local_warcs_streamable};
+use super::pages::{index_nested_from, index_wacz, index_wacz_streaming, last_modified_year};
 use crate::index::testsupport::*;
 use tempfile::TempDir;
 
