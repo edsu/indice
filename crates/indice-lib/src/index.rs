@@ -534,8 +534,13 @@ pub fn reindex(
     let mut skipped = 0usize;
     for (source, name, collection_id, collection_name) in &targets {
         // Skip local files that no longer exist rather than failing the run;
-        // their manifest entry is preserved (see `indice verify`).
-        if !source.is_url() {
+        // their manifest entry is preserved (see `indice verify`). Only *file*
+        // sources get this on-disk check: URL and Browsertrix sources are remote
+        // and must flow to `index_one`, which re-resolves them (the resolver
+        // mints a fresh presigned URL for Browsertrix). Using `is_url()` here
+        // would misroute Browsertrix sources — `resolve()` returns None for them,
+        // so they'd be skipped as "missing" on every reindex (kx… / nk69).
+        if !source.is_remote() {
             match source.resolve(home) {
                 Some(p) if p.exists() => {}
                 _ => {
@@ -3342,6 +3347,55 @@ mod tests {
             manifest.waczs.len(),
             2,
             "skipped source's manifest entry should be preserved"
+        );
+    }
+
+    #[test]
+    fn reindex_does_not_skip_browsertrix_sources_at_the_guard() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Regression for rustyweb-reindex-skips-browsertrix-nk69. The reindex
+        // "skip missing local file" guard used `!source.is_url()`, which is true
+        // for a Browsertrix source (only Url counts as a url); `resolve()` returns
+        // None for it, so it was skipped as "missing local WACZ" *before*
+        // index_one ran — silently dropping every Browsertrix member on each
+        // reindex. The guard is now `!source.is_remote()` (file sources only), so
+        // a Browsertrix source flows to index_one, which resolves it. A spy
+        // resolver proves it's reached (with the bug, resolve is never called).
+        let tmp = TempDir::new().unwrap();
+        index_fixture("simple.wacz", tmp.path(), None);
+
+        // Rewrite the member's source to a public Browsertrix locator — remote,
+        // but not a plain Url: exactly the shape the old guard mis-skipped.
+        let waczs_path = tmp.path().join("index/waczs.json");
+        let mut entries: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&waczs_path).unwrap()).unwrap();
+        entries[0]["source"] =
+            serde_json::Value::String("browsertrix-public|example.com|org1|coll1|file.wacz".into());
+        std::fs::write(&waczs_path, serde_json::to_string(&entries).unwrap()).unwrap();
+
+        struct Spy {
+            called: AtomicBool,
+        }
+        impl SourceResolver for Spy {
+            fn resolve(&self, _s: &Source) -> Result<String> {
+                self.called.store(true, Ordering::SeqCst);
+                // Fail the fetch on purpose — we only care that index_one got far
+                // enough to ask the resolver, not that a real WACZ is streamed.
+                anyhow::bail!("spy resolver: not actually fetching")
+            }
+        }
+        let spy = Spy {
+            called: AtomicBool::new(false),
+        };
+
+        // reindex ends in an error (the stub resolve fails, so the source is
+        // skipped *downstream*), but the resolver having been called proves the
+        // source reached index_one instead of being dropped by the guard.
+        let _ = reindex(tmp.path(), None, Some(&spy), None);
+        assert!(
+            spy.called.load(Ordering::SeqCst),
+            "a Browsertrix source must reach index_one (resolver called), \
+             not be skipped by the reindex guard"
         );
     }
 
