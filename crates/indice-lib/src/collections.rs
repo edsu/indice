@@ -1196,6 +1196,90 @@ mod tests {
         assert!(CollectionId::parse(CollectionId::default().as_str()).is_some());
     }
 
+    /// The property that actually matters, stated in terms of the filesystem
+    /// rather than the allowlist: joining a `CollectionId` onto a base directory
+    /// must land *inside* it, as exactly one new component. Restating "only
+    /// alnum and dash" in the test would just assert the implementation back at
+    /// itself; this asserts the guarantee callers depend on.
+    fn lands_inside_base(id: &CollectionId) -> bool {
+        let base = Path::new("/base/collections");
+        let joined = base.join(id.as_str());
+        joined.starts_with(base)
+            && joined.parent() == Some(base)
+            && joined.components().count() == base.components().count() + 1
+    }
+
+    /// Exhaustive over the characters that can actually cause trouble, rather
+    /// than random fuzzing: the danger space here is tiny, so every string up to
+    /// length 3 over a nasty alphabet is both cheap and far more thorough than
+    /// sampling. Anything `parse` accepts must satisfy the path property.
+    #[test]
+    fn parse_accepts_only_safe_single_path_components() {
+        let alphabet = [
+            'a', '1', '-', '.', '/', '\\', ' ', ':', '\0', '~', '*',
+            '\u{ff0f}', // fullwidth solidus
+        ];
+        let n = alphabet.len();
+        let mut checked = 0usize;
+        let mut accepted = 0usize;
+        let mut buf = String::new();
+        for len in 0..=3u32 {
+            // Base-n counting over the alphabet: provably enumerates every
+            // string of this length exactly once.
+            for mut code in 0..n.pow(len) {
+                buf.clear();
+                for _ in 0..len {
+                    buf.push(alphabet[code % n]);
+                    code /= n;
+                }
+                checked += 1;
+                if let Some(id) = CollectionId::parse(&buf) {
+                    accepted += 1;
+                    assert!(
+                        lands_inside_base(&id),
+                        "parse accepted {buf:?} but it escapes its base directory"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            checked,
+            1 + n + n * n + n * n * n,
+            "the sweep must be exhaustive"
+        );
+        assert!(accepted > 0, "the sweep must include accepted inputs too");
+    }
+
+    /// Whatever `from_name` produces — from any input, including hostile ones —
+    /// must also satisfy the path property, since it bypasses `parse`.
+    #[test]
+    fn from_name_output_is_always_a_safe_component() {
+        for name in [
+            "../../etc/passwd",
+            "/absolute/path",
+            "..",
+            ".",
+            "",
+            "   ",
+            "C:\\Windows\\system32",
+            "a/../../b",
+            "\u{ff0f}\u{ff0f}",
+            "🙂🙂🙂",
+            "..%2f..%2fetc",
+            &"x".repeat(500),
+        ] {
+            let id = CollectionId::from_name(name);
+            assert!(
+                lands_inside_base(&id),
+                "from_name({name:?}) produced {id:?}, which escapes its base"
+            );
+            assert!(
+                CollectionId::parse(id.as_str()).is_some(),
+                "from_name({name:?}) produced {id:?}, which parse rejects"
+            );
+        }
+    }
+
     /// A legacy `collections.json` (the oldest layout, WACZ records inline and
     /// no `collection` key) must still land its crawls in the synthesized
     /// singleton collection — regressed once when `CollectionId::default()`
