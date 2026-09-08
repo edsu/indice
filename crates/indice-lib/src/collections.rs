@@ -412,7 +412,8 @@ impl Manifest {
             for w in &mut waczs {
                 if w.collection.is_empty() {
                     // Legacy layout: the WACZ id doubled as its collection id.
-                    w.collection = CollectionId::parse(&w.id).unwrap_or_default();
+                    w.collection = CollectionId::parse(&w.id)
+                        .unwrap_or_else(|| CollectionId::from_name(&w.id));
                 }
             }
             waczs
@@ -432,7 +433,8 @@ impl Manifest {
                 waczs
                     .iter()
                     .map(|w| Collection {
-                        id: CollectionId::parse(&w.id).unwrap_or_default(),
+                        id: CollectionId::parse(&w.id)
+                            .unwrap_or_else(|| CollectionId::from_name(&w.id)),
                         name: w.name.clone(),
                         description: w.description.clone(),
                         created: w.date_indexed.clone(),
@@ -747,8 +749,18 @@ struct FrontMatter {
 ///
 /// Valid ids are non-empty ASCII alphanumerics plus `-` — no `/`, no `.`, so
 /// neither an absolute path nor a `..` component can appear.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct CollectionId(String);
+
+/// Only exists because [`Collection`] derives `Default`; the value is always
+/// overwritten by a real id. It is deliberately a *valid* id — a `Default` that
+/// produced something [`CollectionId::parse`] would reject would be a hole in
+/// the type's whole promise (every `CollectionId` is a safe path component).
+impl Default for CollectionId {
+    fn default() -> Self {
+        CollectionId("unset".to_string())
+    }
+}
 
 impl CollectionId {
     /// Validate an existing id (e.g. from a URL path segment or the manifest).
@@ -1126,6 +1138,22 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn collection_id_rejects_unsafe_and_default_is_valid() {
+        for bad in ["", ".", "..", "a/b", "../evil", "a.b", "a b", "café"] {
+            assert!(CollectionId::parse(bad).is_none(), "should reject {bad:?}");
+        }
+        for good in ["news", "bay-area-transit", "a1b2c3d4"] {
+            assert_eq!(CollectionId::parse(good).unwrap().as_str(), good);
+        }
+        // from_name always yields something parse accepts...
+        assert!(
+            CollectionId::parse(CollectionId::from_name("Bay Area / Transit!").as_str()).is_some()
+        );
+        // ...and so must Default, or the type's promise has a hole in it.
+        assert!(CollectionId::parse(CollectionId::default().as_str()).is_some());
+    }
+
     /// A valid collection id for tests.
     fn cid(s: &str) -> CollectionId {
         CollectionId::parse(s).expect("valid test id")

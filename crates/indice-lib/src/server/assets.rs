@@ -216,10 +216,14 @@ pub(super) async fn thumb_handler(
         return StatusCode::NOT_FOUND.into_response();
     }
     // Resolve the crawl's collection (needed for the committed pinned path).
-    let collection = Manifest::open(&state.index_dir)
+    // An unknown crawl has no collection and therefore no pinned thumbnail;
+    // 404 rather than composing a path from a placeholder id.
+    let Some(collection) = Manifest::open(&state.index_dir)
         .ok()
         .and_then(|m| m.wacz_by_id(&id).map(|w| w.collection.clone()))
-        .unwrap_or_default();
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let Some(path) = thumb_path(&state.home, &state.index_dir, &collection, &id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
