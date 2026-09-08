@@ -173,7 +173,7 @@ pub struct Wacz {
     /// to a collection — supplied at index/import time, held here in the manifest
     /// (the authoritative membership record, incl. for remote sources with no
     /// local file).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_collection")]
     pub collection: CollectionId,
     /// The WACZ location. Older manifests used the key `path`.
     #[serde(alias = "path")]
@@ -408,18 +408,24 @@ impl Manifest {
             // Oldest layout: `collections.json` held the WACZ records directly.
             let value: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&collections_path)?)?;
-            let mut waczs: Vec<Wacz> = serde_json::from_value(value)?;
-            for w in &mut waczs {
-                if w.collection.is_empty() {
-                    // Legacy layout: the WACZ id doubled as its collection id.
-                    w.collection = CollectionId::parse(&w.id)
-                        .unwrap_or_else(|| CollectionId::from_name(&w.id));
-                }
-            }
-            waczs
+            serde_json::from_value(value)?
         } else {
             Vec::new()
         };
+
+        // Heal records that carry no usable collection — the oldest layout had
+        // no `collection` key at all, and a manifest written mid-migration could
+        // hold an empty one. Both arrive as the sentinel; the WACZ id doubles as
+        // its collection id, matching the singleton collections synthesized
+        // below. Applies to every load path, so a `waczs.json` in that state is
+        // repaired rather than left orphaned.
+        let mut waczs = waczs;
+        for w in &mut waczs {
+            if w.collection == CollectionId::default() {
+                w.collection =
+                    CollectionId::parse(&w.id).unwrap_or_else(|| CollectionId::from_name(&w.id));
+            }
+        }
 
         // ── Collection descriptive metadata (finding aids, source of truth) ──
         let collections: Vec<Collection> = if dir_has_findingaid(&collections_dir) {
@@ -442,7 +448,20 @@ impl Manifest {
                     })
                     .collect()
             } else {
-                serde_json::from_value(value).unwrap_or_default()
+                // Per-element, so one malformed record can't silently discard
+                // every curator's description/narrative (mirrors the
+                // skip-and-warn in `load_finding_aids`).
+                serde_json::from_value::<Vec<serde_json::Value>>(value)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|v| match serde_json::from_value::<Collection>(v.clone()) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            tracing::warn!(record = %v, "skipping unreadable collection record: {e}");
+                            None
+                        }
+                    })
+                    .collect()
             };
             for c in &cols {
                 dirty.insert(c.id.clone());
@@ -752,13 +771,18 @@ struct FrontMatter {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct CollectionId(String);
 
-/// Only exists because [`Collection`] derives `Default`; the value is always
-/// overwritten by a real id. It is deliberately a *valid* id — a `Default` that
-/// produced something [`CollectionId::parse`] would reject would be a hole in
-/// the type's whole promise (every `CollectionId` is a safe path component).
+/// The "not set yet" placeholder, used for a legacy manifest record that predates
+/// collection membership (see [`Manifest::open`], which heals these on load).
+///
+/// It has to satisfy two constraints at once. It must be a *valid* id — a
+/// `Default` that produced something [`CollectionId::parse`] rejects would be a
+/// hole in the type's promise. And it must be one [`slugify`] can never emit, so
+/// it can't collide with a real collection: slugify only ever produces
+/// `[a-z0-9]` separated by single dashes and never a *leading* dash, so a
+/// leading dash makes this unambiguous (and is still a safe path component).
 impl Default for CollectionId {
     fn default() -> Self {
-        CollectionId("unset".to_string())
+        CollectionId("-unset".to_string())
     }
 }
 
@@ -819,6 +843,24 @@ impl PartialEq<String> for CollectionId {
 /// Ids on disk were written by [`slugify`], so they should always be valid;
 /// rejecting anything else means a hand-edited manifest can't smuggle a path
 /// component past the type.
+/// Field deserializer for [`Wacz::collection`]: tolerate what older manifests
+/// actually contain. An absent key, an empty string, or (defensively) a
+/// malformed id becomes the "unset" sentinel, which [`Manifest::open`] then
+/// heals — rather than failing the whole load and taking the server down with
+/// it. The strict [`CollectionId`] impl still guards every other id.
+fn lenient_collection<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<CollectionId, D::Error> {
+    let raw = String::deserialize(d)?;
+    if raw.is_empty() {
+        return Ok(CollectionId::default());
+    }
+    Ok(CollectionId::parse(&raw).unwrap_or_else(|| {
+        tracing::warn!(id = %raw, "manifest holds an invalid collection id; treating it as unset");
+        CollectionId::default()
+    }))
+}
+
 impl<'de> Deserialize<'de> for CollectionId {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         let s = String::deserialize(d)?;
@@ -1152,6 +1194,109 @@ mod tests {
         );
         // ...and so must Default, or the type's promise has a hole in it.
         assert!(CollectionId::parse(CollectionId::default().as_str()).is_some());
+    }
+
+    /// A legacy `collections.json` (the oldest layout, WACZ records inline and
+    /// no `collection` key) must still land its crawls in the synthesized
+    /// singleton collection — regressed once when `CollectionId::default()`
+    /// stopped being the empty string and the migration guard stopped matching.
+    #[test]
+    fn legacy_wacz_records_are_adopted_by_their_synthesized_collection() {
+        let tmp = TempDir::new().unwrap();
+        let idx = tmp.path().join("index");
+        std::fs::create_dir_all(&idx).unwrap();
+        std::fs::write(
+            idx.join("collections.json"),
+            r#"[{"id":"abc12345","name":"Old","path":"archive/a.wacz","date_indexed":"2026-01-01T00:00:00Z","file_size":1,"sha256":"x"}]"#,
+        )
+        .unwrap();
+        let m = Manifest::open(&idx).unwrap();
+        let id = cid("abc12345");
+        assert_eq!(
+            m.waczs[0].collection, id,
+            "the WACZ id doubles as its collection"
+        );
+        assert_eq!(
+            m.members_of(&id).count(),
+            1,
+            "the crawl must not be orphaned"
+        );
+    }
+
+    /// A manifest holding an empty (or malformed) collection id must load and be
+    /// healed, not abort `Manifest::open` and take every page down with it.
+    #[test]
+    fn empty_or_bad_collection_id_is_healed_not_fatal() {
+        for raw in [r#""""#, r#""My_Coll""#] {
+            let tmp = TempDir::new().unwrap();
+            let idx = tmp.path().join("index");
+            std::fs::create_dir_all(&idx).unwrap();
+            std::fs::write(
+                idx.join("waczs.json"),
+                format!(r#"[{{"id":"abc12345","collection":{raw},"name":"X","source":"archive/a.wacz","date_indexed":"2026-01-01T00:00:00Z","file_size":1,"sha256":"x"}}]"#),
+            )
+            .unwrap();
+            let m = Manifest::open(&idx).expect("a bad id must not brick the manifest");
+            assert_eq!(
+                m.waczs[0].collection,
+                cid("abc12345"),
+                "healed from the WACZ id"
+            );
+        }
+    }
+
+    /// One unreadable record in a legacy `collections.json` must not discard
+    /// every curator's description/narrative.
+    #[test]
+    fn one_bad_collection_record_does_not_discard_the_rest() {
+        let tmp = TempDir::new().unwrap();
+        let idx = tmp.path().join("index");
+        std::fs::create_dir_all(&idx).unwrap();
+        std::fs::write(
+            idx.join("waczs.json"),
+            r#"[{"id":"abc12345","collection":"good","name":"X","source":"archive/a.wacz","date_indexed":"2026-01-01T00:00:00Z","file_size":1,"sha256":"x"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            idx.join("collections.json"),
+            r#"[{"id":"good","name":"Good","created":"2026-01-01T00:00:00Z","description":"kept"},
+                {"id":"My_Coll","name":"Bad","created":"2026-01-01T00:00:00Z"}]"#,
+        )
+        .unwrap();
+        let m = Manifest::open(&idx).unwrap();
+        let ids: Vec<String> = m.collections.iter().map(|c| c.id.to_string()).collect();
+        assert!(
+            ids.contains(&"good".to_string()),
+            "the valid record survives: {ids:?}"
+        );
+        assert_eq!(
+            m.collections
+                .iter()
+                .find(|c| c.id == "good")
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("kept"),
+            "its curator metadata survives too"
+        );
+    }
+
+    /// The sentinel must be a valid id (the type's promise) *and* unreachable
+    /// from slugify, so it can never collide with a real collection.
+    #[test]
+    fn unset_sentinel_is_valid_but_unslugifiable() {
+        let d = CollectionId::default();
+        assert!(
+            CollectionId::parse(d.as_str()).is_some(),
+            "sentinel must satisfy parse"
+        );
+        for name in ["unset", "Unset", "UNSET", "-unset", " unset ", "un set"] {
+            assert_ne!(
+                CollectionId::from_name(name),
+                d,
+                "slugify({name:?}) must not equal the sentinel"
+            );
+        }
     }
 
     /// A valid collection id for tests.

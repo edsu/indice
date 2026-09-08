@@ -189,6 +189,13 @@ fn thumb_path(
     if pinned.is_file() {
         return Some(pinned);
     }
+    auto_thumb_path(index_dir, crawl_id)
+}
+
+/// The auto-selected thumbnail cache for a crawl (`index/thumbs/<id>.jpg`),
+/// which needs no collection — so it still serves when the manifest can't be
+/// read.
+fn auto_thumb_path(index_dir: &Path, crawl_id: &str) -> Option<PathBuf> {
     let auto = index_dir.join("thumbs").join(format!("{crawl_id}.jpg"));
     auto.is_file().then_some(auto)
 }
@@ -216,15 +223,22 @@ pub(super) async fn thumb_handler(
         return StatusCode::NOT_FOUND.into_response();
     }
     // Resolve the crawl's collection (needed for the committed pinned path).
-    // An unknown crawl has no collection and therefore no pinned thumbnail;
-    // 404 rather than composing a path from a placeholder id.
-    let Some(collection) = Manifest::open(&state.index_dir)
-        .ok()
-        .and_then(|m| m.wacz_by_id(&id).map(|w| w.collection.clone()))
-    else {
-        return StatusCode::NOT_FOUND.into_response();
+    // Resolve the crawl's collection, needed for the committed *pinned* path.
+    // A crawl the manifest doesn't know can't have one, so 404 — but an
+    // unreadable manifest is a different thing entirely: fall through so the
+    // auto cache at index/thumbs/<id>.jpg still serves, rather than silently
+    // stripping every thumbnail from the grid.
+    let collection = match Manifest::open(&state.index_dir) {
+        Ok(m) => match m.wacz_by_id(&id) {
+            Some(w) => Some(w.collection.clone()),
+            None => return StatusCode::NOT_FOUND.into_response(),
+        },
+        Err(_) => None,
     };
-    let Some(path) = thumb_path(&state.home, &state.index_dir, &collection, &id) else {
+    let Some(path) = collection
+        .and_then(|c| thumb_path(&state.home, &state.index_dir, &c, &id))
+        .or_else(|| auto_thumb_path(&state.index_dir, &id))
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match std::fs::read(path) {
