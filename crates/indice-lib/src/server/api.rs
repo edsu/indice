@@ -10,7 +10,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::annotations::{self, EditOutcome, UpdateResult};
-use crate::collections::Manifest;
+use crate::collections::{CollectionId, Manifest};
 
 use super::*;
 
@@ -76,7 +76,7 @@ struct SelectorDto {
 
 #[derive(Deserialize)]
 pub(super) struct AnnotationListQuery {
-    collection: String,
+    collection: CollectionId,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
@@ -85,7 +85,7 @@ pub(super) struct AnnotationListQuery {
 
 #[derive(Deserialize)]
 pub(super) struct AnnotationCreateReq {
-    collection: String,
+    collection: CollectionId,
     url: String,
     timestamp: String,
     note: String,
@@ -95,13 +95,13 @@ pub(super) struct AnnotationCreateReq {
 
 #[derive(Deserialize)]
 pub(super) struct AnnotationUpdateReq {
-    collection: String,
+    collection: CollectionId,
     note: String,
 }
 
 #[derive(Deserialize)]
 pub(super) struct AnnotationDeleteReq {
-    collection: String,
+    collection: CollectionId,
 }
 
 #[derive(Serialize)]

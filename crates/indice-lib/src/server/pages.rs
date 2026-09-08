@@ -36,7 +36,7 @@ pub(super) async fn homepage(
         .map(|c| {
             let members: Vec<&Wacz> = manifest.members_of(&c.id).collect();
             views::CollectionCard {
-                id: c.id.clone(),
+                id: c.id.to_string(),
                 name: c.name.clone(),
                 count: members.len(),
                 description: c.description.clone(),
@@ -226,7 +226,7 @@ pub(super) async fn search_page(
             .map(|m| {
                 m.collections
                     .iter()
-                    .map(|c| (c.id.clone(), c.name.clone()))
+                    .map(|c| (c.id.to_string(), c.name.clone()))
                     .collect()
             })
             .unwrap_or_default();

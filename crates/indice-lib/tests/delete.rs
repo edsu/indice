@@ -129,7 +129,7 @@ fn delete_collection_refuses_nonempty_without_flag_then_deletes_with_it() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path();
     index_fixture(home, "coll");
-    let coll_id = indice_lib::collections::slugify("coll");
+    let coll_id = indice_lib::collections::CollectionId::from_name("coll");
 
     // A non-empty collection is refused without --with-crawls, and left intact.
     let err = indice_lib::index::delete_collection(home, &coll_id, false)

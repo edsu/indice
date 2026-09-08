@@ -28,7 +28,7 @@ pub(super) async fn crawl_page(
     let name_enc = url_encode(&c.name);
     // Breadcrumb + replay params for the containing collection (name + id).
     let col = manifest.collection_by_id(&c.collection);
-    let crumb = col.map(|col| (col.id.clone(), col.name.clone()));
+    let crumb = col.map(|col| (col.id.to_string(), col.name.clone()));
     let mut coll_q = col
         .map(|col| {
             format!(

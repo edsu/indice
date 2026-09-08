@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use tokio_util::io::ReaderStream;
 
-use crate::collections::{Manifest, Wacz};
+use crate::collections::{CollectionId, Manifest, Wacz};
 
 use super::*;
 
@@ -179,7 +179,12 @@ pub(super) async fn asset_handler(
 /// The on-disk path to a crawl's thumbnail, preferring a curator's committed
 /// pinned image (`collections/<slug>/crawls/<id>.jpg`) over the auto-selected
 /// cache (`index/thumbs/<id>.jpg`). `None` if neither exists.
-fn thumb_path(home: &Path, index_dir: &Path, collection: &str, crawl_id: &str) -> Option<PathBuf> {
+fn thumb_path(
+    home: &Path,
+    index_dir: &Path,
+    collection: &CollectionId,
+    crawl_id: &str,
+) -> Option<PathBuf> {
     let pinned = crate::collections::pinned_thumb_path(home, collection, crawl_id);
     if pinned.is_file() {
         return Some(pinned);
@@ -193,7 +198,7 @@ fn thumb_path(home: &Path, index_dir: &Path, collection: &str, crawl_id: &str) -
 pub(super) fn thumb_href(
     home: &Path,
     index_dir: &Path,
-    collection: &str,
+    collection: &CollectionId,
     crawl_id: &str,
 ) -> Option<String> {
     thumb_path(home, index_dir, collection, crawl_id).map(|_| format!("/thumb/{crawl_id}"))
@@ -233,7 +238,7 @@ pub(super) async fn thumb_handler(
 
 /// The `/collection-thumb/{slug}` href for a collection, if a curator committed
 /// one at `collections/<slug>/thumbnail.jpg`.
-pub(super) fn collection_thumb_href(home: &Path, slug: &str) -> Option<String> {
+pub(super) fn collection_thumb_href(home: &Path, slug: &CollectionId) -> Option<String> {
     crate::collections::collection_thumb_path(home, slug)
         .is_file()
         .then(|| format!("/collection-thumb/{slug}"))
@@ -244,9 +249,11 @@ pub(super) async fn collection_thumb_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    // CollectionId::parse is the single definition of a safe id; an id that
+    // fails it can't name a real collection either, so 404 as before.
+    let Some(id) = CollectionId::parse(&id) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     match std::fs::read(crate::collections::collection_thumb_path(&state.home, &id)) {
         Ok(bytes) => (
             [

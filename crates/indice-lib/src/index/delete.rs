@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::collections::{Manifest, Wacz};
+use crate::collections::{CollectionId, Manifest, Wacz};
 use crate::search::SearchIndex;
 
 use super::paths::{archive_dir, index_dir};
@@ -17,7 +17,7 @@ pub struct CrawlDeletion {
     pub id: String,
     pub name: String,
     /// The collection the crawl belonged to.
-    pub collection: String,
+    pub collection: CollectionId,
     /// The local WACZ file that will be / was removed: a `File` source with a
     /// copy on disk that no other entry references. `None` for a URL/streamed
     /// source, or a file shared with another crawl.
@@ -135,7 +135,7 @@ pub struct CollectionDeletion {
 
 /// Inspect what [`delete_collection`] would remove, changing nothing. Errors if
 /// the id is unknown.
-pub fn plan_collection_deletion(home: &Path, id: &str) -> Result<CollectionDeletion> {
+pub fn plan_collection_deletion(home: &Path, id: &CollectionId) -> Result<CollectionDeletion> {
     let manifest = Manifest::open(&index_dir(home))?;
     let coll = manifest
         .collection_by_id(id)
@@ -151,7 +151,11 @@ pub fn plan_collection_deletion(home: &Path, id: &str) -> Result<CollectionDelet
 /// Delete a collection grouping (its finding aid). Without `with_crawls` a
 /// non-empty collection is refused; with it, every member crawl is deleted first
 /// (files + index docs + manifest entries), then the grouping.
-pub fn delete_collection(home: &Path, id: &str, with_crawls: bool) -> Result<CollectionDeletion> {
+pub fn delete_collection(
+    home: &Path,
+    id: &CollectionId,
+    with_crawls: bool,
+) -> Result<CollectionDeletion> {
     let mut plan = plan_collection_deletion(home, id)?;
     if plan.member_count > 0 && !with_crawls {
         anyhow::bail!(

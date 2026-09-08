@@ -5,7 +5,7 @@
 //! folded into one [`Wacz`] entry here, and the collection's finding aid is
 //! seeded (fill-gaps only) from the same metadata.
 
-use crate::collections::{Manifest, Source, Wacz};
+use crate::collections::{CollectionId, Manifest, Source, Wacz};
 use crate::index::paths::year_prefix;
 
 use super::pages::CrawlStats;
@@ -20,7 +20,7 @@ pub(super) fn upsert(
     manifest: &mut Manifest,
     id: &str,
     // The curated collection (id, display name) this crawl belongs to.
-    collection: (&str, &str),
+    collection: (&CollectionId, &str),
     // What the manifest records as the source (post-`--download` if that ran).
     source: &Source,
     display_name: &str,
@@ -69,7 +69,7 @@ pub(super) fn upsert(
 
     manifest.upsert_wacz(Wacz {
         id: id.to_string(),
-        collection: collection_id.to_string(),
+        collection: collection_id.clone(),
         source: source.clone(),
         name: display_name.to_string(),
         date_indexed,

@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use tracing::debug;
 
-use crate::collections::{file_sha256, wacz_id, Manifest, Source};
+use crate::collections::{file_sha256, wacz_id, CollectionId, Manifest, Source};
 use crate::search::SearchIndex;
 use crate::wacz::read_datapackage;
 
@@ -176,7 +176,7 @@ pub fn index_location_with_resolver(
 ) -> Result<()> {
     // Every crawl belongs to a collection (its id is the slug of the name).
     let group = (
-        crate::collections::slugify(collection),
+        crate::collections::CollectionId::from_name(collection),
         collection.to_string(),
     );
 
@@ -228,7 +228,7 @@ pub fn index_location_with_resolver(
             &mut manifest,
             &search,
             name,
-            (group.0.as_str(), group.1.as_str()),
+            (&group.0, group.1.as_str()),
             download,
             concurrency,
             resolver,
@@ -275,7 +275,7 @@ pub(super) fn index_one(
     name: Option<&str>,
     // The collection (id, display name) this WACZ joins — always set; every
     // crawl belongs to a collection (no singletons).
-    collection: (&str, &str),
+    collection: (&CollectionId, &str),
     // Download a remote WACZ into <home>/archive and index it as a local file
     // (durable copy, whole-file fixity, offline replay) instead of streaming.
     download: bool,

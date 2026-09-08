@@ -20,6 +20,7 @@ use crate::collections::Manifest;
 use crate::views;
 
 use super::*;
+use crate::collections::CollectionId;
 
 /// Progress events streamed to the management UI over SSE while an add-archive
 /// job runs. The first six mirror [`crate::index::IndexProgress`]; `done`/`error`
@@ -361,7 +362,7 @@ pub(super) async fn edit_collection_form(
         return (StatusCode::NOT_FOUND, "unknown collection").into_response();
     };
     let form = views::CollectionFormData {
-        id: c.id.clone(),
+        id: c.id.to_string(),
         name: c.name.clone(),
         description: c.description.clone().unwrap_or_default(),
         curator: c.curator.clone().unwrap_or_default(),
@@ -517,16 +518,21 @@ pub(super) async fn delete_collection_handler(
         .with_crawls
         .as_deref()
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
+    // This ends in a recursive remove_dir_all, so the id has to be a valid
+    // single path component before it goes anywhere near the filesystem.
+    let Some(cid) = CollectionId::parse(&id) else {
+        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+    };
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Refusing a non-empty collection is a client choice, not a server fault,
         // so surface it as 409 rather than letting the lib error become a 500.
-        let plan = crate::index::plan_collection_deletion(&state.home, &id)?;
+        let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
         if plan.member_count > 0 && !with_crawls {
             return Ok(DeleteOutcome::Refused(plan.member_count));
         }
         let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        crate::index::delete_collection(&state.home, &id, with_crawls)?;
+        crate::index::delete_collection(&state.home, &cid, with_crawls)?;
         state.reload_searcher()?;
         Ok::<_, anyhow::Error>(DeleteOutcome::Done)
     })

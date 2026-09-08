@@ -174,7 +174,7 @@ pub struct Wacz {
     /// (the authoritative membership record, incl. for remote sources with no
     /// local file).
     #[serde(default)]
-    pub collection: String,
+    pub collection: CollectionId,
     /// The WACZ location. Older manifests used the key `path`.
     #[serde(alias = "path")]
     pub source: Source,
@@ -329,7 +329,7 @@ fn is_zero(n: &u64) -> bool {
 /// / [`write_finding_aid`]. Fields are framed against DACS / EAD.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Collection {
-    pub id: String,
+    pub id: CollectionId,
     pub name: String,
     /// A short abstract / caption (EAD `<abstract>`), distinct from the longer
     /// `narrative`.
@@ -382,7 +382,7 @@ pub struct Manifest {
     /// Collection ids whose finding aid needs (re)writing on `save` — the set
     /// created/modified this session, or migrated from legacy JSON. Untouched
     /// finding aids are never rewritten, so hand edits keep their formatting.
-    dirty: HashSet<String>,
+    dirty: HashSet<CollectionId>,
 }
 
 impl Manifest {
@@ -411,7 +411,8 @@ impl Manifest {
             let mut waczs: Vec<Wacz> = serde_json::from_value(value)?;
             for w in &mut waczs {
                 if w.collection.is_empty() {
-                    w.collection = w.id.clone();
+                    // Legacy layout: the WACZ id doubled as its collection id.
+                    w.collection = CollectionId::parse(&w.id).unwrap_or_default();
                 }
             }
             waczs
@@ -431,7 +432,7 @@ impl Manifest {
                 waczs
                     .iter()
                     .map(|w| Collection {
-                        id: w.id.clone(),
+                        id: CollectionId::parse(&w.id).unwrap_or_default(),
                         name: w.name.clone(),
                         description: w.description.clone(),
                         created: w.date_indexed.clone(),
@@ -469,15 +470,15 @@ impl Manifest {
 
     /// Ensure a collection with `id` exists, creating a default one (named
     /// `name`) if it doesn't. Returns the collection id for convenience.
-    pub fn ensure_collection(&mut self, id: &str, name: &str, created: &str) -> String {
-        if !self.collections.iter().any(|c| c.id == id) {
+    pub fn ensure_collection(&mut self, id: &CollectionId, name: &str, created: &str) -> String {
+        if !self.collections.iter().any(|c| &c.id == id) {
             self.collections.push(Collection {
-                id: id.to_string(),
+                id: id.clone(),
                 name: name.to_string(),
                 created: created.to_string(),
                 ..Default::default()
             });
-            self.dirty.insert(id.to_string());
+            self.dirty.insert(id.clone());
         }
         id.to_string()
     }
@@ -488,7 +489,7 @@ impl Manifest {
     /// caller decides what to pass (the CLI passes what the curator typed; an
     /// importer passes only fields that are still empty). Returns the id.
     pub fn apply_fields(&mut self, name: &str, fields: &CollectionFields, created: &str) -> String {
-        let id = slugify(name);
+        let id = CollectionId::from_name(name);
         self.dirty.insert(id.clone());
         if let Some(c) = self.collections.iter_mut().find(|c| c.id == id) {
             c.name = name.to_string();
@@ -503,7 +504,7 @@ impl Manifest {
             fields.apply_to(&mut c);
             self.collections.push(c);
         }
-        id
+        id.to_string()
     }
 
     /// Auto-*seed* a collection's curatorial metadata from ingest (the WACZ
@@ -517,21 +518,27 @@ impl Manifest {
     /// already-seeded collection leaves its file (and any hand formatting) alone.
     ///
     /// [`apply_fields`]: Self::apply_fields
-    pub fn seed_fields(&mut self, id: &str, name: &str, fields: &CollectionFields, created: &str) {
-        if let Some(c) = self.collections.iter_mut().find(|c| c.id == id) {
+    pub fn seed_fields(
+        &mut self,
+        id: &CollectionId,
+        name: &str,
+        fields: &CollectionFields,
+        created: &str,
+    ) {
+        if let Some(c) = self.collections.iter_mut().find(|c| &c.id == id) {
             if fields.apply_to_empty(c) {
-                self.dirty.insert(id.to_string());
+                self.dirty.insert(id.clone());
             }
         } else {
             let mut c = Collection {
-                id: id.to_string(),
+                id: id.clone(),
                 name: name.to_string(),
                 created: created.to_string(),
                 ..Default::default()
             };
             fields.apply_to_empty(&mut c);
             self.collections.push(c);
-            self.dirty.insert(id.to_string());
+            self.dirty.insert(id.clone());
         }
     }
 
@@ -727,11 +734,95 @@ struct FrontMatter {
     curator: Option<String>,
 }
 
+/// A validated collection id (slug).
+///
+/// Collection ids become directory names under `<home>/collections/`, so an
+/// unchecked one is a path-traversal waiting to happen — and the check used to
+/// be repeated by hand at every HTTP handler that touched a path. This type
+/// makes that impossible to forget: the inner `String` is private, so the only
+/// ways to obtain a `CollectionId` are [`parse`](Self::parse) (validating) and
+/// [`from_name`](Self::from_name) (slugifying). Every path builder below takes
+/// `&CollectionId` rather than `&str`, so code that tries to build a collection
+/// path from raw request input simply does not compile.
+///
+/// Valid ids are non-empty ASCII alphanumerics plus `-` — no `/`, no `.`, so
+/// neither an absolute path nor a `..` component can appear.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize)]
+pub struct CollectionId(String);
+
+impl CollectionId {
+    /// Validate an existing id (e.g. from a URL path segment or the manifest).
+    /// `None` if it isn't a safe single path component.
+    pub fn parse(s: &str) -> Option<Self> {
+        let ok = !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        ok.then(|| CollectionId(s.to_string()))
+    }
+
+    /// Derive an id from a human collection name (`"Bay Area Transit"` ->
+    /// `bay-area-transit`). Infallible: [`slugify`] only emits safe characters.
+    pub fn from_name(name: &str) -> Self {
+        CollectionId(slugify(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+// Read-only ergonomics: a CollectionId is usable anywhere a &str is expected
+// (format!, comparisons, url_encode…). The conversion is deliberately one-way —
+// there is no `From<&str>`, so the validating constructors stay the only way in.
+impl std::ops::Deref for CollectionId {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+impl std::fmt::Display for CollectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl AsRef<str> for CollectionId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+impl PartialEq<str> for CollectionId {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+impl PartialEq<&str> for CollectionId {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+impl PartialEq<String> for CollectionId {
+    fn eq(&self, other: &String) -> bool {
+        &self.0 == other
+    }
+}
+
+/// Ids on disk were written by [`slugify`], so they should always be valid;
+/// rejecting anything else means a hand-edited manifest can't smuggle a path
+/// component past the type.
+impl<'de> Deserialize<'de> for CollectionId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        CollectionId::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid collection id {s:?}: expected ASCII letters, digits and '-' only"
+            ))
+        })
+    }
+}
+
 /// The committable directory for a collection: `<home>/collections/<slug>/`,
 /// holding its `README.md` finding aid plus any committable assets (per-crawl
 /// notes, pinned/collection thumbnails).
-pub fn collection_dir(home: &Path, slug: &str) -> PathBuf {
-    home.join("collections").join(slug)
+pub fn collection_dir(home: &Path, slug: &CollectionId) -> PathBuf {
+    home.join("collections").join(slug.as_str())
 }
 
 /// Migrate any flat `collections/<slug>.md` finding aids into the per-collection
@@ -786,11 +877,17 @@ pub fn load_finding_aids(collections_dir: &Path) -> Result<Vec<Collection>> {
     dirs.sort();
     let mut out = Vec::with_capacity(dirs.len());
     for dir in dirs {
-        let id = dir
+        // The directory name IS the collection id, so it has to satisfy the
+        // same rule as any other id; skip (loudly) anything that doesn't rather
+        // than trusting a hand-made directory.
+        let Some(id) = dir
             .file_name()
             .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
+            .and_then(CollectionId::parse)
+        else {
+            tracing::warn!(dir = %dir.display(), "skipping collection directory with an invalid id");
+            continue;
+        };
         let readme = dir.join("README.md");
         let text = std::fs::read_to_string(&readme)
             .with_context(|| format!("reading finding aid {}", readme.display()))?;
@@ -804,7 +901,7 @@ pub fn load_finding_aids(collections_dir: &Path) -> Result<Vec<Collection>> {
 
 /// Parse a finding aid's text (YAML front-matter + Markdown body) into a
 /// [`Collection`] with the given `id` (the collection directory name).
-fn parse_finding_aid(id: &str, text: &str) -> Result<Collection> {
+fn parse_finding_aid(id: &CollectionId, text: &str) -> Result<Collection> {
     let (fm_src, body) = split_front_matter(text);
     let fm: FrontMatter = if fm_src.trim().is_empty() {
         FrontMatter::default()
@@ -822,7 +919,7 @@ fn parse_finding_aid(id: &str, text: &str) -> Result<Collection> {
         (!t.is_empty()).then(|| t.to_string())
     };
     Ok(Collection {
-        id: id.to_string(),
+        id: id.clone(),
         name: if fm.name.is_empty() {
             id.to_string()
         } else {
@@ -903,7 +1000,7 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
 
 /// Path to a crawl's committable Markdown note, under its collection:
 /// `<home>/collections/<slug>/crawls/<id>.md`.
-pub fn crawl_note_path(home: &Path, collection: &str, id: &str) -> PathBuf {
+pub fn crawl_note_path(home: &Path, collection: &CollectionId, id: &str) -> PathBuf {
     collection_dir(home, collection)
         .join("crawls")
         .join(format!("{id}.md"))
@@ -913,7 +1010,7 @@ pub fn crawl_note_path(home: &Path, collection: &str, id: &str) -> PathBuf {
 /// `<home>/collections/<slug>/crawls/<id>.jpg`. Its *presence* is the pin marker
 /// — a pinned image lives with the finding aid and is never overwritten by
 /// (re)indexing (which only writes the auto cache under `index/thumbs/`).
-pub fn pinned_thumb_path(home: &Path, collection: &str, id: &str) -> PathBuf {
+pub fn pinned_thumb_path(home: &Path, collection: &CollectionId, id: &str) -> PathBuf {
     collection_dir(home, collection)
         .join("crawls")
         .join(format!("{id}.jpg"))
@@ -921,19 +1018,24 @@ pub fn pinned_thumb_path(home: &Path, collection: &str, id: &str) -> PathBuf {
 
 /// Path to a collection's curator-set representative thumbnail (committable):
 /// `<home>/collections/<slug>/thumbnail.jpg`.
-pub fn collection_thumb_path(home: &Path, collection: &str) -> PathBuf {
+pub fn collection_thumb_path(home: &Path, collection: &CollectionId) -> PathBuf {
     collection_dir(home, collection).join("thumbnail.jpg")
 }
 
 /// Read a crawl's Markdown note, if present and non-empty.
-pub fn read_crawl_note(home: &Path, collection: &str, id: &str) -> Option<String> {
+pub fn read_crawl_note(home: &Path, collection: &CollectionId, id: &str) -> Option<String> {
     let text = std::fs::read_to_string(crawl_note_path(home, collection, id)).ok()?;
     let t = text.trim();
     (!t.is_empty()).then(|| t.to_string())
 }
 
 /// Write a crawl's Markdown note to `<home>/collections/<slug>/crawls/<id>.md`.
-pub fn write_crawl_note(home: &Path, collection: &str, id: &str, note: &str) -> Result<()> {
+pub fn write_crawl_note(
+    home: &Path,
+    collection: &CollectionId,
+    id: &str,
+    note: &str,
+) -> Result<()> {
     let path = crawl_note_path(home, collection, id);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1024,6 +1126,11 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A valid collection id for tests.
+    fn cid(s: &str) -> CollectionId {
+        CollectionId::parse(s).expect("valid test id")
+    }
+
     use super::*;
     use tempfile::TempDir;
 
@@ -1182,7 +1289,7 @@ mod tests {
     fn wacz(id: &str, name: &str, description: Option<&str>) -> Wacz {
         Wacz {
             id: id.to_string(),
-            collection: id.to_string(),
+            collection: cid(id),
             source: Source::File(PathBuf::from("/data/test.wacz")),
             name: name.to_string(),
             date_indexed: "2026-07-01T00:00:00Z".to_string(),
@@ -1292,7 +1399,7 @@ mod tests {
 
         // First seed populates empty fields.
         m.seed_fields(
-            "sucho",
+            &cid("sucho"),
             "SUCHO",
             &CollectionFields {
                 narrative: Some("first scope".into()),
@@ -1318,7 +1425,7 @@ mod tests {
         // A later seed fills a still-empty field (creator) but must NOT overwrite
         // the set ones (narrative, subjects).
         m.seed_fields(
-            "sucho",
+            &cid("sucho"),
             "SUCHO",
             &CollectionFields {
                 narrative: Some("second scope".into()),
@@ -1347,7 +1454,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // A collection with nothing filled in but its name/created.
         let c = Collection {
-            id: "news".into(),
+            id: cid("news"),
             name: "News".into(),
             created: "2026-01-01T00:00:00Z".into(),
             ..Default::default()
@@ -1366,7 +1473,7 @@ mod tests {
 
         // Reading it back, the blanks are unset — so ingest still seeds them and
         // the "still needed" nudge still fires (they're a display scaffold only).
-        let back = parse_finding_aid("news", &text).unwrap();
+        let back = parse_finding_aid(&cid("news"), &text).unwrap();
         assert_eq!(back.creator, None);
         assert_eq!(back.dates, None);
         assert_eq!(back.rights, None);
@@ -1579,10 +1686,10 @@ mod tests {
     #[test]
     fn crawl_note_roundtrips() {
         let tmp = TempDir::new().unwrap();
-        assert!(read_crawl_note(tmp.path(), "sucho", "abc12345").is_none());
+        assert!(read_crawl_note(tmp.path(), &cid("sucho"), "abc12345").is_none());
         write_crawl_note(
             tmp.path(),
-            "sucho",
+            &cid("sucho"),
             "abc12345",
             "  A note about absences.  ",
         )
@@ -1593,7 +1700,7 @@ mod tests {
             .join("collections/sucho/crawls/abc12345.md")
             .is_file());
         assert_eq!(
-            read_crawl_note(tmp.path(), "sucho", "abc12345").as_deref(),
+            read_crawl_note(tmp.path(), &cid("sucho"), "abc12345").as_deref(),
             Some("A note about absences.")
         );
     }

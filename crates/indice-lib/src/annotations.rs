@@ -24,7 +24,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::collections::collection_dir;
+use crate::collections::{collection_dir, CollectionId};
 
 /// The JSON-LD context every annotation carries.
 const ANNO_CONTEXT: &str = "http://www.w3.org/ns/anno.jsonld";
@@ -197,15 +197,14 @@ pub enum UpdateResult {
 }
 
 /// Path to a collection's annotation store: `<home>/collections/<slug>/annotations.jsonl`.
-pub fn annotations_path(home: &Path, collection: &str) -> PathBuf {
+pub fn annotations_path(home: &Path, collection: &CollectionId) -> PathBuf {
     collection_dir(home, collection).join("annotations.jsonl")
 }
 
 /// Load every annotation in a collection (empty if the store doesn't exist yet),
 /// preserving file order. A malformed line aborts the load with context, rather
 /// than being silently dropped.
-pub fn load(home: &Path, collection: &str) -> Result<Vec<Annotation>> {
-    ensure_safe_collection(collection)?;
+pub fn load(home: &Path, collection: &CollectionId) -> Result<Vec<Annotation>> {
     let path = annotations_path(home, collection);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -227,7 +226,7 @@ pub fn load(home: &Path, collection: &str) -> Result<Vec<Annotation>> {
 /// Annotations attached to one capture `(url, timestamp)`, in file order.
 pub fn list_by_page(
     home: &Path,
-    collection: &str,
+    collection: &CollectionId,
     url: &str,
     timestamp: &str,
 ) -> Result<Vec<Annotation>> {
@@ -238,14 +237,13 @@ pub fn list_by_page(
 }
 
 /// Fetch one annotation by id.
-pub fn get(home: &Path, collection: &str, id: &str) -> Result<Option<Annotation>> {
+pub fn get(home: &Path, collection: &CollectionId, id: &str) -> Result<Option<Annotation>> {
     Ok(load(home, collection)?.into_iter().find(|a| a.id == id))
 }
 
 /// Append a new annotation to the collection's store, creating the file (and the
 /// collection directory) if needed. The note body must be non-empty.
-pub fn create(home: &Path, collection: &str, annotation: &Annotation) -> Result<()> {
-    ensure_safe_collection(collection)?;
+pub fn create(home: &Path, collection: &CollectionId, annotation: &Annotation) -> Result<()> {
     if annotation.body.value.trim().is_empty() {
         bail!("annotation body is empty");
     }
@@ -262,7 +260,7 @@ pub fn create(home: &Path, collection: &str, annotation: &Annotation) -> Result<
 /// `modified`. Returns whether it was applied, not found, or forbidden.
 pub fn update(
     home: &Path,
-    collection: &str,
+    collection: &CollectionId,
     id: &str,
     new_note: &str,
     author: &str,
@@ -284,7 +282,12 @@ pub fn update(
 }
 
 /// Delete an annotation, if it exists and `author` wrote it.
-pub fn delete(home: &Path, collection: &str, id: &str, author: &str) -> Result<EditOutcome> {
+pub fn delete(
+    home: &Path,
+    collection: &CollectionId,
+    id: &str,
+    author: &str,
+) -> Result<EditOutcome> {
     let mut all = load(home, collection)?;
     let Some(pos) = all.iter().position(|a| a.id == id) else {
         return Ok(EditOutcome::NotFound);
@@ -298,8 +301,7 @@ pub fn delete(home: &Path, collection: &str, id: &str, author: &str) -> Result<E
 }
 
 /// Rewrite the whole store (used by update/delete). One JSON object per line.
-fn write_all(home: &Path, collection: &str, annotations: &[Annotation]) -> Result<()> {
-    ensure_safe_collection(collection)?;
+fn write_all(home: &Path, collection: &CollectionId, annotations: &[Annotation]) -> Result<()> {
     let path = annotations_path(home, collection);
     let mut buf = String::new();
     for a in annotations {
@@ -307,22 +309,6 @@ fn write_all(home: &Path, collection: &str, annotations: &[Annotation]) -> Resul
         buf.push('\n');
     }
     write_atomic(&path, &buf)?;
-    Ok(())
-}
-
-/// Reject a collection slug that could escape the collections tree. Real slugs
-/// are [`crate::collections::slugify`] output — ASCII alphanumerics and hyphens —
-/// so anything containing a path separator or `.` is invalid. This closes the
-/// path-traversal vector (CodeQL rust/path-injection) at the storage boundary,
-/// before the value reaches `collection_dir`.
-fn ensure_safe_collection(collection: &str) -> Result<()> {
-    let safe = !collection.is_empty()
-        && collection
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-');
-    if !safe {
-        bail!("invalid collection id: {collection:?}");
-    }
     Ok(())
 }
 
@@ -372,6 +358,11 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
 
+    /// A valid collection id for tests.
+    fn cid(s: &str) -> CollectionId {
+        CollectionId::parse(s).expect("valid test id")
+    }
+
     fn creator() -> Creator {
         Creator::person("mailto:ada@example.org", "Ada")
     }
@@ -404,7 +395,7 @@ mod tests {
     fn create_list_and_filter_by_page() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
-        let col = "example";
+        let col = &cid("example");
 
         let page = Annotation::page(
             "https://example.org/a",
@@ -432,7 +423,7 @@ mod tests {
     fn update_and_delete_are_author_gated() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();
-        let col = "example";
+        let col = &cid("example");
         let a = Annotation::page("https://example.org/a", "2026", "first", creator());
         let id = a.id.clone();
         create(home, col, &a).unwrap();
@@ -473,26 +464,27 @@ mod tests {
     #[test]
     fn load_of_missing_store_is_empty() {
         let home = tempfile::tempdir().unwrap();
-        assert!(load(home.path(), "nascent").unwrap().is_empty());
+        assert!(load(home.path(), &cid("nascent")).unwrap().is_empty());
     }
 
     #[test]
     fn rejects_unsafe_collection() {
-        let home = tempfile::tempdir().unwrap();
-        let a = Annotation::page("u", "t", "x", creator());
-        // path-traversal / separators in the collection id are refused before
-        // any filesystem access.
-        assert!(create(home.path(), "../evil", &a).is_err());
-        assert!(load(home.path(), "../evil").is_err());
-        assert!(load(home.path(), "a/b").is_err());
-        assert!(load(home.path(), "").is_err());
+        // The store's functions take a `CollectionId`, which can only be built
+        // by `parse`, so a traversal id can no longer even be *expressed* here —
+        // it's rejected one step earlier, at the type boundary.
+        for bad in ["../evil", "a/b", "", ".", "..", "a.b", "a\\b"] {
+            assert!(
+                CollectionId::parse(bad).is_none(),
+                "should reject collection id {bad:?}"
+            );
+        }
     }
 
     #[test]
     fn empty_body_is_rejected() {
         let home = tempfile::tempdir().unwrap();
         let a = Annotation::page("https://example.org/a", "2026", "   ", creator());
-        assert!(create(home.path(), "example", &a).is_err());
+        assert!(create(home.path(), &cid("example"), &a).is_err());
     }
 
     #[test]

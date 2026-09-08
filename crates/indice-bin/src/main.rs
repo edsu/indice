@@ -1240,12 +1240,15 @@ async fn main() -> Result<()> {
                 // Resolve the argument (id/slug or name) to a collection id.
                 let manifest =
                     indice_lib::collections::Manifest::open(&indice_lib::index::index_dir(&home))?;
-                let coll_id = if manifest.collection_by_id(&id).is_some() {
-                    id.clone()
+                // Accept either the id or the display name; fall back to
+                // slugifying what was typed. All three routes produce a
+                // validated CollectionId.
+                let coll_id = if let Some(c) = manifest.collection_by_id(&id) {
+                    c.id.clone()
                 } else if let Some(c) = manifest.collections.iter().find(|c| c.name == id) {
                     c.id.clone()
                 } else {
-                    indice_lib::collections::slugify(&id)
+                    indice_lib::collections::CollectionId::from_name(&id)
                 };
                 drop(manifest);
 
@@ -1651,7 +1654,7 @@ fn run_crawl_list(home: &std::path::Path, collection: Option<&str>) -> Result<()
     // which collection the id belongs to.
     let mut listed = 0usize;
     for c in &manifest.collections {
-        if want.as_deref().is_some_and(|w| w != c.id) {
+        if want.as_deref().is_some_and(|w| c.id != w) {
             continue;
         }
         for w in manifest.members_of(&c.id) {

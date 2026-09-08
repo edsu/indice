@@ -91,7 +91,7 @@ pub(super) async fn collection_page(
         management: manage,
         signed_in: who,
         can_login,
-        annotation_count: annotations::load(&state.home, &id)
+        annotation_count: annotations::load(&state.home, &c.id)
             .map(|v| v.len())
             .unwrap_or(0),
     };
@@ -114,7 +114,7 @@ pub(super) async fn collection_annotations(
     };
     let (manage, who) = admin_ctx(&state, &headers);
     let can_login = login_available(&state, &who);
-    let anns = annotations::load(&state.home, &id).unwrap_or_default();
+    let anns = annotations::load(&state.home, &c.id).unwrap_or_default();
     let items = anns
         .iter()
         .map(|a| {
