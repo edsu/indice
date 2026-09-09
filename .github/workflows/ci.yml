@@ -10,6 +10,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for GITHUB_TOKEN: CI only reads the repo (checkout + cargo).
+# Without this the token defaults to the repository-wide setting, which is
+# broader than this workflow needs.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
