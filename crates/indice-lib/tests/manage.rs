@@ -265,9 +265,17 @@ async fn manage_page_gated_on_management_mode() {
         r#"data-src="bx""#,
         r#"data-src="ait""#,
         "ait-collection",
-        "/api/archiveit/collections",
+        r#"src="/assets/manage.js""#,
     ] {
         assert!(body.contains(needle), "accession desk wires up: {needle}");
+    }
+    // The browse wizards are driven by that script (they used to be inline JS,
+    // so this assertion used to read off the page itself). Check it's actually
+    // served and still calls the import APIs.
+    let (status, js) = get(format!("{base}/assets/manage.js")).await;
+    assert_eq!(status, 200, "accession-desk script is served");
+    for needle in ["/api/archiveit/collections", "/api/browsertrix/orgs"] {
+        assert!(js.contains(needle), "accession-desk script calls: {needle}");
     }
     // Empty homepage shows the management CTA, not the CLI hint.
     let (_, home) = get(format!("{base}/")).await;

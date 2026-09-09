@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::collections::{Manifest, Source};
+use crate::collections::{CollectionId, Manifest, Source};
 use crate::search::SearchIndex;
 
 use super::ingest::index_one;
@@ -44,7 +44,7 @@ pub fn reindex(
 
     // Snapshot each WACZ (source, name, collection id + name) before upserting
     // back, so its collection membership and the collection's metadata survive.
-    let targets: Vec<(Source, String, String, String)> = manifest
+    let targets: Vec<(Source, String, CollectionId, String)> = manifest
         .waczs
         .iter()
         .map(|w| {

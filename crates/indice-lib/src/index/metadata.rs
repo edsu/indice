@@ -43,17 +43,17 @@ pub fn seed_collection(
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
     let mut manifest = Manifest::open(&index_dir)?;
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let id = crate::collections::slugify(name);
+    let id = crate::collections::CollectionId::from_name(name);
     manifest.seed_fields(&id, name, fields, &now);
     manifest.save()?;
-    Ok(id)
+    Ok(id.to_string())
 }
 
 /// Pin a curator-supplied local image as a collection's representative
 /// thumbnail, committed at `collections/<slug>/thumbnail.jpg`. The collection is
 /// identified by name (its slug); create it first with `collection set`.
 pub fn set_collection_thumbnail(home: &Path, name: &str, image_file: &Path) -> Result<()> {
-    let slug = crate::collections::slugify(name);
+    let slug = crate::collections::CollectionId::from_name(name);
     let dest = crate::collections::collection_thumb_path(home, &slug);
     crate::thumbnail::set_manual(&dest, image_file)
         .with_context(|| format!("setting thumbnail for collection {slug}"))?;
