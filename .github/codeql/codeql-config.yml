@@ -1,0 +1,28 @@
+# CodeQL configuration for indice.
+#
+# This exists so we can exclude the *vendored* ReplayWeb.page bundles from
+# analysis. It mirrors the settings of the default setup it replaced
+# (default query suite, "remote" threat model) so switching to advanced setup
+# changes coverage in exactly one way: the two files below.
+
+name: "indice"
+
+# Match the threat model the default setup used, so the switch to advanced
+# setup doesn't silently widen or narrow what counts as an untrusted source.
+threat-models: remote
+
+# `paths-ignore` only applies to interpreted languages (JavaScript/TypeScript,
+# Python, Ruby) — which is all we need, since both entries are JavaScript.
+#
+# These are Webrecorder's minified ReplayWeb.page / wabac.js bundles, vendored
+# verbatim by scripts/fetch-replay.sh. They are not our source, we don't patch
+# them, and analysing minified output is meaningless anyway (one "line" is
+# 55,000 characters). Left in, every upgrade re-mints the same handful of
+# alerts under fresh fingerprints — see bead rustyweb-triage-remaining-codeql-ggit.
+#
+# Scoped to the two vendored FILES on purpose, never the directory: our own
+# static/replay/annotations.js lives beside them and must keep being scanned —
+# it is the one file there that actually handles user content.
+paths-ignore:
+  - crates/indice-lib/static/replay/ui.js
+  - crates/indice-lib/static/replay/sw.js
