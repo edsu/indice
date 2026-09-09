@@ -1,0 +1,52 @@
+# CodeQL advanced setup.
+#
+# Replaces GitHub's "default setup", which cannot exclude paths. See
+# .github/codeql/codeql-config.yml for what changed and why. Languages,
+# query suite, threat model and cadence all match the default setup this
+# replaced, so the only behavioural difference is the vendored-file exclusion.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, matching the default setup's cadence.
+    - cron: "27 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload results to the code-scanning API.
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The three languages the default setup actually analysed
+        # ("javascript" / "typescript" are aliases of javascript-typescript).
+        language: [actions, javascript-typescript, rust]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # None of these need a build: Rust analysis runs build-mode none,
+          # matching what the default setup used.
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          # Must match the default setup's categories so existing alerts stay
+          # continuous (and dismissals stick) instead of being re-minted.
+          category: "/language:${{ matrix.language }}"
