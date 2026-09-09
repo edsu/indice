@@ -619,3 +619,144 @@ async fn manage_delete_crawl_removes_it_from_index_and_disk() {
 
     server.abort();
 }
+
+/// End-to-end proof that an annotation body cannot carry executable HTML to the
+/// browser.
+///
+/// `annotations.js` does `body.innerHTML = a.note_html`, which CodeQL flags as
+/// `js/xss` (alert #56) because the JS analysis sees `fetch -> json -> innerHTML`
+/// and cannot see that the sanitizing happens server-side, in Rust. That's a
+/// cross-language boundary no static analyzer here can cross — so the invariant
+/// has to be pinned by a test instead of inferred.
+///
+/// Annotations are authored by one user and rendered to others, so this is a
+/// stored-XSS shape whose only defence is `markdown::render`. This exercises the
+/// real HTTP path rather than that function in isolation.
+#[tokio::test]
+async fn annotation_note_html_cannot_carry_executable_markup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    // create_annotation requires the collection to exist in the manifest.
+    let h = home.clone();
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::index_path(&fixture("simple.wacz"), &h, None, "test").unwrap();
+    })
+    .await
+    .unwrap();
+    let (base, server) = serve(home, indice_lib::server::ManageConfig::local()).await;
+
+    let hostile = concat!(
+        "<script>alert('xss')</script>\n\n",
+        "<img src=x onerror=alert('xss')>\n\n",
+        "<svg/onload=alert('xss')>\n\n",
+        "<iframe src=\"javascript:alert('xss')\"></iframe>\n\n",
+        "[click me](javascript:alert('xss'))\n\n",
+        "[data uri](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)\n\n",
+        "<a href=\"javascript:alert('xss')\">link</a>\n\n",
+        "<div onmouseover=\"alert('xss')\">hover</div>\n\n",
+        "harmless **bold** text"
+    );
+
+    let post_url = format!("{base}/api/annotations");
+    let body = serde_json::json!({
+        "collection": "test",
+        "url": "https://example.org/p",
+        "timestamp": "20260101000000",
+        "note": hostile,
+    })
+    .to_string();
+    let created: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post_url)
+            .header("content-type", "application/json")
+            .send(body)
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 201, "annotation should be created");
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+
+    // Check the create response AND the read-back, since the panel renders both.
+    let (status, listed) = get(format!("{base}/api/annotations?collection=test")).await;
+    assert_eq!(status, 200);
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let read_back = listed["annotations"][0]["note_html"].as_str().unwrap();
+
+    for (label, html) in [
+        ("create response", created["note_html"].as_str().unwrap()),
+        ("read-back", read_back),
+    ] {
+        // The property that matters is NOT "the string 'javascript:' is absent"
+        // — that appears harmlessly inside escaped text like
+        // `&lt;a href="javascript:…"&gt;`, which renders as visible characters.
+        // It's that user input never becomes an *element*: the only tags in the
+        // output are ones markdown::render itself emits.
+        const ALLOWED: &[&str] = &[
+            "p",
+            "strong",
+            "em",
+            "code",
+            "pre",
+            "ul",
+            "ol",
+            "li",
+            "blockquote",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "a",
+            "hr",
+            "br",
+        ];
+        let bytes = html.as_bytes();
+        let mut found = Vec::new();
+        for (i, _) in html.match_indices('<') {
+            let rest = &bytes[i + 1..];
+            let rest = if rest.first() == Some(&b'/') {
+                &rest[1..]
+            } else {
+                rest
+            };
+            if !rest.first().is_some_and(|c| c.is_ascii_alphabetic()) {
+                continue; // not a tag opener
+            }
+            let name: String = rest
+                .iter()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .map(|c| (*c as char).to_ascii_lowercase())
+                .collect();
+            if !ALLOWED.contains(&name.as_str()) {
+                found.push(name);
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "{label} contains element(s) markdown::render never emits: {found:?}\n{html}"
+        );
+        // Given the check above, the only tags present are ones render() emits,
+        // and the only attribute it emits is href on <a>. So the residual risk
+        // is a dangerous scheme on a *real* anchor — note `<a` matches only live
+        // markup, since an escaped one reads `&lt;a`.
+        let lower = html.to_lowercase();
+        for (i, _) in lower.match_indices("<a") {
+            let tag = &lower[i..lower[i..].find('>').map(|e| i + e).unwrap_or(lower.len())];
+            for scheme in ["javascript:", "data:", "vbscript:"] {
+                assert!(
+                    !tag.contains(scheme),
+                    "{label} has a live anchor with a {scheme:?} URL: {tag}"
+                );
+            }
+        }
+        // ...and it isn't simply empty: the harmless content still renders.
+        assert!(
+            html.contains("harmless") && html.contains("<strong>bold</strong>"),
+            "{label} should still render the safe Markdown; got: {html}"
+        );
+    }
+
+    server.abort();
+}
