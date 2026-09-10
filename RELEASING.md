@@ -8,9 +8,14 @@ alongside the one the workflow makes.
 
 ## Steps
 
-1. Bump the version in the workspace crates and commit (they move in lockstep):
-   `crates/indice-lib/Cargo.toml` and `crates/indice-bin/Cargo.toml`
-   (`version = "X.Y.Z"`), then `cargo build` so `Cargo.lock` updates too.
+1. Bump `version` under `[workspace.package]` in the **root `Cargo.toml`** —
+   that's the only place it lives; both crates inherit it via
+   `version.workspace = true`. Then `cargo build` so `Cargo.lock` updates too,
+   and commit.
+
+   If you forget, the release workflow refuses the tag before creating a draft
+   or pushing any image, rather than shipping binaries whose `--version`
+   disagrees with the release name.
 2. Merge to `main` and confirm CI is green.
 3. Tag and push:
    ```sh

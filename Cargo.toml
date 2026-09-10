@@ -5,6 +5,15 @@ members = [
 ]
 resolver = "2"
 
+# Package metadata shared by every workspace crate. Version lives HERE and only
+# here — releasing bumps this one line (see RELEASING.md), and the crates
+# inherit it with `version.workspace = true`, so they can't drift apart.
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+authors = ["Ed Summers <ehs@pobox.com>"]
+license = "AGPL-3.0-or-later"
+
 [workspace.dependencies]
 # HTTP server
 axum = { version = "0.8", features = ["macros", "multipart"] }

@@ -37,6 +37,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Fail before anything is published if the tag and the workspace version
+      # disagree. Without this a mismatched tag yields a release named vX.Y.Z
+      # whose binaries report a different version — silently wrong, and only
+      # visible to someone running `indice --version`.
+      - name: Tag matches the workspace version
+        run: |
+          v=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $v (bump [workspace.package].version in Cargo.toml)"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches workspace version $v"
       - name: Create the draft Release (if absent)
         env:
           GH_TOKEN: ${{ github.token }}

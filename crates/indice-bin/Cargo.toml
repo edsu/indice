@@ -1,10 +1,10 @@
 [package]
 name = "indice"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "A small, fast web archive server: full-text search and in-browser replay of WACZ files."
-authors = ["Ed Summers <ehs@pobox.com>"]
-license = "AGPL-3.0-or-later"
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
 indice-lib = { path = "../indice-lib" }
