@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 
+use crate::events::Action;
 use crate::identity::{Principal, Role, SubjectId};
 
 use super::*;
@@ -345,19 +346,37 @@ impl Admin {
     }
 }
 
-/// Record who performed a state change.
+/// Record who performed a state change, to two places at once.
 ///
-/// Its own tracing target so an operator can route `indice::audit` somewhere
-/// durable. This is the minimum viable audit trail — before it, indice kept no
-/// record at all of who added or deleted anything, which is a poor look for a
-/// tool whose whole proposition is provenance. A real append-only event log is
-/// bead `rustyweb-audit-log-dnon`; this is the one-line down payment.
-/// `action` and `target` are recorded with `?` (Debug), which quotes and
-/// escapes them. `target` is user-supplied — a collection name straight off a
-/// form, or a percent-decoded path segment — so with plain `%` display a name
-/// containing a newline could forge a second line in the very log that exists
-/// to be the provenance trail.
-pub(super) fn audit(actor: &Principal, action: &str, target: &str) {
+/// A `tracing` line on its own target (`indice::audit`), so an operator whose
+/// logs go to a pipeline can route it, **and** an append-only event in
+/// `<home>/events/` that outlives the process. Both, because they answer
+/// different questions: the log is what an operator watches, the file is what
+/// the archive keeps.
+///
+/// Best-effort on the file. A failed audit write is logged and swallowed: a
+/// full disk should not take the management surface offline, and losing the
+/// record of an operation is less bad than refusing to perform it. The
+/// `tracing` line goes out regardless.
+///
+/// `action` and `target` are recorded with `?` (Debug) in the log line, which
+/// quotes and escapes them. `target` is user-supplied (a collection name
+/// straight off a form, a percent-decoded path segment), so with plain `%`
+/// display a name containing a newline could forge a second line in the very
+/// log that exists to be the record.
+pub(super) fn audit(state: &AppState, actor: &Principal, action: Action, target: &str) {
+    audit_detail(state, actor, action, target, None)
+}
+
+/// As [`audit`], with structured extra context on the event (the `tracing`
+/// line is unchanged; `detail` is for the durable record).
+pub(super) fn audit_detail(
+    state: &AppState,
+    actor: &Principal,
+    action: Action,
+    target: &str,
+    detail: Option<serde_json::Value>,
+) {
     tracing::info!(
         target: "indice::audit",
         actor = %actor.id(),
@@ -365,6 +384,13 @@ pub(super) fn audit(actor: &Principal, action: &str, target: &str) {
         action = ?action,
         target = ?target,
     );
+    let mut event = crate::events::Event::new(actor.id(), action, target);
+    if let Some(detail) = detail {
+        event = event.with_detail(detail);
+    }
+    if let Err(e) = crate::events::append(&state.home, &event) {
+        tracing::error!("could not record an audit event (the operation still ran): {e:#}");
+    }
 }
 
 /// Why a request was refused. All 403 — indice never issues a challenge (the

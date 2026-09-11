@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::annotations::{self, EditOutcome, UpdateResult};
 use crate::collections::{CollectionId, Manifest};
+use crate::events::Action;
 use crate::identity::Principal;
 
 use super::*;
@@ -261,6 +262,13 @@ pub(super) async fn create_annotation(
         ),
         None => annotations::Annotation::page(req.url, req.timestamp, req.note, creator),
     };
+    audit_detail(
+        &state,
+        &author,
+        Action::AnnotationCreate,
+        &ann.id,
+        Some(serde_json::json!({ "collection": req.collection.as_str() })),
+    );
     let view = annotation_view(&ann, Some(&author));
     let st = state.clone();
     let collection = req.collection;
@@ -291,6 +299,13 @@ pub(super) async fn update_annotation(
         return (StatusCode::BAD_REQUEST, "note is empty").into_response();
     }
     let author = curator.principal().clone();
+    audit_detail(
+        &state,
+        &author,
+        Action::AnnotationUpdate,
+        &id,
+        Some(serde_json::json!({ "collection": req.collection.as_str() })),
+    );
     let st = state.clone();
     let AnnotationUpdateReq { collection, note } = req;
     let author_key = author.clone();
@@ -331,6 +346,13 @@ pub(super) async fn delete_annotation(
     Json(req): Json<AnnotationDeleteReq>,
 ) -> Response {
     let author = curator.principal().clone();
+    audit_detail(
+        &state,
+        &author,
+        Action::AnnotationDelete,
+        &id,
+        Some(serde_json::json!({ "collection": req.collection.as_str() })),
+    );
     let st = state.clone();
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {

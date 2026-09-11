@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::collections::Manifest;
+use crate::events::Action;
 use crate::views;
 
 use super::*;
@@ -280,7 +281,16 @@ pub(super) async fn add_archive(
     if req.collection.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
     }
-    audit(curator.principal(), "crawl.add", &req.collection);
+    audit_detail(
+        &state,
+        curator.principal(),
+        Action::CrawlAdd,
+        // The slug, not the typed name: the crawl has no id yet, so the
+        // collection is the target, and a log you grep by collection wants the
+        // same spelling whichever endpoint wrote the record.
+        &crate::collections::slugify(&req.collection),
+        Some(serde_json::json!({ "collection_name": req.collection })),
+    );
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
@@ -346,7 +356,13 @@ pub(super) async fn upload_archive(
     };
     let name = name.filter(|n| !n.trim().is_empty());
     let location = path.to_string_lossy().to_string();
-    audit(curator.principal(), "crawl.upload", &collection);
+    audit_detail(
+        &state,
+        curator.principal(),
+        Action::CrawlUpload,
+        &crate::collections::slugify(&collection),
+        Some(serde_json::json!({ "collection_name": collection })),
+    );
     let id = start_index_job(&curator, &state, location, collection, name, tmpdir);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
@@ -514,7 +530,15 @@ pub(super) async fn create_collection(
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, "collection name is required").into_response();
     }
-    audit(curator.principal(), "collection.set", &name);
+    audit_detail(
+        &state,
+        curator.principal(),
+        Action::CollectionSet,
+        &crate::collections::slugify(&name),
+        // The display name is what was actually set, and it can change while
+        // the slug stays put, so it is worth keeping alongside.
+        Some(serde_json::json!({ "collection_name": name })),
+    );
     let subjects: Vec<String> = form
         .subjects
         .split(',')
@@ -566,7 +590,7 @@ pub(super) async fn delete_crawl_handler(
     if !curator.principal().may_delete_crawl(added_by.as_deref()) {
         return Denied::Insufficient("deleting a crawl someone else added").into_response();
     }
-    audit(curator.principal(), "crawl.delete", &id);
+    audit(&state, curator.principal(), Action::CrawlDelete, &id);
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it
@@ -605,13 +629,12 @@ pub(super) async fn delete_collection_handler(
         .with_crawls
         .as_deref()
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
-    audit(
+    audit_detail(
+        &state,
         admin.principal(),
-        match with_crawls {
-            true => "collection.delete+crawls",
-            false => "collection.delete",
-        },
+        Action::CollectionDelete,
         &id,
+        Some(serde_json::json!({ "with_crawls": with_crawls })),
     );
     // This ends in a recursive remove_dir_all, so the id has to be a valid
     // single path component before it goes anywhere near the filesystem.

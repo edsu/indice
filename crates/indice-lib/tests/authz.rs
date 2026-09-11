@@ -672,3 +672,96 @@ async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
 
     server.abort();
 }
+
+// ── Audit trail ─────────────────────────────────────────────────────────────
+
+/// The question indice could not answer before: who deleted this collection.
+#[tokio::test]
+async fn mutations_are_recorded_with_who_did_them() {
+    let tmp = home_with_roster();
+    let home = tmp.path().to_path_buf();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(home.clone(), cfg).await;
+
+    // A curator accessions, an admin deaccessions.
+    request(
+        "POST",
+        format!("{base}/api/collections"),
+        Some("curator@x.edu"),
+        Some(("application/x-www-form-urlencoded", "name=Audited".into())),
+    )
+    .await;
+    request(
+        "POST",
+        format!("{base}/api/collections/audited/delete"),
+        Some("boss@x.edu"),
+        Some(("application/x-www-form-urlencoded", "with_crawls=on".into())),
+    )
+    .await;
+
+    // Read the month's log back through the library.
+    let month = chrono::Utc::now().format("%Y-%m").to_string();
+    let events = indice_lib::events::read_month(&home, &month).unwrap();
+    assert_eq!(events.len(), 2, "one record per mutation: {events:?}");
+
+    assert_eq!(events[0].action, indice_lib::events::Action::CollectionSet);
+    assert_eq!(events[0].actor.as_str(), "mailto:curator@x.edu");
+    // The slug, so the log is greppable by collection whichever endpoint wrote
+    // the record; the typed display name rides along in `detail`.
+    assert_eq!(events[0].target, "audited");
+    assert_eq!(
+        events[0].detail,
+        Some(serde_json::json!({ "collection_name": "Audited" }))
+    );
+
+    assert_eq!(
+        events[1].action,
+        indice_lib::events::Action::CollectionDelete
+    );
+    assert_eq!(events[1].actor.as_str(), "mailto:boss@x.edu");
+    // The detail is what makes the record answer the real question: whether
+    // the member crawls went with it.
+    assert_eq!(
+        events[1].detail,
+        Some(serde_json::json!({ "with_crawls": true }))
+    );
+
+    // The identity is recorded, not the display name — a name can be edited in
+    // users.yaml afterwards, which would rewrite history.
+    let raw = std::fs::read_to_string(
+        indice_lib::events::events_dir(&home).join(format!("{month}.jsonl")),
+    )
+    .unwrap();
+    assert!(!raw.contains("The Boss"), "{raw}");
+
+    server.abort();
+}
+
+/// A broken audit log must not take the management surface offline: losing the
+/// record of an operation is less bad than refusing to perform it.
+#[tokio::test]
+async fn a_failing_audit_log_does_not_fail_the_operation() {
+    let tmp = home_with_roster();
+    let home = tmp.path().to_path_buf();
+    // Occupy <home>/events with a regular file, so create_dir_all and the
+    // append both fail for every event.
+    std::fs::write(indice_lib::events::events_dir(&home), b"not a directory").unwrap();
+
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(home.clone(), cfg).await;
+
+    let status = request(
+        "POST",
+        format!("{base}/api/collections"),
+        Some("boss@x.edu"),
+        Some(("application/x-www-form-urlencoded", "name=Survives".into())),
+    )
+    .await;
+    assert_eq!(status, 303, "the write still succeeds");
+    assert!(
+        home.join("collections/survives").is_dir(),
+        "and actually happened"
+    );
+
+    server.abort();
+}

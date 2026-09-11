@@ -19,6 +19,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::collections::Manifest;
+use crate::events::Action;
 
 use super::*;
 
@@ -276,7 +277,16 @@ pub(super) async fn bx_import(
             .into_response();
     }
 
-    audit(curator.principal(), "import.browsertrix", &req.collection);
+    audit_detail(
+        &state,
+        curator.principal(),
+        Action::ImportBrowsertrix,
+        &crate::collections::slugify(&req.collection),
+        Some(serde_json::json!({
+            "collection_name": req.collection,
+            "org": req.org,
+        })),
+    );
     let id = new_import_job(&curator, &state);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
@@ -599,7 +609,16 @@ pub(super) async fn ait_import(
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
     }
 
-    audit(curator.principal(), "import.archiveit", &req.into);
+    audit_detail(
+        &state,
+        curator.principal(),
+        Action::ImportArchiveIt,
+        &crate::collections::slugify(&req.into),
+        Some(serde_json::json!({
+            "collection_name": req.into,
+            "source_collection": req.collection_id,
+        })),
+    );
     let id = new_import_job(&curator, &state);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);

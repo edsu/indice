@@ -37,6 +37,36 @@ The embedded [Tantivy](https://github.com/quickwit-oss/tantivy) full-text index 
 
 Home-level operator settings (index footprint knobs). Everything has a default, so the file is optional. See [Operator configuration](/docs/reference/configuration/).
 
+## `users.yaml`: who may do what
+
+Optional. When indice runs behind an auth proxy, this maps the identities the proxy forwards to roles. Absent means every authenticated user is an admin. See [Who can do what](/docs/guides/manage/#who-can-do-what).
+
+Worth committing alongside `collections/`: it is a deliberate, reviewable statement of who can change the archive, and its history is useful.
+
+## `events/`: the audit trail
+
+An append-only record of every change made through the browser workroom, one JSON object per line, in monthly files (`events/2026-09.jsonl`). Each record says who acted, what they did, and to what:
+
+```json
+{"time":"2026-09-12T10:04:11Z","actor":"mailto:alice@example.org","action":"collection_delete","target":"sucho","detail":{"with_crawls":true}}
+```
+
+It answers the question the manifest cannot: not *who holds this crawl now*, but *who deleted that collection last week*. Records are only ever appended, never edited or removed, which is the point of keeping it separately from the files it describes.
+
+Two things to know about it:
+
+- **It is never served over HTTP.** No route reads it, unlike `collections/`, which is public by design.
+- **It holds login identities, not display names.** A record has to survive someone's name being corrected in `users.yaml` afterwards, so it stores the identity your proxy forwarded, which is usually an email address.
+
+That second point matters if you publish your home directory. Either accept that the addresses are in the history, or exclude it:
+
+```text
+# .gitignore
+/events
+```
+
+Changes made from the command line are not recorded here: the CLI has no request identity, and a shell already has its own history.
+
 ## Version control & backup
 
 Because a home separates *authored* from *derived* data, backup is straightforward:
@@ -47,6 +77,8 @@ Because a home separates *authored* from *derived* data, backup is straightforwa
   # .gitignore
   /index
   ```
+
+  Commit `users.yaml` too, if you have one. Consider whether to commit `events/`, which holds login identities (above).
 
 - **Back up `archive/`** if you want durability. These are the actual captures; losing them means re-fetching (or, for stream-only remote sources, re-resolving the URLs). For a shared or offline library, keep them. They're large and opaque, so many people back them up separately from the git repo rather than committing them.
 - **Ignore or include `index/`.** It's fully reproducible with `indice reindex`, but could get more expensive to regenerate from scratch as your archive grows.
