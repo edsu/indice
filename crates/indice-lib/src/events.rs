@@ -112,8 +112,31 @@ pub fn events_dir(home: &Path) -> PathBuf {
 /// comes from the event's own timestamp rather than a second clock read, so a
 /// record can never land in a file that disagrees with it.
 pub fn event_path(home: &Path, event: &Event) -> PathBuf {
-    let month = event.time.get(..7).unwrap_or("unknown");
-    events_dir(home).join(format!("{month}.jsonl"))
+    events_dir(home).join(month_file(&event.time))
+}
+
+/// The file name for a timestamp, built from *parsed numbers* rather than from
+/// a slice of the input.
+///
+/// [`Event::time`] is a public field, so nothing structurally stops a caller
+/// setting it to `"../../et"`; slicing seven bytes off it and joining that to a
+/// directory would then escape the events directory. Re-formatting a parsed
+/// year and month means the result is derived from two integers and can only
+/// ever be `NNNN-NN.jsonl`, whatever the input was. An unparseable timestamp
+/// lands in `unknown.jsonl` rather than being silently dropped.
+fn month_file(time: &str) -> String {
+    let parsed = (|| {
+        let year: u16 = time.get(..4)?.parse().ok()?;
+        if time.as_bytes().get(4) != Some(&b'-') {
+            return None;
+        }
+        let month: u8 = time.get(5..7)?.parse().ok()?;
+        (1..=12).contains(&month).then_some((year, month))
+    })();
+    match parsed {
+        Some((year, month)) => format!("{year:04}-{month:02}.jsonl"),
+        None => "unknown.jsonl".to_string(),
+    }
 }
 
 /// Append one event.
@@ -149,7 +172,10 @@ pub fn append(home: &Path, event: &Event) -> Result<()> {
 /// failing the read: a truncated tail from a power loss should not make the
 /// rest of the history unreadable.
 pub fn read_month(home: &Path, month: &str) -> Result<Vec<Event>> {
-    let path = events_dir(home).join(format!("{month}.jsonl"));
+    // Through `month_file` for the same reason `event_path` is: the argument
+    // reaches a path join, and operator tooling may well pass something it got
+    // from elsewhere.
+    let path = events_dir(home).join(month_file(month));
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -218,6 +244,40 @@ mod tests {
         assert_eq!(read_month(tmp.path(), "2026-01").unwrap().len(), 1);
         assert_eq!(read_month(tmp.path(), "2026-02").unwrap().len(), 1);
         assert!(read_month(tmp.path(), "2026-03").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_hostile_timestamp_cannot_escape_the_events_directory() {
+        // `time` is a public field, so this is reachable by construction even
+        // though nothing in the crate does it. The file name is rebuilt from
+        // parsed integers, so traversal has nothing to work with.
+        let tmp = tempfile::TempDir::new().unwrap();
+        for hostile in [
+            "../../et",
+            "/etc/pas",
+            "..",
+            "",
+            "2026-13-01T00:00:00Z", // month out of range
+            "abcd-ef",
+            "2026_09",
+        ] {
+            let mut e = Event::new(&actor("a@x.edu"), Action::CrawlAdd, "c");
+            e.time = hostile.to_string();
+            let path = event_path(tmp.path(), &e);
+            assert_eq!(
+                path.parent(),
+                Some(events_dir(tmp.path()).as_path()),
+                "{hostile:?} escaped to {path:?}"
+            );
+            assert_eq!(path.file_name().unwrap(), "unknown.jsonl", "{hostile:?}");
+            // And it is still actually writable, rather than erroring out.
+            append(tmp.path(), &e).unwrap();
+        }
+        assert_eq!(read_month(tmp.path(), "unknown").unwrap().len(), 7);
+        // Reading is guarded the same way, since that argument also reaches a
+        // path join. A hostile month is redirected into the `unknown` bucket
+        // rather than escaping, so it reads that file and never the one named.
+        assert_eq!(read_month(tmp.path(), "../../etc/passwd").unwrap().len(), 7);
     }
 
     #[test]
