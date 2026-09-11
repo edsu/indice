@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 
 use super::*;
@@ -51,6 +51,173 @@ pub(super) async fn forward_auth(
         )
             .into_response(),
     }
+}
+
+/// Cross-site request forgery guard for the management write surface: reject a
+/// state-changing request that a *different* site's page initiated.
+///
+/// This is layered on the management routes unconditionally — including in local
+/// (loopback) mode, which is the mode that needs it most. A loopback bind is not
+/// a boundary a browser respects: while `serve --manage` is running, any page the
+/// operator visits can POST a form to `http://127.0.0.1:8080/...`. The browser
+/// sends it, and because the write routes take `Form`/`Multipart` (simple content
+/// types) there is no CORS preflight to stop it. The attacker can't *read* the
+/// reply, but by then the collection is already deleted.
+pub(super) async fn same_origin_guard(
+    policy: &CsrfPolicy,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if same_site_request(req.method(), req.headers(), req.uri(), policy) {
+        return next.run(req).await;
+    }
+    let trusted = policy.site_authority.as_deref();
+    let origin = req
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("(none)")
+        .to_string();
+    let site = expected_authority(req.headers(), req.uri(), trusted).unwrap_or("(unknown)");
+    (
+        StatusCode::FORBIDDEN,
+        format!(
+            "cross-site request blocked: Origin {origin} does not match this site ({site}). \
+             If indice is behind a proxy that rewrites the Host header, start it with \
+             --site-url <your public URL>."
+        ),
+    )
+        .into_response()
+}
+
+/// Whether this state-changing request was initiated by this same site.
+///
+/// Three rules, in order:
+/// 1. Safe methods (GET/HEAD/OPTIONS/TRACE) change nothing, so they're never gated.
+/// 2. If `Origin` is present, its authority must equal ours. `Origin: null`
+///    (a sandboxed or `data:` initiator) has no authority and is refused.
+/// 3. If `Origin` is absent, fall back to `Sec-Fetch-Site`.
+///
+/// **Why an absent `Origin` is allowed**, which looks backwards but isn't: per
+/// Fetch, browsers append `Origin` to *every* request whose method isn't GET or
+/// HEAD — cross-origin form navigations included (Firefox was the last holdout
+/// and fixed this in FF 70). Historically the header was omitted only on
+/// *same-origin* POSTs, never cross-origin ones. So its absence means the caller
+/// isn't a browser — curl, our own `ureq` tests, a health checker — and a
+/// non-browser carries no ambient credentials to ride. Refusing on absence would
+/// break every non-browser client for no security gain.
+///
+/// `Sec-Fetch-Site` is only a fallback, never the primary signal: Fetch Metadata
+/// headers are sent only to *potentially trustworthy* origins, so a plain-HTTP
+/// deployment on a real hostname (the shipped `compose.yaml` default,
+/// `SITE_ADDRESS=:80`) never receives them. `same-site` is refused alongside
+/// `cross-site` because every form indice renders is served by indice itself, so
+/// a sibling subdomain is never a legitimate initiator.
+pub(super) fn same_site_request(
+    method: &Method,
+    headers: &HeaderMap,
+    uri: &Uri,
+    policy: &CsrfPolicy,
+) -> bool {
+    if matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
+    ) {
+        return true;
+    }
+    match headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(origin) => {
+            // Compare the authority (`host[:port]`) only, never the scheme: an
+            // http page attacking the https same-host site already requires a
+            // network MITM, and comparing schemes would break any deployment
+            // that terminates TLS without setting X-Forwarded-Proto. Both sides
+            // elide the default port for their scheme, so this is exact.
+            let Some(theirs) = origin.split_once("://").map(|(_, rest)| rest) else {
+                return false; // "null", or anything else without an authority
+            };
+            let Some(ours) = expected_authority(headers, uri, policy.site_authority.as_deref())
+            else {
+                return false;
+            };
+            // Matching Host against Origin is not enough on its own when the
+            // browser chose the Host: DNS rebinding defeats it. An attacker who
+            // controls evil.example can point it at 127.0.0.1, and the browser
+            // then sends a *self-consistent* pair (Host and Origin both
+            // evil.example) at the loopback workroom. Local mode is loopback-only
+            // anyway — the server refuses to start otherwise — so any authority
+            // that isn't a loopback name is bogus by definition.
+            if policy.require_loopback && !is_loopback_authority(ours) {
+                return false;
+            }
+            ours.eq_ignore_ascii_case(theirs)
+        }
+        None => !headers
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "cross-site" || v == "same-site"),
+    }
+}
+
+/// How this server decides whether a write was same-site.
+#[derive(Clone, Default)]
+pub(super) struct CsrfPolicy {
+    /// The operator-pinned public authority (`--site-url`), when set.
+    pub site_authority: Option<String>,
+    /// Whether to additionally require the request's authority to be a loopback
+    /// name. True exactly in local (loopback-trust) mode with no `--site-url`,
+    /// where `Host` comes straight from the browser and so can be rebound.
+    pub require_loopback: bool,
+}
+
+/// Whether an authority names this machine. Accepts `localhost`, the IPv4
+/// loopback block (`127.0.0.0/8`), and IPv6 `::1` in its bracketed form.
+fn is_loopback_authority(authority: &str) -> bool {
+    // Strip the port. An IPv6 literal is bracketed, so split after the bracket.
+    let host = match authority.rsplit_once(']') {
+        Some((bracketed, _)) => bracketed.trim_start_matches('[').to_string(),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(h, _)| h)
+            .to_string(),
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The authority (`host[:port]`) a browser would have used to reach us.
+///
+/// `--site-url` wins when set, then `X-Forwarded-Host` (which Caddy sets and both
+/// shipped Caddyfiles rely on), then `Host`, then the URI's authority (HTTP/2,
+/// where the authority is a pseudo-header rather than `Host`). Trusting
+/// `X-Forwarded-Host` is safe *for this purpose*: a CSRF attacker drives a
+/// browser, and script cannot set `Host`, `Origin`, `Sec-*`, or `X-Forwarded-*`.
+fn expected_authority<'a>(
+    headers: &'a HeaderMap,
+    uri: &'a Uri,
+    trusted: Option<&'a str>,
+) -> Option<&'a str> {
+    if trusted.is_some() {
+        return trusted;
+    }
+    headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(axum::http::header::HOST))
+        .and_then(|v| v.to_str().ok())
+        // Chained proxies (CDN in front of Caddy, or two reverse proxies) append
+        // rather than replace, so this can arrive as a list —
+        // `archive.example.org, indice:8080`. The client-facing hop is first,
+        // and that is the one the browser's Origin reflects. Without this a
+        // chained deployment 403s every management write with nothing
+        // misconfigured on the operator's side.
+        .map(|v| v.split(',').next().unwrap_or(v).trim())
+        .filter(|v| !v.is_empty())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
 }
 
 /// Validate a forward-auth request: returns the authenticated identity iff the

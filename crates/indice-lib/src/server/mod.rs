@@ -64,6 +64,13 @@ pub struct ManageConfig {
     /// proxy's sign-out URL (e.g. `/oauth2/sign_out?rd=/`) so a single click ends
     /// both indice's display session and the proxy's login session.
     pub logout_redirect: Option<String>,
+    /// This site's public authority (`host[:port]`), for the cross-site (CSRF)
+    /// check on management writes. `None` — the normal case — means "infer it from
+    /// `X-Forwarded-Host`/`Host`", which is correct for both shipped Caddyfiles and
+    /// for a direct loopback bind. Set it (`--site-url`) only behind a proxy that
+    /// rewrites `Host` *without* setting `X-Forwarded-Host`, e.g. nginx's default
+    /// `proxy_set_header Host $proxy_host`.
+    pub site_authority: Option<String>,
 }
 
 /// Forward-auth settings: which header carries the authenticated user, and the
@@ -88,8 +95,7 @@ impl ManageConfig {
     pub fn local() -> Self {
         Self {
             enabled: true,
-            forward_auth: None,
-            logout_redirect: None,
+            ..Self::default()
         }
     }
     /// Management on, gated behind a trusted auth proxy.
@@ -100,7 +106,7 @@ impl ManageConfig {
                 user_header: user_header.into(),
                 secret: secret.into(),
             }),
-            logout_redirect: None,
+            ..Self::default()
         }
     }
 }
@@ -298,6 +304,7 @@ fn build_router(
         // Forward-auth: reject any management request that doesn't carry the
         // trusted proxy's shared secret + a non-empty identity header. Layered
         // outermost so it runs before a body is read (e.g. a large upload).
+        let forward_auth_off = manage.forward_auth.is_none();
         if let Some(fa) = manage.forward_auth {
             let guard = Arc::new(fa);
             manage_routes = manage_routes.layer(axum::middleware::from_fn(
@@ -307,6 +314,32 @@ fn build_router(
                 },
             ));
         }
+
+        // CSRF: refuse a state-changing management request that some *other*
+        // site's page initiated. Applied unconditionally — not inside the
+        // `if let` above — because local (loopback) mode has no forward-auth
+        // layer and is therefore the mode with no other protection at all.
+        //
+        // `Router::layer` wraps, so this last layer is the OUTERMOST one and runs
+        // first: a cross-site POST is refused before forward-auth does any
+        // identity bookkeeping (notably before it refreshes the display cookie),
+        // and before any body is read — which matters given the disabled body
+        // limit on `/api/archives/upload`.
+        // In local mode `Host` is whatever the browser sends, so matching it
+        // against `Origin` can be satisfied by DNS rebinding; local mode is
+        // loopback-only anyway, so also require a loopback authority there.
+        // Behind a proxy (or with an explicit --site-url) the authority comes
+        // from a trusted source and needs no such check.
+        let policy = Arc::new(CsrfPolicy {
+            require_loopback: forward_auth_off && manage.site_authority.is_none(),
+            site_authority: manage.site_authority.clone(),
+        });
+        manage_routes = manage_routes.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let policy = policy.clone();
+                async move { same_origin_guard(&policy, req, next).await }
+            },
+        ));
         app = app.merge(manage_routes);
     }
 

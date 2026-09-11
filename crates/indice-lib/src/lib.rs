@@ -4,6 +4,7 @@ pub mod browsertrix;
 pub mod collections;
 pub mod config;
 pub mod http_range;
+pub mod identity;
 pub mod index;
 pub mod markdown;
 pub mod pdf;

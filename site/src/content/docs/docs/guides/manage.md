@@ -46,11 +46,26 @@ Every management request must carry both the identity header and the secret; any
 
 The management routes show the workroom chrome + signed-in identity from the proxy's identity header. The public pages (home, collection, crawl) are ungated, and browsers won't send the proxy's credentials there — so at login indice sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) and reads it on those pages, so a signed-in admin gets the edit-in-place controls everywhere. The cookie only drives *rendering* — every write is still re-checked against the proxy's identity header + secret, so a stolen or forged cookie grants no access. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login and returns you to where you were). A **Log out** link clears the display cookie — but note that with the Basic-auth stopgap the browser keeps its cached credentials until it's closed, so logout only hides the chrome; a full sign-out (and single sign-on) comes with the [SSO path](/docs/guides/deploy/#single-sign-on-oauth2-proxy).
 
+## Cross-site protection
+
+Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies to local `--manage` too: a loopback bind is not a boundary a browser respects — while the workroom is running, any page you visit can reach `127.0.0.1`.
+
+Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
+
+This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and both example configs below rely on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host` — nginx's default `proxy_set_header Host $proxy_host`. Then tell indice its public address:
+
+```bash
+indice serve --manage --site-url https://archive.example.org   # or INDICE_SITE_URL
+```
+
+If you get a `403` mentioning a cross-site request when using the workroom normally, that's the symptom: the message names both the `Origin` it saw and the site address it compared against.
+
 ### Deploy checklist
 
 - Bind indice to loopback and have the proxy connect to it there, so nothing but the proxy can reach the port.
 - Configure the proxy to **strip any client-supplied** identity header on inbound requests before setting its own, so a client can't smuggle one in. (The shared secret is your backstop if this is ever missed.)
 - Set the static `X-Indice-Auth-Secret` header in the proxy, and terminate TLS there.
+- Make sure the proxy passes through `X-Forwarded-Host` (or pass `--site-url`), so the cross-site check knows what the browser sees.
 
 Illustrative Caddy config (adapt directives to your proxy/version):
 
