@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::collections::{wacz_id, BrowsertrixRef, Manifest, Source};
+use crate::identity::SubjectId;
 
 use super::paths::index_dir;
 
@@ -82,4 +83,48 @@ pub fn set_archiveit_provenance_by_id(
     });
     manifest.save()?;
     Ok(())
+}
+
+/// Record who accessioned `crawl_ids`, in one manifest open/save.
+///
+/// Set out-of-band, after indexing, for the same reason the import provenance
+/// is: the ingest pipeline is shared with the CLI and has no notion of a
+/// request identity, and threading an actor down through it would add an
+/// eleventh parameter to four already-crowded signatures. Only entries that
+/// are still unattributed are touched, so re-running an add can't reassign
+/// custody of someone else's crawl.
+pub fn set_added_by(
+    home: &Path,
+    crawl_ids: &std::collections::HashSet<String>,
+    actor: &SubjectId,
+) -> Result<()> {
+    if crawl_ids.is_empty() {
+        return Ok(());
+    }
+    let mut manifest = Manifest::open(&index_dir(home))?;
+    let mut touched = false;
+    for wacz in manifest.waczs.iter_mut() {
+        if wacz.added_by.is_none() && crawl_ids.contains(&wacz.id) {
+            wacz.added_by = Some(actor.clone());
+            touched = true;
+        }
+    }
+    if touched {
+        manifest.save()?;
+    }
+    Ok(())
+}
+
+/// Every crawl id currently in the manifest.
+///
+/// Used to snapshot before an ingest so the caller can attribute exactly the
+/// entries that ingest created — a location can yield several crawls (a
+/// directory of WACZs, or nested ones), and "everything in the target
+/// collection without custody" would wrongly claim CLI-indexed neighbours.
+pub fn crawl_ids(home: &Path) -> Result<std::collections::HashSet<String>> {
+    Ok(Manifest::open(&index_dir(home))?
+        .waczs
+        .iter()
+        .map(|w| w.id.clone())
+        .collect())
 }

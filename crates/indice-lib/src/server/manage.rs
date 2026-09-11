@@ -170,7 +170,7 @@ pub(super) fn acquire_write_lock<'a>(
 /// silent exposure. (It will also be where the actor comes from once crawls
 /// record who added them — see bead rustyweb-manifest-provenance-sfu7.)
 fn start_index_job(
-    _curator: &Curator,
+    curator: &Curator,
     state: &Arc<AppState>,
     location: String,
     collection: String,
@@ -182,6 +182,8 @@ fn start_index_job(
     state.jobs.lock().unwrap().insert(id, rx);
 
     let job_state = state.clone();
+    // Who to credit for whatever this ingest creates.
+    let actor = curator.principal().id().clone();
     // `index_location` blocks (file IO, network range reads, the Tantivy commit),
     // so run it off the async runtime — never on a request-handling thread.
     tokio::task::spawn_blocking(move || {
@@ -189,6 +191,10 @@ fn start_index_job(
         // (after `index_location` has copied it into `archive/`).
         let _keepalive = keepalive;
         let progress = ChannelProgress { tx: tx.clone() };
+        // Snapshot custody before ingest so exactly the new entries get
+        // attributed: one location can yield several crawls, and anything
+        // already in the manifest belongs to whoever added it.
+        let before = crate::index::crawl_ids(&job_state.home).unwrap_or_default();
         let result = {
             let _guard = acquire_write_lock(&job_state.write_lock, &progress);
             crate::index::index_location(
@@ -202,6 +208,18 @@ fn start_index_job(
                 Some(&progress),
             )
         };
+        if result.is_ok() {
+            // Best-effort: a crawl that made it into the archive but lost its
+            // custody line is a provenance gap, not a reason to fail the add.
+            let fresh: std::collections::HashSet<String> = crate::index::crawl_ids(&job_state.home)
+                .unwrap_or_default()
+                .difference(&before)
+                .cloned()
+                .collect();
+            if let Err(e) = crate::index::set_added_by(&job_state.home, &fresh, &actor) {
+                tracing::warn!("recording who added {} crawl(s) failed: {e:#}", fresh.len());
+            }
+        }
         match result {
             Ok(()) => match job_state.reload_searcher() {
                 Ok(()) => tx
@@ -509,10 +527,22 @@ pub(super) async fn create_collection(
 /// local WACZ, thumbnail), reload the searcher, and return to its collection.
 pub(super) async fn delete_crawl_handler(
     State(state): State<Arc<AppState>>,
-    admin: Admin,
+    // Curator, not Admin: a curator may remove a crawl *they* accessioned, so
+    // a mis-upload doesn't need someone else to clean up. Whose it is depends
+    // on the manifest, so the real check happens below.
+    curator: Curator,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    audit(admin.principal(), "crawl.delete", &id);
+    let added_by = match Manifest::open(&state.index_dir) {
+        Ok(m) => m
+            .wacz_by_id(&id)
+            .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string())),
+        Err(e) => return error_response(e).into_response(),
+    };
+    if !curator.principal().may_delete_crawl(added_by.as_deref()) {
+        return Denied::Insufficient("deleting a crawl someone else added").into_response();
+    }
+    audit(curator.principal(), "crawl.delete", &id);
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it

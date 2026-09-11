@@ -257,6 +257,26 @@ impl Principal {
         self.can_moderate
     }
 
+    /// Whether this principal may deaccession a crawl accessioned by
+    /// `added_by`: an admin may remove any, a curator only their own.
+    ///
+    /// This completes the model's sentence — *curators add and can undo their
+    /// own additions; only admins remove a collection.* Ownership governs
+    /// crawls because they are leaves; a collection is a shared container, so
+    /// deleting one stays an admin act however it was created.
+    ///
+    /// Note this uses the **role**, not `can_moderate`. The two answer
+    /// different questions: `can_moderate` is "may act on what someone else
+    /// *authored*", which nobody could before roles existed and so is opt-in;
+    /// deaccession is an operational act on the archive, which any
+    /// authenticated user could, so gating it on the role keeps the no-roster
+    /// default behaving as it always has. An unattributed crawl (indexed from
+    /// the CLI, or before custody was recorded) is nobody's, so only an admin
+    /// may remove it.
+    pub fn may_delete_crawl(&self, added_by: Option<&str>) -> bool {
+        self.role.can_administer() || self.owns(added_by)
+    }
+
     /// Whether this principal may edit the record authored under `stored`:
     /// their own, or anyone's if they can moderate.
     pub fn may_edit(&self, stored: Option<&str>) -> bool {
@@ -638,6 +658,42 @@ mod tests {
             false,
         );
         assert_eq!(named.display_name(), "Alice Ramírez", "a chosen name wins");
+    }
+
+    #[test]
+    fn a_curator_deaccessions_only_their_own_crawls() {
+        let alice = Principal::new(
+            SubjectId::parse("alice@x.edu").unwrap(),
+            "",
+            Role::Curator,
+            false,
+        );
+        let boss = Principal::new(
+            SubjectId::parse("boss@x.edu").unwrap(),
+            "",
+            Role::Admin,
+            true,
+        );
+        assert!(alice.may_delete_crawl(Some("alice@x.edu")), "her own");
+        assert!(!alice.may_delete_crawl(Some("bob@x.edu")), "not a peer's");
+        // Unattributed (CLI-indexed, or from before custody existed) is
+        // nobody's, so a curator can't claim it.
+        assert!(!alice.may_delete_crawl(None));
+        assert!(boss.may_delete_crawl(None), "an admin still can");
+        assert!(boss.may_delete_crawl(Some("bob@x.edu")));
+
+        // Upgrade safety: with no roster everyone is an Admin, so deaccession
+        // keeps working exactly as it did before roles. This deliberately uses
+        // the ROLE and not can_moderate — see may_delete_crawl.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let default = Users::load(tmp.path())
+            .unwrap()
+            .resolve(SubjectId::parse("anyone@x.edu").unwrap());
+        assert!(!default.can_moderate(), "not over other people's notes");
+        assert!(
+            default.may_delete_crawl(None),
+            "but deaccession is unchanged"
+        );
     }
 
     #[test]

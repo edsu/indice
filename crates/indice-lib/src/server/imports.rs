@@ -256,8 +256,12 @@ pub(super) async fn bx_import(
     state.jobs.lock().unwrap().insert(id, rx);
 
     let job_state = state.clone();
+    let actor = curator.principal().id().clone();
     tokio::task::spawn_blocking(move || {
         let progress = ChannelProgress { tx: tx.clone() };
+        // Snapshot custody before the import so exactly the new crawls are
+        // attributed (see start_index_job).
+        let before = crate::index::crawl_ids(&job_state.home).unwrap_or_default();
         let result = (|| -> Result<Vec<serde_json::Value>> {
             let client = provider.client()?;
             let host = client.host().to_string();
@@ -366,6 +370,19 @@ pub(super) async fn bx_import(
             }
             Ok(crawls)
         })();
+        if result.is_ok() {
+            let fresh: std::collections::HashSet<String> = crate::index::crawl_ids(&job_state.home)
+                .unwrap_or_default()
+                .difference(&before)
+                .cloned()
+                .collect();
+            if let Err(e) = crate::index::set_added_by(&job_state.home, &fresh, &actor) {
+                tracing::warn!(
+                    "recording who imported {} crawl(s) failed: {e:#}",
+                    fresh.len()
+                );
+            }
+        }
         match result {
             Ok(crawls) => {
                 // A bulk import commits a segment per WACZ; if that left the
@@ -568,8 +585,12 @@ pub(super) async fn ait_import(
     state.jobs.lock().unwrap().insert(id, rx);
 
     let job_state = state.clone();
+    let actor = curator.principal().id().clone();
     tokio::task::spawn_blocking(move || {
         let progress = ChannelProgress { tx: tx.clone() };
+        // Snapshot custody before the import so exactly the new crawls are
+        // attributed (see start_index_job).
+        let before = crate::index::crawl_ids(&job_state.home).unwrap_or_default();
         let result = (|| -> Result<Vec<serde_json::Value>> {
             let client = provider.client()?;
             let selected: std::collections::HashSet<i64> = req.crawls.iter().copied().collect();
@@ -633,6 +654,19 @@ pub(super) async fn ait_import(
                 .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
                 .collect())
         })();
+        if result.is_ok() {
+            let fresh: std::collections::HashSet<String> = crate::index::crawl_ids(&job_state.home)
+                .unwrap_or_default()
+                .difference(&before)
+                .cloned()
+                .collect();
+            if let Err(e) = crate::index::set_added_by(&job_state.home, &fresh, &actor) {
+                tracing::warn!(
+                    "recording who imported {} crawl(s) failed: {e:#}",
+                    fresh.len()
+                );
+            }
+        }
         match result {
             Ok(crawls) => {
                 // A per-crawl import commits a segment per WACZ; compact if that

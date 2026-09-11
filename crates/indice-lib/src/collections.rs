@@ -259,6 +259,21 @@ pub struct Wacz {
     /// derived "capture quality" / DACS Appraisal signal. Empty until reindex.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub status_counts: BTreeMap<u16, u64>,
+
+    // ── Custody ──
+    /// Who accessioned this crawl into the archive, when that is known.
+    ///
+    /// `None` for crawls indexed from the CLI or by a version before this
+    /// existed: we genuinely don't know, and inventing an identity would be
+    /// worse than admitting it. Authorization treats unattributed crawls as
+    /// nobody's, so only an admin may deaccession them.
+    ///
+    /// Stores the [`SubjectId`](crate::identity::SubjectId), never a display
+    /// name — the crawl page is public, and storing the name would recreate
+    /// the login-address leak that sanitizing annotations fixed, in a new
+    /// place. Names are resolved at render time through `users.yaml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<crate::identity::SubjectId>,
 }
 
 impl Wacz {
@@ -1542,6 +1557,23 @@ mod tests {
         assert_ne!(h1, h3, "a changed byte must change the digest");
     }
 
+    #[test]
+    fn a_manifest_without_custody_still_loads() {
+        // added_by is additive, so every manifest written before it existed
+        // must deserialize unchanged — and round-trip without gaining a key,
+        // or every entry would churn in the next git diff.
+        // Uses the older `path` key too, so this is a genuinely old entry
+        // rather than a today's-shape one with a field removed.
+        let line = r#"{"id":"abc","collection":"c","path":"/a/b.wacz","name":"n","date_indexed":"2026-01-01T00:00:00Z","file_size":1,"sha256":"x"}"#;
+        let w: Wacz = serde_json::from_str(line).expect("legacy entry parses");
+        assert_eq!(w.added_by, None, "unattributed, not invented");
+        let back = serde_json::to_string(&w).unwrap();
+        assert!(
+            !back.contains("added_by"),
+            "an unattributed entry must not grow the key: {back}"
+        );
+    }
+
     /// A WACZ member with the given id/name and defaults elsewhere.
     fn wacz(id: &str, name: &str, description: Option<&str>) -> Wacz {
         Wacz {
@@ -1572,6 +1604,7 @@ mod tests {
             keywords: Vec::new(),
             licenses: Vec::new(),
             status_counts: BTreeMap::new(),
+            added_by: None,
         }
     }
 
