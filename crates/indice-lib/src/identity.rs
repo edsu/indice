@@ -150,6 +150,234 @@ impl std::fmt::Display for SubjectId {
     }
 }
 
+/// What someone is allowed to do.
+///
+/// Deliberately **ordered** — `derive(Ord)` on a fieldless enum orders by
+/// declaration order, so the whole permission check is `role >= Role::Curator`.
+/// Each role contains the one below it, which is what makes the model
+/// explainable in a sentence: *curators add, admins remove.*
+///
+/// There is no annotate-only tier yet. If a deployment ever wants one (invite
+/// researchers to annotate without letting them accession), it slots in between
+/// `Reader` and `Curator` as one variant plus a roster value — the ordering
+/// keeps every existing comparison correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Anonymous, or authenticated but on nobody's roster: public read only.
+    Reader,
+    /// Accession and describe: create collections, add and upload crawls, edit
+    /// finding aids, run imports, annotate. May edit and delete their own notes.
+    Curator,
+    /// Everything a curator may do, plus the irreversible and shared acts:
+    /// delete a crawl, delete a collection, and moderate anyone's notes.
+    Admin,
+}
+
+impl Role {
+    /// May accession and describe.
+    pub fn can_curate(self) -> bool {
+        self >= Role::Curator
+    }
+    /// May write annotations.
+    pub fn can_annotate(self) -> bool {
+        self >= Role::Curator
+    }
+    /// May deaccession, and moderate other people's notes.
+    pub fn can_administer(self) -> bool {
+        self >= Role::Admin
+    }
+}
+
+/// Who is making a request, and what they may do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    id: SubjectId,
+    display_name: String,
+    role: Role,
+}
+
+impl Principal {
+    pub fn new(id: SubjectId, display_name: impl Into<String>, role: Role) -> Self {
+        let display_name = display_name.into();
+        let display_name = match display_name.trim().is_empty() {
+            true => id.display_name().to_string(),
+            false => display_name,
+        };
+        Principal {
+            id,
+            display_name,
+            role,
+        }
+    }
+
+    /// The single trusted operator of a loopback `--manage` instance. Always an
+    /// admin: there is no authentication to filter, and the startup guard
+    /// already refuses to run local mode anywhere but loopback.
+    pub fn local_operator() -> Self {
+        let id = SubjectId::local();
+        Principal::new(id, "", Role::Admin)
+    }
+
+    pub fn id(&self) -> &SubjectId {
+        &self.id
+    }
+    /// Safe to publish — derived from the identity, never the raw login value.
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    pub fn role(&self) -> Role {
+        self.role
+    }
+    /// Whether this principal wrote the record carrying `stored` as its author
+    /// key (canonicalizing `stored` first, so legacy keys still match).
+    pub fn owns(&self, stored: Option<&str>) -> bool {
+        self.id.matches(stored)
+    }
+    /// Whether this principal may edit the record authored under `stored`:
+    /// their own, or anyone's if they can moderate.
+    pub fn may_edit(&self, stored: Option<&str>) -> bool {
+        self.owns(stored) || self.role.can_administer()
+    }
+}
+
+/// The file naming who may do what, relative to a indice home.
+pub const USERS_FILE: &str = "users.yaml";
+
+/// One person in the roster.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserEntry {
+    /// Their identity as the proxy forwards it (`alice@x.edu`) or canonically
+    /// (`mailto:alice@x.edu`) — both are accepted and normalized on load.
+    pub id: String,
+    /// The name to show publicly. Omit to derive one from the id.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Defaults to `curator`: someone written down here is presumed to be
+    /// staff, and `reader` is what you get by *not* being listed.
+    #[serde(default = "default_role")]
+    pub role: Role,
+    /// Prior identities — a previous email, or a username from an IdP you've
+    /// since migrated off. Lets someone keep the notes they wrote under an old
+    /// address instead of being permanently locked out of them.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+fn default_role() -> Role {
+    Role::Curator
+}
+
+/// The roster read from `<home>/users.yaml`.
+///
+/// indice still authenticates nobody — the proxy owns login, this file owns
+/// *privilege*. Keeping it a small hand-editable file rather than a user table
+/// matches the rest of the home directory (finding aids, notes): committable,
+/// diffable, and legible without indice running.
+#[derive(Debug, Clone, Default)]
+pub struct Users {
+    /// `None` when there is no `users.yaml` at all, which is the common case
+    /// and must behave exactly as indice did before roles existed: everyone the
+    /// proxy authenticates is an admin. An empty-but-present file is *not* the
+    /// same thing — that's an operator saying "nobody", and is honored.
+    roster: Option<Vec<ResolvedEntry>>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedEntry {
+    id: SubjectId,
+    name: Option<String>,
+    role: Role,
+    aliases: Vec<SubjectId>,
+}
+
+/// The on-disk shape.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct UsersFile {
+    users: Vec<UserEntry>,
+}
+
+impl Users {
+    pub fn path(home: &std::path::Path) -> std::path::PathBuf {
+        home.join(USERS_FILE)
+    }
+
+    /// Load `<home>/users.yaml`, or the permissive default if absent. Errors
+    /// only on a present-but-malformed file — silently ignoring a typo in a
+    /// permissions file is how someone ends up with more access than intended.
+    pub fn load(home: &std::path::Path) -> anyhow::Result<Users> {
+        use anyhow::Context;
+        let path = Self::path(home);
+        if !path.exists() {
+            return Ok(Users { roster: None });
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let parsed: UsersFile = serde_yaml_ng::from_str(&text)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        let mut roster = Vec::new();
+        for entry in parsed.users {
+            let id = SubjectId::parse(&entry.id)
+                .with_context(|| format!("{}: unusable user id {:?}", path.display(), entry.id))?;
+            roster.push(ResolvedEntry {
+                id,
+                name: entry.name.filter(|n| !n.trim().is_empty()),
+                role: entry.role,
+                aliases: entry
+                    .aliases
+                    .iter()
+                    .filter_map(|a| SubjectId::parse(a))
+                    .collect(),
+            });
+        }
+        Ok(Users {
+            roster: Some(roster),
+        })
+    }
+
+    /// Whether a roster is configured at all (vs. the permissive default).
+    pub fn is_configured(&self) -> bool {
+        self.roster.is_some()
+    }
+
+    /// A one-line summary for the startup log, so an operator can see which
+    /// regime they're in without guessing.
+    pub fn summary(&self) -> String {
+        match &self.roster {
+            None => "no users.yaml: every authenticated user is an admin".to_string(),
+            Some(r) => {
+                let admins = r.iter().filter(|e| e.role == Role::Admin).count();
+                let curators = r.iter().filter(|e| e.role == Role::Curator).count();
+                format!(
+                    "users.yaml: {admins} admin(s), {curators} curator(s); anyone else is a reader"
+                )
+            }
+        }
+    }
+
+    /// Resolve an authenticated identity to a principal.
+    ///
+    /// With no roster every authenticated user is an admin — byte-identical to
+    /// indice's behavior before roles, so upgrading changes nothing. With a
+    /// roster, an identity that isn't on it is a `Reader`: authenticated, but
+    /// with no more power than an anonymous visitor.
+    pub fn resolve(&self, id: SubjectId) -> Principal {
+        let Some(roster) = &self.roster else {
+            return Principal::new(id, "", Role::Admin);
+        };
+        match roster
+            .iter()
+            .find(|e| e.id == id || e.aliases.contains(&id))
+        {
+            // Matched via an alias: adopt the entry's *canonical* id, so a note
+            // written under an old address is still recognized as theirs.
+            Some(e) => Principal::new(e.id.clone(), e.name.clone().unwrap_or_default(), e.role),
+            None => Principal::new(id, "", Role::Reader),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +435,114 @@ mod tests {
 
         // Every note a loopback instance ever wrote used the key "local".
         assert!(SubjectId::local().matches(Some("local")));
+    }
+
+    /// Write a `users.yaml` into a temp home and load it.
+    fn roster(yaml: &str) -> (tempfile::TempDir, Users) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(Users::path(tmp.path()), yaml).unwrap();
+        let users = Users::load(tmp.path()).unwrap();
+        (tmp, users)
+    }
+
+    #[test]
+    fn no_users_file_preserves_the_pre_roles_behavior() {
+        // The upgrade path: an existing deployment must not change at all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let users = Users::load(tmp.path()).unwrap();
+        assert!(!users.is_configured());
+        let p = users.resolve(SubjectId::parse("anyone@x.edu").unwrap());
+        assert_eq!(p.role(), Role::Admin, "everyone authenticated is an admin");
+    }
+
+    #[test]
+    fn an_empty_roster_is_not_the_same_as_no_roster() {
+        // "users: []" is an operator saying nobody, and must be honored --
+        // collapsing it into the permissive default would be a privilege bug.
+        let (_t, users) = roster("users: []\n");
+        assert!(users.is_configured());
+        assert_eq!(
+            users
+                .resolve(SubjectId::parse("anyone@x.edu").unwrap())
+                .role(),
+            Role::Reader
+        );
+    }
+
+    #[test]
+    fn roster_assigns_roles_and_leaves_strangers_as_readers() {
+        let (_t, users) = roster(
+            "users:\n  \
+             - id: boss@x.edu\n    role: admin\n    name: The Boss\n  \
+             - id: Alice@X.edu\n",
+        );
+        let boss = users.resolve(SubjectId::parse("boss@x.edu").unwrap());
+        assert_eq!(boss.role(), Role::Admin);
+        assert_eq!(boss.display_name(), "The Boss");
+        // role defaults to curator; the id matches case-insensitively.
+        let alice = users.resolve(SubjectId::parse("alice@x.edu").unwrap());
+        assert_eq!(alice.role(), Role::Curator);
+        assert_eq!(alice.display_name(), "alice", "derived, never the address");
+        // Authenticated but unlisted: no more power than an anonymous visitor.
+        let stranger = users.resolve(SubjectId::parse("eve@x.edu").unwrap());
+        assert_eq!(stranger.role(), Role::Reader);
+    }
+
+    #[test]
+    fn an_alias_keeps_someone_their_old_notes() {
+        let (_t, users) = roster("users:\n  - id: alice@new.edu\n    aliases: [alice@old.edu]\n");
+        let p = users.resolve(SubjectId::parse("alice@old.edu").unwrap());
+        assert_eq!(p.role(), Role::Curator, "recognized via the alias");
+        // Adopting the canonical id is the point: notes written under either
+        // address resolve to one person.
+        assert_eq!(p.id().as_str(), "mailto:alice@new.edu");
+        assert!(p.owns(Some("alice@new.edu")));
+    }
+
+    #[test]
+    fn a_malformed_roster_is_an_error_not_a_shrug() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(Users::path(tmp.path()), "users:\n  - id: \"\"\n").unwrap();
+        assert!(
+            Users::load(tmp.path()).is_err(),
+            "silently ignoring a typo in a permissions file grants access nobody intended"
+        );
+    }
+
+    #[test]
+    fn roles_nest_so_one_comparison_is_the_whole_check() {
+        assert!(Role::Admin > Role::Curator && Role::Curator > Role::Reader);
+        assert!(Role::Admin.can_curate() && Role::Admin.can_administer());
+        assert!(Role::Curator.can_curate() && Role::Curator.can_annotate());
+        assert!(
+            !Role::Curator.can_administer(),
+            "curators do not deaccession"
+        );
+        assert!(!Role::Reader.can_curate() && !Role::Reader.can_annotate());
+    }
+
+    #[test]
+    fn a_principal_falls_back_to_a_derived_display_name() {
+        let p = Principal::new(SubjectId::parse("alice@x.edu").unwrap(), "", Role::Curator);
+        assert_eq!(p.display_name(), "alice", "never the raw login value");
+        let named = Principal::new(
+            SubjectId::parse("alice@x.edu").unwrap(),
+            "Alice Ramírez",
+            Role::Curator,
+        );
+        assert_eq!(named.display_name(), "Alice Ramírez", "a chosen name wins");
+    }
+
+    #[test]
+    fn only_an_admin_may_edit_someone_elses_record() {
+        let alice = Principal::new(SubjectId::parse("alice@x.edu").unwrap(), "", Role::Curator);
+        let boss = Principal::new(SubjectId::parse("boss@x.edu").unwrap(), "", Role::Admin);
+        assert!(alice.may_edit(Some("alice@x.edu")), "their own");
+        assert!(!alice.may_edit(Some("bob@x.edu")), "not a peer's");
+        assert!(boss.may_edit(Some("bob@x.edu")), "an admin moderates");
+        // The loopback operator is an admin, so notes written on a laptop stay
+        // editable after that home is later served behind a proxy.
+        assert!(Principal::local_operator().may_edit(Some("local")));
     }
 
     #[test]
