@@ -1069,7 +1069,11 @@ async fn main() -> Result<()> {
                     .ok()
                     .filter(|s| !s.is_empty())
             });
-            if let Some(raw) = site_url {
+            // Only consulted by the management CSRF guard, so a read-only
+            // server ignores it entirely — and must not refuse to start over a
+            // typo in a setting it never reads. (One env file is commonly
+            // shared by a public and a management container.)
+            if let Some(raw) = site_url.filter(|_| manage.enabled) {
                 let authority = url::Url::parse(&raw).ok().and_then(|u| {
                     let host = u.host_str()?.to_string();
                     Some(match u.port() {

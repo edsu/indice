@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, Method, Uri};
 // Internals these tests exercise directly, now that they live in sibling modules.
 use super::auth::{
     clear_session_cookie, hmac_sha256, local_redirect_target, same_site_request, sign_session,
-    verify_session,
+    verify_session, CsrfPolicy,
 };
 use super::imports::imported_browsertrix_ids;
 use super::pages::{active_filters, query_with_filter, query_without_filter};
@@ -150,9 +150,25 @@ fn csrf_case(method: &str, hdrs: &[(&str, &str)]) -> (Method, HeaderMap, Uri) {
     )
 }
 
+/// Judge a request under the default (proxied / explicit-site) policy.
 fn same_site(method: &str, hdrs: &[(&str, &str)], trusted: Option<&str>) -> bool {
     let (m, h, u) = csrf_case(method, hdrs);
-    same_site_request(&m, &h, &u, trusted)
+    let policy = CsrfPolicy {
+        site_authority: trusted.map(str::to_string),
+        require_loopback: false,
+    };
+    same_site_request(&m, &h, &u, &policy)
+}
+
+/// Judge a request under the local (loopback-trust) policy, which additionally
+/// requires the authority to name this machine.
+fn same_site_local(method: &str, hdrs: &[(&str, &str)]) -> bool {
+    let (m, h, u) = csrf_case(method, hdrs);
+    let policy = CsrfPolicy {
+        site_authority: None,
+        require_loopback: true,
+    };
+    same_site_request(&m, &h, &u, &policy)
 }
 
 #[test]
@@ -293,6 +309,67 @@ fn same_site_request_prefers_forwarded_host_then_site_url() {
 }
 
 #[test]
+fn local_mode_refuses_a_rebound_non_loopback_authority() {
+    // DNS rebinding: the attacker points evil.example at 127.0.0.1, so the
+    // browser sends a *self-consistent* pair — Host and Origin both name
+    // evil.example — at the loopback workroom. Origin==Host alone would let
+    // this through; requiring a loopback authority is what stops it.
+    assert!(!same_site_local(
+        "POST",
+        &[
+            ("host", "evil.example:8080"),
+            ("origin", "http://evil.example:8080")
+        ]
+    ));
+    // The genuine workroom, under every spelling of "this machine".
+    for host in ["127.0.0.1:8080", "localhost:8080", "[::1]:8080"] {
+        assert!(
+            same_site_local(
+                "POST",
+                &[("host", host), ("origin", &format!("http://{host}"))]
+            ),
+            "{host} is this machine"
+        );
+    }
+    // A proxied deployment sets the authority from a trusted source, so a
+    // non-loopback name is expected there and must still pass.
+    assert!(same_site(
+        "POST",
+        &[
+            ("host", "archive.example.org"),
+            ("origin", "https://archive.example.org")
+        ],
+        None
+    ));
+}
+
+#[test]
+fn forwarded_host_list_uses_the_client_facing_hop() {
+    // Chained proxies append rather than replace: "CDN-facing, internal". The
+    // browser's Origin reflects the first. Without taking it, a chained
+    // deployment 403s every management write with nothing misconfigured.
+    assert!(same_site(
+        "POST",
+        &[
+            ("host", "indice:8080"),
+            ("x-forwarded-host", "archive.example.org, indice:8080"),
+            ("origin", "https://archive.example.org"),
+        ],
+        None
+    ));
+    // The internal hop must not be what we compare against.
+    assert!(!same_site(
+        "POST",
+        &[
+            ("host", "indice:8080"),
+            ("x-forwarded-host", "archive.example.org, indice:8080"),
+            ("origin", "https://indice:8080"),
+        ],
+        None
+    ));
+}
+
+#[test]
 fn same_site_request_refuses_when_our_own_authority_is_unknown() {
     // An Origin we can't compare against anything is not provably same-site.
     let mut headers = HeaderMap::new();
@@ -301,7 +378,12 @@ fn same_site_request_refuses_when_our_own_authority_is_unknown() {
         axum::http::HeaderValue::from_static("https://evil.example"),
     );
     let uri: Uri = "/api/collections/x/delete".parse().unwrap();
-    assert!(!same_site_request(&Method::POST, &headers, &uri, None));
+    assert!(!same_site_request(
+        &Method::POST,
+        &headers,
+        &uri,
+        &CsrfPolicy::default()
+    ));
 }
 
 #[test]

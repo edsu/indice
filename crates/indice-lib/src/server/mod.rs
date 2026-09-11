@@ -304,6 +304,7 @@ fn build_router(
         // Forward-auth: reject any management request that doesn't carry the
         // trusted proxy's shared secret + a non-empty identity header. Layered
         // outermost so it runs before a body is read (e.g. a large upload).
+        let forward_auth_off = manage.forward_auth.is_none();
         if let Some(fa) = manage.forward_auth {
             let guard = Arc::new(fa);
             manage_routes = manage_routes.layer(axum::middleware::from_fn(
@@ -324,11 +325,19 @@ fn build_router(
         // identity bookkeeping (notably before it refreshes the display cookie),
         // and before any body is read — which matters given the disabled body
         // limit on `/api/archives/upload`.
-        let site = manage.site_authority.clone();
+        // In local mode `Host` is whatever the browser sends, so matching it
+        // against `Origin` can be satisfied by DNS rebinding; local mode is
+        // loopback-only anyway, so also require a loopback authority there.
+        // Behind a proxy (or with an explicit --site-url) the authority comes
+        // from a trusted source and needs no such check.
+        let policy = Arc::new(CsrfPolicy {
+            require_loopback: forward_auth_off && manage.site_authority.is_none(),
+            site_authority: manage.site_authority.clone(),
+        });
         manage_routes = manage_routes.layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
-                let site = site.clone();
-                async move { same_origin_guard(site.as_deref(), req, next).await }
+                let policy = policy.clone();
+                async move { same_origin_guard(&policy, req, next).await }
             },
         ));
         app = app.merge(manage_routes);

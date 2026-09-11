@@ -64,13 +64,14 @@ pub(super) async fn forward_auth(
 /// types) there is no CORS preflight to stop it. The attacker can't *read* the
 /// reply, but by then the collection is already deleted.
 pub(super) async fn same_origin_guard(
-    trusted: Option<&str>,
+    policy: &CsrfPolicy,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if same_site_request(req.method(), req.headers(), req.uri(), trusted) {
+    if same_site_request(req.method(), req.headers(), req.uri(), policy) {
         return next.run(req).await;
     }
+    let trusted = policy.site_authority.as_deref();
     let origin = req
         .headers()
         .get(axum::http::header::ORIGIN)
@@ -116,7 +117,7 @@ pub(super) fn same_site_request(
     method: &Method,
     headers: &HeaderMap,
     uri: &Uri,
-    trusted: Option<&str>,
+    policy: &CsrfPolicy,
 ) -> bool {
     if matches!(
         *method,
@@ -137,14 +138,56 @@ pub(super) fn same_site_request(
             let Some(theirs) = origin.split_once("://").map(|(_, rest)| rest) else {
                 return false; // "null", or anything else without an authority
             };
-            expected_authority(headers, uri, trusted)
-                .is_some_and(|ours| ours.eq_ignore_ascii_case(theirs))
+            let Some(ours) = expected_authority(headers, uri, policy.site_authority.as_deref())
+            else {
+                return false;
+            };
+            // Matching Host against Origin is not enough on its own when the
+            // browser chose the Host: DNS rebinding defeats it. An attacker who
+            // controls evil.example can point it at 127.0.0.1, and the browser
+            // then sends a *self-consistent* pair (Host and Origin both
+            // evil.example) at the loopback workroom. Local mode is loopback-only
+            // anyway — the server refuses to start otherwise — so any authority
+            // that isn't a loopback name is bogus by definition.
+            if policy.require_loopback && !is_loopback_authority(ours) {
+                return false;
+            }
+            ours.eq_ignore_ascii_case(theirs)
         }
         None => !headers
             .get("sec-fetch-site")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v == "cross-site" || v == "same-site"),
     }
+}
+
+/// How this server decides whether a write was same-site.
+#[derive(Clone, Default)]
+pub(super) struct CsrfPolicy {
+    /// The operator-pinned public authority (`--site-url`), when set.
+    pub site_authority: Option<String>,
+    /// Whether to additionally require the request's authority to be a loopback
+    /// name. True exactly in local (loopback-trust) mode with no `--site-url`,
+    /// where `Host` comes straight from the browser and so can be rebound.
+    pub require_loopback: bool,
+}
+
+/// Whether an authority names this machine. Accepts `localhost`, the IPv4
+/// loopback block (`127.0.0.0/8`), and IPv6 `::1` in its bracketed form.
+fn is_loopback_authority(authority: &str) -> bool {
+    // Strip the port. An IPv6 literal is bracketed, so split after the bracket.
+    let host = match authority.rsplit_once(']') {
+        Some((bracketed, _)) => bracketed.trim_start_matches('[').to_string(),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(h, _)| h)
+            .to_string(),
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The authority (`host[:port]`) a browser would have used to reach us.
@@ -166,6 +209,14 @@ fn expected_authority<'a>(
         .get("x-forwarded-host")
         .or_else(|| headers.get(axum::http::header::HOST))
         .and_then(|v| v.to_str().ok())
+        // Chained proxies (CDN in front of Caddy, or two reverse proxies) append
+        // rather than replace, so this can arrive as a list —
+        // `archive.example.org, indice:8080`. The client-facing hop is first,
+        // and that is the one the browser's Origin reflects. Without this a
+        // chained deployment 403s every management write with nothing
+        // misconfigured on the operator's side.
+        .map(|v| v.split(',').next().unwrap_or(v).trim())
+        .filter(|v| !v.is_empty())
         .or_else(|| uri.authority().map(|a| a.as_str()))
 }
 

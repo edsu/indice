@@ -140,7 +140,9 @@ fn annotation_author(state: &AppState, headers: &HeaderMap) -> Option<SubjectId>
         return None;
     }
     match who {
-        Some(raw) => SubjectId::parse(&raw),
+        // `parse_remote`, not `parse`: a proxy identity must never resolve to
+        // the loopback operator, whose notes it would then inherit.
+        Some(raw) => SubjectId::parse_remote(&raw),
         None => Some(SubjectId::local()),
     }
 }
