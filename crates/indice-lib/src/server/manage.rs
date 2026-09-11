@@ -191,13 +191,18 @@ fn start_index_job(
         // (after `index_location` has copied it into `archive/`).
         let _keepalive = keepalive;
         let progress = ChannelProgress { tx: tx.clone() };
-        // Snapshot custody before ingest so exactly the new entries get
-        // attributed: one location can yield several crawls, and anything
-        // already in the manifest belongs to whoever added it.
-        let before = crate::index::crawl_ids(&job_state.home).unwrap_or_default();
         let result = {
+            // Snapshot, ingest, and attribute all under ONE hold of the write
+            // lock. `Manifest::save` rewrites waczs.json wholesale from an
+            // in-memory vec, so attribution is a read-modify-write: doing it
+            // after releasing the lock let a queued job's ingest land between
+            // our open and our save, and our save then erased that job's
+            // manifest entry while its documents stayed in Tantivy.
             let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-            crate::index::index_location(
+            // One location can yield several crawls (a directory, nested
+            // WACZs), so diff against a snapshot rather than guessing.
+            let before = crate::index::crawl_ids(&job_state.home);
+            let result = crate::index::index_location(
                 &location,
                 &job_state.home,
                 name.as_deref(),
@@ -206,20 +211,37 @@ fn start_index_job(
                 false, // force
                 None,
                 Some(&progress),
-            )
-        };
-        if result.is_ok() {
-            // Best-effort: a crawl that made it into the archive but lost its
-            // custody line is a provenance gap, not a reason to fail the add.
-            let fresh: std::collections::HashSet<String> = crate::index::crawl_ids(&job_state.home)
-                .unwrap_or_default()
-                .difference(&before)
-                .cloned()
-                .collect();
-            if let Err(e) = crate::index::set_added_by(&job_state.home, &fresh, &actor) {
-                tracing::warn!("recording who added {} crawl(s) failed: {e:#}", fresh.len());
+            );
+            // Deliberately not gated on `result`: a multi-WACZ add can fail
+            // part way with earlier crawls already committed, and those are
+            // exactly the ones their curator needs to be able to undo.
+            match before {
+                Ok(before) => {
+                    let fresh: std::collections::HashSet<String> =
+                        crate::index::crawl_ids(&job_state.home)
+                            .unwrap_or_default()
+                            .difference(&before)
+                            .cloned()
+                            .collect();
+                    // Best-effort: a crawl in the archive without its custody
+                    // line is a provenance gap, not a reason to fail the add.
+                    if let Err(e) = crate::index::set_added_by(&job_state.home, &fresh, &actor) {
+                        tracing::warn!(
+                            "recording who added {} crawl(s) failed: {e:#}",
+                            fresh.len()
+                        );
+                    }
+                }
+                // Fail CLOSED. An unreadable snapshot used to become an empty
+                // one, which made every pre-existing unattributed crawl look
+                // new and handed this curator ownership of all of them.
+                Err(e) => tracing::warn!(
+                    "could not read the manifest before indexing, so this add is \
+                     recorded without custody: {e:#}"
+                ),
             }
-        }
+            result
+        };
         match result {
             Ok(()) => match job_state.reload_searcher() {
                 Ok(()) => tx

@@ -548,9 +548,10 @@ impl Manifest {
         if let Some(c) = self.collections.iter_mut().find(|c| c.id == id) {
             c.name = name.to_string();
             fields.apply_to(c);
-            if let Some(a) = actor {
-                c.updated_by = Some(a.clone());
-            }
+            // Assigned unconditionally, so a CLI edit (`actor: None`) CLEARS a
+            // previous web editor rather than leaving them named as the last
+            // one — a stale attribution is worse than an absent one.
+            c.updated_by = actor.cloned();
         } else {
             let mut c = Collection {
                 id: id.clone(),

@@ -128,3 +128,83 @@ pub fn crawl_ids(home: &Path) -> Result<std::collections::HashSet<String>> {
         .map(|w| w.id.clone())
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collections::Wacz;
+
+    /// Built from JSON so the test leans on the serde defaults rather than
+    /// spelling out every provenance field.
+    fn entry(id: &str, added_by: Option<&str>) -> Wacz {
+        let custody = match added_by {
+            Some(a) => format!(r#","added_by":"{a}""#),
+            None => String::new(),
+        };
+        serde_json::from_str(&format!(
+            r#"{{"id":"{id}","collection":"c","path":"/w.wacz","name":"{id}",
+                 "date_indexed":"2026-01-01T00:00:00Z","file_size":1,"sha256":"x"{custody}}}"#
+        ))
+        .unwrap()
+    }
+
+    /// The invariant that keeps attribution from reassigning custody: only
+    /// still-unattributed entries are stamped. Re-running an add, or a job
+    /// whose id set is wider than it should be, therefore cannot take a crawl
+    /// away from the curator who accessioned it.
+    #[test]
+    fn set_added_by_never_reassigns_existing_custody() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let dir = index_dir(home);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut m = Manifest::open(&dir).unwrap();
+        m.upsert_wacz(entry("theirs", Some("bob@x.edu")));
+        m.upsert_wacz(entry("unclaimed", None));
+        m.save().unwrap();
+
+        // Pass BOTH ids, as an over-wide diff would.
+        let alice = SubjectId::parse("alice@x.edu").unwrap();
+        let ids: std::collections::HashSet<String> =
+            ["theirs".to_string(), "unclaimed".to_string()].into();
+        set_added_by(home, &ids, &alice).unwrap();
+
+        let m = Manifest::open(&dir).unwrap();
+        let by = |id: &str| {
+            m.waczs
+                .iter()
+                .find(|w| w.id == id)
+                .unwrap()
+                .added_by
+                .as_ref()
+                .map(|s| s.as_str().to_string())
+        };
+        // Untouched, and byte-for-byte as stored: SubjectId deserializes
+        // transparently, so a value written by an older version (or edited by
+        // hand) is preserved rather than rewritten. Ownership still works on
+        // it because `matches` canonicalizes at comparison time.
+        assert_eq!(
+            by("theirs").as_deref(),
+            Some("bob@x.edu"),
+            "existing custody is never overwritten"
+        );
+        assert!(
+            SubjectId::parse("bob@x.edu")
+                .unwrap()
+                .matches(by("theirs").as_deref()),
+            "and a raw stored value still resolves to its owner"
+        );
+        // Newly written custody is canonical.
+        assert_eq!(by("unclaimed").as_deref(), Some("mailto:alice@x.edu"));
+    }
+
+    /// An empty id set must not open/save the manifest at all — the common case
+    /// (an add that created nothing new) shouldn't rewrite waczs.json.
+    #[test]
+    fn set_added_by_is_a_noop_for_no_ids() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let alice = SubjectId::parse("alice@x.edu").unwrap();
+        // No index dir exists, so this would error if it touched the manifest.
+        set_added_by(tmp.path(), &std::collections::HashSet::new(), &alice).unwrap();
+    }
+}

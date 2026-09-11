@@ -195,6 +195,15 @@ pub struct Principal {
     id: SubjectId,
     display_name: String,
     role: Role,
+    /// Prior identities this person is also known by, from their roster entry.
+    ///
+    /// Load-bearing for ownership, not just for sign-in: records they wrote
+    /// under an old address are stamped with the *old* `SubjectId`, while
+    /// `Users::resolve` gives them their canonical one. Without checking these
+    /// too, listing an alias would silently stop them editing their own notes
+    /// and undoing their own accessions — the exact thing `aliases:` exists to
+    /// prevent.
+    aliases: Vec<SubjectId>,
     /// Whether this principal may act on records *other people* authored.
     ///
     /// Separate from `role` rather than derived from it, because the two come
@@ -223,8 +232,15 @@ impl Principal {
             id,
             display_name,
             role,
+            aliases: Vec::new(),
             can_moderate,
         }
+    }
+
+    /// Attach the prior identities from this person's roster entry.
+    pub fn with_aliases(mut self, aliases: Vec<SubjectId>) -> Self {
+        self.aliases = aliases;
+        self
     }
 
     /// The single trusted operator of a loopback `--manage` instance. Always an
@@ -248,9 +264,10 @@ impl Principal {
         self.role
     }
     /// Whether this principal wrote the record carrying `stored` as its author
-    /// key (canonicalizing `stored` first, so legacy keys still match).
+    /// key (canonicalizing `stored` first, so legacy keys still match), under
+    /// their current identity or any prior one from their roster entry.
     pub fn owns(&self, stored: Option<&str>) -> bool {
-        self.id.matches(stored)
+        self.id.matches(stored) || self.aliases.iter().any(|a| a.matches(stored))
     }
     /// Whether this principal may moderate records other people authored.
     pub fn can_moderate(&self) -> bool {
@@ -438,7 +455,8 @@ impl Users {
                 e.name.clone().unwrap_or_default(),
                 e.role,
                 e.role.can_administer(),
-            ),
+            )
+            .with_aliases(e.aliases.clone()),
             None => Principal::new(id, "", Role::Reader, false),
         }
     }
@@ -607,6 +625,26 @@ mod tests {
         // Authenticated but unlisted: no more power than an anonymous visitor.
         let stranger = users.resolve(SubjectId::parse("eve@x.edu").unwrap());
         assert_eq!(stranger.role(), Role::Reader);
+    }
+
+    #[test]
+    fn an_alias_keeps_someone_their_own_work() {
+        // Records written under a previous address carry the OLD SubjectId,
+        // while resolve() hands back the canonical one — so ownership has to
+        // consult the aliases or `aliases:` silently locks people out of their
+        // own notes and their own accessions.
+        let (_t, users) = roster(
+            "users:\n  - id: alice@new.edu\n    role: curator\n    aliases: [alice@old.edu]\n",
+        );
+        let alice = users.resolve(SubjectId::parse("alice@new.edu").unwrap());
+        assert!(alice.owns(Some("alice@new.edu")), "current address");
+        assert!(alice.owns(Some("alice@old.edu")), "and the previous one");
+        assert!(alice.may_edit(Some("alice@old.edu")), "an old note");
+        assert!(
+            alice.may_delete_crawl(Some("alice@old.edu")),
+            "an old crawl"
+        );
+        assert!(!alice.owns(Some("bob@old.edu")));
     }
 
     #[test]
