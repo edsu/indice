@@ -1260,7 +1260,9 @@ async fn main() -> Result<()> {
                     subjects: (!subjects.is_empty()).then_some(subjects),
                     narrative,
                 };
-                let id = indice_lib::index::set_collection(&home, &name, &fields)?;
+                // No request identity on the CLI; the edit is recorded as
+                // unattributed rather than credited to an invented user.
+                let id = indice_lib::index::set_collection(&home, &name, &fields, None)?;
                 if let Some(file) = &thumbnail {
                     indice_lib::index::set_collection_thumbnail(&home, &name, file)?;
                 }

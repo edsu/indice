@@ -159,12 +159,24 @@ pub(super) async fn crawl_page(
         let m = m.get(..10).unwrap_or(m);
         provenance.push(views::MetaRow::new("WACZ modified", m.to_string()));
     }
+    // Custody. This page is public, so resolve the stored SubjectId to a
+    // display name through the roster rather than printing the identity.
+    if let Some(subject) = &c.added_by {
+        let name = state
+            .users
+            .resolve(subject.clone())
+            .display_name()
+            .to_string();
+        provenance.push(views::MetaRow::new("Added by", name));
+    }
 
     let (manage, who) = admin_ctx(&state, &headers);
     let can_login = login_available(&state, &who);
-    // Deaccession is an admin act; don't offer a curator a button that 403s.
+    // Match the handler's rule exactly: an admin may remove any crawl, a
+    // curator only one they accessioned.
+    let added_by = c.added_by.as_ref().map(|s| s.as_str());
     let can_delete =
-        resolve_caller(&state, &headers).is_some_and(|(p, _)| p.role().can_administer());
+        resolve_caller(&state, &headers).is_some_and(|(p, _)| p.may_delete_crawl(added_by));
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,

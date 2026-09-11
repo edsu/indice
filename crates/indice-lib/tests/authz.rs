@@ -197,7 +197,10 @@ fn routes() -> Vec<Route> {
             Needs::Curator,
             Some((json, r#"{"collection":"t"}"#.into())),
         ),
-        // Deaccession: the irreversible, shared acts.
+        // Deaccession. Crawl delete is Admin *here* because this id doesn't
+        // exist, so it has no recorded custody and is nobody's to undo — a
+        // curator CAN delete a crawl they accessioned, which
+        // `a_curator_deletes_their_own_crawl_but_not_a_peers` covers.
         route("POST", "/api/crawls/abc/delete", Needs::Admin, None),
         route(
             "POST",
@@ -588,6 +591,84 @@ async fn workroom_forms_are_not_shown_to_a_reader() {
             "{path} is a curator's workbench"
         );
     }
+
+    server.abort();
+}
+
+/// The other half of the model: a curator may remove a crawl *they*
+/// accessioned, but not one someone else did.
+#[tokio::test]
+async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("users.yaml"),
+        "users:\n  \
+         - id: boss@x.edu\n    role: admin\n  \
+         - id: one@x.edu\n    role: curator\n  \
+         - id: two@x.edu\n    role: curator\n",
+    )
+    .unwrap();
+    let home = tmp.path().to_path_buf();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(home.clone(), cfg).await;
+
+    // Curator "one" accessions a crawl.
+    let path = fixture("simple.wacz").to_string_lossy().to_string();
+    let status = request(
+        "POST",
+        format!("{base}/api/archives"),
+        Some("one@x.edu"),
+        Some((
+            "application/json",
+            serde_json::json!({ "path": path, "collection": "custody" }).to_string(),
+        )),
+    )
+    .await;
+    assert_eq!(status, 202);
+
+    // Wait for the job to finish (draining its SSE stream blocks until done).
+    let events = format!("{base}/api/archives/0/events");
+    tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .get(&events)
+            .header("x-indice-auth-secret", SECRET)
+            .header(USER_HEADER, "one@x.edu")
+            .call()
+            .unwrap();
+        res.body_mut().read_to_string().unwrap()
+    })
+    .await
+    .unwrap();
+
+    // Custody was recorded.
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let crawl = manifest.waczs.first().expect("one crawl indexed");
+    assert_eq!(
+        crawl.added_by.as_ref().map(|s| s.as_str()),
+        Some("mailto:one@x.edu"),
+        "the accessioning curator is recorded"
+    );
+    let crawl_id = crawl.id.clone();
+
+    // A peer curator must not be able to remove it...
+    let status = request(
+        "POST",
+        format!("{base}/api/crawls/{crawl_id}/delete"),
+        Some("two@x.edu"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "not a peer's crawl to delete");
+
+    // ...but the curator who added it can.
+    let status = request(
+        "POST",
+        format!("{base}/api/crawls/{crawl_id}/delete"),
+        Some("one@x.edu"),
+        None,
+    )
+    .await;
+    assert_ne!(status, 403, "their own accession, their own undo");
 
     server.abort();
 }

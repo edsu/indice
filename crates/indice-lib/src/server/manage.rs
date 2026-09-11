@@ -170,7 +170,7 @@ pub(super) fn acquire_write_lock<'a>(
 /// silent exposure. (It will also be where the actor comes from once crawls
 /// record who added them — see bead rustyweb-manifest-provenance-sfu7.)
 fn start_index_job(
-    _curator: &Curator,
+    curator: &Curator,
     state: &Arc<AppState>,
     location: String,
     collection: String,
@@ -182,6 +182,8 @@ fn start_index_job(
     state.jobs.lock().unwrap().insert(id, rx);
 
     let job_state = state.clone();
+    // Who to credit for whatever this ingest creates.
+    let actor = curator.principal().id().clone();
     // `index_location` blocks (file IO, network range reads, the Tantivy commit),
     // so run it off the async runtime — never on a request-handling thread.
     tokio::task::spawn_blocking(move || {
@@ -190,8 +192,17 @@ fn start_index_job(
         let _keepalive = keepalive;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
+            // Snapshot, ingest, and attribute all under ONE hold of the write
+            // lock. `Manifest::save` rewrites waczs.json wholesale from an
+            // in-memory vec, so attribution is a read-modify-write: doing it
+            // after releasing the lock let a queued job's ingest land between
+            // our open and our save, and our save then erased that job's
+            // manifest entry while its documents stayed in Tantivy.
             let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-            crate::index::index_location(
+            // One location can yield several crawls (a directory, nested
+            // WACZs), so diff against a snapshot rather than guessing.
+            let before = crate::index::crawl_ids(&job_state.home);
+            let result = crate::index::index_location(
                 &location,
                 &job_state.home,
                 name.as_deref(),
@@ -200,7 +211,36 @@ fn start_index_job(
                 false, // force
                 None,
                 Some(&progress),
-            )
+            );
+            // Deliberately not gated on `result`: a multi-WACZ add can fail
+            // part way with earlier crawls already committed, and those are
+            // exactly the ones their curator needs to be able to undo.
+            match before {
+                Ok(before) => {
+                    let fresh: std::collections::HashSet<String> =
+                        crate::index::crawl_ids(&job_state.home)
+                            .unwrap_or_default()
+                            .difference(&before)
+                            .cloned()
+                            .collect();
+                    // Best-effort: a crawl in the archive without its custody
+                    // line is a provenance gap, not a reason to fail the add.
+                    if let Err(e) = crate::index::set_added_by(&job_state.home, &fresh, &actor) {
+                        tracing::warn!(
+                            "recording who added {} crawl(s) failed: {e:#}",
+                            fresh.len()
+                        );
+                    }
+                }
+                // Fail CLOSED. An unreadable snapshot used to become an empty
+                // one, which made every pre-existing unattributed crawl look
+                // new and handed this curator ownership of all of them.
+                Err(e) => tracing::warn!(
+                    "could not read the manifest before indexing, so this add is \
+                     recorded without custody: {e:#}"
+                ),
+            }
+            result
         };
         match result {
             Ok(()) => match job_state.reload_searcher() {
@@ -492,12 +532,14 @@ pub(super) async fn create_collection(
         narrative: field_opt(&form.narrative),
     };
     let home = state.home.clone();
+    let actor = curator.principal().id().clone();
     // set_collection writes the README + manifest — quick, but blocking, so keep
     // it off the async runtime. The homepage re-reads the manifest per request,
     // so the new/edited collection shows immediately (no searcher reload needed).
-    let result =
-        tokio::task::spawn_blocking(move || crate::index::set_collection(&home, &name, &fields))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        crate::index::set_collection(&home, &name, &fields, Some(&actor))
+    })
+    .await;
     match result {
         Ok(Ok(id)) => Redirect::to(&format!("/collection/{id}")).into_response(),
         Ok(Err(e)) => error_response(e).into_response(),
@@ -509,10 +551,22 @@ pub(super) async fn create_collection(
 /// local WACZ, thumbnail), reload the searcher, and return to its collection.
 pub(super) async fn delete_crawl_handler(
     State(state): State<Arc<AppState>>,
-    admin: Admin,
+    // Curator, not Admin: a curator may remove a crawl *they* accessioned, so
+    // a mis-upload doesn't need someone else to clean up. Whose it is depends
+    // on the manifest, so the real check happens below.
+    curator: Curator,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    audit(admin.principal(), "crawl.delete", &id);
+    let added_by = match Manifest::open(&state.index_dir) {
+        Ok(m) => m
+            .wacz_by_id(&id)
+            .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string())),
+        Err(e) => return error_response(e).into_response(),
+    };
+    if !curator.principal().may_delete_crawl(added_by.as_deref()) {
+        return Denied::Insufficient("deleting a crawl someone else added").into_response();
+    }
+    audit(curator.principal(), "crawl.delete", &id);
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it

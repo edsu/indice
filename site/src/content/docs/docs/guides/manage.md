@@ -51,12 +51,14 @@ Your proxy decides **who gets in**. indice decides **what they can do**, using t
 | Role | Can |
 |---|---|
 | **Reader** | Read everything public. This is anonymous visitors, and anyone signed in who isn't on the roster. |
-| **Curator** | Accession and describe: create collections, add and upload crawls, edit finding aids, run imports, and annotate. Edit and delete **their own** notes. |
+| **Curator** | Accession and describe: create collections, add and upload crawls, edit finding aids, run imports, and annotate. Delete **crawls they added** and **their own** notes. |
 | **Admin** | Everything a curator can, plus the irreversible things: delete a crawl, delete a collection, and moderate anyone's notes. |
 
 In a sentence: **curators add and can undo their own additions; only admins remove a collection.**
 
-The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made — then deleting "yours" destroys their work. Deaccession is a shared, irreversible act, so it stays with admins, the same way it's a deliberate decision in a physical archive.
+The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made — then deleting "yours" destroys their work. So ownership governs **crawls**, which belong to whoever accessioned them, while removing a whole **collection** stays an admin act, the same way deaccession is a deliberate decision in a physical archive.
+
+indice records who added each crawl, so a curator can undo their own mis-upload without waiting for an admin. Crawls added from the command line, or before indice recorded this, have no recorded owner — they're nobody's, so only an admin can remove them.
 
 ### Setting roles
 

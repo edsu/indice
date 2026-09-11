@@ -22,6 +22,32 @@ use crate::collections::Manifest;
 
 use super::*;
 
+/// Record custody for crawls an import just created.
+///
+/// Takes the **exact** ids the import produced rather than diffing the manifest
+/// before and after. An import holds the write lock per resource (never across
+/// a download), so a before/after diff would span other jobs' writes and could
+/// stamp this curator's id onto someone else's crawl. `set_added_by` is itself
+/// a read-modify-write of the manifest, so it runs under the lock.
+fn attribute_import(
+    job_state: &Arc<AppState>,
+    progress: &ChannelProgress,
+    actor: &crate::identity::SubjectId,
+    created: &[String],
+) {
+    if created.is_empty() {
+        return;
+    }
+    let ids: std::collections::HashSet<String> = created.iter().cloned().collect();
+    let _guard = acquire_write_lock(&job_state.write_lock, progress);
+    if let Err(e) = crate::index::set_added_by(&job_state.home, &ids, actor) {
+        tracing::warn!(
+            "recording who imported {} crawl(s) failed: {e:#}",
+            ids.len()
+        );
+    }
+}
+
 /// Mint a job id for an import.
 ///
 /// Takes a `&Curator` it never reads, for the same reason `start_index_job`
@@ -256,8 +282,15 @@ pub(super) async fn bx_import(
     state.jobs.lock().unwrap().insert(id, rx);
 
     let job_state = state.clone();
+    let actor = curator.principal().id().clone();
     tokio::task::spawn_blocking(move || {
         let progress = ChannelProgress { tx: tx.clone() };
+        // Snapshot custody before the import so exactly the new crawls are
+        // attributed (see start_index_job).
+        // Exact ids as they're created, so a partial import still attributes
+        // what actually landed — those are precisely the crawls their curator
+        // needs to be able to undo.
+        let mut created: Vec<String> = Vec::new();
         let result = (|| -> Result<Vec<serde_json::Value>> {
             let client = provider.client()?;
             let host = client.host().to_string();
@@ -361,11 +394,15 @@ pub(super) async fn bx_import(
                     } else {
                         display
                     };
+                    created.push(crawl_id.clone());
                     crawls.push(serde_json::json!({ "id": crawl_id, "name": label }));
                 }
             }
             Ok(crawls)
         })();
+        // Not gated on `result`: `created` holds whatever committed before a
+        // failure, and those crawls are durable.
+        attribute_import(&job_state, &progress, &actor, &created);
         match result {
             Ok(crawls) => {
                 // A bulk import commits a segment per WACZ; if that left the
@@ -568,8 +605,17 @@ pub(super) async fn ait_import(
     state.jobs.lock().unwrap().insert(id, rx);
 
     let job_state = state.clone();
+    let actor = curator.principal().id().clone();
     tokio::task::spawn_blocking(move || {
         let progress = ChannelProgress { tx: tx.clone() };
+        // Snapshot custody before the import so exactly the new crawls are
+        // attributed (see start_index_job).
+        // Archive-It's importer is one orchestrator call, so it reports the
+        // crawls it created. On failure it reports nothing, so anything it
+        // partially committed stays unattributed — safe (only an admin can
+        // remove it) rather than misattributed; noted on bead
+        // rustyweb-manifest-provenance-sfu7 as a known edge.
+        let mut created: Vec<String> = Vec::new();
         let result = (|| -> Result<Vec<serde_json::Value>> {
             let client = provider.client()?;
             let selected: std::collections::HashSet<i64> = req.crawls.iter().copied().collect();
@@ -627,12 +673,14 @@ pub(super) async fn ait_import(
                     Some(&progress),
                 )?
             };
+            created.extend(outcome.crawls.iter().map(|(id, _)| id.clone()));
             Ok(outcome
                 .crawls
                 .into_iter()
                 .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
                 .collect())
         })();
+        attribute_import(&job_state, &progress, &actor, &created);
         match result {
             Ok(crawls) => {
                 // A per-crawl import commits a segment per WACZ; compact if that

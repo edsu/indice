@@ -195,6 +195,15 @@ pub struct Principal {
     id: SubjectId,
     display_name: String,
     role: Role,
+    /// Prior identities this person is also known by, from their roster entry.
+    ///
+    /// Load-bearing for ownership, not just for sign-in: records they wrote
+    /// under an old address are stamped with the *old* `SubjectId`, while
+    /// `Users::resolve` gives them their canonical one. Without checking these
+    /// too, listing an alias would silently stop them editing their own notes
+    /// and undoing their own accessions — the exact thing `aliases:` exists to
+    /// prevent.
+    aliases: Vec<SubjectId>,
     /// Whether this principal may act on records *other people* authored.
     ///
     /// Separate from `role` rather than derived from it, because the two come
@@ -223,8 +232,15 @@ impl Principal {
             id,
             display_name,
             role,
+            aliases: Vec::new(),
             can_moderate,
         }
+    }
+
+    /// Attach the prior identities from this person's roster entry.
+    pub fn with_aliases(mut self, aliases: Vec<SubjectId>) -> Self {
+        self.aliases = aliases;
+        self
     }
 
     /// The single trusted operator of a loopback `--manage` instance. Always an
@@ -248,13 +264,34 @@ impl Principal {
         self.role
     }
     /// Whether this principal wrote the record carrying `stored` as its author
-    /// key (canonicalizing `stored` first, so legacy keys still match).
+    /// key (canonicalizing `stored` first, so legacy keys still match), under
+    /// their current identity or any prior one from their roster entry.
     pub fn owns(&self, stored: Option<&str>) -> bool {
-        self.id.matches(stored)
+        self.id.matches(stored) || self.aliases.iter().any(|a| a.matches(stored))
     }
     /// Whether this principal may moderate records other people authored.
     pub fn can_moderate(&self) -> bool {
         self.can_moderate
+    }
+
+    /// Whether this principal may deaccession a crawl accessioned by
+    /// `added_by`: an admin may remove any, a curator only their own.
+    ///
+    /// This completes the model's sentence — *curators add and can undo their
+    /// own additions; only admins remove a collection.* Ownership governs
+    /// crawls because they are leaves; a collection is a shared container, so
+    /// deleting one stays an admin act however it was created.
+    ///
+    /// Note this uses the **role**, not `can_moderate`. The two answer
+    /// different questions: `can_moderate` is "may act on what someone else
+    /// *authored*", which nobody could before roles existed and so is opt-in;
+    /// deaccession is an operational act on the archive, which any
+    /// authenticated user could, so gating it on the role keeps the no-roster
+    /// default behaving as it always has. An unattributed crawl (indexed from
+    /// the CLI, or before custody was recorded) is nobody's, so only an admin
+    /// may remove it.
+    pub fn may_delete_crawl(&self, added_by: Option<&str>) -> bool {
+        self.role.can_administer() || self.owns(added_by)
     }
 
     /// Whether this principal may edit the record authored under `stored`:
@@ -418,7 +455,8 @@ impl Users {
                 e.name.clone().unwrap_or_default(),
                 e.role,
                 e.role.can_administer(),
-            ),
+            )
+            .with_aliases(e.aliases.clone()),
             None => Principal::new(id, "", Role::Reader, false),
         }
     }
@@ -590,6 +628,26 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_keeps_someone_their_own_work() {
+        // Records written under a previous address carry the OLD SubjectId,
+        // while resolve() hands back the canonical one — so ownership has to
+        // consult the aliases or `aliases:` silently locks people out of their
+        // own notes and their own accessions.
+        let (_t, users) = roster(
+            "users:\n  - id: alice@new.edu\n    role: curator\n    aliases: [alice@old.edu]\n",
+        );
+        let alice = users.resolve(SubjectId::parse("alice@new.edu").unwrap());
+        assert!(alice.owns(Some("alice@new.edu")), "current address");
+        assert!(alice.owns(Some("alice@old.edu")), "and the previous one");
+        assert!(alice.may_edit(Some("alice@old.edu")), "an old note");
+        assert!(
+            alice.may_delete_crawl(Some("alice@old.edu")),
+            "an old crawl"
+        );
+        assert!(!alice.owns(Some("bob@old.edu")));
+    }
+
+    #[test]
     fn an_alias_keeps_someone_their_old_notes() {
         let (_t, users) = roster("users:\n  - id: alice@new.edu\n    aliases: [alice@old.edu]\n");
         let p = users.resolve(SubjectId::parse("alice@old.edu").unwrap());
@@ -638,6 +696,42 @@ mod tests {
             false,
         );
         assert_eq!(named.display_name(), "Alice Ramírez", "a chosen name wins");
+    }
+
+    #[test]
+    fn a_curator_deaccessions_only_their_own_crawls() {
+        let alice = Principal::new(
+            SubjectId::parse("alice@x.edu").unwrap(),
+            "",
+            Role::Curator,
+            false,
+        );
+        let boss = Principal::new(
+            SubjectId::parse("boss@x.edu").unwrap(),
+            "",
+            Role::Admin,
+            true,
+        );
+        assert!(alice.may_delete_crawl(Some("alice@x.edu")), "her own");
+        assert!(!alice.may_delete_crawl(Some("bob@x.edu")), "not a peer's");
+        // Unattributed (CLI-indexed, or from before custody existed) is
+        // nobody's, so a curator can't claim it.
+        assert!(!alice.may_delete_crawl(None));
+        assert!(boss.may_delete_crawl(None), "an admin still can");
+        assert!(boss.may_delete_crawl(Some("bob@x.edu")));
+
+        // Upgrade safety: with no roster everyone is an Admin, so deaccession
+        // keeps working exactly as it did before roles. This deliberately uses
+        // the ROLE and not can_moderate — see may_delete_crawl.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let default = Users::load(tmp.path())
+            .unwrap()
+            .resolve(SubjectId::parse("anyone@x.edu").unwrap());
+        assert!(!default.can_moderate(), "not over other people's notes");
+        assert!(
+            default.may_delete_crawl(None),
+            "but deaccession is unchanged"
+        );
     }
 
     #[test]

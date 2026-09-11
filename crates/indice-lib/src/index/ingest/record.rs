@@ -66,6 +66,9 @@ pub(super) fn upsert(
     // reindex, which otherwise rebuilds the entry from scratch.
     let browsertrix = manifest.wacz_by_id(id).and_then(|w| w.browsertrix.clone());
     let archive_it = manifest.wacz_by_id(id).and_then(|w| w.archive_it.clone());
+    // Custody is set out-of-band too (only the server knows who is acting), so
+    // it needs the same preservation or a reindex would orphan every crawl.
+    let added_by = manifest.wacz_by_id(id).and_then(|w| w.added_by.clone());
 
     manifest.upsert_wacz(Wacz {
         id: id.to_string(),
@@ -96,6 +99,7 @@ pub(super) fn upsert(
         keywords: meta.keywords,
         licenses: meta.licenses,
         status_counts: stats.status_counts,
+        added_by,
     });
 }
 

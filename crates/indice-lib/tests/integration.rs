@@ -767,6 +767,7 @@ async fn collection_page_nudge_lists_only_still_missing_minimum() {
             creator: Some("Someone".into()),
             ..Default::default()
         },
+        None,
     )
     .unwrap();
     let app = indice_lib::server::router(tmp.path()).unwrap();
