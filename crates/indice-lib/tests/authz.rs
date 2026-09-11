@@ -101,54 +101,73 @@ enum Needs {
     Admin,
 }
 
+/// One row of the coverage table.
+#[derive(Clone)]
+struct Route {
+    method: &'static str,
+    path: &'static str,
+    needs: Needs,
+    /// `(content_type, payload)`; `None` sends no body.
+    body: Option<(&'static str, String)>,
+}
+
+fn route(
+    method: &'static str,
+    path: &'static str,
+    needs: Needs,
+    body: Option<(&'static str, String)>,
+) -> Route {
+    Route {
+        method,
+        path,
+        needs,
+        body,
+    }
+}
+
 /// Every management route, the privilege it requires, and a body that gets far
 /// enough into the handler to prove the *gate* ran (not that the operation
 /// succeeded — hence asserting `!= 403` rather than a specific success code,
 /// which would couple this table to each endpoint's semantics).
-fn routes() -> Vec<(
-    &'static str,
-    &'static str,
-    Needs,
-    Option<(&'static str, String)>,
-)> {
+fn routes() -> Vec<Route> {
     let json = "application/json";
     let form = "application/x-www-form-urlencoded";
     vec![
-        (
+        route(
             "POST",
             "/api/collections",
             Needs::Curator,
             Some((form, "name=Table".into())),
         ),
-        (
+        route(
             "POST",
             "/api/archives",
             Needs::Curator,
             Some((json, r#"{"path":"/nope.wacz","collection":"t"}"#.into())),
         ),
-        ("GET", "/api/archives/0/events", Needs::Curator, None),
-        (
+        route("GET", "/api/archives/0/events", Needs::Curator, None),
+        route(
             "POST",
             "/api/browsertrix/import",
             Needs::Curator,
             Some((json, r#"{"org":"o","collection":"c","items":[]}"#.into())),
         ),
-        ("GET", "/api/browsertrix/orgs", Needs::Curator, None),
-        (
+        route("GET", "/api/browsertrix/orgs", Needs::Curator, None),
+        route(
             "GET",
             "/api/browsertrix/collections?org=o",
             Needs::Curator,
             None,
         ),
-        ("GET", "/api/browsertrix/items?org=o", Needs::Curator, None),
-        ("GET", "/api/archiveit/collections", Needs::Curator, None),
-        (
+        route("GET", "/api/browsertrix/items?org=o", Needs::Curator, None),
+        route("GET", "/api/archiveit/collections", Needs::Curator, None),
+        route(
             "GET",
             "/api/archiveit/crawls?collection=1",
             Needs::Curator,
             None,
         ),
-        (
+        route(
             "POST",
             "/api/archiveit/import",
             Needs::Curator,
@@ -157,7 +176,7 @@ fn routes() -> Vec<(
                 r#"{"collection_id":"1","collection":"c","crawls":[]}"#.into(),
             )),
         ),
-        (
+        route(
             "POST",
             "/api/annotations",
             Needs::Curator,
@@ -166,21 +185,21 @@ fn routes() -> Vec<(
                 r#"{"collection":"t","url":"u","timestamp":"1","note":"n"}"#.into(),
             )),
         ),
-        (
+        route(
             "POST",
             "/api/annotations/x",
             Needs::Curator,
             Some((json, r#"{"collection":"t","note":"n"}"#.into())),
         ),
-        (
+        route(
             "POST",
             "/api/annotations/x/delete",
             Needs::Curator,
             Some((json, r#"{"collection":"t"}"#.into())),
         ),
         // Deaccession: the irreversible, shared acts.
-        ("POST", "/api/crawls/abc/delete", Needs::Admin, None),
-        (
+        route("POST", "/api/crawls/abc/delete", Needs::Admin, None),
+        route(
             "POST",
             "/api/collections/abc/delete",
             Needs::Admin,
@@ -195,7 +214,13 @@ async fn every_management_route_demands_the_right_privilege() {
     let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
-    for (method, path, needs, body) in routes() {
+    for Route {
+        method,
+        path,
+        needs,
+        body,
+    } in routes()
+    {
         let url = format!("{base}{path}");
 
         // Anonymous: refused by the forward-auth middleware.
@@ -370,7 +395,10 @@ async fn without_a_roster_every_authenticated_user_is_an_admin() {
     let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
-    for (method, path, _needs, body) in routes() {
+    for Route {
+        method, path, body, ..
+    } in routes()
+    {
         let status = request(method, format!("{base}{path}"), Some("anyone@x.edu"), body).await;
         assert_ne!(
             status, 403,
@@ -424,6 +452,59 @@ async fn a_display_cookie_alone_cannot_write() {
     assert_eq!(
         status, 403,
         "a cookie is evidence for rendering, not writing"
+    );
+
+    server.abort();
+}
+
+/// The chrome must match the enforcement: a curator should never be shown a
+/// control that would 403. (The server enforces independently — hiding the
+/// button is UX, not the control — but showing an impossible one is a bug.)
+#[tokio::test]
+async fn a_curator_is_not_shown_a_delete_button() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    request(
+        "POST",
+        format!("{base}/api/collections"),
+        Some("boss@x.edu"),
+        Some(("application/x-www-form-urlencoded", "name=Chrome".into())),
+    )
+    .await;
+
+    let page = |who: &'static str| {
+        let url = format!("{base}/collection/chrome");
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut res = agent()
+                    .get(&url)
+                    .header("x-indice-auth-secret", SECRET)
+                    .header(USER_HEADER, who)
+                    .call()
+                    .unwrap();
+                res.body_mut().read_to_string().unwrap()
+            })
+            .await
+            .unwrap()
+        }
+    };
+
+    let as_curator = page("curator@x.edu").await;
+    assert!(
+        as_curator.contains("Edit collection"),
+        "a curator still curates"
+    );
+    assert!(
+        !as_curator.contains("Delete this collection"),
+        "but is not offered deaccession"
+    );
+
+    let as_admin = page("boss@x.edu").await;
+    assert!(
+        as_admin.contains("Delete this collection"),
+        "an admin is: {as_admin}"
     );
 
     server.abort();

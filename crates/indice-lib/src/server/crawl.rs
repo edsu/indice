@@ -162,6 +162,9 @@ pub(super) async fn crawl_page(
 
     let (manage, who) = admin_ctx(&state, &headers);
     let can_login = login_available(&state, &who);
+    // Deaccession is an admin act; don't offer a curator a button that 403s.
+    let can_delete =
+        resolve_caller(&state, &headers).is_some_and(|(p, _)| p.role().can_administer());
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,
@@ -199,6 +202,7 @@ pub(super) async fn crawl_page(
         ),
         pages,
         management: manage,
+        can_delete,
         signed_in: who,
         can_login,
     };
