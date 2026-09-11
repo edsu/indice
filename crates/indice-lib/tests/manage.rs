@@ -357,7 +357,14 @@ async fn forward_auth_gates_management_routes() {
     )
     .await;
     assert_eq!(status, 200, "valid proxy auth is allowed");
-    assert!(body.contains("alice@x.edu"), "shows the signed-in user");
+    // The appbar shows the *display* name, not the login identity. These pages
+    // get screenshotted for the docs, so a full address here would end up
+    // published; and with a users.yaml the operator can set a real name.
+    assert!(body.contains("alice"), "shows who is signed in");
+    assert!(
+        !body.contains("alice@x.edu"),
+        "but never the login address: {body}"
+    );
 
     // A write route is gated the same way.
     let post_url = format!("{base}/api/collections");

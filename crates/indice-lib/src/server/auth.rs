@@ -7,6 +7,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 
+use crate::identity::{Principal, Role, SubjectId};
+
 use super::*;
 
 /// The fixed header carrying the proxy↔indice shared secret in forward-auth mode.
@@ -241,27 +243,201 @@ fn check_forward_auth(fa: &ForwardAuth, headers: &HeaderMap) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Whether this request may use management affordances, plus the signed-in user.
-/// Local mode trusts every request (it's loopback-only); forward-auth defers to
-/// [`check_forward_auth`]. Used by the read handlers to decide whether to render
-/// the workroom chrome and edit-in-place controls.
-pub(super) fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<String>) {
-    if !state.management {
-        return (false, None);
+/// How a request's identity was established.
+///
+/// Load-bearing, and the reason this is a type rather than a comment. The
+/// display cookie is good enough to *render* the workroom chrome but must never
+/// be good enough to *write*: indice issues it itself, so it outlives the
+/// proxy's session, and it is the one credential an XSS could ride. That rule
+/// used to be enforced only by which router block a route was mounted in —
+/// true, but invisible, and silently lost the moment a route moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Evidence {
+    /// Loopback `--manage` with no proxy: the machine's operator.
+    Loopback,
+    /// The trusted proxy injected its identity header *and* the shared secret
+    /// on this very request.
+    Proxy,
+    /// indice's own signed display cookie. Rendering only.
+    Cookie,
+}
+
+impl Evidence {
+    /// Whether this evidence is strong enough to authorize a state change.
+    pub(super) fn admits_writes(self) -> bool {
+        matches!(self, Evidence::Loopback | Evidence::Proxy)
     }
-    match &state.forward_auth {
-        None => (true, None),
-        Some(fa) => {
-            // The live proxy-injected identity (management routes), or — on the
-            // ungated public pages the browser can't send proxy creds to — the
-            // display cookie indice set at login. The cookie drives *rendering*
-            // only; write routes always re-check the proxy headers.
-            let user = check_forward_auth(fa, headers).or_else(|| session_cookie_user(fa, headers));
-            match user {
-                Some(u) => (true, Some(u)),
-                None => (false, None),
+}
+
+/// Resolve who is making this request, and how we know.
+///
+/// The single place identity and role are decided. `None` means anonymous —
+/// either management is off, or nothing vouched for this request.
+pub(super) fn resolve_caller(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<(Principal, Evidence)> {
+    if !state.management {
+        return None;
+    }
+    let Some(fa) = &state.forward_auth else {
+        // Local mode: loopback-only (enforced at startup), so the operator is
+        // the admin and the roster has no authentication to filter.
+        return Some((Principal::local_operator(), Evidence::Loopback));
+    };
+    // The live proxy-injected identity, or — on the ungated public pages the
+    // browser can't send proxy credentials to — the display cookie set at login.
+    let (raw, evidence) = match check_forward_auth(fa, headers) {
+        Some(u) => (u, Evidence::Proxy),
+        None => (session_cookie_user(fa, headers)?, Evidence::Cookie),
+    };
+    // `parse_remote`: a proxy identity must never resolve to the local operator.
+    let id = SubjectId::parse_remote(&raw)?;
+    Some((state.users.resolve(id), evidence))
+}
+
+/// Whether this request may use management affordances, plus the signed-in user.
+///
+/// Rendering only — it deliberately accepts cookie evidence, so a signed-in
+/// admin sees the workroom chrome on the ungated public pages. Authorization
+/// for an actual write goes through the [`Curator`]/[`Admin`] extractors, which
+/// additionally require [`Evidence::admits_writes`].
+pub(super) fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<String>) {
+    match resolve_caller(state, headers) {
+        // Local mode has no login and no distinct identities, so there is no
+        // "signed in as" to show — matching what the appbar did before roles.
+        Some((p, Evidence::Loopback)) => (p.role().can_curate(), None),
+        Some((p, _)) => (p.role().can_curate(), Some(p.display_name().to_string())),
+        None => (false, None),
+    }
+}
+
+// ── Capability tokens ───────────────────────────────────────────────────────
+//
+// `Curator` and `Admin` are axum extractors *and* witness types: the inner
+// field is private to this module, so nothing outside `auth.rs` can build one.
+// Holding a `Curator` is therefore proof that the check ran.
+//
+// That is what makes the privilege un-forgettable. A handler declares what it
+// needs in its own signature, and the privileged internal helpers take a
+// `&Curator`/`&Admin` they can't be called without — so adding a route and
+// forgetting to gate it is a *type error*, not a silent exposure. Same move as
+// `CollectionId`'s private field + `parse()`, applied to a permission instead
+// of a path component.
+
+/// Proof that this request may accession and describe: create collections, add
+/// and upload crawls, edit finding aids, run imports, annotate.
+pub(super) struct Curator(Principal);
+
+/// Proof that this request may do the irreversible, shared things: delete a
+/// crawl, delete a collection, moderate anyone's notes.
+pub(super) struct Admin(Principal);
+
+impl Curator {
+    pub(super) fn principal(&self) -> &Principal {
+        &self.0
+    }
+}
+
+impl Admin {
+    pub(super) fn principal(&self) -> &Principal {
+        &self.0
+    }
+}
+
+/// Record who performed a state change.
+///
+/// Its own tracing target so an operator can route `indice::audit` somewhere
+/// durable. This is the minimum viable audit trail — before it, indice kept no
+/// record at all of who added or deleted anything, which is a poor look for a
+/// tool whose whole proposition is provenance. A real append-only event log is
+/// bead `rustyweb-audit-log-dnon`; this is the one-line down payment.
+pub(super) fn audit(actor: &Principal, action: &str, target: &str) {
+    tracing::info!(
+        target: "indice::audit",
+        actor = %actor.id(),
+        role = ?actor.role(),
+        action,
+        target,
+    );
+}
+
+/// Why a request was refused. All 403 — indice never issues a challenge (the
+/// front proxy owns login), so a `WWW-Authenticate` header would be a lie.
+pub(super) enum Denied {
+    Unauthenticated,
+    StaleEvidence,
+    Insufficient(&'static str),
+}
+
+impl IntoResponse for Denied {
+    fn into_response(self) -> Response {
+        let msg: String = match self {
+            Denied::Unauthenticated => {
+                "forbidden: this action requires signing in via the front proxy".into()
             }
-        }
+            Denied::StaleEvidence => {
+                "forbidden: your sign-in has lapsed — reload the page to log in again".into()
+            }
+            Denied::Insufficient(what) => {
+                format!("forbidden: your account is not authorized for {what}")
+            }
+        };
+        (StatusCode::FORBIDDEN, msg).into_response()
+    }
+}
+
+/// The shared gate: the evidence must be strong enough to authorize a write,
+/// *and* the role must be high enough.
+fn require(
+    state: &AppState,
+    headers: &HeaderMap,
+    need: Role,
+    what: &'static str,
+) -> Result<Principal, Denied> {
+    let Some((principal, evidence)) = resolve_caller(state, headers) else {
+        return Err(Denied::Unauthenticated);
+    };
+    if !evidence.admits_writes() {
+        // A display cookie alone. The user looks signed in and the chrome
+        // rendered, but the proxy hasn't vouched for *this* request.
+        return Err(Denied::StaleEvidence);
+    }
+    match principal.role() >= need {
+        true => Ok(principal),
+        false => Err(Denied::Insufficient(what)),
+    }
+}
+
+impl axum::extract::FromRequestParts<Arc<AppState>> for Curator {
+    type Rejection = Denied;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        require(
+            state,
+            &parts.headers,
+            Role::Curator,
+            "curating this archive",
+        )
+        .map(Curator)
+    }
+}
+
+impl axum::extract::FromRequestParts<Arc<AppState>> for Admin {
+    type Rejection = Denied;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        require(
+            state,
+            &parts.headers,
+            Role::Admin,
+            "deleting from this archive",
+        )
+        .map(Admin)
     }
 }
 

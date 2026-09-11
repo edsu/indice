@@ -161,7 +161,16 @@ pub(super) fn acquire_write_lock<'a>(
     }
 }
 
+/// Start a background ingest job.
+///
+/// Takes a `&Curator` it never reads. That is the point: `Curator`'s field is
+/// private to `auth.rs`, so one cannot be fabricated — a caller must have
+/// obtained it from the extractor, i.e. must have passed the check. This makes
+/// "I added a handler and forgot to gate it" a compile error rather than a
+/// silent exposure. (It will also be where the actor comes from once crawls
+/// record who added them — see bead rustyweb-manifest-provenance-sfu7.)
 fn start_index_job(
+    _curator: &Curator,
     state: &Arc<AppState>,
     location: String,
     collection: String,
@@ -224,13 +233,14 @@ fn start_index_job(
 /// an ingest job and returns its id (202 Accepted).
 pub(super) async fn add_archive(
     State(state): State<Arc<AppState>>,
+    curator: Curator,
     Json(req): Json<AddArchiveRequest>,
 ) -> Response {
     // Mirror the CLI's "every crawl belongs to a collection" guard.
     if req.collection.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
     }
-    let id = start_index_job(&state, req.path, req.collection, req.name, None);
+    let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
@@ -241,6 +251,9 @@ pub(super) async fn add_archive(
 /// the job finishes. Returns a job id (202) to stream progress from.
 pub(super) async fn upload_archive(
     State(state): State<Arc<AppState>>,
+    // Before `Multipart`: an extractor that reads the body must come last, and
+    // this way the 403 fires before a multi-gigabyte WACZ is streamed in.
+    curator: Curator,
     mut multipart: Multipart,
 ) -> Response {
     let mut collection: Option<String> = None;
@@ -292,7 +305,7 @@ pub(super) async fn upload_archive(
     };
     let name = name.filter(|n| !n.trim().is_empty());
     let location = path.to_string_lossy().to_string();
-    let id = start_index_job(&state, location, collection, name, tmpdir);
+    let id = start_index_job(&curator, &state, location, collection, name, tmpdir);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
@@ -316,6 +329,7 @@ async fn stream_field_to_file(
 /// consumed once); reconnecting after that yields 404.
 pub(super) async fn add_archive_events(
     State(state): State<Arc<AppState>>,
+    _curator: Curator,
     axum::extract::Path(id): axum::extract::Path<u64>,
 ) -> Response {
     let Some(rx) = state.jobs.lock().unwrap().remove(&id) else {
@@ -439,12 +453,14 @@ fn field_opt(s: &str) -> Option<String> {
 /// redirect (POST-redirect-GET) to its page. Wraps [`crate::index::set_collection`].
 pub(super) async fn create_collection(
     State(state): State<Arc<AppState>>,
+    curator: Curator,
     Form(form): Form<CollectionForm>,
 ) -> Response {
     let name = form.name.trim().to_string();
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, "collection name is required").into_response();
     }
+    audit(curator.principal(), "collection.set", &name);
     let subjects: Vec<String> = form
         .subjects
         .split(',')
@@ -479,8 +495,10 @@ pub(super) async fn create_collection(
 /// local WACZ, thumbnail), reload the searcher, and return to its collection.
 pub(super) async fn delete_crawl_handler(
     State(state): State<Arc<AppState>>,
+    admin: Admin,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    audit(admin.principal(), "crawl.delete", &id);
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it
@@ -511,6 +529,7 @@ pub(super) struct DeleteCollectionForm {
 /// `with_crawls`, its member crawls), reload the searcher, and return home.
 pub(super) async fn delete_collection_handler(
     State(state): State<Arc<AppState>>,
+    admin: Admin,
     axum::extract::Path(id): axum::extract::Path<String>,
     Form(form): Form<DeleteCollectionForm>,
 ) -> Response {
@@ -518,6 +537,14 @@ pub(super) async fn delete_collection_handler(
         .with_crawls
         .as_deref()
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
+    audit(
+        admin.principal(),
+        match with_crawls {
+            true => "collection.delete+crawls",
+            false => "collection.delete",
+        },
+        &id,
+    );
     // This ends in a recursive remove_dir_all, so the id has to be a valid
     // single path component before it goes anywhere near the filesystem.
     let Some(cid) = CollectionId::parse(&id) else {
