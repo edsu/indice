@@ -352,6 +352,15 @@ pub struct Collection {
     pub description: Option<String>,
     /// When the collection was first created (RFC 3339).
     pub created: String,
+    /// Who created it, and who last edited its finding aid, when known.
+    /// `None` for collections created from the CLI or before custody was
+    /// recorded. Stores the [`SubjectId`](crate::identity::SubjectId) — the
+    /// collection page is public, so display names are resolved through
+    /// `users.yaml` at render time rather than baked in here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<crate::identity::SubjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<crate::identity::SubjectId>,
     /// Who runs this indice instance / holds the collection (EAD
     /// `<repository>`), distinct from `creator`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -524,17 +533,31 @@ impl Manifest {
     /// set on first creation. Merge policy is "fill gaps, curator wins": the
     /// caller decides what to pass (the CLI passes what the curator typed; an
     /// importer passes only fields that are still empty). Returns the id.
-    pub fn apply_fields(&mut self, name: &str, fields: &CollectionFields, created: &str) -> String {
+    /// `actor` is who is making the edit, when known — `None` from the CLI,
+    /// which has no request identity. `created_by` is set only on creation so
+    /// it stays the accession record; `updated_by` tracks the last editor.
+    pub fn apply_fields(
+        &mut self,
+        name: &str,
+        fields: &CollectionFields,
+        created: &str,
+        actor: Option<&crate::identity::SubjectId>,
+    ) -> String {
         let id = CollectionId::from_name(name);
         self.dirty.insert(id.clone());
         if let Some(c) = self.collections.iter_mut().find(|c| c.id == id) {
             c.name = name.to_string();
             fields.apply_to(c);
+            if let Some(a) = actor {
+                c.updated_by = Some(a.clone());
+            }
         } else {
             let mut c = Collection {
                 id: id.clone(),
                 name: name.to_string(),
                 created: created.to_string(),
+                created_by: actor.cloned(),
+                updated_by: actor.cloned(),
                 ..Default::default()
             };
             fields.apply_to(&mut c);
@@ -749,6 +772,13 @@ struct FrontMatter {
     name: String,
     #[serde(default)]
     created: String,
+    // Custody. Unlike the curatorial fields below these are NOT written as
+    // blanks: they're recorded by indice, not filled in by a curator, so an
+    // empty scaffold would just be noise in the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_by: Option<crate::identity::SubjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updated_by: Option<crate::identity::SubjectId>,
     // The DACS/EAD curatorial fields are written as `String`/`Vec` (not skipped
     // when empty) so an unset field appears as a blank the curator can fill in —
     // `creator: ''`, `subjects: []`. On read, blanks map back to `None`/empty in
@@ -996,6 +1026,8 @@ fn parse_finding_aid(id: &CollectionId, text: &str) -> Result<Collection> {
         },
         description: blank_none(fm.description),
         created: fm.created,
+        created_by: fm.created_by,
+        updated_by: fm.updated_by,
         curator: fm.curator,
         creator: blank_none(fm.creator),
         dates: blank_none(fm.dates),
@@ -1036,6 +1068,8 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
     let fm = FrontMatter {
         name: c.name.clone(),
         created: c.created.clone(),
+        created_by: c.created_by.clone(),
+        updated_by: c.updated_by.clone(),
         // Unset curatorial fields become empty blanks in the file (scaffold).
         description: c.description.clone().unwrap_or_default(),
         creator: c.creator.clone().unwrap_or_default(),
@@ -1558,6 +1592,38 @@ mod tests {
     }
 
     #[test]
+    fn collection_custody_round_trips_through_the_finding_aid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let alice = crate::identity::SubjectId::parse("alice@x.edu").unwrap();
+        let c = Collection {
+            id: cid("notes"),
+            name: "Notes".into(),
+            created: "2026-01-01T00:00:00Z".into(),
+            created_by: Some(alice.clone()),
+            updated_by: Some(alice.clone()),
+            ..Default::default()
+        };
+        write_finding_aid(tmp.path(), &c).unwrap();
+        let text =
+            std::fs::read_to_string(collection_dir(tmp.path(), &c.id).join("README.md")).unwrap();
+        // Stored as the canonical identity, for comparison — the page resolves
+        // a display name through users.yaml at render time.
+        assert!(text.contains("created_by: mailto:alice@x.edu"), "{text}");
+        let back = parse_finding_aid(&c.id, &text).unwrap();
+        assert_eq!(back.created_by, Some(alice));
+
+        // A finding aid with no custody keys must load, and must not grow them
+        // on the way back out — otherwise every hand-written one churns.
+        let plain = "---\nname: Notes\ncreated: 2026-01-01T00:00:00Z\n---\n";
+        let none = parse_finding_aid(&cid("notes"), plain).unwrap();
+        assert_eq!(none.created_by, None);
+        write_finding_aid(tmp.path(), &none).unwrap();
+        let out = std::fs::read_to_string(collection_dir(tmp.path(), &none.id).join("README.md"))
+            .unwrap();
+        assert!(!out.contains("created_by"), "{out}");
+    }
+
+    #[test]
     fn a_manifest_without_custody_still_loads() {
         // added_by is additive, so every manifest written before it existed
         // must deserialize unchanged — and round-trip without gaining a key,
@@ -1710,6 +1776,7 @@ mod tests {
                 ..Default::default()
             },
             "2026-01-01T00:00:00Z",
+            None,
         );
 
         // A later seed fills a still-empty field (creator) but must NOT overwrite
@@ -1790,6 +1857,7 @@ mod tests {
                 ..Default::default()
             },
             "2026-01-01T00:00:00Z",
+            None,
         );
         assert_eq!(id, "bay-area-transit");
         assert_eq!(m.collections.len(), 1);
@@ -1807,6 +1875,7 @@ mod tests {
                 ..Default::default()
             },
             "2026-02-02T00:00:00Z",
+            None,
         );
         assert_eq!(m.collections.len(), 1);
         assert_eq!(m.collections[0].description.as_deref(), Some("desc"));
@@ -1833,6 +1902,7 @@ mod tests {
                 ..Default::default()
             },
             "2026-01-01T00:00:00Z",
+            None,
         );
         m.save().unwrap();
 

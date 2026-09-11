@@ -17,13 +17,16 @@ pub fn set_collection(
     home: &Path,
     name: &str,
     fields: &crate::collections::CollectionFields,
+    // Who is editing, when known. `None` from the CLI, which has no request
+    // identity — an unattributed edit is recorded as such rather than invented.
+    actor: Option<&crate::identity::SubjectId>,
 ) -> Result<String> {
     let index_dir = index_dir(home);
     std::fs::create_dir_all(&index_dir)
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
     let mut manifest = Manifest::open(&index_dir)?;
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let id = manifest.apply_fields(name, fields, &now);
+    let id = manifest.apply_fields(name, fields, &now, actor);
     manifest.save()?;
     info!(collection = %id, "collection metadata updated");
     Ok(id)

@@ -510,12 +510,14 @@ pub(super) async fn create_collection(
         narrative: field_opt(&form.narrative),
     };
     let home = state.home.clone();
+    let actor = curator.principal().id().clone();
     // set_collection writes the README + manifest — quick, but blocking, so keep
     // it off the async runtime. The homepage re-reads the manifest per request,
     // so the new/edited collection shows immediately (no searcher reload needed).
-    let result =
-        tokio::task::spawn_blocking(move || crate::index::set_collection(&home, &name, &fields))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        crate::index::set_collection(&home, &name, &fields, Some(&actor))
+    })
+    .await;
     match result {
         Ok(Ok(id)) => Redirect::to(&format!("/collection/{id}")).into_response(),
         Ok(Err(e)) => error_response(e).into_response(),

@@ -50,6 +50,16 @@ pub(super) async fn collection_page(
     }
     let created = c.created.get(..10).unwrap_or(&c.created);
     meta.push(views::MetaRow::new("Created", created));
+    // Custody, resolved to a display name through the roster — this page is
+    // public, so the stored SubjectId must not be printed.
+    if let Some(subject) = &c.created_by {
+        let name = state
+            .users
+            .resolve(subject.clone())
+            .display_name()
+            .to_string();
+        meta.push(views::MetaRow::new("Created by", name));
+    }
 
     let member_items: Vec<views::MemberItem> = members
         .iter()
