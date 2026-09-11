@@ -16,9 +16,18 @@ Annotations are stored in the clear as Markdown, and display is **public**. Don'
 Reading annotations is open to everyone. **Creating, editing, and deleting** them requires management access — the same gate as the rest of the [workroom](/docs/guides/manage/):
 
 - **Local `serve --manage`** on loopback — you're the trusted admin; notes are authored as `local`.
-- **Behind a forward-auth proxy** — the authenticated user is the author, and their identity is shown as the note's author.
+- **Behind a forward-auth proxy** — the authenticated user is the author.
 
-You can edit or delete **only your own** notes.
+You can edit or delete **only your own** notes. On a loopback instance that rule has nothing to distinguish: there's a single local identity, so every note is editable by whoever is at the machine. Telling authors apart needs a forward-auth proxy.
+
+### Authorship and privacy
+
+Each note records two different things about its author, and only one of them is published:
+
+- a **subject id**, used to decide who may edit the note. It's normalized (`alice@x.edu` and `Alice@X.edu` are one person) and never displayed.
+- a **display name**, shown on the note. It's derived from the identity your proxy forwards, with any domain stripped — so an `alice@x.edu` login is attributed to `alice`.
+
+This matters because annotations are **public to read** and `annotations.jsonl` is meant to be committed to version control. Publishing the raw login identity would put contributors' email addresses in front of anonymous visitors and into your git history. If your proxy forwards emails, only the local part is ever shown.
 
 ## Creating a note
 

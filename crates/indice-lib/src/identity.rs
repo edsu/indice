@@ -96,7 +96,9 @@ impl SubjectId {
     /// key. The stored value is canonicalized first, so keys written before
     /// normalization (`alice@x.edu`, `Alice@X.edu`, `local`) still match.
     pub fn matches(&self, stored: Option<&str>) -> bool {
-        stored.and_then(SubjectId::parse).is_some_and(|s| s == *self)
+        stored
+            .and_then(SubjectId::parse)
+            .is_some_and(|s| s == *self)
     }
 
     /// A name safe to publish: the email local part, or the bare username —
@@ -189,7 +191,10 @@ mod tests {
             SubjectId::parse("alice@x.edu").unwrap().display_name(),
             "alice"
         );
-        assert_eq!(SubjectId::parse("ed.summers").unwrap().display_name(), "ed.summers");
+        assert_eq!(
+            SubjectId::parse("ed.summers").unwrap().display_name(),
+            "ed.summers"
+        );
         assert_eq!(SubjectId::local().display_name(), "local");
     }
 }
