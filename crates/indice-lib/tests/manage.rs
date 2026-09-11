@@ -973,6 +973,13 @@ async fn public_annotation_api_never_exposes_a_login_address() {
     .unwrap();
     assert!((200..300).contains(&status), "note created (got {status})");
 
+    // On disk the two values are now distinct: a canonical id to compare
+    // against, and a display name that is safe to publish and to commit.
+    let stored = std::fs::read_to_string(home.join("collections/notes/annotations.jsonl")).unwrap();
+    let record: serde_json::Value = serde_json::from_str(stored.trim()).unwrap();
+    assert_eq!(record["creator"]["id"], "mailto:alice@x.edu");
+    assert_eq!(record["creator"]["name"], "alice");
+
     // Now read as an anonymous visitor. None of these may carry the address.
     for path in [
         "/api/annotations?collection=notes",

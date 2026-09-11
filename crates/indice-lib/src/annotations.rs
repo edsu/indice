@@ -278,14 +278,22 @@ pub fn create(home: &Path, collection: &CollectionId, annotation: &Annotation) -
     Ok(())
 }
 
-/// Replace an annotation's note text, if it exists and `author` wrote it. Sets
-/// `modified`. Returns whether it was applied, not found, or forbidden.
+/// Replace an annotation's note text, if it exists and `may_edit` accepts its
+/// author key. Sets `modified`. Returns whether it was applied, not found, or
+/// forbidden.
+///
+/// The gate is a predicate over the *stored* key rather than a `&str` to compare
+/// against, for two reasons. It keeps this storage layer free of any identity
+/// type (it deliberately knows nothing about proxies or logins), and it lets the
+/// caller canonicalize the stored value before matching — which is how notes
+/// written before identities were normalized stay editable by their authors.
+/// See [`crate::identity::SubjectId::matches`].
 pub fn update(
     home: &Path,
     collection: &CollectionId,
     id: &str,
     new_note: &str,
-    author: &str,
+    may_edit: impl Fn(Option<&str>) -> bool,
 ) -> Result<UpdateResult> {
     if new_note.trim().is_empty() {
         bail!("annotation body is empty");
@@ -294,7 +302,7 @@ pub fn update(
     let Some(pos) = all.iter().position(|a| a.id == id) else {
         return Ok(UpdateResult::NotFound);
     };
-    if all[pos].author_key() != Some(author) {
+    if !may_edit(all[pos].author_key()) {
         return Ok(UpdateResult::Forbidden);
     }
     all[pos].body = Body::markdown(new_note);
@@ -303,18 +311,19 @@ pub fn update(
     Ok(UpdateResult::Updated(Box::new(all[pos].clone())))
 }
 
-/// Delete an annotation, if it exists and `author` wrote it.
+/// Delete an annotation, if it exists and `may_edit` accepts its author key
+/// (see [`update`] for why the gate is a predicate).
 pub fn delete(
     home: &Path,
     collection: &CollectionId,
     id: &str,
-    author: &str,
+    may_edit: impl Fn(Option<&str>) -> bool,
 ) -> Result<EditOutcome> {
     let mut all = load(home, collection)?;
     let Some(pos) = all.iter().position(|a| a.id == id) else {
         return Ok(EditOutcome::NotFound);
     };
-    if all[pos].author_key() != Some(author) {
+    if !may_edit(all[pos].author_key()) {
         return Ok(EditOutcome::Forbidden);
     }
     all.remove(pos);
@@ -492,18 +501,22 @@ mod tests {
 
         // wrong author can't edit or delete
         assert_eq!(
-            update(home, col, &id, "hacked", "mailto:eve@example.org").unwrap(),
+            update(home, col, &id, "hacked", |k| k
+                == Some("mailto:eve@example.org"))
+            .unwrap(),
             UpdateResult::Forbidden
         );
         assert_eq!(
-            delete(home, col, &id, "mailto:eve@example.org").unwrap(),
+            delete(home, col, &id, |k| k == Some("mailto:eve@example.org")).unwrap(),
             EditOutcome::Forbidden
         );
         assert_eq!(get(home, col, &id).unwrap().unwrap().body.value, "first");
 
         // author can edit (sets modified) then delete
         assert!(matches!(
-            update(home, col, &id, "second", "mailto:ada@example.org").unwrap(),
+            update(home, col, &id, "second", |k| k
+                == Some("mailto:ada@example.org"))
+            .unwrap(),
             UpdateResult::Updated(_)
         ));
         let edited = get(home, col, &id).unwrap().unwrap();
@@ -511,14 +524,14 @@ mod tests {
         assert!(edited.modified.is_some());
 
         assert_eq!(
-            delete(home, col, &id, "mailto:ada@example.org").unwrap(),
+            delete(home, col, &id, |k| k == Some("mailto:ada@example.org")).unwrap(),
             EditOutcome::Done
         );
         assert!(get(home, col, &id).unwrap().is_none());
 
         // unknown id
         assert_eq!(
-            delete(home, col, "nope", "mailto:ada@example.org").unwrap(),
+            delete(home, col, "nope", |k| k == Some("mailto:ada@example.org")).unwrap(),
             EditOutcome::NotFound
         );
     }
