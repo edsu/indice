@@ -37,6 +37,24 @@ const USER_URN: &str = "urn:indice:user:";
 /// behind a trusted proxy, and this string ends up in committed JSONL.
 const MAX_LEN: usize = 320;
 
+/// Reduce an identity-ish string to something safe to publish: an email's local
+/// part, or the value unchanged if there's no domain in it.
+///
+/// This is the sanitizer every *public* surface goes through, and it runs on
+/// read rather than on write so it covers data already on disk — annotations
+/// written before identities were separated, and `author` values already baked
+/// into the search index, which is only rebuilt by an explicit `reindex`.
+///
+/// Used verbatim, never title-cased: turning `ed.summers` into "Ed Summers"
+/// would be inventing the spelling of someone's name.
+pub fn public_display_name(raw: &str) -> &str {
+    match raw.split_once('@') {
+        // A leading `@` would otherwise yield an empty label.
+        Some((local, _)) if !local.is_empty() => local,
+        _ => raw,
+    }
+}
+
 /// A normalized, stable identity for someone who writes to this archive.
 ///
 /// Always an IRI:
@@ -103,20 +121,26 @@ impl SubjectId {
 
     /// A name safe to publish: the email local part, or the bare username —
     /// never the domain, and never a mailto-able address.
-    ///
-    /// Used verbatim, never title-cased: turning `ed.summers` into "Ed Summers"
-    /// would be inventing the spelling of someone's name. A real display name
-    /// comes from the person choosing one.
     pub fn display_name(&self) -> &str {
         let bare = self
             .0
             .strip_prefix("mailto:")
             .or_else(|| self.0.strip_prefix(USER_URN))
             .unwrap_or(&self.0);
-        match bare.split_once('@') {
-            Some((local, _)) if !local.is_empty() => local,
-            _ => bare,
-        }
+        public_display_name(bare)
+    }
+
+    /// Parse an identity forwarded by a *proxy*, which must never be able to
+    /// name the loopback operator.
+    ///
+    /// [`SubjectId::local`] is the author key every loopback `--manage` session
+    /// writes, and [`SubjectId::matches`] deliberately treats the bare string
+    /// `"local"` as that same identity so those notes stay editable. The flip
+    /// side is that a remote user whose proxy identity happened to be `local`
+    /// would inherit every note the machine's operator ever wrote. Rare, but
+    /// free to close: reject it, rather than silently conflating two people.
+    pub fn parse_remote(raw: &str) -> Option<Self> {
+        SubjectId::parse(raw).filter(|s| *s != SubjectId::local())
     }
 }
 
@@ -183,6 +207,20 @@ mod tests {
 
         // Every note a loopback instance ever wrote used the key "local".
         assert!(SubjectId::local().matches(Some("local")));
+    }
+
+    #[test]
+    fn the_local_operator_is_not_claimable_by_a_remote_user() {
+        // `matches` treats a bare "local" as the loopback operator so those
+        // notes stay editable — which means a proxy identity of "local" would
+        // otherwise inherit every one of them.
+        assert_eq!(SubjectId::parse("local"), Some(SubjectId::local()));
+        assert_eq!(SubjectId::parse_remote("local"), None);
+        assert_eq!(SubjectId::parse_remote("Local"), None);
+        assert_eq!(SubjectId::parse_remote("urn:indice:user:local"), None);
+        // Anyone else is unaffected.
+        assert!(SubjectId::parse_remote("alice@x.edu").is_some());
+        assert!(SubjectId::parse_remote("localadmin").is_some());
     }
 
     #[test]

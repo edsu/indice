@@ -224,7 +224,15 @@ impl SearchIndex {
                 domain: get_text(&doc, domain_f),
                 timestamp: get_text(&doc, ts_f),
                 title: get_text(&doc, title_f),
-                author: get_text(&doc, author_f),
+                // Sanitized on the way out, not just on the way in: for an
+                // annotation hit this is the note's author, and an index built
+                // before display names were separated from login identities
+                // still has an address stored here. Doing it on read means an
+                // upgrade stops the leak without an `indice reindex`.
+                author: {
+                    let stored = get_text(&doc, author_f);
+                    crate::identity::public_display_name(&stored).to_string()
+                },
                 description: get_text(&doc, description_f),
                 snippet: snippet.to_html(),
                 body_excerpt: leading_excerpt(&body_snip),

@@ -86,16 +86,14 @@ impl Creator {
     /// than on write means existing notes stop leaking as soon as this ships,
     /// with no file rewrite and no migration to run first.
     ///
-    /// The local part is used verbatim, never title-cased: guessing that
-    /// `ed.summers` is "Ed Summers" would be inventing the spelling of someone's
-    /// name. A real display name comes from the author choosing one.
+    /// The search index stores its own copy of this name, so the same sanitizer
+    /// is applied when reading a hit back out (see `search::query`) — otherwise
+    /// an index built before this change would keep serving the address until
+    /// the next `indice reindex`.
     pub fn public_name(&self) -> Option<&str> {
-        let name = self.name.as_deref()?;
-        Some(match name.split_once('@') {
-            // Guard against a leading `@` yielding an empty label.
-            Some((local, _)) if !local.is_empty() => local,
-            _ => name,
-        })
+        self.name
+            .as_deref()
+            .map(crate::identity::public_display_name)
     }
 }
 
