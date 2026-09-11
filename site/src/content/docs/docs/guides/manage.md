@@ -42,7 +42,45 @@ indice serve --manage \
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
 - **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config — *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
-Every management request must carry both the identity header and the secret; anything else is rejected. The public read-only site (search, browse, replay) is **not** gated — only the management routes are. "Who is an admin" is delegated entirely to your proxy/SSO: anyone it logs in can administer.
+Every management request must carry both the identity header and the secret; anything else is rejected. The public read-only site (search, browse, replay) is **not** gated — only the management routes are.
+
+## Who can do what
+
+Your proxy decides **who gets in**. indice decides **what they can do**, using three roles:
+
+| Role | Can |
+|---|---|
+| **Reader** | Read everything public. This is anonymous visitors, and anyone signed in who isn't on the roster. |
+| **Curator** | Accession and describe: create collections, add and upload crawls, edit finding aids, run imports, and annotate. Edit and delete **their own** notes. |
+| **Admin** | Everything a curator can, plus the irreversible things: delete a crawl, delete a collection, and moderate anyone's notes. |
+
+In a sentence: **curators add and can undo their own additions; only admins remove a collection.**
+
+The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made — then deleting "yours" destroys their work. Deaccession is a shared, irreversible act, so it stays with admins, the same way it's a deliberate decision in a physical archive.
+
+### Setting roles
+
+Roles live in an optional `<home>/users.yaml`:
+
+```yaml
+users:
+  - id: alice@example.org
+    name: Alice Ramírez      # shown publicly; omit to derive one from the id
+    role: admin              # admin | curator | reader (default: curator)
+  - id: jun@example.org
+    aliases: [j.tanaka@old.example.org]   # prior addresses, so they keep their notes
+```
+
+- **No `users.yaml`** — every user your proxy authenticates is an **admin**. This is the default, and it's exactly how indice behaved before roles existed, so adding the file is opt-in.
+- **With a `users.yaml`** — listed people get their role; anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) therefore means "nobody administers", which is honored rather than treated as "no file".
+
+Take care not to lock yourself out: if you add the file, put your own identity in it. indice logs which regime it's in at startup.
+
+The file is read at startup, so a change takes effect on restart. It's plain YAML meant to be committed alongside your finding aids.
+
+:::caution[Identities aren't passwords]
+`users.yaml` grants privilege to an identity your proxy has already verified. It is not a credential store — indice never sees or checks a password. Anyone who can make your proxy emit `alice@example.org` is Alice, as far as indice is concerned.
+:::
 
 The management routes show the workroom chrome + signed-in identity from the proxy's identity header. The public pages (home, collection, crawl) are ungated, and browsers won't send the proxy's credentials there — so at login indice sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) and reads it on those pages, so a signed-in admin gets the edit-in-place controls everywhere. The cookie only drives *rendering* — every write is still re-checked against the proxy's identity header + secret, so a stolen or forged cookie grants no access. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login and returns you to where you were). A **Log out** link clears the display cookie — but note that with the Basic-auth stopgap the browser keeps its cached credentials until it's closed, so logout only hides the chrome; a full sign-out (and single sign-on) comes with the [SSO path](/docs/guides/deploy/#single-sign-on-oauth2-proxy).
 
