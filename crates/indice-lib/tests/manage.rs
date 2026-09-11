@@ -760,3 +760,168 @@ async fn annotation_note_html_cannot_carry_executable_markup() {
 
     server.abort();
 }
+
+// ── Cross-site request forgery ──────────────────────────────────────────────
+
+/// POST a form body with extra request headers; returns `(status, body)`.
+/// `redirects(0)` keeps a successful POST-redirect-GET from following through to
+/// the page, so the status we assert on is the handler's own.
+async fn post_form_with_headers(
+    url: String,
+    form: &'static str,
+    headers: Vec<(&'static str, String)>,
+) -> (u16, String) {
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .build()
+            .new_agent();
+        let mut req = agent
+            .post(&url)
+            .header("content-type", "application/x-www-form-urlencoded");
+        for (k, v) in &headers {
+            req = req.header(*k, v);
+        }
+        let mut res = req.send(form).unwrap();
+        (
+            res.status().as_u16(),
+            res.body_mut().read_to_string().unwrap_or_default(),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+/// The heart of the CSRF fix: a *local* `--manage` instance has no auth proxy
+/// and therefore no forward-auth middleware, so before the same-origin guard the
+/// write routes ran completely unprotected. A loopback bind is not a boundary a
+/// browser honors — any page the operator visited could POST a form here.
+#[tokio::test]
+async fn local_manage_mode_is_csrf_protected_too() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+
+    // A same-origin POST still works: create a collection the normal way.
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        "name=Keepsakes",
+        vec![("origin", base.clone())],
+    )
+    .await;
+    assert_eq!(status, 303, "a same-origin form post is untouched");
+    let dir = home.join("collections").join("keepsakes");
+    assert!(dir.is_dir(), "collection was created at {dir:?}");
+
+    // Now the attack: a form on another site aimed at the loopback server.
+    let (status, body) = post_form_with_headers(
+        format!("{base}/api/collections/keepsakes/delete"),
+        "with_crawls=on",
+        vec![("origin", "https://evil.example".to_string())],
+    )
+    .await;
+    assert_eq!(status, 403, "cross-site delete must be refused");
+    assert!(body.contains("cross-site request blocked"), "{body}");
+    assert!(
+        dir.is_dir(),
+        "the collection must survive a cross-site delete"
+    );
+
+    server.abort();
+}
+
+/// Every management write reachable without a CORS preflight (`Form` and
+/// `Multipart` bodies are "simple" content types) must refuse a foreign Origin.
+/// The `Json` routes are preflighted and so already unreachable cross-site, but
+/// they are covered here too so the guard can't regress to a partial rollout.
+#[tokio::test]
+async fn cross_site_post_is_rejected_on_every_management_write() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+
+    for (path, form) in [
+        ("/api/collections", "name=Sneaky"),
+        ("/api/collections/anything/delete", "with_crawls=on"),
+        ("/api/crawls/anything/delete", ""),
+        ("/api/archives/upload", ""),
+    ] {
+        let (status, body) = post_form_with_headers(
+            format!("{base}{path}"),
+            form,
+            vec![("origin", "https://evil.example".to_string())],
+        )
+        .await;
+        assert_eq!(status, 403, "{path} should refuse a cross-site POST");
+        assert!(
+            body.contains("cross-site request blocked"),
+            "{path}: {body}"
+        );
+    }
+
+    // Nothing was created by the refused create-collection attempt.
+    assert!(
+        !home.join("collections").join("sneaky").exists(),
+        "a refused request must not have run the handler"
+    );
+
+    server.abort();
+}
+
+/// `Sec-Fetch-Site` is the fallback when a request carries no `Origin`.
+#[tokio::test]
+async fn sec_fetch_site_cross_site_is_rejected_without_origin() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::local(),
+    )
+    .await;
+
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        "name=Sneaky",
+        vec![("sec-fetch-site", "cross-site".to_string())],
+    )
+    .await;
+    assert_eq!(status, 403);
+
+    // ...while a request with neither header (curl, our own tests, a health
+    // checker) is allowed: no browser, so no ambient credentials to ride.
+    let (status, _) =
+        post_form_with_headers(format!("{base}/api/collections"), "name=Fine", vec![]).await;
+    assert_eq!(status, 303);
+
+    server.abort();
+}
+
+/// The guard is outermost, so a cross-site request is refused *before*
+/// forward-auth looks at credentials — the attacker learns nothing about whether
+/// their forged identity would have been accepted.
+#[tokio::test]
+async fn csrf_guard_runs_before_forward_auth() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    // Fully valid proxy credentials, but a foreign Origin: still refused, and
+    // with the CSRF message rather than the forward-auth one.
+    let (status, body) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        "name=Sneaky",
+        vec![
+            ("origin", "https://evil.example".to_string()),
+            ("x-indice-auth-secret", "s3cret".to_string()),
+            ("x-forwarded-email", "alice@x.edu".to_string()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 403);
+    assert!(
+        body.contains("cross-site request blocked"),
+        "CSRF is judged first: {body}"
+    );
+
+    server.abort();
+}
