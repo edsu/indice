@@ -3,16 +3,16 @@ title: Importing from Archive-It
 description: Pull WARC crawls from an Archive-It account over WASAPI; indice builds a WACZ per crawl and indexes it.
 ---
 
-If your crawls live in an [Archive-It](https://archive-it.org/) account (the Internet Archive's subscription web-archiving service), `indice import archive-it` pulls them in. Unlike Browsertrix, Archive-It serves **WARC files** (via WASAPI), not WACZ — so indice downloads each crawl's WARCs, **builds a WACZ from them** (one WACZ per crawl, the same builder as `wacz build`), and indexes it. WACZ creation is an implementation detail; you select crawls.
+If your crawls live in an [Archive-It](https://archive-it.org/) account (the Internet Archive's subscription web-archiving service), `indice import archive-it` pulls them in. Unlike Browsertrix, Archive-It serves **WARC files** (via WASAPI), not WACZ, so indice downloads each crawl's WARCs, **builds a WACZ from them** (one WACZ per crawl, the same builder as `wacz build`), and indexes it.
 
-Credentials come from the **environment**, never the command line:
+At the moment an indice server can only be associated with one Archive-It account. Credentials come from the **environment**, never the command line:
 
 ```sh
 export ARCHIVEIT_USER='you@example.org'
 read -rs ARCHIVEIT_PASSWORD; export ARCHIVEIT_PASSWORD   # prompts, no echo
 ```
 
-Then import — preview first with `--dry-run`, then pull for real:
+Then import, or preview first with `--dry-run`, and then pull for real:
 
 ```sh
 # every active collection in the account, into ~/webarchive

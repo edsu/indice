@@ -3,7 +3,7 @@ title: Manage & curate
 description: Turn the read-only reading room into an editable workroom with serve --manage, locally or behind an authenticating proxy.
 ---
 
-By default `indice serve` is **read-only** — it never writes, so you curate from the command line (`index`, `collection set`, `import browsertrix`). Passing `--manage` turns the ordinary site into an editable **workroom**: the same pages gain curation controls (a warm clay "red-tape" accent marks write mode), so you can add archives and curate collections in place, no command line needed:
+By default `indice serve` is **read-only**: it never writes, so you curate from the command line (`index`, `collection set`, `import browsertrix`). However, passing `--manage` turns the ordinary site into an editable **workroom**: the same pages gain curation controls (a warm clay "red-tape" accent marks write mode), so you can add archives and curate collections in place, no command line needed:
 
 ```bash
 indice serve --manage        # http://127.0.0.1:8080
@@ -13,24 +13,24 @@ indice serve --manage        # http://127.0.0.1:8080
 
 With `--manage` on:
 
-- **The homepage** — its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance greets you with "add your first archive."
-- **Each collection page** — gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
-- **Add crawls** (the accession desk) — upload a `.wacz` from your computer, or point indice at a local path or an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader — no restart). Uploaded/local files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
-- **The replay viewer** — gains a **Notes** panel for [annotating](/docs/guides/annotations/) a page or a selected passage. Notes are public to read but only signed-in users can write them.
+- **The homepage.** Its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance shows "add your first archive."
+- **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
+- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or point indice at a local path or an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded/local files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
+- **The replay viewer** gains a **Notes** panel for [annotating](/docs/guides/annotations/) a page or a selected passage. Notes are public to read but only signed-in users can write them.
 
 ![The Edit collection finding-aid form: name (fixed), description, creator, dates, curator, rights, comma-separated subjects, and a Markdown narrative field, with a Save changes button](../../../../assets/docs/edit-collection.png)
 
-![The Add crawls accession desk: a collection selector and source tabs — Upload, Path / URL, Browsertrix, and Archive-It — with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
+![The Add crawls accession desk: a collection selector and source tabs (Upload, Path / URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
 
 The default `serve` (without `--manage`) mounts none of this, so a public, read-only deployment can never mutate the archive.
 
 ## Local use
 
-`indice serve --manage` bound to `127.0.0.1` (the default) trusts every request: you're the only one who can reach it, so you're the admin and there's no login. Because it trusts everything, indice **refuses to start** if `--manage` is bound to a non-loopback address without an auth proxy configured (below) — otherwise you'd expose an unauthenticated write surface to the network.
+`indice serve --manage` bound to `127.0.0.1` (the default) trusts every request: you're the only one who can reach it, so you're the admin and there's no login. Because it trusts everything, indice **refuses to start** if `--manage` is bound to a non-loopback address without an auth proxy configured (below), since that would expose an unauthenticated write surface to the network.
 
 ## Running as a service (forward-auth)
 
-To offer management to real users over the network, run indice behind an **authenticating reverse proxy** — nginx, Caddy, [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/), Authelia, Cloudflare Access, Tailscale, an institutional SSO gateway, and so on. The proxy performs the login and forwards the authenticated user to indice in a header; indice trusts that header only when the request also carries a shared secret:
+To offer management to real users over the network, run indice behind an **authenticating reverse proxy**: nginx, Caddy, [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/), Authelia, Cloudflare Access, Tailscale, an institutional SSO gateway, and so on. The proxy performs the login and forwards the authenticated user to indice in a header; indice trusts that header only when the request also carries a shared secret:
 
 ```bash
 indice serve --manage \
@@ -40,9 +40,9 @@ indice serve --manage \
 ```
 
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
-- **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config — *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
+- **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
-Every management request must carry both the identity header and the secret; anything else is rejected. The public read-only site (search, browse, replay) is **not** gated — only the management routes are.
+Every management request must carry both the identity header and the secret; anything else is rejected. The public read-only site (search, browse, replay) is **not** gated; only the management routes are.
 
 ## Who can do what
 
@@ -54,11 +54,11 @@ Your proxy decides **who gets in**. indice decides **what they can do**, using t
 | **Curator** | Accession and describe: create collections, add and upload crawls, edit finding aids, run imports, and annotate. Delete **crawls they added** and **their own** notes. |
 | **Admin** | Everything a curator can, plus the irreversible things: delete a crawl, delete a collection, and moderate anyone's notes. |
 
-In a sentence: **curators add and can undo their own additions; only admins remove a collection.**
+In short: **curators add and can undo their own additions; only admins remove a collection.**
 
-The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made — then deleting "yours" destroys their work. So ownership governs **crawls**, which belong to whoever accessioned them, while removing a whole **collection** stays an admin act, the same way deaccession is a deliberate decision in a physical archive.
+The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made, then deleting "yours" destroys their work. So ownership governs **crawls**, which belong to whoever accessioned them, while removing a whole **collection** stays an admin act.
 
-indice records who added each crawl, so a curator can undo their own mis-upload without waiting for an admin. Crawls added from the command line, or before indice recorded this, have no recorded owner — they're nobody's, so only an admin can remove them.
+indice records who added each crawl, so a curator can undo their own mis-upload without waiting for an admin. Crawls added from the command line, or before indice recorded this, have no recorded owner, they're nobody's, so only an admin can remove them.
 
 ### Setting roles
 
@@ -73,26 +73,26 @@ users:
     aliases: [j.tanaka@old.example.org]   # prior addresses, so they keep their notes
 ```
 
-- **No `users.yaml`** — every user your proxy authenticates is an **admin**. This is the default, and it's exactly how indice behaved before roles existed, so adding the file is opt-in. One deliberate exception: notes stay **author-only** here. Moderating someone else's work is something you opt into by naming admins in a roster, not something the permissive default hands out.
-- **With a `users.yaml`** — listed people get their role; anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) therefore means "nobody administers", which is honored rather than treated as "no file".
+- **No `users.yaml`** means every user your proxy authenticates is an **admin**. This is the default, and it's exactly how indice behaved before roles existed, so adding the file is opt-in. One deliberate exception: notes stay **author-only** here. Moderating someone else's work is something you opt into by naming admins in a roster, not something the permissive default hands out.
+- **With a `users.yaml`** means listed people get their role; anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) therefore means "nobody administers", which is honored rather than treated as "no file".
 
 Take care not to lock yourself out: if you add the file, put your own identity in it. indice logs which regime it's in at startup.
 
 The file is read at startup, so a change takes effect on restart. It's plain YAML meant to be committed alongside your finding aids.
 
 :::caution[Identities aren't passwords]
-`users.yaml` grants privilege to an identity your proxy has already verified. It is not a credential store — indice never sees or checks a password. Anyone who can make your proxy emit `alice@example.org` is Alice, as far as indice is concerned.
+`users.yaml` grants privilege to an identity your proxy has already verified. It is not a credential store: indice never sees or checks a password. Anyone who can make your proxy emit `alice@example.org` is Alice, as far as indice is concerned.
 :::
 
-The management routes show the workroom chrome + signed-in identity from the proxy's identity header. The public pages (home, collection, crawl) are ungated, and browsers won't send the proxy's credentials there — so at login indice sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) and reads it on those pages, so a signed-in admin gets the edit-in-place controls everywhere. The cookie only drives *rendering* — every write is still re-checked against the proxy's identity header + secret, so a stolen or forged cookie grants no access. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login and returns you to where you were). A **Log out** link clears the display cookie — but note that with the Basic-auth stopgap the browser keeps its cached credentials until it's closed, so logout only hides the chrome; a full sign-out (and single sign-on) comes with the [SSO path](/docs/guides/deploy/#single-sign-on-oauth2-proxy).
+The management routes show the workroom chrome + signed-in identity from the proxy's identity header. The public pages (home, collection, crawl) are ungated, and browsers won't send the proxy's credentials there. So at login indice sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) and reads it on those pages. A signed-in admin or curator gets the edit-in-place controls everywhere. The cookie only drives *rendering*. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login and returns you to where you were). A **Log out** link clears the display cookie. But note that with the Basic-auth stopgap the browser keeps its cached credentials until it's closed, so logout only hides the chrome; a full sign-out (and single sign-on) comes with the [SSO path](/docs/guides/deploy/#single-sign-on-oauth2-proxy).
 
 ## Cross-site protection
 
-Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies to local `--manage` too: a loopback bind is not a boundary a browser respects — while the workroom is running, any page you visit can reach `127.0.0.1`.
+Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies to local `--manage` too: a loopback bind is not a boundary a browser respects. While the workroom is running, any page you visit can reach `127.0.0.1`.
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
 
-This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and both example configs below rely on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host` — nginx's default `proxy_set_header Host $proxy_host`. Then tell indice its public address:
+This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and both example configs below rely on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host`, which is nginx's default (`proxy_set_header Host $proxy_host`). Then tell indice its public address:
 
 ```bash
 indice serve --manage --site-url https://archive.example.org   # or INDICE_SITE_URL
