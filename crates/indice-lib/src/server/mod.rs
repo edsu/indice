@@ -64,6 +64,13 @@ pub struct ManageConfig {
     /// proxy's sign-out URL (e.g. `/oauth2/sign_out?rd=/`) so a single click ends
     /// both indice's display session and the proxy's login session.
     pub logout_redirect: Option<String>,
+    /// This site's public authority (`host[:port]`), for the cross-site (CSRF)
+    /// check on management writes. `None` — the normal case — means "infer it from
+    /// `X-Forwarded-Host`/`Host`", which is correct for both shipped Caddyfiles and
+    /// for a direct loopback bind. Set it (`--site-url`) only behind a proxy that
+    /// rewrites `Host` *without* setting `X-Forwarded-Host`, e.g. nginx's default
+    /// `proxy_set_header Host $proxy_host`.
+    pub site_authority: Option<String>,
 }
 
 /// Forward-auth settings: which header carries the authenticated user, and the
@@ -88,8 +95,7 @@ impl ManageConfig {
     pub fn local() -> Self {
         Self {
             enabled: true,
-            forward_auth: None,
-            logout_redirect: None,
+            ..Self::default()
         }
     }
     /// Management on, gated behind a trusted auth proxy.
@@ -100,7 +106,7 @@ impl ManageConfig {
                 user_header: user_header.into(),
                 secret: secret.into(),
             }),
-            logout_redirect: None,
+            ..Self::default()
         }
     }
 }
@@ -307,6 +313,24 @@ fn build_router(
                 },
             ));
         }
+
+        // CSRF: refuse a state-changing management request that some *other*
+        // site's page initiated. Applied unconditionally — not inside the
+        // `if let` above — because local (loopback) mode has no forward-auth
+        // layer and is therefore the mode with no other protection at all.
+        //
+        // `Router::layer` wraps, so this last layer is the OUTERMOST one and runs
+        // first: a cross-site POST is refused before forward-auth does any
+        // identity bookkeeping (notably before it refreshes the display cookie),
+        // and before any body is read — which matters given the disabled body
+        // limit on `/api/archives/upload`.
+        let site = manage.site_authority.clone();
+        manage_routes = manage_routes.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let site = site.clone();
+                async move { same_origin_guard(site.as_deref(), req, next).await }
+            },
+        ));
         app = app.merge(manage_routes);
     }
 

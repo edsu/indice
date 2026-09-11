@@ -1,8 +1,10 @@
 use super::*;
 use crate::views;
+use axum::http::{HeaderMap, Method, Uri};
 // Internals these tests exercise directly, now that they live in sibling modules.
 use super::auth::{
-    clear_session_cookie, hmac_sha256, local_redirect_target, sign_session, verify_session,
+    clear_session_cookie, hmac_sha256, local_redirect_target, same_site_request, sign_session,
+    verify_session,
 };
 use super::imports::imported_browsertrix_ids;
 use super::pages::{active_filters, query_with_filter, query_without_filter};
@@ -126,6 +128,180 @@ fn local_redirect_target_keeps_same_site_paths_only() {
     assert_eq!(local_redirect_target("http://host//evil.example"), None);
     assert_eq!(local_redirect_target("http://host/\\evil.example"), None);
     assert_eq!(local_redirect_target("http://host/\\/evil.example"), None);
+}
+
+// ── Cross-site (CSRF) guard ─────────────────────────────────────────────────
+
+/// Build the (method, headers, uri) triple `same_site_request` judges.
+/// `hdrs` are plain `(name, value)` pairs so each case reads as the request a
+/// browser would actually send.
+fn csrf_case(method: &str, hdrs: &[(&str, &str)]) -> (Method, HeaderMap, Uri) {
+    let mut headers = HeaderMap::new();
+    for (k, v) in hdrs {
+        headers.insert(
+            axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+            axum::http::HeaderValue::from_str(v).unwrap(),
+        );
+    }
+    (
+        Method::from_bytes(method.as_bytes()).unwrap(),
+        headers,
+        "/api/collections/x/delete".parse().unwrap(),
+    )
+}
+
+fn same_site(method: &str, hdrs: &[(&str, &str)], trusted: Option<&str>) -> bool {
+    let (m, h, u) = csrf_case(method, hdrs);
+    same_site_request(&m, &h, &u, trusted)
+}
+
+#[test]
+fn same_site_request_never_gates_safe_methods() {
+    // Reads change nothing, so a cross-site Origin on one is irrelevant.
+    for method in ["GET", "HEAD", "OPTIONS", "TRACE"] {
+        assert!(
+            same_site(
+                method,
+                &[("host", "a.example"), ("origin", "https://evil.example")],
+                None
+            ),
+            "{method} should never be gated"
+        );
+    }
+}
+
+#[test]
+fn same_site_request_allows_absent_origin_for_non_browsers() {
+    // No Origin at all: curl, our own ureq tests, a health checker. Browsers
+    // always send Origin on a cross-origin POST, so absence means "not a
+    // browser" — and a non-browser has no ambient credentials to ride.
+    assert!(same_site("POST", &[("host", "a.example")], None));
+    // Sec-Fetch-Site present but benign still passes.
+    assert!(same_site(
+        "POST",
+        &[("host", "a.example"), ("sec-fetch-site", "same-origin")],
+        None
+    ));
+    assert!(same_site(
+        "POST",
+        &[("host", "a.example"), ("sec-fetch-site", "none")],
+        None
+    ));
+}
+
+#[test]
+fn same_site_request_rejects_foreign_origin_and_null() {
+    assert!(!same_site(
+        "POST",
+        &[("host", "a.example"), ("origin", "https://evil.example")],
+        None
+    ));
+    // A sandboxed or data: initiator sends "null" — no authority, so no match.
+    assert!(!same_site(
+        "POST",
+        &[("host", "a.example"), ("origin", "null")],
+        None
+    ));
+    // Same registrable domain but a different host is still a different origin.
+    assert!(!same_site(
+        "POST",
+        &[("host", "a.example"), ("origin", "https://b.a.example")],
+        None
+    ));
+    // A matching Origin passes, and the scheme is deliberately not compared.
+    assert!(same_site(
+        "POST",
+        &[("host", "a.example"), ("origin", "https://a.example")],
+        None
+    ));
+    assert!(same_site(
+        "POST",
+        &[("host", "a.example"), ("origin", "http://a.example")],
+        None
+    ));
+}
+
+#[test]
+fn same_site_request_falls_back_to_sec_fetch_site_without_origin() {
+    // Origin absent but Fetch Metadata says another site started this.
+    for site in ["cross-site", "same-site"] {
+        assert!(
+            !same_site(
+                "POST",
+                &[("host", "a.example"), ("sec-fetch-site", site)],
+                None
+            ),
+            "sec-fetch-site: {site} should be refused"
+        );
+    }
+}
+
+#[test]
+fn same_site_request_matches_host_with_explicit_port() {
+    // The loopback workroom: Origin carries the port, so Host must too.
+    assert!(same_site(
+        "POST",
+        &[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:8080")
+        ],
+        None
+    ));
+    // Port mismatch is a different origin — another service on the same host.
+    assert!(!same_site(
+        "POST",
+        &[
+            ("host", "127.0.0.1:8080"),
+            ("origin", "http://127.0.0.1:9999")
+        ],
+        None
+    ));
+    // Case is insensitive on the host.
+    assert!(same_site(
+        "POST",
+        &[("host", "A.Example"), ("origin", "https://a.example")],
+        None
+    ));
+}
+
+#[test]
+fn same_site_request_prefers_forwarded_host_then_site_url() {
+    // Behind Caddy: Host is the internal upstream, X-Forwarded-Host is what the
+    // browser used — and the browser's Origin matches the latter.
+    let behind_proxy = &[
+        ("host", "indice:8080"),
+        ("x-forwarded-host", "archive.example.org"),
+        ("origin", "https://archive.example.org"),
+    ];
+    assert!(same_site("POST", behind_proxy, None));
+    // An explicit --site-url outranks both headers (the nginx case, where Host
+    // is rewritten and X-Forwarded-Host is absent).
+    assert!(same_site(
+        "POST",
+        &[
+            ("host", "indice:8080"),
+            ("origin", "https://archive.example.org")
+        ],
+        Some("archive.example.org")
+    ));
+    // ...and it is authoritative, so a mismatch against it still fails.
+    assert!(!same_site(
+        "POST",
+        &[("host", "indice:8080"), ("origin", "https://indice:8080")],
+        Some("archive.example.org")
+    ));
+}
+
+#[test]
+fn same_site_request_refuses_when_our_own_authority_is_unknown() {
+    // An Origin we can't compare against anything is not provably same-site.
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::ORIGIN,
+        axum::http::HeaderValue::from_static("https://evil.example"),
+    );
+    let uri: Uri = "/api/collections/x/delete".parse().unwrap();
+    assert!(!same_site_request(&Method::POST, &headers, &uri, None));
 }
 
 #[test]

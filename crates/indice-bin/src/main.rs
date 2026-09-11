@@ -143,6 +143,14 @@ enum Commands {
         /// INDICE_AUTH_PROXY_SECRET environment variable.
         #[arg(long, value_name = "SECRET")]
         auth_proxy_secret: Option<String>,
+
+        /// This site's public URL (e.g. `https://archive.example.org`), used by the
+        /// cross-site (CSRF) check on management writes. Only needed behind a proxy
+        /// that rewrites the Host header without setting X-Forwarded-Host (nginx's
+        /// default); Caddy and a direct bind are detected automatically. May also be
+        /// given via the INDICE_SITE_URL environment variable.
+        #[arg(long, value_name = "URL")]
+        site_url: Option<String>,
     },
     /// Rebuild the search index from collections.json (re-fetches remote sources).
     Reindex {
@@ -1019,6 +1027,7 @@ async fn main() -> Result<()> {
             manage,
             auth_proxy_header,
             auth_proxy_secret,
+            site_url,
         } => {
             // Build the management config from the flags. Forward-auth is on when
             // an identity header is named; it then requires a shared secret (flag
@@ -1048,6 +1057,35 @@ async fn main() -> Result<()> {
             } else {
                 indice_lib::server::ManageConfig::local()
             };
+
+            // Optional CSRF escape hatch: pin the authority the cross-site check
+            // compares Origin against, for proxies that rewrite Host without
+            // setting X-Forwarded-Host. We keep only host[:port] — `Url::port()`
+            // elides the scheme's default port, exactly as a browser's Origin does,
+            // so the two are directly comparable.
+            let mut manage = manage;
+            let site_url = site_url.or_else(|| {
+                std::env::var("INDICE_SITE_URL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            });
+            if let Some(raw) = site_url {
+                let authority = url::Url::parse(&raw).ok().and_then(|u| {
+                    let host = u.host_str()?.to_string();
+                    Some(match u.port() {
+                        Some(p) => format!("{host}:{p}"),
+                        None => host,
+                    })
+                });
+                let Some(authority) = authority else {
+                    eprintln!(
+                        "--site-url must be an absolute URL with a host, e.g. \
+                         https://archive.example.org (got: {raw})"
+                    );
+                    std::process::exit(2);
+                };
+                manage.site_authority = Some(authority);
+            }
 
             let ctrl_c = async {
                 tokio::signal::ctrl_c()
