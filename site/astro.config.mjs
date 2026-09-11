@@ -47,6 +47,7 @@ export default defineConfig({
           label: 'Guides',
           items: [
             'docs/guides/searching',
+            'docs/guides/wacz',
             'docs/guides/import-browsertrix',
             'docs/guides/import-archive-it',
             'docs/guides/manage',
