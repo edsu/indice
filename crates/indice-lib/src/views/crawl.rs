@@ -42,6 +42,8 @@ pub struct CrawlPage {
     pub pages: Vec<PageItem>,
     /// Whether management mode is on (workroom chrome).
     pub management: bool,
+    /// Whether to render the danger zone (admins only — see CollectionPage).
+    pub can_delete: bool,
     /// Signed-in user (forward-auth), shown in the workroom strip.
     pub signed_in: Option<String>,
     /// Forward-auth configured but this request anonymous — show a "Log in" link.
@@ -105,7 +107,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
             }
         }
 
-        @if p.management {
+        @if p.can_delete {
             details.danger-zone {
                 summary { "Delete this crawl" }
                 form.confirm-delete method="post" action=(format!("/api/crawls/{}/delete", p.id)) {

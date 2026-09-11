@@ -1,5 +1,11 @@
 //! Management-mode import browsers: Browsertrix (orgs → collections → items)
 //! and Archive-It (collections → crawls), driven by server-side credentials.
+//!
+//! Note that the *browse* endpoints require `Curator` even though they mutate
+//! nothing. They read through the operator's own credentials, so leaving them
+//! open would let any signed-in reader enumerate the whole upstream account.
+//! Privilege here follows whose credentials are being spent, not whether a
+//! write happens.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -15,6 +21,17 @@ use tokio::sync::mpsc;
 use crate::collections::Manifest;
 
 use super::*;
+
+/// Mint a job id for an import.
+///
+/// Takes a `&Curator` it never reads, for the same reason `start_index_job`
+/// does: the token cannot be constructed outside `auth.rs`, so a caller has to
+/// have passed the check to call this at all. Imports spend the operator's own
+/// Browsertrix/Archive-It credentials, which is exactly the kind of thing that
+/// should not be reachable by forgetting an extractor.
+fn new_import_job(_curator: &Curator, state: &Arc<AppState>) -> u64 {
+    state.job_counter.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Response when a Browsertrix endpoint is hit but no credentials are configured.
 fn browsertrix_unconfigured() -> Response {
@@ -57,7 +74,7 @@ where
 }
 
 /// `GET /api/browsertrix/orgs` — the orgs the configured credentials can see.
-pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>) -> Response {
+pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>, _curator: Curator) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
         return browsertrix_unconfigured();
     };
@@ -74,6 +91,7 @@ pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/browsertrix/collections?org=<oid>` — collections in an org.
 pub(super) async fn bx_collections(
     State(state): State<Arc<AppState>>,
+    _curator: Curator,
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -121,6 +139,7 @@ pub(super) fn imported_browsertrix_ids<'a>(
 /// scoped to a collection), with QA-review status for the selection UI.
 pub(super) async fn bx_items(
     State(state): State<Arc<AppState>>,
+    _curator: Curator,
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -205,6 +224,7 @@ fn default_true() -> bool {
 /// fresh presigned URL via the resolver.
 pub(super) async fn bx_import(
     State(state): State<Arc<AppState>>,
+    curator: Curator,
     Json(req): Json<BxImportRequest>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -230,7 +250,8 @@ pub(super) async fn bx_import(
             .into_response();
     }
 
-    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    audit(curator.principal(), "import.browsertrix", &req.collection);
+    let id = new_import_job(&curator, &state);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
 
@@ -418,7 +439,10 @@ where
 
 /// `GET /api/archiveit/collections` — the account's collections (including
 /// inactive ones, which still hold importable crawls).
-pub(super) async fn ait_collections(State(state): State<Arc<AppState>>) -> Response {
+pub(super) async fn ait_collections(
+    State(state): State<Arc<AppState>>,
+    _curator: Curator,
+) -> Response {
     let Some(provider) = state.archiveit.clone() else {
         return archiveit_unconfigured();
     };
@@ -441,6 +465,7 @@ pub(super) struct AitBrowse {
 /// (finished, not deleted), each marked if already imported into this instance.
 pub(super) async fn ait_crawls(
     State(state): State<Arc<AppState>>,
+    _curator: Curator,
     Query(q): Query<AitBrowse>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
@@ -524,6 +549,7 @@ pub(super) struct AitImportRequest {
 /// orchestrator the CLI uses.
 pub(super) async fn ait_import(
     State(state): State<Arc<AppState>>,
+    curator: Curator,
     Json(req): Json<AitImportRequest>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
@@ -536,7 +562,8 @@ pub(super) async fn ait_import(
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
     }
 
-    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
+    audit(curator.principal(), "import.archiveit", &req.into);
+    let id = new_import_job(&curator, &state);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
 

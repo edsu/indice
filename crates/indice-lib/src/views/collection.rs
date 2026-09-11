@@ -44,6 +44,9 @@ pub struct CollectionPage {
     pub id: String,
     /// Whether management mode is on — gates the edit-in-place affordances.
     pub management: bool,
+    /// Whether to render the danger zone. Deaccession is an admin act, so a
+    /// curator must not be shown a button that would 403.
+    pub can_delete: bool,
     /// Signed-in user (forward-auth), shown in the workroom strip.
     pub signed_in: Option<String>,
     /// Forward-auth configured but this request anonymous — show a "Log in" link.
@@ -122,7 +125,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 a.btn href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
             }
         }
-        @if p.management {
+        @if p.can_delete {
             details.danger-zone {
                 summary { "Delete this collection" }
                 form.confirm-delete method="post" action=(format!("/api/collections/{}/delete", p.id)) {

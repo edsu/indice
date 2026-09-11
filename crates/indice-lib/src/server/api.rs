@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::annotations::{self, EditOutcome, UpdateResult};
 use crate::collections::{CollectionId, Manifest};
-use crate::identity::SubjectId;
+use crate::identity::Principal;
 
 use super::*;
 
@@ -130,24 +130,19 @@ struct AnnotationListResp {
     annotations: Vec<AnnotationView>,
 }
 
-/// Who is writing, as a normalized [`SubjectId`]: the signed-in identity, or the
-/// local operator on a loopback `--manage` instance (which has no authentication
-/// and so no distinct identities). `None` when the request may not annotate, or
-/// when the proxy forwarded an identity we refuse to record.
-fn annotation_author(state: &AppState, headers: &HeaderMap) -> Option<SubjectId> {
-    let (can, who) = admin_ctx(state, headers);
-    if !can {
-        return None;
-    }
-    match who {
-        // `parse_remote`, not `parse`: a proxy identity must never resolve to
-        // the loopback operator, whose notes it would then inherit.
-        Some(raw) => SubjectId::parse_remote(&raw),
-        None => Some(SubjectId::local()),
-    }
+/// Who is reading, for the *public* annotation list: used only to decide which
+/// notes to mark editable and whether to offer the composer. `None` when the
+/// request may not annotate.
+///
+/// Deliberately accepts cookie evidence — this is rendering, and the actual
+/// writes go through the [`Curator`] extractor, which does not.
+fn annotation_viewer(state: &AppState, headers: &HeaderMap) -> Option<Principal> {
+    resolve_caller(state, headers)
+        .map(|(p, _)| p)
+        .filter(|p| p.role().can_annotate())
 }
 
-fn annotation_view(a: &annotations::Annotation, author: Option<&SubjectId>) -> AnnotationView {
+fn annotation_view(a: &annotations::Annotation, viewer: Option<&Principal>) -> AnnotationView {
     let selector = a.target.selector.as_ref().map(|s| match s {
         annotations::Selector::TextQuoteSelector {
             exact,
@@ -159,9 +154,10 @@ fn annotation_view(a: &annotations::Annotation, author: Option<&SubjectId>) -> A
             suffix: suffix.clone(),
         },
     });
-    // `matches` canonicalizes the stored key, so a note written before
-    // identities were normalized is still recognized as its author's.
-    let editable = author.is_some_and(|s| s.matches(a.creator.id.as_deref()));
+    // `may_edit` canonicalizes the stored key (so a note written before
+    // identities were normalized is still recognized as its author's) and lets
+    // an admin moderate anyone's note.
+    let editable = viewer.is_some_and(|p| p.may_edit(a.creator.id.as_deref()));
     AnnotationView {
         id: a.id.clone(),
         created: a.created.clone(),
@@ -185,7 +181,7 @@ pub(super) async fn list_annotations(
     headers: HeaderMap,
     Query(q): Query<AnnotationListQuery>,
 ) -> Response {
-    let author = annotation_author(&state, &headers);
+    let viewer = annotation_viewer(&state, &headers);
     // url and ts pin a capture; require both, or neither (whole collection).
     match (q.url.is_some(), q.ts.is_some()) {
         (true, true) | (false, false) => {}
@@ -212,10 +208,10 @@ pub(super) async fn list_annotations(
         Ok(Ok(list)) => {
             let views = list
                 .iter()
-                .map(|a| annotation_view(a, author.as_ref()))
+                .map(|a| annotation_view(a, viewer.as_ref()))
                 .collect();
             Json(AnnotationListResp {
-                can_annotate: author.is_some(),
+                can_annotate: viewer.is_some(),
                 annotations: views,
             })
             .into_response()
@@ -228,7 +224,7 @@ pub(super) async fn list_annotations(
 /// POST /api/annotations — create (management-gated).
 pub(super) async fn create_annotation(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    curator: Curator,
     Json(req): Json<AnnotationCreateReq>,
 ) -> Response {
     if req.note.trim().is_empty() {
@@ -248,11 +244,9 @@ pub(super) async fn create_annotation(
     // No invented identity: if we can't say who is writing, we don't write.
     // (Unreachable while the route is gated, but it means this handler no longer
     // depends on the middleware for that guarantee.)
-    let Some(author) = annotation_author(&state, &headers) else {
-        return (StatusCode::FORBIDDEN, "not signed in").into_response();
-    };
+    let author = curator.principal().clone();
     // The id is compared and never shown; the name is shown and never compared.
-    let creator = annotations::Creator::person(author.as_str(), author.display_name());
+    let creator = annotations::Creator::person(author.id().as_str(), author.display_name());
     let ann = match req.selector {
         Some(s) => annotations::Annotation::region(
             req.url,
@@ -289,23 +283,23 @@ pub(super) async fn create_annotation(
 /// POST /api/annotations/{id} — update the note text (author only).
 pub(super) async fn update_annotation(
     State(state): State<Arc<AppState>>,
+    curator: Curator,
     axum::extract::Path(id): axum::extract::Path<String>,
-    headers: HeaderMap,
     Json(req): Json<AnnotationUpdateReq>,
 ) -> Response {
     if req.note.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "note is empty").into_response();
     }
-    let Some(author) = annotation_author(&state, &headers) else {
-        return (StatusCode::FORBIDDEN, "not signed in").into_response();
-    };
+    let author = curator.principal().clone();
     let st = state.clone();
     let AnnotationUpdateReq { collection, note } = req;
     let author_key = author.clone();
     let done = tokio::task::spawn_blocking(move || {
         let _guard = st.write_lock.lock().expect("write lock poisoned");
-        let res =
-            annotations::update(&st.home, &collection, &id, &note, |k| author_key.matches(k))?;
+        // `may_edit`, not `owns`: an admin moderates anyone's notes.
+        let res = annotations::update(&st.home, &collection, &id, &note, |k| {
+            author_key.may_edit(k)
+        })?;
         // Re-index the edited note (upsert by id) and publish, when it changed.
         if let UpdateResult::Updated(a) = &res {
             crate::index::index_annotation_upsert(&st.home, &collection, a)?;
@@ -332,18 +326,16 @@ pub(super) async fn update_annotation(
 /// POST /api/annotations/{id}/delete — delete (author only).
 pub(super) async fn delete_annotation(
     State(state): State<Arc<AppState>>,
+    curator: Curator,
     axum::extract::Path(id): axum::extract::Path<String>,
-    headers: HeaderMap,
     Json(req): Json<AnnotationDeleteReq>,
 ) -> Response {
-    let Some(author) = annotation_author(&state, &headers) else {
-        return (StatusCode::FORBIDDEN, "not signed in").into_response();
-    };
+    let author = curator.principal().clone();
     let st = state.clone();
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {
         let _guard = st.write_lock.lock().expect("write lock poisoned");
-        let outcome = annotations::delete(&st.home, &collection, &id, |k| author.matches(k))?;
+        let outcome = annotations::delete(&st.home, &collection, &id, |k| author.may_edit(k))?;
         // Drop the note from search and publish, when it was actually removed.
         if let EditOutcome::Done = outcome {
             crate::index::delete_annotation_from_index(&st.home, &id)?;

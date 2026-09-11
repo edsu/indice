@@ -20,3 +20,27 @@ index:
 ```
 
 These apply on `index` and `reindex`; use `indice stats` to see their effect on the footprint. After **upgrading** to a version that changes the index schema or these defaults, run `indice reindex` to rebuild — that's how existing homes pick up footprint improvements (a stale index built by an older version is detected, and indice tells you to reindex).
+
+## `users.yaml`
+
+Who may do what, when running behind an auth proxy. Separate from `config.yaml` because it's a different kind of decision — `config.yaml` tunes the index, `users.yaml` grants privilege — and because you'll want it in version control alongside your finding aids.
+
+```yaml
+users:
+  - id: alice@example.org
+    name: Alice Ramírez
+    role: admin
+  - id: jun@example.org
+    aliases: [j.tanaka@old.example.org]
+```
+
+| Key | Meaning |
+|---|---|
+| `id` | The identity your proxy forwards (usually an email). Matched case-insensitively. |
+| `name` | Public display name. Omit to derive one from the id (an email's local part). |
+| `role` | `admin`, `curator`, or `reader`. Defaults to `curator`. |
+| `aliases` | Prior identities, so someone keeps notes written under an old address. |
+
+**Omitting the file entirely means every authenticated user is an admin** — the behavior before roles existed. See [Who can do what](/docs/guides/manage/#who-can-do-what) for what each role may do, and the lock-yourself-out warning.
+
+A malformed `users.yaml` stops startup rather than being ignored: silently skipping a typo in a permissions file is how you end up granting access you didn't intend.

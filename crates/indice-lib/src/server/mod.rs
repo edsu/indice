@@ -141,6 +141,10 @@ struct AppState {
     /// (below), but the read handlers also read this to decide whether to render
     /// management affordances (the `/manage` link, the empty-state CTA).
     management: bool,
+    /// Who may do what, from `<home>/users.yaml`. Read once at startup: a
+    /// roster change takes effect on restart, which keeps request handling free
+    /// of file I/O. Absent file = every authenticated user is an admin.
+    users: crate::identity::Users,
     /// Forward-auth settings, when management runs behind an auth proxy. Handlers
     /// read the `user_header` to show who's signed in; the route middleware does
     /// the actual enforcement.
@@ -217,6 +221,14 @@ fn build_router(
             tracing::warn!("{}", crate::index::fragmentation_warning(n));
         }
     }
+    // Authentication comes from the CLI and the proxy (`ManageConfig`);
+    // authorization comes from the home directory. Loading it here means a
+    // malformed permissions file stops startup rather than silently granting
+    // whatever the default is.
+    let users = crate::identity::Users::load(home)?;
+    if manage.enabled {
+        tracing::info!("management: {}", users.summary());
+    }
     let state = Arc::new(AppState {
         search: RwLock::new(Arc::new(search)),
         home: home.to_path_buf(),
@@ -227,6 +239,7 @@ fn build_router(
         jobs: std::sync::Mutex::new(HashMap::new()),
         job_counter: AtomicU64::new(0),
         management: manage.enabled,
+        users,
         forward_auth: manage.forward_auth.clone(),
         logout_redirect: manage.logout_redirect.clone(),
         browsertrix: providers.browsertrix,
