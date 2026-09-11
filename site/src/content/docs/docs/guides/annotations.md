@@ -18,7 +18,7 @@ Reading annotations is open to everyone. **Creating, editing, and deleting** the
 - **Local `serve --manage`** on loopback — you're the trusted admin; notes are authored as `local`.
 - **Behind a forward-auth proxy** — the authenticated user is the author, if they're a curator or admin. Someone signed in but not on your `users.yaml` roster is a reader, and can read notes but not write them.
 
-You can edit or delete **only your own** notes — except that an [admin](/docs/guides/manage/#who-can-do-what) can moderate anyone's, so an abusive or orphaned note can be removed. On a loopback instance the own-only rule has nothing to distinguish: there's a single local identity, so every note is editable by whoever is at the machine. Telling authors apart needs a forward-auth proxy.
+You can edit or delete **only your own** notes — except that an [admin](/docs/guides/manage/#who-can-do-what) *named in a `users.yaml` roster* can moderate anyone's, so an abusive or orphaned note can be removed. Without a roster there are no distinct roles to speak of, so notes stay strictly author-only. On a loopback instance the own-only rule has nothing to distinguish: there's a single local identity, so every note is editable by whoever is at the machine. Telling authors apart needs a forward-auth proxy.
 
 ### Authorship and privacy
 

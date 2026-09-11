@@ -509,3 +509,85 @@ async fn a_curator_is_not_shown_a_delete_button() {
 
     server.abort();
 }
+
+/// Upgrade safety, the part the route table can't see: with no `users.yaml`
+/// every authenticated user is an Admin, and admins moderate — so a naive
+/// `may_edit` would silently make every signed-in user able to delete everyone
+/// else's notes, which was strictly author-only before roles existed.
+#[tokio::test]
+async fn without_a_roster_notes_stay_author_only() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    request(
+        "POST",
+        format!("{base}/api/collections"),
+        Some("alice@x.edu"),
+        Some(("application/x-www-form-urlencoded", "name=Notes".into())),
+    )
+    .await;
+
+    let url = format!("{base}/api/annotations");
+    let body = serde_json::json!({
+        "collection": "notes", "url": "https://example.org/",
+        "timestamp": "20260101000000", "note": "alice's note",
+    })
+    .to_string();
+    let id = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-indice-auth-secret", SECRET)
+            .header(USER_HEADER, "alice@x.edu")
+            .send(body)
+            .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap();
+        v["id"].as_str().unwrap().to_string()
+    })
+    .await
+    .unwrap();
+
+    let status = request(
+        "POST",
+        format!("{base}/api/annotations/{id}/delete"),
+        Some("mallory@x.edu"),
+        Some((
+            "application/json",
+            serde_json::json!({ "collection": "notes" }).to_string(),
+        )),
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "moderation must be opt-in via a roster, not the default"
+    );
+
+    server.abort();
+}
+
+/// A Reader must not be handed the workroom forms either. Every control on
+/// them 403s, so rendering them is the same bug as showing a delete button to
+/// a curator.
+#[tokio::test]
+async fn workroom_forms_are_not_shown_to_a_reader() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    for path in ["/manage/add", "/manage/collections/new"] {
+        assert_eq!(
+            request("GET", format!("{base}{path}"), Some("eve@x.edu"), None).await,
+            403,
+            "{path} must not render for a reader"
+        );
+        assert_ne!(
+            request("GET", format!("{base}{path}"), Some("curator@x.edu"), None).await,
+            403,
+            "{path} is a curator's workbench"
+        );
+    }
+
+    server.abort();
+}

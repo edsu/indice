@@ -352,13 +352,18 @@ impl Admin {
 /// record at all of who added or deleted anything, which is a poor look for a
 /// tool whose whole proposition is provenance. A real append-only event log is
 /// bead `rustyweb-audit-log-dnon`; this is the one-line down payment.
+/// `action` and `target` are recorded with `?` (Debug), which quotes and
+/// escapes them. `target` is user-supplied — a collection name straight off a
+/// form, or a percent-decoded path segment — so with plain `%` display a name
+/// containing a newline could forge a second line in the very log that exists
+/// to be the provenance trail.
 pub(super) fn audit(actor: &Principal, action: &str, target: &str) {
     tracing::info!(
         target: "indice::audit",
         actor = %actor.id(),
         role = ?actor.role(),
-        action,
-        target,
+        action = ?action,
+        target = ?target,
     );
 }
 

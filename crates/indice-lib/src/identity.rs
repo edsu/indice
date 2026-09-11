@@ -195,10 +195,25 @@ pub struct Principal {
     id: SubjectId,
     display_name: String,
     role: Role,
+    /// Whether this principal may act on records *other people* authored.
+    ///
+    /// Separate from `role` rather than derived from it, because the two come
+    /// apart in the default deployment: with no `users.yaml` everyone
+    /// authenticated is an `Admin`, and deriving moderation from that would
+    /// silently let any signed-in user delete anyone's notes — which was
+    /// strictly author-only before roles existed. Moderating someone else's
+    /// work is a real decision, so it is something an operator opts into by
+    /// naming admins in a roster.
+    can_moderate: bool,
 }
 
 impl Principal {
-    pub fn new(id: SubjectId, display_name: impl Into<String>, role: Role) -> Self {
+    pub fn new(
+        id: SubjectId,
+        display_name: impl Into<String>,
+        role: Role,
+        can_moderate: bool,
+    ) -> Self {
         let display_name = display_name.into();
         let display_name = match display_name.trim().is_empty() {
             true => id.display_name().to_string(),
@@ -208,15 +223,18 @@ impl Principal {
             id,
             display_name,
             role,
+            can_moderate,
         }
     }
 
     /// The single trusted operator of a loopback `--manage` instance. Always an
     /// admin: there is no authentication to filter, and the startup guard
-    /// already refuses to run local mode anywhere but loopback.
+    /// already refuses to run local mode anywhere but loopback. (Moderation is
+    /// moot there — every note carries the same author key, so `owns` already
+    /// covers all of them.)
     pub fn local_operator() -> Self {
         let id = SubjectId::local();
-        Principal::new(id, "", Role::Admin)
+        Principal::new(id, "", Role::Admin, true)
     }
 
     pub fn id(&self) -> &SubjectId {
@@ -234,10 +252,15 @@ impl Principal {
     pub fn owns(&self, stored: Option<&str>) -> bool {
         self.id.matches(stored)
     }
+    /// Whether this principal may moderate records other people authored.
+    pub fn can_moderate(&self) -> bool {
+        self.can_moderate
+    }
+
     /// Whether this principal may edit the record authored under `stored`:
     /// their own, or anyone's if they can moderate.
     pub fn may_edit(&self, stored: Option<&str>) -> bool {
-        self.owns(stored) || self.role.can_administer()
+        self.owns(stored) || self.can_moderate
     }
 }
 
@@ -245,7 +268,12 @@ impl Principal {
 pub const USERS_FILE: &str = "users.yaml";
 
 /// One person in the roster.
+///
+/// `deny_unknown_fields` because this is a permissions file: a typo'd `Role:`
+/// or `rol:` would otherwise be ignored and silently fall back to the
+/// `curator` default, granting more than the operator wrote down.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserEntry {
     /// Their identity as the proxy forwards it (`alice@x.edu`) or canonically
     /// (`mailto:alice@x.edu`) — both are accepted and normalized on load.
@@ -293,7 +321,7 @@ struct ResolvedEntry {
 
 /// The on-disk shape.
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct UsersFile {
     users: Vec<UserEntry>,
 }
@@ -324,11 +352,17 @@ impl Users {
                 id,
                 name: entry.name.filter(|n| !n.trim().is_empty()),
                 role: entry.role,
+                // An unparseable alias is an error, not something to drop:
+                // silently discarding one would quietly lose that person
+                // access to every note they wrote under their old address.
                 aliases: entry
                     .aliases
                     .iter()
-                    .filter_map(|a| SubjectId::parse(a))
-                    .collect(),
+                    .map(|a| {
+                        SubjectId::parse(a)
+                            .with_context(|| format!("{}: unusable alias {a:?}", path.display()))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
             });
         }
         Ok(Users {
@@ -364,16 +398,28 @@ impl Users {
     /// with no more power than an anonymous visitor.
     pub fn resolve(&self, id: SubjectId) -> Principal {
         let Some(roster) = &self.roster else {
-            return Principal::new(id, "", Role::Admin);
+            // Admin, as before roles — but NOT a moderator. Deriving moderation
+            // from the role here would quietly grant every signed-in user power
+            // over other people's notes, which nobody had before this existed.
+            return Principal::new(id, "", Role::Admin, false);
         };
-        match roster
+        // Someone's own entry always beats another entry's stale alias;
+        // otherwise a leftover alias would silently hand them that person's
+        // role *and* subject id.
+        let found = roster
             .iter()
-            .find(|e| e.id == id || e.aliases.contains(&id))
-        {
+            .find(|e| e.id == id)
+            .or_else(|| roster.iter().find(|e| e.aliases.contains(&id)));
+        match found {
             // Matched via an alias: adopt the entry's *canonical* id, so a note
             // written under an old address is still recognized as theirs.
-            Some(e) => Principal::new(e.id.clone(), e.name.clone().unwrap_or_default(), e.role),
-            None => Principal::new(id, "", Role::Reader),
+            Some(e) => Principal::new(
+                e.id.clone(),
+                e.name.clone().unwrap_or_default(),
+                e.role,
+                e.role.can_administer(),
+            ),
+            None => Principal::new(id, "", Role::Reader, false),
         }
     }
 }
@@ -443,6 +489,61 @@ mod tests {
         std::fs::write(Users::path(tmp.path()), yaml).unwrap();
         let users = Users::load(tmp.path()).unwrap();
         (tmp, users)
+    }
+
+    #[test]
+    fn moderation_requires_an_explicit_roster() {
+        // With no users.yaml everyone is an Admin, so deriving moderation from
+        // the role would let any signed-in user delete anyone's notes — power
+        // nobody had before roles existed.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let default = Users::load(tmp.path())
+            .unwrap()
+            .resolve(SubjectId::parse("anyone@x.edu").unwrap());
+        assert_eq!(default.role(), Role::Admin);
+        assert!(!default.can_moderate(), "not without a roster");
+        assert!(!default.may_edit(Some("someone-else@x.edu")));
+        assert!(default.may_edit(Some("anyone@x.edu")), "still their own");
+
+        // Naming an admin in a roster IS the opt-in.
+        let (_t, users) = roster("users:\n  - id: boss@x.edu\n    role: admin\n");
+        let boss = users.resolve(SubjectId::parse("boss@x.edu").unwrap());
+        assert!(boss.can_moderate() && boss.may_edit(Some("someone-else@x.edu")));
+        // ...but a curator on that same roster still only edits their own.
+        let (_t2, users2) = roster("users:\n  - id: c@x.edu\n    role: curator\n");
+        let c = users2.resolve(SubjectId::parse("c@x.edu").unwrap());
+        assert!(!c.can_moderate());
+    }
+
+    #[test]
+    fn an_own_entry_beats_another_entrys_stale_alias() {
+        // A leftover alias must not hand someone else's role and subject id to
+        // the person who actually owns that address.
+        let (_t, users) = roster(
+            "users:\n  \
+             - id: boss@x.edu\n    role: admin\n    aliases: [alice@x.edu]\n  \
+             - id: alice@x.edu\n    role: curator\n",
+        );
+        let alice = users.resolve(SubjectId::parse("alice@x.edu").unwrap());
+        assert_eq!(alice.role(), Role::Curator, "her own entry wins");
+        assert_eq!(alice.id().as_str(), "mailto:alice@x.edu");
+        assert!(!alice.can_moderate());
+    }
+
+    #[test]
+    fn a_typo_in_a_permissions_file_is_refused() {
+        // An ignored `Role:` would silently fall back to the curator default,
+        // granting more than the operator wrote down.
+        let tmp = tempfile::TempDir::new().unwrap();
+        for bad in [
+            "users:\n  - id: a@x.edu\n    Role: reader\n",
+            "users:\n  - id: a@x.edu\n    rol: reader\n",
+            "user:\n  - id: a@x.edu\n",
+            "users:\n  - id: a@x.edu\n    aliases: [\"\"]\n",
+        ] {
+            std::fs::write(Users::path(tmp.path()), bad).unwrap();
+            assert!(Users::load(tmp.path()).is_err(), "should refuse: {bad:?}");
+        }
     }
 
     #[test]
@@ -523,20 +624,36 @@ mod tests {
 
     #[test]
     fn a_principal_falls_back_to_a_derived_display_name() {
-        let p = Principal::new(SubjectId::parse("alice@x.edu").unwrap(), "", Role::Curator);
+        let p = Principal::new(
+            SubjectId::parse("alice@x.edu").unwrap(),
+            "",
+            Role::Curator,
+            false,
+        );
         assert_eq!(p.display_name(), "alice", "never the raw login value");
         let named = Principal::new(
             SubjectId::parse("alice@x.edu").unwrap(),
             "Alice Ramírez",
             Role::Curator,
+            false,
         );
         assert_eq!(named.display_name(), "Alice Ramírez", "a chosen name wins");
     }
 
     #[test]
     fn only_an_admin_may_edit_someone_elses_record() {
-        let alice = Principal::new(SubjectId::parse("alice@x.edu").unwrap(), "", Role::Curator);
-        let boss = Principal::new(SubjectId::parse("boss@x.edu").unwrap(), "", Role::Admin);
+        let alice = Principal::new(
+            SubjectId::parse("alice@x.edu").unwrap(),
+            "",
+            Role::Curator,
+            false,
+        );
+        let boss = Principal::new(
+            SubjectId::parse("boss@x.edu").unwrap(),
+            "",
+            Role::Admin,
+            true,
+        );
         assert!(alice.may_edit(Some("alice@x.edu")), "their own");
         assert!(!alice.may_edit(Some("bob@x.edu")), "not a peer's");
         assert!(boss.may_edit(Some("bob@x.edu")), "an admin moderates");

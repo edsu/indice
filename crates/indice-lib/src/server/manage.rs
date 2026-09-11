@@ -240,6 +240,7 @@ pub(super) async fn add_archive(
     if req.collection.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
     }
+    audit(curator.principal(), "crawl.add", &req.collection);
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
@@ -305,6 +306,7 @@ pub(super) async fn upload_archive(
     };
     let name = name.filter(|n| !n.trim().is_empty());
     let location = path.to_string_lossy().to_string();
+    audit(curator.principal(), "crawl.upload", &collection);
     let id = start_index_job(&curator, &state, location, collection, name, tmpdir);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
@@ -355,6 +357,10 @@ pub(super) async fn add_archive_events(
 /// `GET /manage/collections/new` — the empty finding-aid form.
 pub(super) async fn new_collection_form(
     State(state): State<Arc<AppState>>,
+    // Same rule as the danger zone: don't render a form whose every
+    // control would 403. Without this an authenticated Reader reaches
+    // the upload form and the pre-filled finding-aid editor.
+    _curator: Curator,
     headers: HeaderMap,
 ) -> Response {
     let (_, who) = admin_ctx(&state, &headers);
@@ -365,6 +371,10 @@ pub(super) async fn new_collection_form(
 /// collection (name locked, since the slug is its identity).
 pub(super) async fn edit_collection_form(
     State(state): State<Arc<AppState>>,
+    // Same rule as the danger zone: don't render a form whose every
+    // control would 403. Without this an authenticated Reader reaches
+    // the upload form and the pre-filled finding-aid editor.
+    _curator: Curator,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
@@ -402,6 +412,10 @@ pub(super) struct AddQuery {
 /// prefilled when arriving from a collection page.
 pub(super) async fn accession_desk_page(
     State(state): State<Arc<AppState>>,
+    // Same rule as the danger zone: don't render a form whose every
+    // control would 403. Without this an authenticated Reader reaches
+    // the upload form and the pre-filled finding-aid editor.
+    _curator: Curator,
     headers: HeaderMap,
     Query(q): Query<AddQuery>,
 ) -> Response {

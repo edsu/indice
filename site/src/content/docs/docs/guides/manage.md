@@ -71,7 +71,7 @@ users:
     aliases: [j.tanaka@old.example.org]   # prior addresses, so they keep their notes
 ```
 
-- **No `users.yaml`** — every user your proxy authenticates is an **admin**. This is the default, and it's exactly how indice behaved before roles existed, so adding the file is opt-in.
+- **No `users.yaml`** — every user your proxy authenticates is an **admin**. This is the default, and it's exactly how indice behaved before roles existed, so adding the file is opt-in. One deliberate exception: notes stay **author-only** here. Moderating someone else's work is something you opt into by naming admins in a roster, not something the permissive default hands out.
 - **With a `users.yaml`** — listed people get their role; anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) therefore means "nobody administers", which is honored rather than treated as "no file".
 
 Take care not to lock yourself out: if you add the file, put your own identity in it. indice logs which regime it's in at startup.

@@ -250,6 +250,7 @@ pub(super) async fn bx_import(
             .into_response();
     }
 
+    audit(curator.principal(), "import.browsertrix", &req.collection);
     let id = new_import_job(&curator, &state);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
@@ -561,6 +562,7 @@ pub(super) async fn ait_import(
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
     }
 
+    audit(curator.principal(), "import.archiveit", &req.into);
     let id = new_import_job(&curator, &state);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
