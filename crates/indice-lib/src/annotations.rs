@@ -75,6 +75,28 @@ impl Creator {
             name: Some(name.into()),
         }
     }
+
+    /// The name that is safe to show in public.
+    ///
+    /// Annotations are world-readable (`GET /api/annotations` needs no auth) and
+    /// the JSONL store is meant to be committed, so whatever lands here is
+    /// published for good. Early versions stored the login identity in *both*
+    /// `id` and `name`, which under an SSO proxy means an email address — so an
+    /// `@` is reduced to its local part on the way out. Sanitizing on read rather
+    /// than on write means existing notes stop leaking as soon as this ships,
+    /// with no file rewrite and no migration to run first.
+    ///
+    /// The local part is used verbatim, never title-cased: guessing that
+    /// `ed.summers` is "Ed Summers" would be inventing the spelling of someone's
+    /// name. A real display name comes from the author choosing one.
+    pub fn public_name(&self) -> Option<&str> {
+        let name = self.name.as_deref()?;
+        Some(match name.split_once('@') {
+            // Guard against a leading `@` yielding an empty label.
+            Some((local, _)) if !local.is_empty() => local,
+            _ => name,
+        })
+    }
 }
 
 /// What an annotation points at: a captured page, optionally a passage within it.
@@ -365,6 +387,46 @@ mod tests {
 
     fn creator() -> Creator {
         Creator::person("mailto:ada@example.org", "Ada")
+    }
+
+    #[test]
+    fn public_name_never_exposes_a_login_address() {
+        // The shape early versions wrote: the SSO identity in both fields.
+        let legacy = Creator::person("alice@example.org", "alice@example.org");
+        assert_eq!(legacy.public_name(), Some("alice"));
+        // A chosen display name is passed through untouched — including its
+        // capitalization, which we never invent.
+        assert_eq!(creator().public_name(), Some("Ada"));
+        assert_eq!(
+            Creator::person("x", "Ed Summers").public_name(),
+            Some("Ed Summers")
+        );
+        // Degenerate inputs fall back rather than yielding an empty label.
+        assert_eq!(
+            Creator::person("x", "@handle").public_name(),
+            Some("@handle")
+        );
+        assert_eq!(Creator::default().public_name(), None);
+        // The author *key* is deliberately untouched: sanitizing it would break
+        // the edit gate for every note already on disk.
+        assert_eq!(legacy.id.as_deref(), Some("alice@example.org"));
+    }
+
+    #[test]
+    fn legacy_records_still_load_and_stay_editable() {
+        // Verbatim shape of a record written before display names were separated
+        // from identities, under a proxy forwarding an email as the identity.
+        let line = r#"{"@context":"http://www.w3.org/ns/anno.jsonld","id":"urn:indice:annotation:abc","type":"Annotation","created":"2026-09-01T00:00:00Z","creator":{"type":"Person","id":"alice@x.edu","name":"alice@x.edu"},"target":{"source":"https://e.org/","timestamp":"20260101000000"},"body":{"type":"TextualBody","value":"hi","format":"text/markdown"}}"#;
+        let a: Annotation = serde_json::from_str(line).expect("legacy line still parses");
+        // The gate still matches the stored key, so the author keeps their notes.
+        assert_eq!(a.author_key(), Some("alice@x.edu"));
+        // ...while the public surface shows only the local part.
+        assert_eq!(a.creator.public_name(), Some("alice"));
+
+        // The other legacy shape, from a loopback instance: a single shared
+        // identity with no address in it, which passes through unchanged.
+        let local = Creator::person("local", "local");
+        assert_eq!(local.public_name(), Some("local"));
     }
 
     #[test]

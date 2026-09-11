@@ -159,7 +159,9 @@ pub fn reindex(
                 }
             };
             for a in &anns {
-                let author = a.creator.name.as_deref().unwrap_or("");
+                // Same sanitization as the live upsert path (search_sync): the
+                // indexed author is public, so never the stored login identity.
+                let author = a.creator.public_name().unwrap_or("");
                 si.index_annotation(
                     &a.id,
                     &coll.id,

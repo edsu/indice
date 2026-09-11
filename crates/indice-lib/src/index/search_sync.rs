@@ -31,7 +31,9 @@ pub fn index_annotation_upsert(
         collection,
         &annotation.target.source,
         &annotation.target.timestamp,
-        annotation.creator.name.as_deref().unwrap_or(""),
+        // Indexed author is shown on public search results, so it must be the
+        // sanitized display name rather than the stored login identity.
+        annotation.creator.public_name().unwrap_or(""),
         &annotation.body.value,
     )?;
     search.commit().context("committing the annotation index")?;

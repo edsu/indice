@@ -925,3 +925,70 @@ async fn csrf_guard_runs_before_forward_auth() {
 
     server.abort();
 }
+
+/// Annotations are world-readable and the JSONL store is meant to be committed,
+/// so a login address that reaches a public surface is published for good. Write
+/// a note as `alice@x.edu` through the real forward-auth path, then read every
+/// public surface *anonymously* and assert the address never appears.
+#[tokio::test]
+async fn public_annotation_api_never_exposes_a_login_address() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
+    let (base, server) = serve(home.clone(), cfg).await;
+
+    // A collection to hang the note on (annotations require a known collection).
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        "name=Notes",
+        vec![
+            ("x-indice-auth-secret", "s3cret".to_string()),
+            ("x-forwarded-email", "alice@x.edu".to_string()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 303);
+
+    // Create a note as an SSO-authenticated user whose identity is an email.
+    let url = format!("{base}/api/annotations");
+    let body = serde_json::json!({
+        "collection": "notes",
+        "url": "https://example.org/",
+        "timestamp": "20260101000000",
+        "note": "a public note",
+    })
+    .to_string();
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-indice-auth-secret", "s3cret")
+            .header("x-forwarded-email", "alice@x.edu")
+            .send(body)
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert!((200..300).contains(&status), "note created (got {status})");
+
+    // Now read as an anonymous visitor. None of these may carry the address.
+    for path in [
+        "/api/annotations?collection=notes",
+        "/collection/notes/annotations",
+    ] {
+        let (status, body) = get(format!("{base}{path}")).await;
+        assert_eq!(status, 200, "{path}");
+        assert!(
+            body.contains("alice"),
+            "{path} should still attribute the note: {body}"
+        );
+        assert!(
+            !body.contains("alice@x.edu") && !body.contains("x.edu"),
+            "{path} leaked a login address: {body}"
+        );
+    }
+
+    server.abort();
+}

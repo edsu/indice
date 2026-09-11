@@ -154,7 +154,9 @@ fn annotation_view(a: &annotations::Annotation, author_key: Option<&str>) -> Ann
         id: a.id.clone(),
         created: a.created.clone(),
         modified: a.modified.clone(),
-        author: a.creator.name.clone(),
+        // Never the raw stored name: it may be a login address (see
+        // `Creator::public_name`), and this endpoint is public.
+        author: a.creator.public_name().map(str::to_string),
         url: a.target.source.clone(),
         timestamp: a.target.timestamp.clone(),
         selector,

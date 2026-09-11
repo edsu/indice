@@ -122,11 +122,9 @@ pub(super) async fn collection_annotations(
                 annotations::Selector::TextQuoteSelector { exact, .. } => exact.clone(),
             });
             views::AnnoLink {
-                author: a
-                    .creator
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| "anonymous".to_string()),
+                // This page is public, so the sanitized name — never the stored
+                // login identity (see `Creator::public_name`).
+                author: a.creator.public_name().unwrap_or("anonymous").to_string(),
                 date: a
                     .modified
                     .clone()
