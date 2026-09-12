@@ -555,13 +555,20 @@ pub(super) async fn create_collection(
         subjects: (!subjects.is_empty()).then_some(subjects),
         narrative: field_opt(&form.narrative),
     };
-    let home = state.home.clone();
     let actor = curator.principal().id().clone();
+    let state = state.clone();
     // set_collection writes the README + manifest — quick, but blocking, so keep
     // it off the async runtime. The homepage re-reads the manifest per request,
     // so the new/edited collection shows immediately (no searcher reload needed).
     let result = tokio::task::spawn_blocking(move || {
-        crate::index::set_collection(&home, &name, &fields, Some(&actor))
+        // Takes the same write lock as every other manifest mutation. It is
+        // easy to assume a finding-aid edit doesn't need it, but `Manifest::save`
+        // rewrites waczs.json wholesale whatever changed — so saving a
+        // description while an add-crawls job runs could install a stale copy
+        // and erase that job's entry, leaving its documents in Tantivy with no
+        // manifest record. Same bug as PR #126, different handler.
+        let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        crate::index::set_collection(&state.home, &name, &fields, Some(&actor))
     })
     .await;
     match result {
@@ -581,29 +588,37 @@ pub(super) async fn delete_crawl_handler(
     curator: Curator,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
-    let added_by = match Manifest::open(&state.index_dir) {
-        Ok(m) => m
-            .wacz_by_id(&id)
-            .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string())),
-        Err(e) => return error_response(e).into_response(),
-    };
-    if !curator.principal().may_delete_crawl(added_by.as_deref()) {
-        return Denied::Insufficient("deleting a crawl someone else added").into_response();
-    }
-    audit(&state, curator.principal(), Action::CrawlDelete, &id);
+    let principal = curator.principal().clone();
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it
         // takes the same write lock as an add (poison-tolerant); it's quick, so
         // there's no queued-progress channel to announce a wait on.
         let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Custody is read and judged INSIDE the lock. Reading it outside and
+        // deleting under the lock leaves a window: a crawl id is a hash of its
+        // source, so the entry can be deleted and the same WACZ re-added under
+        // a different owner in between, and the check would have passed against
+        // the owner who is no longer there.
+        let added_by = Manifest::open(&state.index_dir)?
+            .wacz_by_id(&id)
+            .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string()));
+        if !principal.may_delete_crawl(added_by.as_deref()) {
+            return Ok(None);
+        }
+        // Audited here rather than before the check, so a refused delete is not
+        // recorded as an authorized attempt.
+        audit(&state, &principal, Action::CrawlDelete, &id);
         let plan = crate::index::delete_crawl(&state.home, &id)?;
         state.reload_searcher()?;
-        Ok::<_, anyhow::Error>(plan)
+        Ok::<_, anyhow::Error>(Some(plan))
     })
     .await;
     match result {
-        Ok(Ok(plan)) => Redirect::to(&format!("/collection/{}", plan.collection)).into_response(),
+        Ok(Ok(Some(plan))) => {
+            Redirect::to(&format!("/collection/{}", plan.collection)).into_response()
+        }
+        Ok(Ok(None)) => Denied::Insufficient("deleting a crawl someone else added").into_response(),
         Ok(Err(e)) => error_response(e).into_response(),
         Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
     }
