@@ -606,7 +606,9 @@ impl Manifest {
     /// aid for every collection created/modified this session. Untouched finding
     /// aids are left on disk as-is (so hand edits keep their formatting).
     pub fn save(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.index_dir)?;
+        // No create_dir_all here: `write_atomic` creates the parent itself,
+        // and doing it first would create the directory BEFORE the containment
+        // check refused the write, which is the property fsio documents.
         // Atomically: this is the only record of which crawls exist, their
         // collections, and provenance set out of band (import refs, custody)
         // that a reindex cannot rebuild. A truncate-then-write that loses power
@@ -1069,8 +1071,9 @@ fn split_front_matter(text: &str) -> (&str, &str) {
 /// YAML front-matter for the structured fields, then the Markdown `narrative`
 /// body.
 pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
+    // `write_atomic` creates the parent; creating it here would happen before
+    // the containment check (see fsio).
     let dir = collection_dir(home, &c.id);
-    std::fs::create_dir_all(&dir)?;
     let fm = FrontMatter {
         name: c.name.clone(),
         created: c.created.clone(),
@@ -1149,9 +1152,6 @@ pub fn write_crawl_note(
     note: &str,
 ) -> Result<()> {
     let path = crawl_note_path(home, collection, id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     crate::fsio::write_atomic_str(home, &path, &format!("{}\n", note.trim()))
         .with_context(|| format!("writing crawl note {}", path.display()))?;
     Ok(())
@@ -1630,6 +1630,40 @@ mod tests {
         let out = std::fs::read_to_string(collection_dir(tmp.path(), &none.id).join("README.md"))
             .unwrap();
         assert!(!out.contains("created_by"), "{out}");
+    }
+
+    #[test]
+    fn the_state_writers_create_their_own_parents() {
+        // They used to call create_dir_all themselves, which ran BEFORE fsio's
+        // containment check and so could create a tree for a write that was
+        // then refused. Those calls are gone, which means `write_atomic` has to
+        // be the one creating the directory. (The refusal path itself is tested
+        // in fsio, where it is reachable: here it is not, because the path is
+        // always built from the home passed in and CollectionId makes an
+        // escaping component unconstructible.)
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("fresh");
+
+        let c = Collection {
+            id: CollectionId::parse("brand-new").unwrap(),
+            name: "Brand New".into(),
+            created: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        write_finding_aid(&home, &c).unwrap();
+        assert!(home.join("collections/brand-new/README.md").exists());
+
+        write_crawl_note(&home, &c.id, "abc12345", "a note").unwrap();
+        assert!(home
+            .join("collections/brand-new/crawls/abc12345.md")
+            .exists());
+
+        // And the manifest, whose index dir also no longer gets pre-created.
+        let idx = home.join("index");
+        let mut m = Manifest::open(&idx).unwrap();
+        m.upsert_wacz(wacz("abc12345", "X", None));
+        m.save().unwrap();
+        assert!(idx.join("waczs.json").exists());
     }
 
     #[test]

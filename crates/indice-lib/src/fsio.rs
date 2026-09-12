@@ -83,9 +83,23 @@ pub(crate) fn ensure_within(home: &Path, path: &Path) -> Result<()> {
 /// hard power cut, never atomicity, so a failure here is not worth failing the
 /// write over.
 ///
-/// The two syncs cost a few milliseconds. Every caller is already doing far
-/// more work than that (parsing a WACZ, committing a Tantivy segment), so
-/// there is no non-syncing variant to choose wrongly between.
+/// It also only covers the *immediate* parent. When this call is the one that
+/// created that directory, the new directory's own entry in *its* parent is
+/// not synced, so a power cut right after the first-ever write to a fresh home
+/// can leave the directory missing entirely. That case is recoverable (the
+/// index is rebuilt by `reindex`, and a lost first finding aid is one
+/// just-entered form), so it is not worth syncing the whole chain on every
+/// write.
+///
+/// Cost: two fsyncs per write. That is usually noise next to what the caller is
+/// already doing (parsing a WACZ, committing a Tantivy segment), which is why
+/// there is no non-syncing variant to choose wrongly between. The exception
+/// worth knowing is the manifest during a bulk import: `ingest` saves once per
+/// crawl, and `waczs.json` grows with the archive, so a few-thousand-crawl
+/// ingest re-syncs a multi-megabyte file each time. On a spinning or networked
+/// home that is measurable. It is a symptom of the manifest being one JSON
+/// document rather than an appendable log, tracked under the scale work
+/// (`rustyweb-scale-footprint-qw5`), not of the sync itself.
 pub(crate) fn write_atomic(home: &Path, path: &Path, contents: &[u8]) -> Result<()> {
     // First, and before creating anything: the target has to be inside the home.
     ensure_within(home, path)?;
@@ -96,6 +110,7 @@ pub(crate) fn write_atomic(home: &Path, path: &Path, contents: &[u8]) -> Result<
         .with_context(|| format!("creating a temp file in {}", parent.display()))?;
     tmp.write_all(contents)
         .with_context(|| format!("writing {}", path.display()))?;
+    carry_permissions(&tmp, path)?;
     tmp.as_file()
         .sync_all()
         .with_context(|| format!("flushing {} to disk", path.display()))?;
@@ -107,6 +122,43 @@ pub(crate) fn write_atomic(home: &Path, path: &Path, contents: &[u8]) -> Result<
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
+    Ok(())
+}
+
+/// Give the temp file the mode the target should end up with.
+///
+/// This is load-bearing and easy to miss. `NamedTempFile` deliberately creates
+/// at `0o600`, and `persist` is a **rename**, so the temp file's mode becomes
+/// the target's: replacing a file leaves it with the temp file's permissions,
+/// not its own. Without this, switching a writer from `std::fs::write` (which
+/// preserves an existing file's mode, and creates at `0o666 & !umask`) to an
+/// atomic write silently narrows it to owner-only.
+///
+/// That is not hypothetical. `collections/*/annotations.jsonl` is `0600` in
+/// real archives today, purely because the original atomic writer in
+/// `annotations.rs` had this shape, while `waczs.json` and the finding aids
+/// next to it are `0644`. An operator who serves or backs up the archive as a
+/// second uid would have lost access to both on the next save.
+///
+/// So: keep the target's current mode when it exists, which also respects an
+/// operator who deliberately chmod'd it, and use `0o644` for a new file. We do
+/// not consult the umask, because there is no portable way to read it without
+/// setting it; a stricter umask is therefore not honoured for files we create,
+/// which is worth knowing but is the lesser of the two surprises.
+#[cfg(unix)]
+fn carry_permissions(tmp: &tempfile::NamedTempFile, path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o777)
+        .unwrap_or(0o644);
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("setting permissions for {}", path.display()))
+}
+
+/// No unix mode to carry.
+#[cfg(not(unix))]
+fn carry_permissions(_tmp: &tempfile::NamedTempFile, _path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -125,13 +177,13 @@ mod tests {
         let path = tmp.path().join("state.json");
         write_atomic_str(tmp.path(), &path, "first").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
-        // A shorter replacement is the case plain `fs::write` handles worst:
-        // truncate-then-write would briefly leave the old tail visible.
         write_atomic_str(tmp.path(), &path, "second, and longer").unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "second, and longer"
         );
+        // Shrinking is the case plain `fs::write` handles worst: it truncates
+        // first, so a crash leaves the file short and the old contents gone.
         write_atomic_str(tmp.path(), &path, "3").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "3");
     }
@@ -175,6 +227,28 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         assert!(write_atomic_str(&home, &other.join("index/waczs.json"), "x").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replacement_keeps_the_targets_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state.json");
+
+        // A new file gets 0644, not NamedTempFile's 0600. Anything reading the
+        // archive as a second uid (a backup agent, a static file server, the
+        // server process when indexing ran as someone else) depends on this.
+        write_atomic_str(tmp.path(), &path, "one").unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o644, "a new state file is world-readable");
+
+        // And a rewrite carries the target's mode across the rename rather
+        // than replacing it with the temp file's. This is the regression that
+        // silently narrowed waczs.json and every README.md to 0600.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomic_str(tmp.path(), &path, "two").unwrap();
+        assert_eq!(mode(&path), 0o640, "an operator's chmod survives a save");
     }
 
     #[test]
