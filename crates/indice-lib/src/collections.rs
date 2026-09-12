@@ -504,6 +504,32 @@ impl Manifest {
         })
     }
 
+    /// Open the manifest, apply `f`, and save, as one named operation.
+    ///
+    /// Every mutation of the manifest is a read-modify-write: [`save`] rewrites
+    /// `waczs.json` wholesale from the in-memory vec, so an open, a change, and
+    /// a save are a unit even though nothing about three separate calls says
+    /// so. Naming it means a caller cannot mutate and forget to persist, and
+    /// gives the invariant one place to be written down.
+    ///
+    /// `f` returning an error leaves the file untouched.
+    ///
+    /// # This does not serialize anything
+    ///
+    /// It is packaging, not a lock. Two callers running this concurrently will
+    /// each read, change their own copy, and atomically install it, and the
+    /// later save wins: the earlier one's changes are gone. Anything that can
+    /// run concurrently must still hold whatever lock serializes it (in the
+    /// server, `AppState::write_lock`). Doing attribution outside that lock is
+    /// how a crawl's manifest entry got erased while its documents stayed in
+    /// the index, which is the bug this doc exists to stop repeating.
+    pub fn update<T>(index_dir: &Path, f: impl FnOnce(&mut Manifest) -> Result<T>) -> Result<T> {
+        let mut manifest = Manifest::open(index_dir)?;
+        let out = f(&mut manifest)?;
+        manifest.save()?;
+        Ok(out)
+    }
+
     /// Insert or replace a WACZ member by id.
     pub fn upsert_wacz(&mut self, wacz: Wacz) {
         if let Some(pos) = self.waczs.iter().position(|w| w.id == wacz.id) {
@@ -1629,6 +1655,33 @@ mod tests {
         let out = std::fs::read_to_string(collection_dir(tmp.path(), &none.id).join("README.md"))
             .unwrap();
         assert!(!out.contains("created_by"), "{out}");
+    }
+
+    #[test]
+    fn update_persists_on_success_and_leaves_the_file_alone_on_error() {
+        let tmp = TempDir::new().unwrap();
+        let idx = tmp.path().join("index");
+        std::fs::create_dir_all(&idx).unwrap();
+
+        // A successful update is saved without the caller remembering to.
+        let id = Manifest::update(&idx, |m| {
+            m.upsert_wacz(wacz("abc12345", "First", None));
+            Ok(m.waczs[0].id.clone())
+        })
+        .unwrap();
+        assert_eq!(id, "abc12345");
+        assert_eq!(Manifest::open(&idx).unwrap().waczs.len(), 1);
+
+        // A failing one leaves the previous state exactly as it was, rather
+        // than persisting a half-applied change.
+        let err = Manifest::update(&idx, |m| -> Result<()> {
+            m.upsert_wacz(wacz("def67890", "Second", None));
+            anyhow::bail!("changed my mind")
+        });
+        assert!(err.is_err());
+        let after = Manifest::open(&idx).unwrap();
+        assert_eq!(after.waczs.len(), 1, "the aborted change must not persist");
+        assert_eq!(after.waczs[0].id, "abc12345");
     }
 
     #[test]

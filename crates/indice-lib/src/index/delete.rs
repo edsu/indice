@@ -114,11 +114,11 @@ pub fn delete_crawl(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
     ));
 
     // 3. Remove the manifest entry last.
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    manifest.remove_wacz(crawl_id);
-    manifest
-        .save()
-        .context("saving the manifest after deletion")?;
+    Manifest::update(&index_dir(home), |manifest| {
+        manifest.remove_wacz(crawl_id);
+        Ok(())
+    })
+    .context("saving the manifest after deletion")?;
 
     info!(crawl = %crawl_id, "crawl deleted");
     Ok(plan)
@@ -186,11 +186,10 @@ pub fn delete_collection(
         .collect();
 
     // Remove the grouping last: the manifest entry, then its finding-aid dir.
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let removed = manifest.remove_collection(id);
-    manifest
-        .save()
-        .context("saving the manifest after deleting a collection")?;
+    let removed = Manifest::update(&index_dir(home), |manifest| {
+        Ok(manifest.remove_collection(id))
+    })
+    .context("saving the manifest after deleting a collection")?;
     if removed.is_some() {
         let _ = std::fs::remove_dir_all(crate::collections::collection_dir(home, id));
     }

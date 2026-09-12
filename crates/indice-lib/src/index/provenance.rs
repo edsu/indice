@@ -41,20 +41,20 @@ pub fn set_browsertrix_provenance_by_id(
     resource_hash: &str,
     review_status: Option<u8>,
 ) -> Result<()> {
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest
-        .waczs
-        .iter_mut()
-        .find(|w| w.id == crawl_id)
-        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
-    wacz.browsertrix = Some(BrowsertrixRef {
-        host: host.to_string(),
-        item_id: item_id.to_string(),
-        resource_hash: resource_hash.to_string(),
-        review_status,
-    });
-    manifest.save()?;
-    Ok(())
+    Manifest::update(&index_dir(home), |manifest| {
+        let wacz = manifest
+            .waczs
+            .iter_mut()
+            .find(|w| w.id == crawl_id)
+            .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
+        wacz.browsertrix = Some(BrowsertrixRef {
+            host: host.to_string(),
+            item_id: item_id.to_string(),
+            resource_hash: resource_hash.to_string(),
+            review_status,
+        });
+        Ok(())
+    })
 }
 
 /// Record Archive-It import provenance on an already-indexed crawl (by its id),
@@ -68,21 +68,21 @@ pub fn set_archiveit_provenance_by_id(
     warc_count: u64,
     collection_title: &str,
 ) -> Result<()> {
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest
-        .waczs
-        .iter_mut()
-        .find(|w| w.id == crawl_id)
-        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
-    wacz.archive_it = Some(crate::collections::ArchiveItRef {
-        host: host.to_string(),
-        collection_id: ait_collection_id,
-        crawl_id: ait_crawl_id,
-        warc_count,
-        collection_title: collection_title.to_string(),
-    });
-    manifest.save()?;
-    Ok(())
+    Manifest::update(&index_dir(home), |manifest| {
+        let wacz = manifest
+            .waczs
+            .iter_mut()
+            .find(|w| w.id == crawl_id)
+            .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
+        wacz.archive_it = Some(crate::collections::ArchiveItRef {
+            host: host.to_string(),
+            collection_id: ait_collection_id,
+            crawl_id: ait_crawl_id,
+            warc_count,
+            collection_title: collection_title.to_string(),
+        });
+        Ok(())
+    })
 }
 
 /// Record who accessioned `crawl_ids`, in one manifest open/save.
@@ -101,18 +101,14 @@ pub fn set_added_by(
     if crawl_ids.is_empty() {
         return Ok(());
     }
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let mut touched = false;
-    for wacz in manifest.waczs.iter_mut() {
-        if wacz.added_by.is_none() && crawl_ids.contains(&wacz.id) {
-            wacz.added_by = Some(actor.clone());
-            touched = true;
+    Manifest::update(&index_dir(home), |manifest| {
+        for wacz in manifest.waczs.iter_mut() {
+            if wacz.added_by.is_none() && crawl_ids.contains(&wacz.id) {
+                wacz.added_by = Some(actor.clone());
+            }
         }
-    }
-    if touched {
-        manifest.save()?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Every crawl id currently in the manifest.

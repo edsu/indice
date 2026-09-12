@@ -189,6 +189,10 @@ pub fn index_location_with_resolver(
     std::fs::create_dir_all(&index_dir)
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
 
+    // As in reindex, held open across the ingest rather than wrapped in
+    // `Manifest::update`: one location can yield several crawls, each of which
+    // records its entry as it finishes, so the span is the whole operation.
+    // Callers that can run concurrently hold the server's write lock.
     let mut manifest = Manifest::open(&index_dir)?;
 
     // Validate the argument and file local WACZs into the collection's archive

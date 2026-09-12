@@ -36,6 +36,12 @@ pub fn reindex(
     progress: Option<&dyn IndexProgress>,
 ) -> Result<()> {
     let index_dir = index_dir(home);
+    // Held open across the whole reindex rather than going through
+    // `Manifest::update`: the manifest is read here, then rewritten entry by
+    // entry as each WACZ is re-ingested, so the critical section is the whole
+    // operation and not a short read-modify-write. Reindex is exclusive by
+    // nature (it swaps the index directory underneath), so nothing else should
+    // be touching the manifest while it runs.
     let mut manifest = Manifest::open(&index_dir)?;
     if manifest.waczs.is_empty() {
         info!("no WACZs registered; nothing to reindex");
