@@ -339,13 +339,15 @@ pub(super) fn index_one(
     let fixity = access.fixity(progress)?;
     record::upsert(
         manifest,
-        &id,
-        collection,
-        &effective_source,
-        &crawl_name,
-        meta,
-        stats,
-        fixity,
+        record::Indexed {
+            id: &id,
+            collection,
+            source: &effective_source,
+            display_name: &crawl_name,
+            meta,
+            stats,
+            fixity,
+        },
     );
 
     // Note: the spinner/bar is *not* finished here - the Tantivy commit happens
