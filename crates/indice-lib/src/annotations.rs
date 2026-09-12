@@ -272,7 +272,7 @@ pub fn create(home: &Path, collection: &CollectionId, annotation: &Annotation) -
     line.push('\n');
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&line);
-    write_atomic(&path, &existing)?;
+    crate::fsio::write_atomic_str(home, &path, &existing)?;
     Ok(())
 }
 
@@ -337,26 +337,7 @@ fn write_all(home: &Path, collection: &CollectionId, annotations: &[Annotation])
         buf.push_str(&serde_json::to_string(a)?);
         buf.push('\n');
     }
-    write_atomic(&path, &buf)?;
-    Ok(())
-}
-
-/// Write `contents` to `path` atomically: a temp file in the same directory is
-/// fully written, then renamed over `path` (a rename is atomic on one
-/// filesystem), so a crash mid-write can never truncate the store. Creates the
-/// parent directory if needed.
-fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    use std::io::Write;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating a temp file in {}", parent.display()))?;
-    tmp.write_all(contents.as_bytes())
-        .with_context(|| format!("writing {}", path.display()))?;
-    tmp.flush().ok();
-    tmp.persist(path)
-        .map_err(|e| e.error)
-        .with_context(|| format!("finalizing {}", path.display()))?;
+    crate::fsio::write_atomic_str(home, &path, &buf)?;
     Ok(())
 }
 
