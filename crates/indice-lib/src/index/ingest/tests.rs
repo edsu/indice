@@ -2,7 +2,7 @@ use super::*;
 // Phase internals these tests exercise directly (the pipeline's own surface
 // comes in via `use super::*`).
 use super::acquire::{file_display_name, local_warcs_streamable};
-use super::pages::{index_nested_from, index_wacz, index_wacz_streaming, last_modified_year};
+use super::pages::{index_nested_from, index_wacz, index_wacz_streaming, last_modified_year, Docs};
 use crate::index::testsupport::*;
 use tempfile::TempDir;
 
@@ -18,20 +18,28 @@ fn indexed_page_count(fixture_name: &str, stream: bool) -> u64 {
         let fetch = crate::http_range::FileFetch::open(&f).unwrap();
         index_wacz_streaming(
             fetch,
-            "cid",
-            "cname",
-            "coll",
-            &search,
+            &docs(&search),
             fixture_name,
             4,
             crate::index::no_progress(),
         )
         .unwrap()
     } else {
-        index_wacz(&f, "cid", "cname", "coll", &search).unwrap()
+        index_wacz(&f, &docs(&search)).unwrap()
     };
     stats.pages
 }
+/// The document tags these page-level tests use. Named fields rather than
+/// three positional `&str`s, which is the point of `Docs`.
+fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
+    Docs {
+        crawl_id: "cid",
+        crawl_name: "cname",
+        collection: "coll",
+        search,
+    }
+}
+
 #[test]
 fn streaming_matches_scan_on_a_stored_wacz() {
     // a.wacz stores its WARCs uncompressed, so streaming can seek into them.
@@ -60,10 +68,7 @@ fn streaming_refuses_a_deflated_wacz() {
     let fetch = crate::http_range::FileFetch::open(&f).unwrap();
     let err = index_wacz_streaming(
         fetch,
-        "cid",
-        "cname",
-        "coll",
-        &search,
+        &docs(&search),
         "simple.wacz",
         4,
         crate::index::no_progress(),
@@ -243,10 +248,12 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
 
     let stats = index_nested_from(
         outer,
-        "cid",
-        "Nested",
-        "coll",
-        &search,
+        &Docs {
+            crawl_id: "cid",
+            crawl_name: "Nested",
+            collection: "coll",
+            search: &search,
+        },
         2,
         crate::index::no_progress(),
     )

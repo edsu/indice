@@ -310,10 +310,12 @@ pub(super) fn index_one(
     let stats = pages::index(
         &access,
         &pages::Ctx {
-            crawl_id: &id,
-            crawl_name: &crawl_name,
-            collection: collection.0,
-            search,
+            docs: pages::Docs {
+                crawl_id: &id,
+                crawl_name: &crawl_name,
+                collection: collection.0,
+                search,
+            },
             workers: resolve_workers(concurrency, access.is_remote()),
             thumbs_dir: &thumbs_dir,
             pinned_thumb: &pinned_thumb,
