@@ -5,19 +5,25 @@ description: Index a sample WACZ, serve it, and search and replay in a minute, p
 
 ## Try it in a minute
 
-Once you have installed indice you can index a WACZ file into a new collection.
-
-In this example we are downloading a sample WACZ file that contains an archive of a single page of NASA's [Astronomy Picture of the Day](https://apod.nasa.gov) website. If you have your own WACZ file by all means use that instead! For more about the different ways for creating WACZ files see the [WACZ](/docs/guides/wacz/) guide.
+Once you have [installed](/docs/install/) indice you can index a sample WACZ file into a new collection.
 
 ```sh
-wget https://raw.githubusercontent.com/edsu/indice/2c24fcab9613054e881729bc823e2c98677b3d82/apod.wacz
-indice index --collection "APOD" apod.wacz   # build the search index from the sample
-indice serve                                 # http://127.0.0.1:8080
+wget https://github.com/edsu/indice/raw/refs/heads/main/apod.wacz
+indice index --collection "APOD" apod.wacz
+indice serve
 ```
 
-Open <http://127.0.0.1:8080> and you can full-text search the captured pages, narrow by the facets, and replay the archived site in your browser. Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve --manage` adds an in-browser interface for adding and curating crawls; see [Manage &amp; curate](/docs/guides/manage/).
+Open <http://127.0.0.1:8080> and you should see the new collection, and be able to replay:
 
-![The indice reading-room homepage: a search box, browse-by-year and top-sites entry points, and collection cards](../../../assets/docs/reading-room-home.png)
+![The indice reading-room homepage: a search box, browse-by-year and top-sites entry points, and collection cards](../../../assets/docs/apod-01.png)
+
+![Replaying the APOD web page that contains a Youtube video of Saturn flyby](../../../assets/docs/apod-02.png)
+
+:::note[Making WACZ files]
+Here we downloaded a small sample WACZ. But indice can work with much larger ones that can be stored locally or in the cloud. For more about the different ways of creating WACZ files see [Making a WACZ](/docs/guides/wacz/#making-a-wacz).
+:::
+
+Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve --manage` adds an in-browser interface for adding and curating crawls. To learn more see [Manage &amp; curate](/docs/guides/manage/).
 
 ## The home directory
 
@@ -30,7 +36,7 @@ indice keeps everything under a **home directory** (default: the current directo
 └── index/              search index + derived metadata (rebuildable; git-ignore it)
 ```
 
-If you want, the `collections/` folder is the part worth keeping in version control, since it contains the prose and images a curator writes, and annotations. `index/` is derived from the WACZs and rebuilt by `indice reindex`, so a home in git typically `.gitignore`s `/index`. See [The home directory](/docs/reference/home-directory/) for the full layout, what to version-control, and how backup works.
+If you want, the `collections/` folder might be worth keeping in version control, since it contains the prose and images a curator writes, and annotations. `index/` is derived from the WACZs and rebuilt by `indice reindex`, so a home in git typically `.gitignore`s `/index`. See [The home directory](/docs/reference/home-directory/) for the full layout, what to version-control, and how backup works.
 
 ## Index and serve
 

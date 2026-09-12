@@ -2,10 +2,13 @@
 
 [![CI](https://github.com/edsu/indice/actions/workflows/ci.yml/badge.svg)](https://github.com/edsu/indice/actions/workflows/ci.yml)
 
-**indice** is a web archive server written in Rust — a [reading room] for web
-archives. Point it at a pile of local or remote [WACZ] files and it gives you
-full-text faceted search, provenance up front, faithful in-browser replay, and a
-management workroom — all from a single self-contained binary.
+**indice** is a web archive server written in Rust, which functions as
+a [reading room] for web archives. You can point it at a collection of local or
+remote [WACZ] files and it gives you full-text faceted search, crawl
+provenance, faithful in-browser replay, annotation support, and a management
+workroom, all from a single self-contained binary. Curator supplied
+descriptions are persisted on the file system as Markdown and JSON files that
+are revision control ready.
 
 - 🌐 **Website & tour:** <https://indice.page>
 - 📖 **Documentation:** <https://indice.page/docs/>
@@ -21,23 +24,23 @@ management workroom — all from a single self-contained binary.
 > the actual replay — and adds a thin Rust layer for indexing, search, and
 > serving. Webrecorder did the heavy lifting; please support them.
 
-## What you get
+## The readings room
 
-- **Full-text search with faceted, temporal browsing** — hit-highlighted
+- **Full-text search with faceted, temporal browsing**: hit-highlighted
   snippets, then narrow by collection, site, date, type, or language, with a
   timeline for navigating through time.
-- **Provenance up front** — see how each crawl was made (software, operator,
-  dates, seeds, page counts) and verify each WACZ's fixity, instead of taking the
-  archive on faith.
-- **In-browser replay** of the archived pages via [ReplayWeb.page] / wabac.js.
+- **Provenance up front**: see how each crawl was made (software, operator,
+  dates, seeds, page counts) and verify each WACZ's fixity.
+- **In-browser replay** of the archived pages via Webrecorder's [ReplayWeb.page] / wabac.js.
 - **A management workroom** where authenticated users add archives and edit
-  collection metadata and descriptions.
+  collection metadata and descriptions. They can also annotate individual pages 
+  or regions of pages as [Web Annotations Vocabulary](https://www.w3.org/TR/annotation-vocab/)
 
-It ships as a single self-contained binary — no Solr, no Elasticsearch, no
-separate database server. That's a deliberate design goal: indice is built for
-**small, local, and private** use (a person indexing a handful of their own WACZ
-files on a laptop, nothing sent to a hosted service) and uses the same model to
-**scale up** toward institutional collections.
+It ships as a single self-contained binary, so there is no Solr, no
+Elasticsearch, no separate database server. indice is built for **small, local,
+and private** use (a person indexing a handful of their own WACZ files on
+a laptop, nothing sent to a hosted service) and uses the same model to **scale
+up** towards multi-user institutional collections.
 
 ## Install
 
@@ -54,8 +57,12 @@ Docker, building from source, and the macOS Gatekeeper note are covered in the
 
 ## Try it in a minute
 
-The prebuilt archive includes `apod.wacz` — a small sample crawl of NASA's
-Astronomy Picture of the Day. Index it into a collection, then start the server:
+First you need a WACZ. If you don't have one already, download [apod.wacz],
+which is a crawl of one page from NASA's Astronomy Picture of the Day.
+Learn more about the different ways of creating your own in the [Making a WACZ]
+section of the manual.
+
+Index `apod.wacz` into a collection, and then start the server:
 
 ```sh
 indice index --collection "APOD" apod.wacz   # build the search index from the sample
@@ -89,17 +96,16 @@ Architecture and design rationale: [DESIGN.md](DESIGN.md).
 
 ## Credits
 
-indice stands almost entirely on the shoulders of [Webrecorder]. The hard part —
-faithfully replaying an archived page in the browser — is done by their
-[ReplayWeb.page] and [wabac.js] (which bundles wombat.js), both of which indice
-ships and serves unmodified. It also builds on the open [WACZ] format and the
-broader web-archiving community. If indice is useful to you, please support
-Webrecorder's work.
+indice stands almost entirely on the shoulders of [Webrecorder]. Faithfully
+replaying an archived page in the browser is done by their [ReplayWeb.page] and
+[wabac.js], both of which indice ships and serves unmodified. It also builds on
+the open [WACZ] format and the broader web-archiving community. If indice is
+useful to you, [please support] Webrecorder's work.
 
 ## License
 
 indice is licensed under the **GNU Affero General Public License v3.0 or later**
-(AGPL-3.0-or-later) — the same license as the ReplayWeb.page and wabac.js
+(AGPL-3.0-or-later), which is the same license as the ReplayWeb.page and wabac.js
 components it bundles. See [LICENSE](LICENSE) for the full text and
 [NOTICE](NOTICE) for third-party attributions and bundled-asset details.
 
@@ -108,3 +114,6 @@ components it bundles. See [LICENSE](LICENSE) for the full text and
 [ReplayWeb.page]: https://replayweb.page/
 [wabac.js]: https://github.com/webrecorder/wabac.js
 [reading room]: https://inkdroid.org/2026/06/03/jan6-doj-archive/
+[please support]: https://www.w3.org/TR/annotation-vocab/
+[Making a WACZ]: https://indice.page/docs/guides/wacz/#making-a-wacz
+[apod.wacz]: https://github.com/edsu/indice/raw/refs/heads/main/apod.wacz
