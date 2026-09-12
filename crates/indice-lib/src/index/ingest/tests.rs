@@ -2,7 +2,7 @@ use super::*;
 // Phase internals these tests exercise directly (the pipeline's own surface
 // comes in via `use super::*`).
 use super::acquire::{file_display_name, local_warcs_streamable};
-use super::pages::{index_nested_from, index_wacz, index_wacz_streaming, last_modified_year};
+use super::pages::{index_nested_from, index_wacz, index_wacz_streaming, last_modified_year, Docs};
 use crate::index::testsupport::*;
 use tempfile::TempDir;
 
@@ -18,20 +18,28 @@ fn indexed_page_count(fixture_name: &str, stream: bool) -> u64 {
         let fetch = crate::http_range::FileFetch::open(&f).unwrap();
         index_wacz_streaming(
             fetch,
-            "cid",
-            "cname",
-            "coll",
-            &search,
+            &docs(&search),
             fixture_name,
             4,
-            None,
+            crate::index::no_progress(),
         )
         .unwrap()
     } else {
-        index_wacz(&f, "cid", "cname", "coll", &search).unwrap()
+        index_wacz(&f, &docs(&search)).unwrap()
     };
     stats.pages
 }
+/// The document tags these page-level tests use. Named fields rather than
+/// three positional `&str`s, which is the point of `Docs`.
+fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
+    Docs {
+        crawl_id: "cid",
+        crawl_name: "cname",
+        collection: "coll",
+        search,
+    }
+}
+
 #[test]
 fn streaming_matches_scan_on_a_stored_wacz() {
     // a.wacz stores its WARCs uncompressed, so streaming can seek into them.
@@ -60,13 +68,10 @@ fn streaming_refuses_a_deflated_wacz() {
     let fetch = crate::http_range::FileFetch::open(&f).unwrap();
     let err = index_wacz_streaming(
         fetch,
-        "cid",
-        "cname",
-        "coll",
-        &search,
+        &docs(&search),
         "simple.wacz",
         4,
-        None,
+        crate::index::no_progress(),
     )
     .unwrap_err()
     .to_string()
@@ -241,9 +246,19 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
     let tmp = TempDir::new().unwrap();
     let search = Mutex::new(SearchIndex::open(&tmp.path().join("ft")).unwrap());
 
-    let stats = index_nested_from(outer, "cid", "Nested", "coll", &search, 2, None)
-        .unwrap()
-        .expect("should detect and index the nested WACZ");
+    let stats = index_nested_from(
+        outer,
+        &Docs {
+            crawl_id: "cid",
+            crawl_name: "Nested",
+            collection: "coll",
+            search: &search,
+        },
+        2,
+        crate::index::no_progress(),
+    )
+    .unwrap()
+    .expect("should detect and index the nested WACZ");
     assert!(
         stats.pages > 0,
         "inner pages should be indexed by streaming in place"
@@ -255,7 +270,8 @@ fn browsertrix_source_without_resolver_errors_clearly() {
     // stable identity into a fresh presigned URL — the error should say so.
     let tmp = TempDir::new().unwrap();
     let loc = "browsertrix|https://app.browsertrix.com|o1|item-1|x-0.wacz";
-    let err = index_location(loc, tmp.path(), None, "test", false, false, None, None)
+    let err = Ingest::new(tmp.path())
+        .index_location(loc, "test")
         .err()
         .unwrap()
         .to_string();
@@ -272,17 +288,9 @@ fn index_into_named_collection_groups_the_wacz() {
     let dest = archive.join("simple.wacz");
     std::fs::copy(fixture("simple.wacz"), &dest).unwrap();
 
-    index_location(
-        &dest.to_string_lossy(),
-        tmp.path(),
-        None,
-        "My Project",
-        false,
-        false,
-        None,
-        None,
-    )
-    .unwrap();
+    Ingest::new(tmp.path())
+        .index_location(&dest.to_string_lossy(), "My Project")
+        .unwrap();
 
     let m = crate::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     assert!(

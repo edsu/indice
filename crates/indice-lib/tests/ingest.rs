@@ -15,14 +15,10 @@ struct PhaseRecorder {
 }
 
 impl indice_lib::index::IndexProgress for PhaseRecorder {
-    fn begin(&self, _: &str) {}
+    // Only the callback this test cares about; the rest default to no-ops.
     fn phase(&self, p: &str) {
         self.phases.lock().unwrap().push(p.to_string());
     }
-    fn set_total(&self, _: u64) {}
-    fn set_records(&self, _: u64) {}
-    fn wacz_indexed(&self, _: &str, _: u64) {}
-    fn finish(&self) {}
 }
 
 impl PhaseRecorder {
@@ -42,8 +38,13 @@ fn crawl_count(home: &Path) -> usize {
         .len()
 }
 
-fn index(home: &Path, src: &str, force: bool, prog: Option<&dyn indice_lib::index::IndexProgress>) {
-    indice_lib::index::index_location(src, home, Some("S"), "c", false, force, None, prog).unwrap();
+fn index(home: &Path, src: &str, force: bool, prog: &dyn indice_lib::index::IndexProgress) {
+    indice_lib::index::Ingest::new(home)
+        .name(Some("S"))
+        .force(force)
+        .progress(prog)
+        .index_location(src, "c")
+        .unwrap();
 }
 
 #[test]
@@ -54,7 +55,7 @@ fn reindex_swaps_cleanly_and_leaves_no_swap_dirs() {
     std::fs::copy(Path::new(FIXTURES).join("simple.wacz"), &input).unwrap();
     let src = input.to_string_lossy().into_owned();
 
-    index(home, &src, false, None);
+    index(home, &src, false, indice_lib::index::no_progress());
     let before = crawl_count(home);
     assert!(before > 0, "fixture registers a crawl");
 
@@ -64,7 +65,7 @@ fn reindex_swaps_cleanly_and_leaves_no_swap_dirs() {
     std::fs::create_dir_all(idx.join("full_text.new")).unwrap();
     std::fs::create_dir_all(idx.join("full_text.old")).unwrap();
 
-    indice_lib::index::reindex(home, None, None, None).unwrap();
+    indice_lib::index::Ingest::new(home).reindex().unwrap();
 
     assert_eq!(crawl_count(home), before, "collection membership preserved");
     assert!(
@@ -94,20 +95,20 @@ fn rerun_skips_already_indexed_unless_forced() {
     let src = input.to_string_lossy().into_owned();
 
     // First ingest registers the crawl.
-    index(home, &src, false, None);
+    index(home, &src, false, indice_lib::index::no_progress());
     assert_eq!(crawl_count(home), 1);
 
     // Re-running the same ingest skips the already-indexed source (this is what
     // makes an interrupted large ingest resumable — the finished crawls persist,
     // committed per WACZ, and a re-run steps over them).
     let rec = PhaseRecorder::default();
-    index(home, &src, false, Some(&rec));
+    index(home, &src, false, &rec);
     assert!(rec.skipped(), "re-run skips the already-indexed source");
     assert_eq!(crawl_count(home), 1, "no duplicate");
 
     // --force re-indexes it (no skip).
     let rec2 = PhaseRecorder::default();
-    index(home, &src, true, Some(&rec2));
+    index(home, &src, true, &rec2);
     assert!(!rec2.skipped(), "--force re-indexes rather than skipping");
     assert_eq!(crawl_count(home), 1, "still one crawl (upsert)");
 }

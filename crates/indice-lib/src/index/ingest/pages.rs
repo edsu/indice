@@ -27,16 +27,35 @@ use super::WaczAccess;
 /// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
 /// and collection the pages belong to, where to write them, how wide to fan out,
 /// and where a representative thumbnail should land.
-pub(super) struct Ctx<'a> {
+/// Which crawl (and collection) the documents being written belong to, and the
+/// index they go into.
+///
+/// Every page-indexing function needs exactly this quartet, so it travels as one
+/// named value rather than four parallel arguments — three of which are `&str`
+/// in a fixed order, an easy thing to transpose and (because the manifest would
+/// still be correct) an easy thing not to notice. Naming the fields at each
+/// construction site is what makes that mistake visible; the guard is
+/// `tests/integration.rs::a_page_document_is_tagged_with_its_own_crawl_and_collection`.
+///
+/// `Copy`, so a callee can destructure it and keep using the bare names.
+#[derive(Clone, Copy)]
+pub(super) struct Docs<'a> {
+    /// The crawl's id, tagged on each page as `crawl_id`.
     pub crawl_id: &'a str,
+    /// The crawl's display name, tagged as `crawl_name`.
     pub crawl_name: &'a str,
+    /// The curated collection id (slug) the crawl belongs to.
     pub collection: &'a str,
     pub search: &'a Mutex<SearchIndex>,
+}
+
+pub(super) struct Ctx<'a> {
+    pub docs: Docs<'a>,
     pub workers: usize,
     pub thumbs_dir: &'a Path,
     pub pinned_thumb: &'a Path,
     pub main_page_url: Option<&'a str>,
-    pub progress: Option<&'a dyn IndexProgress>,
+    pub progress: &'a dyn IndexProgress,
 }
 
 /// Index every page in one WACZ.
@@ -67,16 +86,8 @@ pub(super) fn index(access: &WaczAccess, ctx: &Ctx) -> Result<CrawlStats> {
                 // The scan path has no cheap up-front record total, so it stays on
                 // the spinner (no determinate bar). Label it "scanning" - it reads
                 // every WARC record, unlike the CDX-guided path.
-                if let Some(pr) = ctx.progress {
-                    pr.phase("scanning");
-                }
-                index_wacz(
-                    path,
-                    ctx.crawl_id,
-                    ctx.crawl_name,
-                    ctx.collection,
-                    ctx.search,
-                )
+                ctx.progress.phase("scanning");
+                index_wacz(path, &ctx.docs)
             }
         }
     }
@@ -88,20 +99,11 @@ fn stream_with_thumbnail<F>(fetch: F, label: &str, ctx: &Ctx) -> Result<CrawlSta
 where
     F: RangeFetch + Clone + Send + Sync,
 {
-    let stats = index_wacz_streaming(
-        fetch.clone(),
-        ctx.crawl_id,
-        ctx.crawl_name,
-        ctx.collection,
-        ctx.search,
-        label,
-        ctx.workers,
-        ctx.progress,
-    )?;
+    let stats = index_wacz_streaming(fetch.clone(), &ctx.docs, label, ctx.workers, ctx.progress)?;
     cache_thumbnail(
         fetch,
         ctx.thumbs_dir,
-        ctx.crawl_id,
+        ctx.docs.crawl_id,
         ctx.main_page_url,
         ctx.pinned_thumb,
     );
@@ -206,19 +208,13 @@ fn index_nested(access: &WaczAccess, ctx: &Ctx) -> Result<Option<CrawlStats>> {
     match access {
         WaczAccess::Local { path, .. } => index_nested_from(
             crate::http_range::FileFetch::open(path)?,
-            ctx.crawl_id,
-            ctx.crawl_name,
-            ctx.collection,
-            ctx.search,
+            &ctx.docs,
             ctx.workers,
             ctx.progress,
         ),
         WaczAccess::Stream { url } => index_nested_from(
             crate::http_range::HttpFetch::open(url)?,
-            ctx.crawl_id,
-            ctx.crawl_name,
-            ctx.collection,
-            ctx.search,
+            &ctx.docs,
             ctx.workers,
             ctx.progress,
         ),
@@ -227,15 +223,11 @@ fn index_nested(access: &WaczAccess, ctx: &Ctx) -> Result<Option<CrawlStats>> {
 
 /// Core of [`index_nested`], generic over the outer WACZ's byte source
 /// (`FileFetch` locally, `HttpFetch` remotely).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
     outer: F,
-    crawl_id: &str,
-    crawl_name: &str,
-    collection: &str,
-    search: &Mutex<SearchIndex>,
+    docs: &Docs,
     workers: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<Option<CrawlStats>> {
     let inners = {
         let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))
@@ -249,18 +241,13 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
 
     let mut agg = CrawlStats::default();
     for (i, inner) in inners.iter().enumerate() {
-        if let Some(pr) = progress {
-            pr.phase(&format!("nested WACZ {}/{}", i + 1, inners.len()));
-        }
+        progress.phase(&format!("nested WACZ {}/{}", i + 1, inners.len()));
         let stats = match inner.inline {
             // Stored: read it in place as a window of the outer file.
             Some((base, len)) => index_inner(
                 crate::http_range::SubRangeFetch::new(outer.clone(), base, len),
                 &inner.name,
-                crawl_id,
-                crawl_name,
-                collection,
-                search,
+                docs,
                 workers,
                 progress,
             )?,
@@ -272,7 +259,7 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
                     tempfile::NamedTempFile::new().context("temp for compressed nested WACZ")?;
                 std::io::copy(&mut zip.by_name(&inner.name)?, tmp.as_file_mut())
                     .with_context(|| format!("extracting nested {}", inner.name))?;
-                index_wacz(tmp.path(), crawl_id, crawl_name, collection, search)?
+                index_wacz(tmp.path(), docs)?
             }
         };
         agg.pages += stats.pages;
@@ -292,28 +279,22 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
 /// Index one inner WACZ presented as a [`RangeFetch`] window. CDX-guided
 /// (streaming, no extraction) when its WARCs are Stored; otherwise the window is
 /// materialized to a temp file and full-scanned (rare).
-#[allow(clippy::too_many_arguments)]
 fn index_inner<F: RangeFetch + Clone + Send + Sync>(
     fetch: F,
     label: &str,
-    crawl_id: &str,
-    crawl_name: &str,
-    collection: &str,
-    search: &Mutex<SearchIndex>,
+    docs: &Docs,
     workers: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<CrawlStats> {
     let streamable = zip::ZipArchive::new(RangeReader::new(fetch.clone()))
         .ok()
         .map(|mut z| crate::wacz::warcs_stored(&mut z).unwrap_or(false))
         .unwrap_or(false);
     if streamable {
-        index_wacz_streaming(
-            fetch, crawl_id, crawl_name, collection, search, label, workers, progress,
-        )
+        index_wacz_streaming(fetch, docs, label, workers, progress)
     } else {
         let tmp = materialize_fetch(&fetch).context("materializing nested WACZ for scan")?;
-        index_wacz(tmp.path(), crawl_id, crawl_name, collection, search)
+        index_wacz(tmp.path(), docs)
     }
 }
 
@@ -357,15 +338,7 @@ fn merge_max(acc: &mut Option<String>, v: Option<String>) {
 /// often live in a separate WARC from the HTML response), merged into one
 /// document per URL, and indexed once. The body prefers Browsertrix's rendered
 /// text and falls back to scraped HTML; the title comes from the HTML.
-pub(super) fn index_wacz(
-    wacz_path: &Path,
-    // WACZ id/name (tagged on each page as crawl_id/crawl_name).
-    crawl_id: &str,
-    crawl_name: &str,
-    // Curated collection id (slug) the WACZ belongs to.
-    collection: &str,
-    search: &Mutex<SearchIndex>,
-) -> Result<CrawlStats> {
+pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
     let warc_paths: Vec<_> = iter_warc_paths(wacz_path)?
         .collect::<Result<Vec<_>>>()
         .with_context(|| format!("listing WARC entries in {}", wacz_path.display()))?;
@@ -416,10 +389,7 @@ pub(super) fn index_wacz(
         raws,
         warcinfo,
         status_counts,
-        crawl_id,
-        crawl_name,
-        collection,
-        search,
+        docs,
         &wacz_path.display().to_string(),
     )
 }
@@ -428,48 +398,39 @@ pub(super) fn index_wacz(
 /// (a local file or an HTTP range reader): read only the page-relevant records
 /// the CDX points at, rather than scanning every WARC record. Produces the same
 /// index as [`index_wacz`] (both share [`record_to_raw`] and [`index_merged`]).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn index_wacz_streaming<F>(
     fetch: F,
-    crawl_id: &str,
-    crawl_name: &str,
-    collection: &str,
-    search: &Mutex<SearchIndex>,
+    docs: &Docs,
     label: &str,
     concurrency: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<CrawlStats>
 where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
 {
     let (raws, warcinfo, status_counts) =
         collect_page_records_via_cdx(fetch, concurrency, progress)?;
-    index_merged(
-        raws,
-        warcinfo,
-        status_counts,
-        crawl_id,
-        crawl_name,
-        collection,
-        search,
-        label,
-    )
+    index_merged(raws, warcinfo, status_counts, docs, label)
 }
 
 /// Merge per-record contributions into one document per URL and index them.
 /// Shared by the scan-everything ([`index_wacz`]) and CDX-guided
 /// ([`index_wacz_streaming`]) paths.
-#[allow(clippy::too_many_arguments)]
 fn index_merged(
     raws: Vec<RawRecord>,
     warcinfo: Option<Warcinfo>,
     status_counts: BTreeMap<u16, u64>,
-    crawl_id: &str,
-    crawl_name: &str,
-    collection: &str,
-    search: &Mutex<SearchIndex>,
+    docs: &Docs,
     label: &str,
 ) -> Result<CrawlStats> {
+    // The only phase that reads the tags rather than forwarding them; the
+    // others just pass `docs` along.
+    let Docs {
+        crawl_id,
+        crawl_name,
+        collection,
+        search,
+    } = *docs;
     let build_start = std::time::Instant::now();
     let mut pages: HashMap<String, MergedPage> = HashMap::new();
     {
@@ -651,7 +612,7 @@ type PageRecords = (Vec<RawRecord>, Option<Warcinfo>, BTreeMap<u16, u64>);
 fn collect_page_records_via_cdx<F>(
     fetch: F,
     concurrency: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<PageRecords>
 where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
@@ -659,9 +620,7 @@ where
     use crate::wacz;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    if let Some(p) = progress {
-        p.phase("reading index");
-    }
+    progress.phase("reading index");
     let read_start = std::time::Instant::now();
 
     // Setup (serial): read the ZIP central directory, the CDX, each WARC's
@@ -690,9 +649,7 @@ where
                     || c.mime.contains("pdf"))
         })
         .collect();
-    if let Some(p) = progress {
-        p.set_total(wanted.len() as u64);
-    }
+    progress.set_total(wanted.len() as u64);
 
     // Fetch + extract each wanted record concurrently. The CDX gives every record
     // an independent (offset, length), so fetches don't depend on each other:
@@ -726,9 +683,7 @@ where
                     None => Vec::new(),
                 };
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(p) = progress {
-                    p.set_records(n);
-                }
+                progress.set_records(n);
                 raws
             })
             .collect()
@@ -756,9 +711,7 @@ where
     // total, so drop the determinate bar back to a spinner - otherwise it sits at
     // 100% with a decaying rate/ETA during the slow tail (very visible for a local
     // file, where reads are near-instant and the tail dominates).
-    if let Some(p) = progress {
-        p.phase("building index");
-    }
+    progress.phase("building index");
     Ok((out, warcinfo, status_counts))
 }
 

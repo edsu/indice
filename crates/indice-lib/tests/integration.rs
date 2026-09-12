@@ -70,6 +70,53 @@ fn index_wacz_result_has_crawl_fields() {
     assert_eq!(page.crawl_name, "simple");
 }
 
+/// A page document must carry the *right* three tags, not merely non-empty
+/// ones.
+///
+/// These three travel together through every page-indexing function as adjacent
+/// `&str` arguments in a fixed order, so transposing two of them is an easy
+/// slip — and a slip that mis-tags every document in the index while leaving
+/// the manifest perfectly correct, so every manifest-focused test here would
+/// still pass. This asserts the search document instead, which is the only
+/// place the mistake would show.
+#[test]
+fn a_page_document_is_tagged_with_its_own_crawl_and_collection() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let dest = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &dest).unwrap();
+    indice_lib::index::index_path(&dest, home, Some("A Readable Name"), "Tagged Coll").unwrap();
+
+    // What the manifest says this crawl is.
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let wacz = &manifest.waczs[0];
+
+    let idx = indice_lib::search::SearchIndex::open(home.join("index").join("full_text").as_path())
+        .unwrap();
+    let results = idx.search("example", 10).unwrap();
+    let page = results
+        .iter()
+        .find(|r| r.doc_type == "page")
+        .expect("a page document");
+
+    assert_eq!(page.crawl_id, wacz.id, "crawl_id is the crawl's id");
+    assert_eq!(
+        page.crawl_name, "A Readable Name",
+        "crawl_name is the display name, not the id"
+    );
+    assert_eq!(
+        page.collection, "tagged-coll",
+        "collection is the slug, not the display name or the crawl"
+    );
+    // The three are pairwise distinct here on purpose: if any two were equal a
+    // transposition would pass unnoticed.
+    assert_ne!(page.crawl_id, page.crawl_name);
+    assert_ne!(page.crawl_name, page.collection);
+    assert_ne!(page.crawl_id, page.collection);
+}
+
 #[test]
 fn index_wacz_writes_manifest_with_metadata() {
     let tmp = make_index(&["simple.wacz"]);
@@ -90,7 +137,8 @@ fn index_wacz_writes_manifest_with_metadata() {
 fn optimize_compacts_in_place_and_keeps_search_working() {
     let tmp = make_index(&["simple.wacz"]);
     // Compact the existing index — no sources are re-read.
-    let (before, after) = indice_lib::index::optimize(tmp.path(), 8, None).unwrap();
+    let (before, after) =
+        indice_lib::index::optimize(tmp.path(), 8, indice_lib::index::no_progress()).unwrap();
     assert!(
         after >= 1 && after <= before,
         "before={before} after={after}"
@@ -108,7 +156,7 @@ fn optimize_compacts_in_place_and_keeps_search_working() {
 #[test]
 fn optimize_errors_clearly_when_there_is_no_index() {
     let tmp = TempDir::new().unwrap();
-    let err = indice_lib::index::optimize(tmp.path(), 8, None)
+    let err = indice_lib::index::optimize(tmp.path(), 8, indice_lib::index::no_progress())
         .unwrap_err()
         .to_string();
     assert!(err.contains("no search index"), "unexpected error: {err}");
@@ -1073,7 +1121,8 @@ async fn index_from_http_url_and_link_directly() {
     // index_location uses a blocking HTTP client; run it off the async runtime.
     let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
     tokio::task::spawn_blocking(move || {
-        indice_lib::index::index_location(&url_c, &dir_c, None, "test", false, false, None, None)
+        indice_lib::index::Ingest::new(&dir_c)
+            .index_location(&url_c, "test")
             .unwrap();
     })
     .await
