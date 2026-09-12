@@ -73,16 +73,14 @@ impl WaczAccess {
     /// already skips remote sources) and its size comes from `Content-Length`. A
     /// local file is hashed — reading every byte, which dominates the tail for a
     /// large WACZ, so it gets its own "checksumming" phase and timing.
-    fn fixity(&self, progress: Option<&dyn IndexProgress>) -> Result<(String, u64)> {
+    fn fixity(&self, progress: &dyn IndexProgress) -> Result<(String, u64)> {
         match self {
             WaczAccess::Stream { url } => Ok((
                 String::new(),
                 crate::http_range::open_remote(url)?.total_len(),
             )),
             WaczAccess::Local { path, .. } => {
-                if let Some(pr) = progress {
-                    pr.phase("checksumming");
-                }
+                progress.phase("checksumming");
                 let sha_start = std::time::Instant::now();
                 let sha = file_sha256(path)
                     .with_context(|| format!("computing sha256 of {}", path.display()))?;
@@ -108,8 +106,8 @@ pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str
         collection,
         false, // download
         false, // force
-        None,
-        None,
+        None,  // concurrency: per-source default
+        crate::index::no_progress(),
     )
 }
 
@@ -136,7 +134,7 @@ pub fn index_location(
     // otherwise an already-indexed source is skipped (so a large ingest resumes).
     force: bool,
     concurrency: Option<usize>,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<()> {
     index_location_with_resolver(
         location,
@@ -172,7 +170,7 @@ pub fn index_location_with_resolver(
     // Resolves a Browsertrix source to a fresh presigned URL (binary-provided).
     resolver: Option<&dyn SourceResolver>,
     // Optional progress sink for indexing (the binary renders a bar).
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<()> {
     // Every crawl belongs to a collection (its id is the slug of the name).
     let group = (
@@ -216,9 +214,7 @@ pub fn index_location_with_resolver(
                 .wacz_by_id(&wacz_id(source))
                 .is_some_and(|w| w.collection == group.0)
         {
-            if let Some(p) = progress {
-                p.phase(&format!("skipping already-indexed {}", source.location()));
-            }
+            progress.phase(&format!("skipping already-indexed {}", source.location()));
             continue;
         }
 
@@ -238,9 +234,7 @@ pub fn index_location_with_resolver(
         // Commit + save per WACZ so an interrupted large ingest keeps every
         // completed crawl (and a re-run resumes past it), rather than losing the
         // whole run's uncommitted work.
-        if let Some(p) = progress {
-            p.phase("committing");
-        }
+        progress.phase("committing");
         let commit_start = std::time::Instant::now();
         search.lock().unwrap().commit()?;
         debug!(
@@ -251,14 +245,10 @@ pub fn index_location_with_resolver(
         manifest.save()?;
 
         // Per-WACZ summary persists above the next WACZ's progress bar.
-        if let Some(p) = progress {
-            p.wacz_indexed(&wacz_name, pages);
-        }
+        progress.wacz_indexed(&wacz_name, pages);
     }
 
-    if let Some(p) = progress {
-        p.finish();
-    }
+    progress.finish();
 
     Ok(())
 }
@@ -285,15 +275,13 @@ pub(super) fn index_one(
     // Resolves a Browsertrix source to a fresh presigned URL (binary-provided).
     resolver: Option<&dyn SourceResolver>,
     // Optional progress sink for indexing.
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<(String, u64)> {
     // Show an indeterminate spinner from the very start: the setup work (probing
     // the host, downloading, reading the ZIP directory and CDX) happens before
     // any record total is known, and can take many seconds on a large remote
     // WACZ. The streaming path later calls `set_total` to switch to a bar.
-    if let Some(p) = progress {
-        p.begin(&source.location());
-    }
+    progress.begin(&source.location());
 
     // 1. Acquire: where the WACZ lives, and how we'll read it.
     let (effective_source, access) =

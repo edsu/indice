@@ -36,7 +36,7 @@ pub(super) struct Ctx<'a> {
     pub thumbs_dir: &'a Path,
     pub pinned_thumb: &'a Path,
     pub main_page_url: Option<&'a str>,
-    pub progress: Option<&'a dyn IndexProgress>,
+    pub progress: &'a dyn IndexProgress,
 }
 
 /// Index every page in one WACZ.
@@ -67,9 +67,7 @@ pub(super) fn index(access: &WaczAccess, ctx: &Ctx) -> Result<CrawlStats> {
                 // The scan path has no cheap up-front record total, so it stays on
                 // the spinner (no determinate bar). Label it "scanning" - it reads
                 // every WARC record, unlike the CDX-guided path.
-                if let Some(pr) = ctx.progress {
-                    pr.phase("scanning");
-                }
+                ctx.progress.phase("scanning");
                 index_wacz(
                     path,
                     ctx.crawl_id,
@@ -235,7 +233,7 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
     collection: &str,
     search: &Mutex<SearchIndex>,
     workers: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<Option<CrawlStats>> {
     let inners = {
         let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))
@@ -249,9 +247,7 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
 
     let mut agg = CrawlStats::default();
     for (i, inner) in inners.iter().enumerate() {
-        if let Some(pr) = progress {
-            pr.phase(&format!("nested WACZ {}/{}", i + 1, inners.len()));
-        }
+        progress.phase(&format!("nested WACZ {}/{}", i + 1, inners.len()));
         let stats = match inner.inline {
             // Stored: read it in place as a window of the outer file.
             Some((base, len)) => index_inner(
@@ -301,7 +297,7 @@ fn index_inner<F: RangeFetch + Clone + Send + Sync>(
     collection: &str,
     search: &Mutex<SearchIndex>,
     workers: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<CrawlStats> {
     let streamable = zip::ZipArchive::new(RangeReader::new(fetch.clone()))
         .ok()
@@ -437,7 +433,7 @@ pub(super) fn index_wacz_streaming<F>(
     search: &Mutex<SearchIndex>,
     label: &str,
     concurrency: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<CrawlStats>
 where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
@@ -651,7 +647,7 @@ type PageRecords = (Vec<RawRecord>, Option<Warcinfo>, BTreeMap<u16, u64>);
 fn collect_page_records_via_cdx<F>(
     fetch: F,
     concurrency: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<PageRecords>
 where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
@@ -659,9 +655,7 @@ where
     use crate::wacz;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    if let Some(p) = progress {
-        p.phase("reading index");
-    }
+    progress.phase("reading index");
     let read_start = std::time::Instant::now();
 
     // Setup (serial): read the ZIP central directory, the CDX, each WARC's
@@ -690,9 +684,7 @@ where
                     || c.mime.contains("pdf"))
         })
         .collect();
-    if let Some(p) = progress {
-        p.set_total(wanted.len() as u64);
-    }
+    progress.set_total(wanted.len() as u64);
 
     // Fetch + extract each wanted record concurrently. The CDX gives every record
     // an independent (offset, length), so fetches don't depend on each other:
@@ -726,9 +718,7 @@ where
                     None => Vec::new(),
                 };
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(p) = progress {
-                    p.set_records(n);
-                }
+                progress.set_records(n);
                 raws
             })
             .collect()
@@ -756,9 +746,7 @@ where
     // total, so drop the determinate bar back to a spinner - otherwise it sits at
     // 100% with a decaying rate/ETA during the slow tail (very visible for a local
     // file, where reads are near-instant and the tail dominates).
-    if let Some(p) = progress {
-        p.phase("building index");
-    }
+    progress.phase("building index");
     Ok((out, warcinfo, status_counts))
 }
 

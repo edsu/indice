@@ -344,7 +344,7 @@ pub(super) async fn bx_import(
                             false, // download (already a local file)
                             true,  // force: honor the explicitly selected crawl
                             None,
-                            Some(&progress),
+                            &progress,
                         )?;
                         let abs = dest.canonicalize().unwrap_or(dest.clone());
                         let crawl_id = crate::collections::wacz_id(
@@ -379,7 +379,7 @@ pub(super) async fn bx_import(
                             true,  // force: honor the explicitly selected crawl
                             None,
                             Some(resolver.as_ref()),
-                            Some(&progress),
+                            &progress,
                         )?;
                         let crawl_id = crate::collections::wacz_id(&source);
                         crate::index::set_browsertrix_provenance_by_id(
@@ -422,7 +422,7 @@ pub(super) async fn bx_import(
                 // lock (the per-resource loop above released it each time).
                 {
                     let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-                    match crate::index::optimize_if_fragmented(&job_state.home, Some(&progress)) {
+                    match crate::index::optimize_if_fragmented(&job_state.home, &progress) {
                         Ok(Some((before, after))) => {
                             tracing::info!("compacted fragmented index: {before} → {after} segments");
                         }
@@ -689,7 +689,7 @@ pub(super) async fn ait_import(
                     &fields,
                     &catalog,
                     req.force,
-                    Some(&progress),
+                    &progress,
                 )?
             };
             created.extend(outcome.crawls.iter().map(|(id, _)| id.clone()));
@@ -706,7 +706,7 @@ pub(super) async fn ait_import(
                 // left the index fragmented (best-effort — see `bx_import`).
                 {
                     let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-                    match crate::index::optimize_if_fragmented(&job_state.home, Some(&progress)) {
+                    match crate::index::optimize_if_fragmented(&job_state.home, &progress) {
                         Ok(Some((before, after))) => {
                             tracing::info!("compacted fragmented index: {before} → {after} segments")
                         }

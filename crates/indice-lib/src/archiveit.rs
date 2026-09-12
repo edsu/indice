@@ -565,7 +565,7 @@ pub fn import_crawls<T: Transport>(
     fields: &crate::collections::CollectionFields,
     catalog: &Catalog,
     force: bool,
-    progress: Option<&dyn crate::index::IndexProgress>,
+    progress: &dyn crate::index::IndexProgress,
 ) -> Result<ImportOutcome> {
     use crate::collections::{slugify, wacz_id, Manifest, Source};
 
@@ -626,9 +626,7 @@ pub fn import_crawls<T: Transport>(
         // first fetch — `phase()` only updates an already-active bar — and also
         // log at INFO for the no-bar (piped/CI) case.
         let display = format!("{} - crawl {}", coll_title.unwrap_or(into), plan.crawl_id);
-        if let Some(p) = progress {
-            p.begin(&display);
-        }
+        progress.begin(&display);
         let total_files = plan.files.len();
         let mut warcs = Vec::new();
         let mut staged_names = std::collections::HashSet::new();
@@ -644,9 +642,7 @@ pub fn import_crawls<T: Transport>(
                 i + 1,
                 total_files
             );
-            if let Some(p) = progress {
-                p.phase(&status);
-            }
+            progress.phase(&status);
             tracing::info!(crawl = plan.crawl_id, "{status}");
             // Sanitize the server-supplied filename to a safe basename (no path
             // traversal out of staging), and disambiguate a repeated basename so a
@@ -700,9 +696,7 @@ pub fn import_crawls<T: Transport>(
             datapackage_extra,
             ..Default::default()
         };
-        if let Some(p) = progress {
-            p.phase("building WACZ");
-        }
+        progress.phase("building WACZ");
         tracing::info!(crawl = plan.crawl_id, warcs = warcs.len(), "building WACZ");
         let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
         crate::index::index_location(
@@ -1051,7 +1045,14 @@ mod tests {
         std::fs::write(stale.join("partial.warc.gz.part"), b"junk").unwrap();
 
         let out = import_crawls(
-            &client, home, "City Gov", &plans, &fields, &catalog, false, None,
+            &client,
+            home,
+            "City Gov",
+            &plans,
+            &fields,
+            &catalog,
+            false,
+            crate::index::no_progress(),
         )
         .unwrap();
         assert_eq!(out.imported, 1);
@@ -1123,7 +1124,14 @@ mod tests {
 
         // A re-run skips the already-imported crawl.
         let again = import_crawls(
-            &client, home, "City Gov", &plans, &fields, &catalog, false, None,
+            &client,
+            home,
+            "City Gov",
+            &plans,
+            &fields,
+            &catalog,
+            false,
+            crate::index::no_progress(),
         )
         .unwrap();
         assert_eq!(again.imported, 0);

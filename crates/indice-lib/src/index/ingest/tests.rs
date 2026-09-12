@@ -24,7 +24,7 @@ fn indexed_page_count(fixture_name: &str, stream: bool) -> u64 {
             &search,
             fixture_name,
             4,
-            None,
+            crate::index::no_progress(),
         )
         .unwrap()
     } else {
@@ -66,7 +66,7 @@ fn streaming_refuses_a_deflated_wacz() {
         &search,
         "simple.wacz",
         4,
-        None,
+        crate::index::no_progress(),
     )
     .unwrap_err()
     .to_string()
@@ -241,9 +241,17 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
     let tmp = TempDir::new().unwrap();
     let search = Mutex::new(SearchIndex::open(&tmp.path().join("ft")).unwrap());
 
-    let stats = index_nested_from(outer, "cid", "Nested", "coll", &search, 2, None)
-        .unwrap()
-        .expect("should detect and index the nested WACZ");
+    let stats = index_nested_from(
+        outer,
+        "cid",
+        "Nested",
+        "coll",
+        &search,
+        2,
+        crate::index::no_progress(),
+    )
+    .unwrap()
+    .expect("should detect and index the nested WACZ");
     assert!(
         stats.pages > 0,
         "inner pages should be indexed by streaming in place"
@@ -255,10 +263,19 @@ fn browsertrix_source_without_resolver_errors_clearly() {
     // stable identity into a fresh presigned URL — the error should say so.
     let tmp = TempDir::new().unwrap();
     let loc = "browsertrix|https://app.browsertrix.com|o1|item-1|x-0.wacz";
-    let err = index_location(loc, tmp.path(), None, "test", false, false, None, None)
-        .err()
-        .unwrap()
-        .to_string();
+    let err = index_location(
+        loc,
+        tmp.path(),
+        None,
+        "test",
+        false,
+        false,
+        None,
+        crate::index::no_progress(),
+    )
+    .err()
+    .unwrap()
+    .to_string();
     assert!(
         err.contains("BROWSERTRIX") || err.to_lowercase().contains("credential"),
         "{err}"
@@ -280,7 +297,7 @@ fn index_into_named_collection_groups_the_wacz() {
         false,
         false,
         None,
-        None,
+        crate::index::no_progress(),
     )
     .unwrap();
 

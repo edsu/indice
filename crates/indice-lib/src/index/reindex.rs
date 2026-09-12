@@ -33,7 +33,7 @@ pub fn reindex(
     // (binary-provided). `None` → such a source errors (needs credentials).
     resolver: Option<&dyn SourceResolver>,
     // Optional progress sink; drives the same per-WACZ bar as `index`.
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<()> {
     let index_dir = index_dir(home);
     let mut manifest = Manifest::open(&index_dir)?;
@@ -129,9 +129,7 @@ pub fn reindex(
                 // Print the per-WACZ summary as each one finishes, so the next
                 // WACZ's progress bar doesn't erase the record of it (the line
                 // persists above the new bar).
-                if let Some(p) = progress {
-                    p.wacz_indexed(&wacz_name, pages);
-                }
+                progress.wacz_indexed(&wacz_name, pages);
             }
             Err(e) => {
                 tracing::warn!(
@@ -183,9 +181,7 @@ pub fn reindex(
     // and no worse than the old index — but we still exit non-zero below.
     swap_in_new_index(&index_dir)?;
     manifest.save()?;
-    if let Some(p) = progress {
-        p.finish();
-    }
+    progress.finish();
     if skipped > 0 {
         // Usable but incomplete: return an error so the process exits non-zero and
         // cron/CI notices, while leaving the mostly-rebuilt index in place.
@@ -233,7 +229,7 @@ mod tests {
 
         // A reindex rebuilds each manifest entry from scratch; provenance set
         // out-of-band by the importer must be carried over, not wiped.
-        reindex(tmp.path(), None, None, None).unwrap();
+        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
         let after = recorded(tmp.path()).expect("provenance after reindex");
         assert_eq!(after.item_id, "item-1");
         assert_eq!(
@@ -256,7 +252,7 @@ mod tests {
             .replace("name: test", "name: test  # hand-labelled");
         std::fs::write(&readme, &edited).unwrap();
 
-        reindex(tmp.path(), None, None, None).unwrap();
+        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(&readme).unwrap(),
@@ -276,7 +272,7 @@ mod tests {
             .replace("name: test", "name: Test Archive");
         std::fs::write(&readme, renamed).unwrap();
 
-        reindex(tmp.path(), None, None, None).unwrap();
+        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
 
         let entries: Vec<_> = std::fs::read_dir(tmp.path().join("collections"))
             .unwrap()
@@ -297,7 +293,7 @@ mod tests {
         let full_text = tmp.path().join("index").join("full_text");
         std::fs::remove_dir_all(&full_text).unwrap();
 
-        reindex(tmp.path(), None, None, None).unwrap();
+        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
 
         // The manifest (custom name + collection membership) is preserved...
         let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
@@ -319,7 +315,7 @@ mod tests {
     fn reindex_with_no_collections_is_ok() {
         let tmp = TempDir::new().unwrap();
         // No collections.json yet: reindex should be a no-op, not an error.
-        reindex(tmp.path(), None, None, None).unwrap();
+        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
     }
     #[test]
     fn reindex_skips_a_failing_source_and_keeps_going() {
@@ -348,7 +344,7 @@ mod tests {
 
         // Rebuild from the manifest: the run completes over the good source but
         // reports a non-zero exit (an error) because one source was skipped.
-        let err = reindex(tmp.path(), None, None, None)
+        let err = reindex(tmp.path(), None, None, crate::index::no_progress())
             .expect_err("a skipped source should surface as a non-zero exit, not abort mid-run");
         let msg = format!("{err:#}");
         assert!(
@@ -415,7 +411,7 @@ mod tests {
         // reindex ends in an error (the stub resolve fails, so the source is
         // skipped *downstream*), but the resolver having been called proves the
         // source reached index_one instead of being dropped by the guard.
-        let _ = reindex(tmp.path(), None, Some(&spy), None);
+        let _ = reindex(tmp.path(), None, Some(&spy), crate::index::no_progress());
         assert!(
             spy.called.load(Ordering::SeqCst),
             "a Browsertrix source must reach index_one (resolver called), \

@@ -23,7 +23,7 @@ fn index_fixture(home: &Path, collection: &str) -> String {
         false,
         false,
         None,
-        None,
+        indice_lib::index::no_progress(),
     )
     .unwrap();
     let manifest = indice_lib::collections::Manifest::open(&index_dir(home)).unwrap();

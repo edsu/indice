@@ -90,7 +90,8 @@ fn index_wacz_writes_manifest_with_metadata() {
 fn optimize_compacts_in_place_and_keeps_search_working() {
     let tmp = make_index(&["simple.wacz"]);
     // Compact the existing index — no sources are re-read.
-    let (before, after) = indice_lib::index::optimize(tmp.path(), 8, None).unwrap();
+    let (before, after) =
+        indice_lib::index::optimize(tmp.path(), 8, indice_lib::index::no_progress()).unwrap();
     assert!(
         after >= 1 && after <= before,
         "before={before} after={after}"
@@ -108,7 +109,7 @@ fn optimize_compacts_in_place_and_keeps_search_working() {
 #[test]
 fn optimize_errors_clearly_when_there_is_no_index() {
     let tmp = TempDir::new().unwrap();
-    let err = indice_lib::index::optimize(tmp.path(), 8, None)
+    let err = indice_lib::index::optimize(tmp.path(), 8, indice_lib::index::no_progress())
         .unwrap_err()
         .to_string();
     assert!(err.contains("no search index"), "unexpected error: {err}");
@@ -1073,8 +1074,17 @@ async fn index_from_http_url_and_link_directly() {
     // index_location uses a blocking HTTP client; run it off the async runtime.
     let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
     tokio::task::spawn_blocking(move || {
-        indice_lib::index::index_location(&url_c, &dir_c, None, "test", false, false, None, None)
-            .unwrap();
+        indice_lib::index::index_location(
+            &url_c,
+            &dir_c,
+            None,
+            "test",
+            false,
+            false,
+            None,
+            indice_lib::index::no_progress(),
+        )
+        .unwrap();
     })
     .await
     .unwrap();

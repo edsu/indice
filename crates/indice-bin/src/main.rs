@@ -803,6 +803,19 @@ impl indice_lib::index::IndexProgress for BarProgress {
     }
 }
 
+/// The progress sink for a command: the bar when one is being rendered, a no-op
+/// otherwise.
+///
+/// Whether to draw a bar is a UI decision (interactive stderr, not under `-v`),
+/// so the `Option` ends here and the library always receives a real sink. See
+/// `indice_lib::index::NoProgress` for why that distinction is deliberate.
+fn progress_sink(bar: &Option<BarProgress>) -> &dyn indice_lib::index::IndexProgress {
+    match bar {
+        Some(b) => b,
+        None => indice_lib::index::no_progress(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -954,9 +967,7 @@ async fn main() -> Result<()> {
             // record is a separate HTTP range request) visible. Shown only on an
             // interactive stderr and not under -v (see `show_bar` above).
             let bar = show_bar.then(BarProgress::new);
-            let progress = bar
-                .as_ref()
-                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let progress = progress_sink(&bar);
 
             let total = locations.len();
             for (i, location) in locations.iter().enumerate() {
@@ -1147,9 +1158,7 @@ async fn main() -> Result<()> {
             // A full reindex re-streams every source, so the progress bar is even
             // more welcome here than for `index`. Same gating (interactive, not -v).
             let bar = show_bar.then(BarProgress::new);
-            let progress = bar
-                .as_ref()
-                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let progress = progress_sink(&bar);
             // Like `index`, silence stdout to hide third-party PDF extraction
             // noise; our logs are on stderr.
             let quiet = gag::Gag::stdout().ok();
@@ -1176,9 +1185,7 @@ async fn main() -> Result<()> {
             // spinner (begin/phase/finish) is the right fit — same gating as
             // the other commands (interactive, not -v).
             let bar = show_bar.then(BarProgress::new);
-            let progress = bar
-                .as_ref()
-                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let progress = progress_sink(&bar);
             // Measure the on-disk footprint before/after so we can report the
             // disk reclaimed — this includes orphaned segment files swept away
             // (leftovers from an interrupted merge/ingest), not just the merge.
@@ -1401,9 +1408,7 @@ async fn main() -> Result<()> {
                 verbose: _,
             } => {
                 let bar = show_bar.then(BarProgress::new);
-                let progress = bar
-                    .as_ref()
-                    .map(|b| b as &dyn indice_lib::index::IndexProgress);
+                let progress = progress_sink(&bar);
                 let opts = ImportOpts {
                     public,
                     collection: collection.as_deref(),
@@ -1440,9 +1445,7 @@ async fn main() -> Result<()> {
                 verbose: _,
             } => {
                 let bar = show_bar.then(BarProgress::new);
-                let progress = bar
-                    .as_ref()
-                    .map(|b| b as &dyn indice_lib::index::IndexProgress);
+                let progress = progress_sink(&bar);
                 let opts = ArchiveItOpts {
                     collection,
                     crawl,
@@ -1638,9 +1641,7 @@ fn run_wacz_build(args: WaczBuildArgs) -> Result<()> {
 
     // Index it (shows the same progress bar as `index`).
     let bar = args.show_bar.then(BarProgress::new);
-    let progress = bar
-        .as_ref()
-        .map(|b| b as &dyn indice_lib::index::IndexProgress);
+    let progress = progress_sink(&bar);
     let quiet = gag::Gag::stdout().ok();
     let result = indice_lib::index::index_location(
         &built.path.to_string_lossy(),
@@ -2040,7 +2041,7 @@ fn run_browsertrix(
     org: Option<&str>,
     home: &std::path::Path,
     opts: &ImportOpts,
-    progress: Option<&dyn indice_lib::index::IndexProgress>,
+    progress: &dyn indice_lib::index::IndexProgress,
 ) -> Result<()> {
     use indice_lib::browsertrix::ItemQuery;
 
@@ -2293,7 +2294,7 @@ fn run_browsertrix_public(
     org: Option<&str>,
     home: &std::path::Path,
     opts: &ImportOpts,
-    progress: Option<&dyn indice_lib::index::IndexProgress>,
+    progress: &dyn indice_lib::index::IndexProgress,
 ) -> Result<()> {
     use indice_lib::browsertrix::Client;
 
@@ -2699,7 +2700,7 @@ fn run_archiveit(
     host: &str,
     home: &std::path::Path,
     opts: &ArchiveItOpts,
-    progress: Option<&dyn indice_lib::index::IndexProgress>,
+    progress: &dyn indice_lib::index::IndexProgress,
 ) -> Result<()> {
     use indice_lib::archiveit::{self, WasapiQuery};
 

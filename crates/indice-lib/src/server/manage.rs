@@ -211,7 +211,7 @@ fn start_index_job(
                 false, // download
                 false, // force
                 None,
-                Some(&progress),
+                &progress,
             );
             // Deliberately not gated on `result`: a multi-WACZ add can fail
             // part way with earlier crawls already committed, and those are

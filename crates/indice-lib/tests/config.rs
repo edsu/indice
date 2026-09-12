@@ -32,8 +32,17 @@ fn index_honors_a_valid_config() {
     )
     .unwrap();
 
-    indice_lib::index::index_location(&wacz(), home, Some("S"), "c", false, false, None, None)
-        .unwrap();
+    indice_lib::index::index_location(
+        &wacz(),
+        home,
+        Some("S"),
+        "c",
+        false,
+        false,
+        None,
+        indice_lib::index::no_progress(),
+    )
+    .unwrap();
     assert_eq!(crawl_count(home), 1, "a valid config indexes normally");
 }
 
@@ -49,10 +58,18 @@ fn index_aborts_on_a_malformed_config() {
     )
     .unwrap();
 
-    let err =
-        indice_lib::index::index_location(&wacz(), home, Some("S"), "c", false, false, None, None)
-            .unwrap_err()
-            .to_string();
+    let err = indice_lib::index::index_location(
+        &wacz(),
+        home,
+        Some("S"),
+        "c",
+        false,
+        false,
+        None,
+        indice_lib::index::no_progress(),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
         err.contains("config.yaml"),
         "the error points at the config file; got: {err}"

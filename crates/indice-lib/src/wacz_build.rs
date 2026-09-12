@@ -638,7 +638,7 @@ mod tests {
             false,
             false,
             None,
-            None,
+            crate::index::no_progress(),
         )
         .unwrap();
         let idx = crate::index::index_dir(&home).join("full_text");
@@ -734,7 +734,7 @@ mod tests {
             false,
             false,
             None,
-            None,
+            crate::index::no_progress(),
         )
         .unwrap();
         let idx = crate::index::index_dir(&home).join("full_text");

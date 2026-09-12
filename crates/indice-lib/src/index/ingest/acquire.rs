@@ -36,14 +36,12 @@ pub(super) fn open(
     collection_slug: &str,
     download: bool,
     resolver: Option<&dyn SourceResolver>,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<(Source, WaczAccess)> {
     let effective_source: Source = match source {
         Source::Url(u) if download => {
             info!(url = %u, "downloading remote WACZ into archive");
-            if let Some(p) = progress {
-                p.phase("downloading");
-            }
+            progress.phase("downloading");
             Source::File(download_into_archive(u, home, collection_slug)?)
         }
         _ => source.clone(),
@@ -60,9 +58,7 @@ pub(super) fn open(
                 WaczAccess::Stream { url: u.clone() }
             } else {
                 info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
-                if let Some(p) = progress {
-                    p.phase("downloading");
-                }
+                progress.phase("downloading");
                 let tmp = download_to_temp(u).with_context(|| format!("downloading {u}"))?;
                 let path = tmp.path().to_path_buf();
                 // The temp file must outlive the read, so the handle rides along.
@@ -73,9 +69,7 @@ pub(super) fn open(
             }
         }
         bt @ (Source::Browsertrix { .. } | Source::BrowsertrixPublic { .. }) => {
-            if let Some(p) = progress {
-                p.phase("resolving");
-            }
+            progress.phase("resolving");
             let resolver = resolver.ok_or_else(|| {
                 anyhow::anyhow!(
                     "indexing a Browsertrix source needs a resolver to fetch a fresh URL \
