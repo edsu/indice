@@ -1006,3 +1006,91 @@ async fn public_annotation_api_never_exposes_a_login_address() {
 
     server.abort();
 }
+
+/// Saving a finding aid must not erase a concurrent ingest's manifest entry.
+///
+/// `Manifest::save` rewrites `waczs.json` wholesale whatever changed, so a
+/// finding-aid edit is a full read-modify-write of the manifest. Before this
+/// test's fix, `create_collection` took no write lock at all, so a curator
+/// editing a description while an add-crawls job ran could install a stale
+/// manifest and drop the job's crawl — leaving its documents in Tantivy with
+/// no manifest entry, which is a crawl whose page 404s and which can no longer
+/// be deleted.
+///
+/// Note on what this test is: the invariant it asserts is deterministic (a
+/// crawl that was indexed is still in the manifest), but the *interleaving* is
+/// not forced. The save is issued immediately after the job is accepted, while
+/// the job runs on a blocking thread, and a 4.7 MB fixture is used so the job
+/// is long enough to overlap. So it never fails when the code is right, and it
+/// fails often — not always — when it is wrong. Several rounds make that
+/// likelier. Forcing the overlap properly needs the library-level lock, which
+/// is `rustyweb-durable-writes-f4h5`.
+#[tokio::test]
+async fn a_finding_aid_save_cannot_erase_a_concurrent_ingest() {
+    for round in 0..3 {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+
+        // The collection the crawl goes into has to exist first, so the save
+        // below is an *edit* rather than a create.
+        let (status, _) = post_form_with_headers(
+            format!("{base}/api/collections"),
+            "name=Contended",
+            vec![("origin", base.clone())],
+        )
+        .await;
+        assert_eq!(status, 303);
+
+        // Start an ingest of the largest fixture, so the job is still running
+        // when the edit lands.
+        let path = fixture("a.wacz").to_string_lossy().to_string();
+        let add = format!("{base}/api/archives");
+        let body = serde_json::json!({ "path": path, "collection": "Contended" }).to_string();
+        let job: serde_json::Value = tokio::task::spawn_blocking(move || {
+            let mut res = agent()
+                .post(&add)
+                .header("content-type", "application/json")
+                .send(body)
+                .unwrap();
+            assert_eq!(res.status().as_u16(), 202);
+            serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+        })
+        .await
+        .unwrap();
+        let job_id = job["job"].as_u64().unwrap();
+
+        // ...and edit the finding aid while it runs.
+        let (status, _) = post_form_with_headers(
+            format!("{base}/api/collections"),
+            "name=Contended&description=edited+mid-ingest",
+            vec![("origin", base.clone())],
+        )
+        .await;
+        assert_eq!(status, 303);
+
+        // Let the job finish (draining its SSE stream blocks until it ends).
+        let (_, events) = get(format!("{base}/api/archives/{job_id}/events")).await;
+        assert!(
+            events.contains("event: done"),
+            "round {round}: ingest should complete; got:\n{events}"
+        );
+
+        // The invariant: the crawl is still recorded. Before the fix, the
+        // finding-aid save could install a manifest copy read before the crawl
+        // existed, silently dropping it.
+        let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+        assert_eq!(
+            manifest.waczs.len(),
+            1,
+            "round {round}: the ingested crawl was erased by a concurrent \
+             finding-aid save; manifest: {:?}",
+            manifest.waczs
+        );
+        // And the edit landed too, so the fix serializes rather than drops.
+        let c = manifest.collection_by_id("contended").expect("collection");
+        assert_eq!(c.description.as_deref(), Some("edited mid-ingest"));
+
+        server.abort();
+    }
+}
