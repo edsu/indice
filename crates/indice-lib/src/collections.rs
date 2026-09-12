@@ -607,9 +607,13 @@ impl Manifest {
     /// aids are left on disk as-is (so hand edits keep their formatting).
     pub fn save(&self) -> Result<()> {
         std::fs::create_dir_all(&self.index_dir)?;
-        std::fs::write(
-            self.index_dir.join("waczs.json"),
-            serde_json::to_string_pretty(&self.waczs)?,
+        // Atomically: this is the only record of which crawls exist, their
+        // collections, and provenance set out of band (import refs, custody)
+        // that a reindex cannot rebuild. A truncate-then-write that loses power
+        // half way loses the archive's index of itself.
+        crate::fsio::write_atomic_str(
+            &self.index_dir.join("waczs.json"),
+            &serde_json::to_string_pretty(&self.waczs)?,
         )?;
         for c in &self.collections {
             if self.dirty.contains(&c.id) {
@@ -1097,7 +1101,10 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
         out.push('\n');
     }
     let path = dir.join("README.md");
-    std::fs::write(&path, out)
+    // Atomically: this is hand-written curatorial work, and the directory is
+    // meant to be committed, so a half-written README is both a data loss and
+    // a confusing diff.
+    crate::fsio::write_atomic_str(&path, &out)
         .with_context(|| format!("writing finding aid {}", path.display()))?;
     Ok(())
 }
@@ -1144,7 +1151,7 @@ pub fn write_crawl_note(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, format!("{}\n", note.trim()))
+    crate::fsio::write_atomic_str(&path, &format!("{}\n", note.trim()))
         .with_context(|| format!("writing crawl note {}", path.display()))?;
     Ok(())
 }
