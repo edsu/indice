@@ -612,6 +612,7 @@ impl Manifest {
         // that a reindex cannot rebuild. A truncate-then-write that loses power
         // half way loses the archive's index of itself.
         crate::fsio::write_atomic_str(
+            &self.home,
             &self.index_dir.join("waczs.json"),
             &serde_json::to_string_pretty(&self.waczs)?,
         )?;
@@ -1104,7 +1105,7 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
     // Atomically: this is hand-written curatorial work, and the directory is
     // meant to be committed, so a half-written README is both a data loss and
     // a confusing diff.
-    crate::fsio::write_atomic_str(&path, &out)
+    crate::fsio::write_atomic_str(home, &path, &out)
         .with_context(|| format!("writing finding aid {}", path.display()))?;
     Ok(())
 }
@@ -1151,7 +1152,7 @@ pub fn write_crawl_note(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::fsio::write_atomic_str(&path, &format!("{}\n", note.trim()))
+    crate::fsio::write_atomic_str(home, &path, &format!("{}\n", note.trim()))
         .with_context(|| format!("writing crawl note {}", path.display()))?;
     Ok(())
 }

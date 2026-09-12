@@ -153,9 +153,13 @@ fn month_file(time: &str) -> String {
 pub fn append(home: &Path, event: &Event) -> Result<()> {
     let mut line = serde_json::to_string(event).context("serializing an audit event")?;
     line.push('\n');
+    let path = event_path(home, event);
+    // Same gate the atomic writers use. `month_file` already makes the file
+    // name safe by construction, so this is the backstop for whatever gets
+    // added next.
+    crate::fsio::ensure_within(home, &path)?;
     let dir = events_dir(home);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let path = event_path(home, event);
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

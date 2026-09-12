@@ -272,7 +272,7 @@ pub fn create(home: &Path, collection: &CollectionId, annotation: &Annotation) -
     line.push('\n');
     let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     existing.push_str(&line);
-    crate::fsio::write_atomic_str(&path, &existing)?;
+    crate::fsio::write_atomic_str(home, &path, &existing)?;
     Ok(())
 }
 
@@ -337,7 +337,7 @@ fn write_all(home: &Path, collection: &CollectionId, annotations: &[Annotation])
         buf.push_str(&serde_json::to_string(a)?);
         buf.push('\n');
     }
-    crate::fsio::write_atomic_str(&path, &buf)?;
+    crate::fsio::write_atomic_str(home, &path, &buf)?;
     Ok(())
 }
 
