@@ -336,16 +336,13 @@ pub(super) async fn bx_import(
                         );
                         crate::index::download_wacz(&res.path, &dest)?;
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-                        crate::index::index_location(
-                            &dest.to_string_lossy(),
-                            &job_state.home,
-                            name,
-                            &req.collection,
-                            false, // download (already a local file)
-                            true,  // force: honor the explicitly selected crawl
-                            None,
-                            &progress,
-                        )?;
+                        // force: honor the explicitly selected crawl. No
+                        // download: it is already a local file.
+                        crate::index::Ingest::new(&job_state.home)
+                            .name(name)
+                            .force(true)
+                            .progress(&progress)
+                            .index_location(&dest.to_string_lossy(), &req.collection)?;
                         let abs = dest.canonicalize().unwrap_or(dest.clone());
                         let crawl_id = crate::collections::wacz_id(
                             &crate::collections::Source::for_file(&abs, &job_state.home),
@@ -370,17 +367,14 @@ pub(super) async fn bx_import(
                             item: item.id.clone(),
                             resource: res.name.clone(),
                         };
-                        crate::index::index_location_with_resolver(
-                            &source.location(),
-                            &job_state.home,
-                            name,
-                            &req.collection,
-                            false, // download (stream in place)
-                            true,  // force: honor the explicitly selected crawl
-                            None,
-                            Some(resolver.as_ref()),
-                            &progress,
-                        )?;
+                        // Streamed in place (no download), forced because the
+                        // crawl was explicitly selected.
+                        crate::index::Ingest::new(&job_state.home)
+                            .name(name)
+                            .force(true)
+                            .resolver(Some(resolver.as_ref()))
+                            .progress(&progress)
+                            .index_location(&source.location(), &req.collection)?;
                         let crawl_id = crate::collections::wacz_id(&source);
                         crate::index::set_browsertrix_provenance_by_id(
                             &job_state.home,

@@ -1121,17 +1121,9 @@ async fn index_from_http_url_and_link_directly() {
     // index_location uses a blocking HTTP client; run it off the async runtime.
     let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
     tokio::task::spawn_blocking(move || {
-        indice_lib::index::index_location(
-            &url_c,
-            &dir_c,
-            None,
-            "test",
-            false,
-            false,
-            None,
-            indice_lib::index::no_progress(),
-        )
-        .unwrap();
+        indice_lib::index::Ingest::new(&dir_c)
+            .index_location(&url_c, "test")
+            .unwrap();
     })
     .await
     .unwrap();

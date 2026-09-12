@@ -21,7 +21,6 @@ pub use metadata::*;
 pub use optimize::*;
 pub use paths::*;
 pub use provenance::*;
-pub use reindex::*;
 pub use search_sync::*;
 pub use stats::*;
 

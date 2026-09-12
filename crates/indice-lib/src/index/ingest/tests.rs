@@ -270,19 +270,11 @@ fn browsertrix_source_without_resolver_errors_clearly() {
     // stable identity into a fresh presigned URL — the error should say so.
     let tmp = TempDir::new().unwrap();
     let loc = "browsertrix|https://app.browsertrix.com|o1|item-1|x-0.wacz";
-    let err = index_location(
-        loc,
-        tmp.path(),
-        None,
-        "test",
-        false,
-        false,
-        None,
-        crate::index::no_progress(),
-    )
-    .err()
-    .unwrap()
-    .to_string();
+    let err = Ingest::new(tmp.path())
+        .index_location(loc, "test")
+        .err()
+        .unwrap()
+        .to_string();
     assert!(
         err.contains("BROWSERTRIX") || err.to_lowercase().contains("credential"),
         "{err}"
@@ -296,17 +288,9 @@ fn index_into_named_collection_groups_the_wacz() {
     let dest = archive.join("simple.wacz");
     std::fs::copy(fixture("simple.wacz"), &dest).unwrap();
 
-    index_location(
-        &dest.to_string_lossy(),
-        tmp.path(),
-        None,
-        "My Project",
-        false,
-        false,
-        None,
-        crate::index::no_progress(),
-    )
-    .unwrap();
+    Ingest::new(tmp.path())
+        .index_location(&dest.to_string_lossy(), "My Project")
+        .unwrap();
 
     let m = crate::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     assert!(

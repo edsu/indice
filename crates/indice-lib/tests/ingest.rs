@@ -39,7 +39,12 @@ fn crawl_count(home: &Path) -> usize {
 }
 
 fn index(home: &Path, src: &str, force: bool, prog: &dyn indice_lib::index::IndexProgress) {
-    indice_lib::index::index_location(src, home, Some("S"), "c", false, force, None, prog).unwrap();
+    indice_lib::index::Ingest::new(home)
+        .name(Some("S"))
+        .force(force)
+        .progress(prog)
+        .index_location(src, "c")
+        .unwrap();
 }
 
 #[test]
@@ -60,7 +65,7 @@ fn reindex_swaps_cleanly_and_leaves_no_swap_dirs() {
     std::fs::create_dir_all(idx.join("full_text.new")).unwrap();
     std::fs::create_dir_all(idx.join("full_text.old")).unwrap();
 
-    indice_lib::index::reindex(home, None, None, indice_lib::index::no_progress()).unwrap();
+    indice_lib::index::Ingest::new(home).reindex().unwrap();
 
     assert_eq!(crawl_count(home), before, "collection membership preserved");
     assert!(

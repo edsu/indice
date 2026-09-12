@@ -1,8 +1,8 @@
 //! Ingest: bringing a WACZ into the archive and the search index.
 //!
-//! The public entry points ([`index_path`] / [`index_location`] /
-//! [`index_location_with_resolver`]) validate the argument, open the index once,
-//! and drive [`index_one`] per source. `index_one` is the pipeline, and reads as
+//! The public entry points ([`index_path`] and
+//! [`Ingest::index_location`]) validate the argument, open the index once, and
+//! drive [`index_one`] per source. `index_one` is the pipeline, and reads as
 //! one: **acquire** the WACZ ([`acquire`]), **index** its pages ([`pages`]), then
 //! **record** it in the manifest ([`record`]).
 //!
@@ -183,169 +183,126 @@ impl<'a> Ingest<'a> {
         self.progress = p;
         self
     }
+
+    // Read side, for `reindex`. The phases (`acquire`, `pages`, `record`) are
+    // descendants of this module and read the private fields directly; a
+    // sibling module cannot, so it goes through these.
+    pub(crate) fn home_dir(&self) -> &'a Path {
+        self.home
+    }
+    pub(crate) fn progress_sink(&self) -> &'a dyn IndexProgress {
+        self.progress
+    }
+}
+
+impl Ingest<'_> {
+    /// Index a WACZ from a location into the home's `index/`. The location is
+    /// either a local `.wacz` file (from anywhere) or a remote `http(s)://` URL.
+    ///
+    /// A local WACZ is filed into `<home>/archive/<collection-slug>/` — moved if
+    /// it already sits under `archive/`, copied otherwise — and its path stored
+    /// relative to `home`, so the home folder (archive + collections + index) is
+    /// portable. A directory or non-`.wacz` path is an error (see
+    /// [`acquire::resolve_sources`]).
+    ///
+    /// Idempotent: re-indexing the same source upserts its manifest entry and
+    /// replaces its documents in Tantivy.
+    pub fn index_location(&self, location: &str, collection: &str) -> Result<()> {
+        let cx = self;
+        let Ingest {
+            home,
+            name,
+            force,
+            progress,
+            ..
+        } = *self;
+        // Every crawl belongs to a collection (its id is the slug of the name).
+        let group = (
+            crate::collections::CollectionId::from_name(collection),
+            collection.to_string(),
+        );
+
+        // Resolve config (frugality cap + writer-heap ceiling) up front, so a
+        // malformed config.yaml aborts here — before we copy files into archive/ or
+        // touch the index — rather than silently indexing with the wrong setting.
+        let config = crate::config::Config::load(home)?;
+
+        let index_dir = index_dir(home);
+        std::fs::create_dir_all(&index_dir)
+            .with_context(|| format!("creating index dir {}", index_dir.display()))?;
+
+        let mut manifest = Manifest::open(&index_dir)?;
+
+        // Validate the argument and file local WACZs into the collection's archive
+        // folder (a bad path errors before we touch the index; the manifest lets us
+        // refuse a silent re-collection of an already-registered crawl).
+        let sources = acquire::resolve_sources(location, home, &group.0, &manifest)?;
+
+        let mut search_index = SearchIndex::open_with_heap(
+            index_dir.join("full_text").as_path(),
+            config.writer_heap_bytes(),
+        )
+        .with_context(|| format!("opening search index at {}", index_dir.display()))?;
+        search_index.set_stored_body_cap(config.stored_body_cap_bytes());
+        let search = Mutex::new(search_index);
+
+        for source in &sources {
+            // Resume-friendly: skip a source already indexed *into this collection*
+            // on an earlier run (unless --force). Commit + save happen per WACZ below,
+            // so a source is "registered" only once its docs are durable. Scoping to
+            // the collection means a genuine (re)assignment to a different collection
+            // isn't silently swallowed — it falls through to index_one (a local file
+            // is refused upstream by place_local_wacz; a URL is re-homed as before).
+            if !force
+                && manifest
+                    .wacz_by_id(&wacz_id(source))
+                    .is_some_and(|w| w.collection == group.0)
+            {
+                progress.phase(&format!("skipping already-indexed {}", source.location()));
+                continue;
+            }
+
+            let (wacz_name, pages) = index_one(
+                cx,
+                source,
+                &mut manifest,
+                &search,
+                name,
+                (&group.0, group.1.as_str()),
+            )?;
+
+            // Commit + save per WACZ so an interrupted large ingest keeps every
+            // completed crawl (and a re-run resumes past it), rather than losing the
+            // whole run's uncommitted work.
+            progress.phase("committing");
+            let commit_start = std::time::Instant::now();
+            search.lock().unwrap().commit()?;
+            debug!(
+                commit_ms = commit_start.elapsed().as_millis() as u64,
+                wacz = %wacz_name,
+                "committed index"
+            );
+            manifest.save()?;
+
+            // Per-WACZ summary persists above the next WACZ's progress bar.
+            progress.wacz_indexed(&wacz_name, pages);
+        }
+
+        progress.finish();
+
+        Ok(())
+    }
 }
 
 /// Index a local WACZ file into the given collection (it's filed into
-/// `<home>/archive/<slug>/`). Thin wrapper over [`index_location`].
+/// `<home>/archive/<slug>/`).
+///
+/// The plain "just index this file" door, kept as a free function because that
+/// is what most callers and tests want.
 pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str) -> Result<()> {
-    index_location(
-        &path.to_string_lossy(),
-        home,
-        name,
-        collection,
-        false, // download
-        false, // force
-        None,  // concurrency: per-source default
-        crate::index::no_progress(),
-    )
-}
-
-/// Index a WACZ from a location into the home directory's `index/`. The location
-/// is either a local `.wacz` file (from anywhere) or a remote `http(s)://` URL.
-///
-/// A local WACZ is filed into `<home>/archive/<collection-slug>/` — moved if it
-/// already sits under `archive/`, copied otherwise — and its path stored relative
-/// to `home`, so the home folder (archive + collections + index) is portable. A
-/// directory or non-`.wacz` path is an error (see [`acquire::resolve_sources`]).
-///
-/// Idempotent: re-indexing the same source upserts its manifest entry and
-/// replaces its documents in Tantivy.
-/// `name` overrides the collection display name; otherwise it comes from the
-/// WACZ metadata, falling back to the filename/URL stem.
-#[allow(clippy::too_many_arguments)]
-pub fn index_location(
-    location: &str,
-    home: &Path,
-    name: Option<&str>,
-    collection: &str,
-    download: bool,
-    // Re-index a source even if it's already registered in the collection;
-    // otherwise an already-indexed source is skipped (so a large ingest resumes).
-    force: bool,
-    concurrency: Option<usize>,
-    progress: &dyn IndexProgress,
-) -> Result<()> {
-    index_location_with_resolver(
-        location,
-        home,
-        name,
-        collection,
-        download,
-        force,
-        concurrency,
-        None,
-        progress,
-    )
-}
-
-/// Like [`index_location`], but with a [`SourceResolver`] for refreshable remote
-/// sources (Browsertrix). The importer's streaming mode passes one; plain
-/// `index` doesn't need it.
-#[allow(clippy::too_many_arguments)]
-pub fn index_location_with_resolver(
-    location: &str,
-    home: &Path,
-    name: Option<&str>,
-    collection: &str,
-    // Download a remote WACZ into <home>/archive and index it as a local file
-    // instead of streaming it in place.
-    download: bool,
-    // Re-index a source even if already registered in the collection; otherwise
-    // an already-indexed source is skipped so a large ingest can resume.
-    force: bool,
-    // Concurrent record fetches for CDX-guided streaming; `None` = per-source
-    // default (4 remote, CPU count local).
-    concurrency: Option<usize>,
-    // Resolves a Browsertrix source to a fresh presigned URL (binary-provided).
-    resolver: Option<&dyn SourceResolver>,
-    // Optional progress sink for indexing (the binary renders a bar).
-    progress: &dyn IndexProgress,
-) -> Result<()> {
-    // One value carrying everything the phases need, so the loop body below is
-    // just "index this source".
-    let cx = Ingest::new(home)
+    Ingest::new(home)
         .name(name)
-        .download(download)
-        .force(force)
-        .concurrency(concurrency)
-        .resolver(resolver)
-        .progress(progress);
-
-    // Every crawl belongs to a collection (its id is the slug of the name).
-    let group = (
-        crate::collections::CollectionId::from_name(collection),
-        collection.to_string(),
-    );
-
-    // Resolve config (frugality cap + writer-heap ceiling) up front, so a
-    // malformed config.yaml aborts here — before we copy files into archive/ or
-    // touch the index — rather than silently indexing with the wrong setting.
-    let config = crate::config::Config::load(home)?;
-
-    let index_dir = index_dir(home);
-    std::fs::create_dir_all(&index_dir)
-        .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-
-    let mut manifest = Manifest::open(&index_dir)?;
-
-    // Validate the argument and file local WACZs into the collection's archive
-    // folder (a bad path errors before we touch the index; the manifest lets us
-    // refuse a silent re-collection of an already-registered crawl).
-    let sources = acquire::resolve_sources(location, home, &group.0, &manifest)?;
-
-    let mut search_index = SearchIndex::open_with_heap(
-        index_dir.join("full_text").as_path(),
-        config.writer_heap_bytes(),
-    )
-    .with_context(|| format!("opening search index at {}", index_dir.display()))?;
-    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
-    let search = Mutex::new(search_index);
-
-    for source in &sources {
-        // Resume-friendly: skip a source already indexed *into this collection*
-        // on an earlier run (unless --force). Commit + save happen per WACZ below,
-        // so a source is "registered" only once its docs are durable. Scoping to
-        // the collection means a genuine (re)assignment to a different collection
-        // isn't silently swallowed — it falls through to index_one (a local file
-        // is refused upstream by place_local_wacz; a URL is re-homed as before).
-        if !force
-            && manifest
-                .wacz_by_id(&wacz_id(source))
-                .is_some_and(|w| w.collection == group.0)
-        {
-            progress.phase(&format!("skipping already-indexed {}", source.location()));
-            continue;
-        }
-
-        let (wacz_name, pages) = index_one(
-            &cx,
-            source,
-            &mut manifest,
-            &search,
-            name,
-            (&group.0, group.1.as_str()),
-        )?;
-
-        // Commit + save per WACZ so an interrupted large ingest keeps every
-        // completed crawl (and a re-run resumes past it), rather than losing the
-        // whole run's uncommitted work.
-        progress.phase("committing");
-        let commit_start = std::time::Instant::now();
-        search.lock().unwrap().commit()?;
-        debug!(
-            commit_ms = commit_start.elapsed().as_millis() as u64,
-            wacz = %wacz_name,
-            "committed index"
-        );
-        manifest.save()?;
-
-        // Per-WACZ summary persists above the next WACZ's progress bar.
-        progress.wacz_indexed(&wacz_name, pages);
-    }
-
-    progress.finish();
-
-    Ok(())
+        .index_location(&path.to_string_lossy(), collection)
 }
 
 /// Index a single WACZ source, start to finish: acquire it, index its pages, and

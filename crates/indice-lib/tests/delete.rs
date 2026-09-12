@@ -15,17 +15,10 @@ fn index_dir(home: &Path) -> PathBuf {
 fn index_fixture(home: &Path, collection: &str) -> String {
     let input = home.join(format!("input-{collection}.wacz"));
     std::fs::copy(Path::new(FIXTURES).join("simple.wacz"), &input).unwrap();
-    indice_lib::index::index_location(
-        &input.to_string_lossy(),
-        home,
-        Some("Simple"),
-        collection,
-        false,
-        false,
-        None,
-        indice_lib::index::no_progress(),
-    )
-    .unwrap();
+    indice_lib::index::Ingest::new(home)
+        .name(Some("Simple"))
+        .index_location(&input.to_string_lossy(), collection)
+        .unwrap();
     let manifest = indice_lib::collections::Manifest::open(&index_dir(home)).unwrap();
     let id = manifest
         .members_of(&indice_lib::collections::slugify(collection))

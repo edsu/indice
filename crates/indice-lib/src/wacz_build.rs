@@ -630,17 +630,9 @@ mod tests {
         // indice indexes its own output.
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
-        crate::index::index_location(
-            &built.path.to_string_lossy(),
-            &home,
-            None,
-            "c",
-            false,
-            false,
-            None,
-            crate::index::no_progress(),
-        )
-        .unwrap();
+        crate::index::Ingest::new(&home)
+            .index_location(&built.path.to_string_lossy(), "c")
+            .unwrap();
         let idx = crate::index::index_dir(&home).join("full_text");
         let si = crate::search::SearchIndex::open(&idx).unwrap();
         assert!(si.num_docs().unwrap() >= 1, "built WACZ indexed a page");
@@ -726,17 +718,9 @@ mod tests {
 
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
-        crate::index::index_location(
-            &built.path.to_string_lossy(),
-            &home,
-            None,
-            "c",
-            false,
-            false,
-            None,
-            crate::index::no_progress(),
-        )
-        .unwrap();
+        crate::index::Ingest::new(&home)
+            .index_location(&built.path.to_string_lossy(), "c")
+            .unwrap();
         let idx = crate::index::index_dir(&home).join("full_text");
         assert!(
             crate::search::SearchIndex::open(&idx)

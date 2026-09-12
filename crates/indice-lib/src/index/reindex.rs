@@ -1,7 +1,6 @@
 //! Rebuild the full-text index from the manifest's recorded sources, into a
 //! sibling index that is swapped in atomically on success.
 
-use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -13,7 +12,6 @@ use crate::search::SearchIndex;
 use super::ingest::index_one;
 use super::paths::index_dir;
 use super::swap::{index_swap_paths, reconcile_index_swap, swap_in_new_index};
-use super::{IndexProgress, SourceResolver};
 
 /// Rebuild the full-text index from the sources already recorded in
 /// `collections.json`, preserving the manifest (including each collection's
@@ -24,186 +22,181 @@ use super::{IndexProgress, SourceResolver};
 /// recreates the Tantivy index from scratch, so a schema change is picked up.
 /// Local files that have gone missing are skipped with a warning rather than
 /// aborting the whole run.
-pub fn reindex(
-    home: &Path,
-    // Concurrent record fetches per source for CDX-guided streaming; `None` picks
-    // a per-source default (see `default_concurrency`).
-    concurrency: Option<usize>,
-    // Resolves any Browsertrix sources in the manifest to fresh presigned URLs
-    // (binary-provided). `None` → such a source errors (needs credentials).
-    resolver: Option<&dyn SourceResolver>,
-    // Optional progress sink; drives the same per-WACZ bar as `index`.
-    progress: &dyn IndexProgress,
-) -> Result<()> {
-    let index_dir = index_dir(home);
-    // reindex keeps its own signature for now; it drives the same pipeline, so
-    // it builds the context the phases expect. `name` is deliberately not set
-    // here: a rebuild preserves each crawl's recorded name, passed per source.
-    let cx = crate::index::Ingest::new(home)
-        .concurrency(concurrency)
-        .resolver(resolver)
-        .progress(progress);
+impl crate::index::Ingest<'_> {
+    /// Rebuild the full-text index from the sources recorded in the manifest.
+    ///
+    /// Reads `home`, `concurrency`, `resolver` and `progress`. `name`,
+    /// `download` and `force` do not apply to a rebuild and are ignored: each
+    /// crawl keeps its recorded display name, which is passed per source.
+    pub fn reindex(&self) -> Result<()> {
+        let cx = self;
+        let (home, progress) = (self.home_dir(), self.progress_sink());
+        let index_dir = index_dir(home);
 
-    let mut manifest = Manifest::open(&index_dir)?;
-    if manifest.waczs.is_empty() {
-        info!("no WACZs registered; nothing to reindex");
-        return Ok(());
-    }
+        let mut manifest = Manifest::open(&index_dir)?;
+        if manifest.waczs.is_empty() {
+            info!("no WACZs registered; nothing to reindex");
+            return Ok(());
+        }
 
-    // Snapshot each WACZ (source, name, collection id + name) before upserting
-    // back, so its collection membership and the collection's metadata survive.
-    let targets: Vec<(Source, String, CollectionId, String)> = manifest
-        .waczs
-        .iter()
-        .map(|w| {
-            let coll_name = manifest
-                .collection_by_id(&w.collection)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| w.name.clone());
-            (
-                w.source.clone(),
-                w.name.clone(),
-                w.collection.clone(),
-                coll_name,
-            )
-        })
-        .collect();
+        // Snapshot each WACZ (source, name, collection id + name) before upserting
+        // back, so its collection membership and the collection's metadata survive.
+        let targets: Vec<(Source, String, CollectionId, String)> = manifest
+            .waczs
+            .iter()
+            .map(|w| {
+                let coll_name = manifest
+                    .collection_by_id(&w.collection)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| w.name.clone());
+                (
+                    w.source.clone(),
+                    w.name.clone(),
+                    w.collection.clone(),
+                    coll_name,
+                )
+            })
+            .collect();
 
-    // Resolve config before destroying the old index, so a malformed config.yaml
-    // aborts the reindex rather than leaving no index. reindex re-streams every
-    // source, so honoring the writer heap here matters most.
-    let config = crate::config::Config::load(home)?;
+        // Resolve config before destroying the old index, so a malformed config.yaml
+        // aborts the reindex rather than leaving no index. reindex re-streams every
+        // source, so honoring the writer heap here matters most.
+        let config = crate::config::Config::load(home)?;
 
-    // Atomic rebuild: build the fresh index into a sibling `full_text.new` and
-    // swap it in only once the rebuild fully succeeds, so a hard failure (crash,
-    // kill, disk-full) mid-rebuild leaves the existing `full_text` untouched —
-    // you are never left worse off than before the reindex, and a running
-    // `serve` keeps reading the old index until the swap. First clear any
-    // leftovers from a previously-interrupted run (recovering the live index if
-    // a crash landed mid-swap).
-    reconcile_index_swap(&index_dir)?;
-    let (_full_text, new_dir, _old_dir) = index_swap_paths(&index_dir);
-    let mut search_index =
-        SearchIndex::open_with_heap(new_dir.as_path(), config.writer_heap_bytes())
-            .with_context(|| format!("creating search index at {}", new_dir.display()))?;
-    search_index.set_stored_body_cap(config.stored_body_cap_bytes());
-    let search = Mutex::new(search_index);
+        // Atomic rebuild: build the fresh index into a sibling `full_text.new` and
+        // swap it in only once the rebuild fully succeeds, so a hard failure (crash,
+        // kill, disk-full) mid-rebuild leaves the existing `full_text` untouched —
+        // you are never left worse off than before the reindex, and a running
+        // `serve` keeps reading the old index until the swap. First clear any
+        // leftovers from a previously-interrupted run (recovering the live index if
+        // a crash landed mid-swap).
+        reconcile_index_swap(&index_dir)?;
+        let (_full_text, new_dir, _old_dir) = index_swap_paths(&index_dir);
+        let mut search_index =
+            SearchIndex::open_with_heap(new_dir.as_path(), config.writer_heap_bytes())
+                .with_context(|| format!("creating search index at {}", new_dir.display()))?;
+        search_index.set_stored_body_cap(config.stored_body_cap_bytes());
+        let search = Mutex::new(search_index);
 
-    let total = targets.len();
-    let mut done = 0usize;
-    let mut skipped = 0usize;
-    for (source, name, collection_id, collection_name) in &targets {
-        // Skip local files that no longer exist rather than failing the run;
-        // their manifest entry is preserved (see `indice verify`). Only *file*
-        // sources get this on-disk check: URL and Browsertrix sources are remote
-        // and must flow to `index_one`, which re-resolves them (the resolver
-        // mints a fresh presigned URL for Browsertrix). Using `is_url()` here
-        // would misroute Browsertrix sources — `resolve()` returns None for them,
-        // so they'd be skipped as "missing" on every reindex (kx… / nk69).
-        if !source.is_remote() {
-            match source.resolve(home) {
-                Some(p) if p.exists() => {}
-                _ => {
-                    tracing::warn!(source = %source.location(), "skipping missing local WACZ");
-                    skipped += 1;
-                    continue;
+        let total = targets.len();
+        let mut done = 0usize;
+        let mut skipped = 0usize;
+        for (source, name, collection_id, collection_name) in &targets {
+            // Skip local files that no longer exist rather than failing the run;
+            // their manifest entry is preserved (see `indice verify`). Only *file*
+            // sources get this on-disk check: URL and Browsertrix sources are remote
+            // and must flow to `index_one`, which re-resolves them (the resolver
+            // mints a fresh presigned URL for Browsertrix). Using `is_url()` here
+            // would misroute Browsertrix sources — `resolve()` returns None for them,
+            // so they'd be skipped as "missing" on every reindex (kx… / nk69).
+            if !source.is_remote() {
+                match source.resolve(home) {
+                    Some(p) if p.exists() => {}
+                    _ => {
+                        tracing::warn!(source = %source.location(), "skipping missing local WACZ");
+                        skipped += 1;
+                        continue;
+                    }
                 }
             }
-        }
-        info!(
-            source = %source.location(),
-            progress = format!("{}/{}", done + skipped + 1, total),
-            "reindexing"
-        );
-        // Resilient: a source that fails after retries (e.g. a remote host that's
-        // down or blocking) is skipped with a warning rather than aborting the
-        // whole rebuild — a long reindex over many remote sources shouldn't be
-        // torched by one bad source. Its manifest entry is preserved, and
-        // membership is re-supplied so the collection survives.
-        match index_one(
-            &cx,
-            source,
-            &mut manifest,
-            &search,
-            Some(name),
-            (collection_id, collection_name),
-        ) {
-            Ok((wacz_name, pages)) => {
-                done += 1;
-                // Print the per-WACZ summary as each one finishes, so the next
-                // WACZ's progress bar doesn't erase the record of it (the line
-                // persists above the new bar).
-                progress.wacz_indexed(&wacz_name, pages);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    source = %source.location(),
-                    "skipping WACZ that failed to reindex: {e:#}"
-                );
-                skipped += 1;
-            }
-        }
-    }
-
-    // Re-index every collection's page annotations into the fresh index, so
-    // notes are searchable after a rebuild just like pages. Annotations live in
-    // committable JSONL (not the WACZs), so they're indexed here rather than in
-    // `index_one`. A collection whose annotations file is missing/unreadable is
-    // simply skipped (an empty or absent file is the common case).
-    {
-        let mut si = search.lock().unwrap();
-        for coll in &manifest.collections {
-            let anns = match crate::annotations::load(home, &coll.id) {
-                Ok(a) => a,
+            info!(
+                source = %source.location(),
+                progress = format!("{}/{}", done + skipped + 1, total),
+                "reindexing"
+            );
+            // Resilient: a source that fails after retries (e.g. a remote host that's
+            // down or blocking) is skipped with a warning rather than aborting the
+            // whole rebuild — a long reindex over many remote sources shouldn't be
+            // torched by one bad source. Its manifest entry is preserved, and
+            // membership is re-supplied so the collection survives.
+            match index_one(
+                cx,
+                source,
+                &mut manifest,
+                &search,
+                Some(name),
+                (collection_id, collection_name),
+            ) {
+                Ok((wacz_name, pages)) => {
+                    done += 1;
+                    // Print the per-WACZ summary as each one finishes, so the next
+                    // WACZ's progress bar doesn't erase the record of it (the line
+                    // persists above the new bar).
+                    progress.wacz_indexed(&wacz_name, pages);
+                }
                 Err(e) => {
-                    tracing::warn!(collection = %coll.id, "skipping annotations: {e:#}");
-                    continue;
+                    tracing::warn!(
+                        source = %source.location(),
+                        "skipping WACZ that failed to reindex: {e:#}"
+                    );
+                    skipped += 1;
                 }
-            };
-            for a in &anns {
-                // Same sanitization as the live upsert path (search_sync): the
-                // indexed author is public, so never the stored login identity.
-                let author = a.creator.public_name().unwrap_or("");
-                si.index_annotation(
-                    &a.id,
-                    &coll.id,
-                    &a.target.source,
-                    &a.target.timestamp,
-                    author,
-                    &a.body.value,
-                )?;
             }
         }
-    }
 
-    // The rebuild always runs to completion and the (possibly partial) index is
-    // committed, so it's usable even if some sources were skipped.
-    search.into_inner().unwrap().commit()?;
-    // The fresh build succeeded; swap it in for the old index atomically, then
-    // persist the manifest so on-disk metadata matches the now-live index. A
-    // partial rebuild (some sources skipped) is still swapped in — it's usable
-    // and no worse than the old index — but we still exit non-zero below.
-    swap_in_new_index(&index_dir)?;
-    manifest.save()?;
-    progress.finish();
-    if skipped > 0 {
-        // Usable but incomplete: return an error so the process exits non-zero and
-        // cron/CI notices, while leaving the mostly-rebuilt index in place.
-        anyhow::bail!(
-            "reindex finished but {skipped} of {total} source(s) were skipped \
-             (indexed {done}); the search index is missing them — fix the cause \
-             and run `indice reindex` again to include them"
-        );
+        // Re-index every collection's page annotations into the fresh index, so
+        // notes are searchable after a rebuild just like pages. Annotations live in
+        // committable JSONL (not the WACZs), so they're indexed here rather than in
+        // `index_one`. A collection whose annotations file is missing/unreadable is
+        // simply skipped (an empty or absent file is the common case).
+        {
+            let mut si = search.lock().unwrap();
+            for coll in &manifest.collections {
+                let anns = match crate::annotations::load(home, &coll.id) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(collection = %coll.id, "skipping annotations: {e:#}");
+                        continue;
+                    }
+                };
+                for a in &anns {
+                    // Same sanitization as the live upsert path (search_sync): the
+                    // indexed author is public, so never the stored login identity.
+                    let author = a.creator.public_name().unwrap_or("");
+                    si.index_annotation(
+                        &a.id,
+                        &coll.id,
+                        &a.target.source,
+                        &a.target.timestamp,
+                        author,
+                        &a.body.value,
+                    )?;
+                }
+            }
+        }
+
+        // The rebuild always runs to completion and the (possibly partial) index is
+        // committed, so it's usable even if some sources were skipped.
+        search.into_inner().unwrap().commit()?;
+        // The fresh build succeeded; swap it in for the old index atomically, then
+        // persist the manifest so on-disk metadata matches the now-live index. A
+        // partial rebuild (some sources skipped) is still swapped in — it's usable
+        // and no worse than the old index — but we still exit non-zero below.
+        swap_in_new_index(&index_dir)?;
+        manifest.save()?;
+        progress.finish();
+        if skipped > 0 {
+            // Usable but incomplete: return an error so the process exits non-zero and
+            // cron/CI notices, while leaving the mostly-rebuilt index in place.
+            anyhow::bail!(
+                "reindex finished but {skipped} of {total} source(s) were skipped \
+                 (indexed {done}); the search index is missing them — fix the cause \
+                 and run `indice reindex` again to include them"
+            );
+        }
+        info!(reindexed = done, total, "reindex complete");
+        Ok(())
     }
-    info!(reindexed = done, total, "reindex complete");
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::index::set_browsertrix_provenance;
     use crate::index::testsupport::*;
+    use crate::index::SourceResolver;
     use tempfile::TempDir;
 
     #[test]
@@ -233,7 +226,7 @@ mod tests {
 
         // A reindex rebuilds each manifest entry from scratch; provenance set
         // out-of-band by the importer must be carried over, not wiped.
-        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
+        crate::index::Ingest::new(tmp.path()).reindex().unwrap();
         let after = recorded(tmp.path()).expect("provenance after reindex");
         assert_eq!(after.item_id, "item-1");
         assert_eq!(
@@ -256,7 +249,7 @@ mod tests {
             .replace("name: test", "name: test  # hand-labelled");
         std::fs::write(&readme, &edited).unwrap();
 
-        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
+        crate::index::Ingest::new(tmp.path()).reindex().unwrap();
 
         assert_eq!(
             std::fs::read_to_string(&readme).unwrap(),
@@ -276,7 +269,7 @@ mod tests {
             .replace("name: test", "name: Test Archive");
         std::fs::write(&readme, renamed).unwrap();
 
-        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
+        crate::index::Ingest::new(tmp.path()).reindex().unwrap();
 
         let entries: Vec<_> = std::fs::read_dir(tmp.path().join("collections"))
             .unwrap()
@@ -297,7 +290,7 @@ mod tests {
         let full_text = tmp.path().join("index").join("full_text");
         std::fs::remove_dir_all(&full_text).unwrap();
 
-        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
+        crate::index::Ingest::new(tmp.path()).reindex().unwrap();
 
         // The manifest (custom name + collection membership) is preserved...
         let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
@@ -319,7 +312,7 @@ mod tests {
     fn reindex_with_no_collections_is_ok() {
         let tmp = TempDir::new().unwrap();
         // No collections.json yet: reindex should be a no-op, not an error.
-        reindex(tmp.path(), None, None, crate::index::no_progress()).unwrap();
+        crate::index::Ingest::new(tmp.path()).reindex().unwrap();
     }
     #[test]
     fn reindex_skips_a_failing_source_and_keeps_going() {
@@ -348,7 +341,8 @@ mod tests {
 
         // Rebuild from the manifest: the run completes over the good source but
         // reports a non-zero exit (an error) because one source was skipped.
-        let err = reindex(tmp.path(), None, None, crate::index::no_progress())
+        let err = crate::index::Ingest::new(tmp.path())
+            .reindex()
             .expect_err("a skipped source should surface as a non-zero exit, not abort mid-run");
         let msg = format!("{err:#}");
         assert!(
@@ -415,7 +409,9 @@ mod tests {
         // reindex ends in an error (the stub resolve fails, so the source is
         // skipped *downstream*), but the resolver having been called proves the
         // source reached index_one instead of being dropped by the guard.
-        let _ = reindex(tmp.path(), None, Some(&spy), crate::index::no_progress());
+        let _ = crate::index::Ingest::new(tmp.path())
+            .resolver(Some(&spy))
+            .reindex();
         assert!(
             spy.called.load(Ordering::SeqCst),
             "a Browsertrix source must reach index_one (resolver called), \

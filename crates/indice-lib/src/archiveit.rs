@@ -699,16 +699,12 @@ pub fn import_crawls<T: Transport>(
         progress.phase("building WACZ");
         tracing::info!(crawl = plan.crawl_id, warcs = warcs.len(), "building WACZ");
         let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
-        crate::index::index_location(
-            &built.path.to_string_lossy(),
-            home,
-            Some(&display),
-            into,
-            false, // download
-            true,  // force: the importer already made the skip decision
-            None,
-            progress,
-        )?;
+        // force: the importer already made the skip decision.
+        crate::index::Ingest::new(home)
+            .name(Some(&display))
+            .force(true)
+            .progress(progress)
+            .index_location(&built.path.to_string_lossy(), into)?;
         // The filed WACZ is in place under archive/<slug>/; its id is stable.
         let abs = built.path.canonicalize().unwrap_or(built.path.clone());
         let crawl_indice_id = wacz_id(&Source::for_file(&abs, home));
