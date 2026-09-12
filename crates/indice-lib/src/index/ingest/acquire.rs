@@ -13,7 +13,6 @@ use tracing::info;
 
 use crate::collections::{file_sha256, Manifest, Source};
 use crate::index::paths::archive_dir;
-use crate::index::{IndexProgress, SourceResolver};
 
 use super::WaczAccess;
 
@@ -31,13 +30,11 @@ use super::WaczAccess;
 ///   streamed; the recorded source stays the stable Browsertrix identity, so the
 ///   id survives re-imports and replay re-resolves later.
 pub(super) fn open(
+    cx: &super::Ingest,
     source: &Source,
-    home: &Path,
     collection_slug: &str,
-    download: bool,
-    resolver: Option<&dyn SourceResolver>,
-    progress: &dyn IndexProgress,
 ) -> Result<(Source, WaczAccess)> {
+    let (home, download, resolver, progress) = (cx.home, cx.download, cx.resolver, cx.progress);
     let effective_source: Source = match source {
         Source::Url(u) if download => {
             info!(url = %u, "downloading remote WACZ into archive");

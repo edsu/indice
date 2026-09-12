@@ -96,6 +96,95 @@ impl WaczAccess {
     }
 }
 
+/// One ingest, configured: where it runs, what it is being asked to do, and
+/// the collaborators it may call out to.
+///
+/// `Ingest::new(home)` is already a complete, valid ingest; each setter narrows
+/// it. That is the `std::process::Command` shape, and it matters here for a
+/// reason beyond tidiness: the pipeline threads `&Ingest` through every phase,
+/// so a new collaborator is **one field and one setter**, reachable by the
+/// phase that needs it without any signature in between changing.
+///
+/// Growing the collaborators used to mean editing four already-crowded
+/// parameter lists. That is why crawl custody ended up being written out of
+/// band (see [`set_added_by`](crate::index::set_added_by)) rather than threaded
+/// through, and why the snapshot it then needed produced two data-loss bugs.
+///
+/// Every field is private: an `Ingest` can only come from `new` plus setters,
+/// the same one-way-in discipline as
+/// [`CollectionId`](crate::collections::CollectionId).
+#[derive(Clone, Copy)]
+pub struct Ingest<'a> {
+    /// indice home: `archive/`, `collections/` and `index/` hang off it.
+    home: &'a Path,
+    /// Display-name override for each crawl (`--name`); `None` → the WACZ
+    /// datapackage title, falling back to the filename/URL stem.
+    name: Option<&'a str>,
+    /// Fetch a remote WACZ into `<home>/archive` and index it as a local file
+    /// (durable copy, whole-file fixity, offline replay) instead of streaming.
+    download: bool,
+    /// Re-index a source already registered in the collection; otherwise it is
+    /// skipped, so a large interrupted ingest resumes.
+    force: bool,
+    /// Concurrent record fetches for CDX-guided streaming; `None` → a
+    /// per-source default (see `pages::default_concurrency`).
+    concurrency: Option<usize>,
+    /// Resolves a refreshable remote source (Browsertrix) to a fresh presigned
+    /// URL. `None` means no credentials are configured — real information that
+    /// `acquire::open` turns into a specific error, so this one stays optional.
+    resolver: Option<&'a dyn SourceResolver>,
+    /// Where progress is reported. Never optional: see
+    /// [`NoProgress`](crate::index::NoProgress).
+    progress: &'a dyn IndexProgress,
+}
+
+impl<'a> Ingest<'a> {
+    /// An ingest into `home` with everything at its default: no name override,
+    /// no download, no force, per-source concurrency, no resolver, no progress.
+    pub fn new(home: &'a Path) -> Self {
+        Self {
+            home,
+            name: None,
+            download: false,
+            force: false,
+            concurrency: None,
+            resolver: None,
+            progress: crate::index::no_progress(),
+        }
+    }
+
+    /// Override the display name of each crawl this ingest records.
+    pub fn name(mut self, name: Option<&'a str>) -> Self {
+        self.name = name;
+        self
+    }
+    /// Fetch a remote WACZ into the archive instead of streaming it in place.
+    pub fn download(mut self, yes: bool) -> Self {
+        self.download = yes;
+        self
+    }
+    /// Re-index sources already registered in the collection.
+    pub fn force(mut self, yes: bool) -> Self {
+        self.force = yes;
+        self
+    }
+    /// Concurrent record fetches for streaming; `None` for the default.
+    pub fn concurrency(mut self, n: Option<usize>) -> Self {
+        self.concurrency = n;
+        self
+    }
+    /// Supply a resolver for refreshable remote sources (Browsertrix).
+    pub fn resolver(mut self, r: Option<&'a dyn SourceResolver>) -> Self {
+        self.resolver = r;
+        self
+    }
+    /// Report progress to `p`.
+    pub fn progress(mut self, p: &'a dyn IndexProgress) -> Self {
+        self.progress = p;
+        self
+    }
+}
+
 /// Index a local WACZ file into the given collection (it's filed into
 /// `<home>/archive/<slug>/`). Thin wrapper over [`index_location`].
 pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str) -> Result<()> {
@@ -172,6 +261,16 @@ pub fn index_location_with_resolver(
     // Optional progress sink for indexing (the binary renders a bar).
     progress: &dyn IndexProgress,
 ) -> Result<()> {
+    // One value carrying everything the phases need, so the loop body below is
+    // just "index this source".
+    let cx = Ingest::new(home)
+        .name(name)
+        .download(download)
+        .force(force)
+        .concurrency(concurrency)
+        .resolver(resolver)
+        .progress(progress);
+
     // Every crawl belongs to a collection (its id is the slug of the name).
     let group = (
         crate::collections::CollectionId::from_name(collection),
@@ -219,16 +318,12 @@ pub fn index_location_with_resolver(
         }
 
         let (wacz_name, pages) = index_one(
+            &cx,
             source,
-            home,
             &mut manifest,
             &search,
             name,
             (&group.0, group.1.as_str()),
-            download,
-            concurrency,
-            resolver,
-            progress,
         )?;
 
         // Commit + save per WACZ so an interrupted large ingest keeps every
@@ -256,27 +351,20 @@ pub fn index_location_with_resolver(
 /// Index a single WACZ source, start to finish: acquire it, index its pages, and
 /// record it in the manifest. Returns the WACZ's display name and page count,
 /// for a post-commit summary.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn index_one(
+    cx: &Ingest,
     source: &Source,
-    home: &Path,
     manifest: &mut Manifest,
     search: &Mutex<SearchIndex>,
+    // Display-name override for *this* crawl: `--name` for an ingest, the
+    // preserved manifest name for a reindex. Per-call rather than a field on
+    // `Ingest`, because reindex passes a different one per source.
     name: Option<&str>,
     // The collection (id, display name) this WACZ joins — always set; every
     // crawl belongs to a collection (no singletons).
     collection: (&CollectionId, &str),
-    // Download a remote WACZ into <home>/archive and index it as a local file
-    // (durable copy, whole-file fixity, offline replay) instead of streaming.
-    download: bool,
-    // Concurrent record fetches for CDX-guided streaming; `None` picks a
-    // per-source default (see `pages::default_concurrency`).
-    concurrency: Option<usize>,
-    // Resolves a Browsertrix source to a fresh presigned URL (binary-provided).
-    resolver: Option<&dyn SourceResolver>,
-    // Optional progress sink for indexing.
-    progress: &dyn IndexProgress,
 ) -> Result<(String, u64)> {
+    let (home, concurrency, progress) = (cx.home, cx.concurrency, cx.progress);
     // Show an indeterminate spinner from the very start: the setup work (probing
     // the host, downloading, reading the ZIP directory and CDX) happens before
     // any record total is known, and can take many seconds on a large remote
@@ -284,8 +372,7 @@ pub(super) fn index_one(
     progress.begin(&source.location());
 
     // 1. Acquire: where the WACZ lives, and how we'll read it.
-    let (effective_source, access) =
-        acquire::open(source, home, collection.0, download, resolver, progress)?;
+    let (effective_source, access) = acquire::open(cx, source, collection.0)?;
 
     // Its datapackage metadata, read up front so the title can name the crawl.
     // Precedence: explicit --name, then the WACZ title, then the filename/URL stem.

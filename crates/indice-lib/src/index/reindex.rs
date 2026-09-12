@@ -36,6 +36,14 @@ pub fn reindex(
     progress: &dyn IndexProgress,
 ) -> Result<()> {
     let index_dir = index_dir(home);
+    // reindex keeps its own signature for now; it drives the same pipeline, so
+    // it builds the context the phases expect. `name` is deliberately not set
+    // here: a rebuild preserves each crawl's recorded name, passed per source.
+    let cx = crate::index::Ingest::new(home)
+        .concurrency(concurrency)
+        .resolver(resolver)
+        .progress(progress);
+
     let mut manifest = Manifest::open(&index_dir)?;
     if manifest.waczs.is_empty() {
         info!("no WACZs registered; nothing to reindex");
@@ -113,16 +121,12 @@ pub fn reindex(
         // torched by one bad source. Its manifest entry is preserved, and
         // membership is re-supplied so the collection survives.
         match index_one(
+            &cx,
             source,
-            home,
             &mut manifest,
             &search,
             Some(name),
             (collection_id, collection_name),
-            false,
-            concurrency,
-            resolver,
-            progress,
         ) {
             Ok((wacz_name, pages)) => {
                 done += 1;
