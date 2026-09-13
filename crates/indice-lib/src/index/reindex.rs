@@ -25,22 +25,33 @@ use super::swap::{index_swap_paths, reconcile_index_swap, swap_in_new_index};
 impl crate::index::Ingest<'_> {
     /// Rebuild the full-text index from the sources recorded in the manifest.
     ///
-    /// Reads `home`, `concurrency`, `resolver` and `progress`. `name` and
-    /// `force` do not apply to a rebuild: each crawl keeps its recorded display
-    /// name, which is passed per source, and every source is rebuilt anyway.
-    /// `download` is forced off (see below).
+    /// Reads `home`, `concurrency`, `resolver` and `progress`. `download`,
+    /// `name` and `force` are overridden with what a rebuild means, rather than
+    /// being documented as ignored (see below).
     pub fn reindex(&self) -> Result<()> {
-        // `download` is forced off rather than merely documented as ignored.
-        // Fetching a remote source during a rebuild would index it as a local
-        // file, and since the id is derived from the effective source, the
-        // rebuild would record a *second* manifest entry under a new id while
-        // the original `Url` entry survived — and the provenance carried on the
-        // old entry (`browsertrix`, `archive_it`, `added_by`), all looked up by
-        // id, would not be found. Downloading is `indice index --download`'s
-        // job. Before `Ingest` existed this was structurally impossible,
-        // because `reindex` passed `false` positionally.
-        let cx = &self.download(false);
-        let (home, progress) = (self.home_dir(), self.progress_sink());
+        // Three fields say something a rebuild must not honour, so the rebuild
+        // restates them here instead of relying on prose. Note that this is not
+        // "reset them to their defaults": each is set to what a rebuild
+        // actually means, which for `force` is the opposite of its default.
+        //
+        // - `download(false)`. Fetching a remote source during a rebuild would
+        //   index it as a local file, and since the id is derived from the
+        //   effective source, the rebuild would record a *second* manifest
+        //   entry under a new id while the original `Url` entry survived — and
+        //   the provenance carried on the old entry (`browsertrix`,
+        //   `archive_it`, `added_by`), all looked up by id, would not be found.
+        //   Downloading is `indice index --download`'s job. This is the only
+        //   one of the three that any phase reads today, so it is the only one
+        //   with a live bug behind it, and `reindex` used to pass `false`
+        //   positionally, which is why the builder made it reachable.
+        // - `name(None)`. `index_one` is handed each crawl's recorded name from
+        //   the manifest snapshot below, so a `--name` override must not reach
+        //   it and silently rename every crawl in the archive.
+        // - `force(true)`. A rebuild re-indexes every registered source
+        //   unconditionally; "skip what is already registered" is meaningless
+        //   here, so the truthful value is the *set* one.
+        let cx = &self.download(false).name(None).force(true);
+        let (home, progress) = (cx.home_dir(), cx.progress_sink());
         let index_dir = index_dir(home);
 
         let mut manifest = Manifest::open(&index_dir)?;

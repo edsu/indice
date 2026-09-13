@@ -1253,6 +1253,34 @@ async fn a_rebuild_does_not_download_a_remote_source() {
     );
 }
 
+/// The `name` twin of the test above: a rebuild must not apply a `--name`
+/// override, because `index_one` is handed each crawl's *recorded* name from the
+/// manifest. No phase reads `cx.name` today, so this asserts the contract rather
+/// than catching a live bug — `reindex` sets `name(None)` so that stays true if
+/// one ever does.
+#[test]
+fn a_rebuild_does_not_rename_crawls() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let dest = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &dest).unwrap();
+    indice_lib::index::index_path(&dest, home, Some("Recorded Name"), "coll").unwrap();
+
+    indice_lib::index::Ingest::new(home)
+        .name(Some("Should Not Apply"))
+        .reindex()
+        .unwrap();
+
+    let after = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(after.waczs.len(), 1);
+    assert_eq!(
+        after.waczs[0].name, "Recorded Name",
+        "a rebuild keeps each crawl's recorded name"
+    );
+}
+
 // ── Real-fixture smoke tests ───────────────────────────────────────────────────
 
 const REAL_URL: &str = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
