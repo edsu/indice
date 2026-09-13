@@ -24,9 +24,6 @@ use crate::warc::{iter_records, WarcRecord, Warcinfo};
 use super::acquire::local_warcs_streamable;
 use super::WaczAccess;
 
-/// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
-/// and collection the pages belong to, where to write them, how wide to fan out,
-/// and where a representative thumbnail should land.
 /// Which crawl (and collection) the documents being written belong to, and the
 /// index they go into.
 ///
@@ -49,6 +46,9 @@ pub(super) struct Docs<'a> {
     pub search: &'a Mutex<SearchIndex>,
 }
 
+/// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
+/// and collection the pages belong to, where to write them, how wide to fan out,
+/// and where a representative thumbnail should land.
 pub(super) struct Ctx<'a> {
     pub docs: Docs<'a>,
     pub workers: usize,
