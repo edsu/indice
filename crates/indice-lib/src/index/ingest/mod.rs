@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use tracing::debug;
 
 use crate::collections::{file_sha256, wacz_id, CollectionId, Manifest, Source};
+use crate::identity::SubjectId;
 use crate::search::SearchIndex;
 use crate::wacz::read_datapackage;
 
@@ -107,8 +108,9 @@ impl WaczAccess {
 ///
 /// Growing the collaborators used to mean editing four already-crowded
 /// parameter lists. That is why crawl custody ended up being written out of
-/// band (see [`set_added_by`](crate::index::set_added_by)) rather than threaded
-/// through, and why the snapshot it then needed produced two data-loss bugs.
+/// band rather than threaded through, and why the snapshot it then needed
+/// produced two data-loss bugs. `actor` below is that field, threaded; the
+/// out-of-band setter and its snapshot are gone.
 ///
 /// Every field is private: an `Ingest` can only come from `new` plus setters,
 /// the same one-way-in discipline as
@@ -142,6 +144,15 @@ pub struct Ingest<'a> {
     /// Where progress is reported. Never optional: see
     /// [`NoProgress`](crate::index::NoProgress).
     progress: &'a dyn IndexProgress,
+    /// Who to credit with accessioning whatever this ingest records, stored as
+    /// [`Wacz::added_by`](crate::collections::Wacz::added_by).
+    ///
+    /// `None` means "nobody in particular", which is the honest answer for the
+    /// CLI: `indice index` has no request identity, so its crawls stay
+    /// unattributed exactly as they do today. This stays an `Option` under the
+    /// rule above because the absence is real information — an unattributed
+    /// crawl is one only an admin may delete.
+    actor: Option<&'a SubjectId>,
 }
 
 impl<'a> Ingest<'a> {
@@ -157,6 +168,7 @@ impl<'a> Ingest<'a> {
             concurrency: None,
             resolver: None,
             progress: crate::index::no_progress(),
+            actor: None,
         }
     }
 
@@ -196,10 +208,23 @@ impl<'a> Ingest<'a> {
         self.progress = p;
         self
     }
+    /// Credit `who` with accessioning whatever this ingest records.
+    ///
+    /// Only the server calls this: it is the only caller that knows who is
+    /// acting. An existing crawl's custody is never reassigned: `record::upsert`
+    /// prefers whatever the manifest already has.
+    #[must_use]
+    pub fn actor(mut self, who: Option<&'a SubjectId>) -> Self {
+        self.actor = who;
+        self
+    }
 
-    // Read side, for `reindex`. The phases (`acquire`, `pages`, `record`) are
-    // descendants of this module and read the private fields directly; a
-    // sibling module cannot, so it goes through these.
+    // Read side, for the callers that are handed a configured `Ingest` and
+    // need the plain values back out: `reindex`, and `archiveit::import_crawls`
+    // (which does its own downloading and staging under `home` before handing
+    // each built WACZ to the ingest). The phases (`acquire`, `pages`, `record`)
+    // are descendants of this module and read the private fields directly; a
+    // module elsewhere in the crate cannot, so it goes through these.
     pub(crate) fn home_dir(&self) -> &'a Path {
         self.home
     }
@@ -404,6 +429,7 @@ pub(super) fn index_one(
             meta,
             stats,
             fixity,
+            actor: cx.actor,
         },
     );
 

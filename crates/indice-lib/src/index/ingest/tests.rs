@@ -156,6 +156,165 @@ fn indexed_local_wacz_is_filed_under_its_collection_relative_to_home() {
         "the WACZ was moved into its collection folder"
     );
 }
+/// Custody is recorded by the ingest itself, not stamped on afterwards.
+#[test]
+fn an_ingest_records_who_accessioned_the_crawl() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+
+    let alice = crate::identity::SubjectId::parse("alice@x.edu").unwrap();
+    Ingest::new(home)
+        .actor(Some(&alice))
+        .index_location(&staged.to_string_lossy(), "custody")
+        .unwrap();
+
+    let manifest = Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(
+        manifest.waczs[0].added_by.as_ref().map(|s| s.as_str()),
+        Some("mailto:alice@x.edu"),
+        "custody is canonical, and recorded during the ingest"
+    );
+}
+
+/// The CLI has no request identity, so it attributes nothing rather than
+/// inventing an owner. An unattributed crawl is one only an admin may delete,
+/// which is the safe default.
+#[test]
+fn an_ingest_without_an_actor_attributes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    index_fixture("simple.wacz", tmp.path(), None);
+    let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(manifest.waczs[0].added_by, None);
+}
+
+/// Custody is never transferred by re-indexing.
+///
+/// This is the invariant the out-of-band setter enforced with an
+/// `added_by.is_none()` check on each entry; now it is the order of the
+/// `and_then`/`or_else` in `record::upsert`. Worth its own test because the
+/// consequence of getting it backwards is an authorization change, not a
+/// cosmetic one: `may_edit` is owner-or-admin, so reassigning custody hands a
+/// peer curator the right to delete a crawl they did not accession.
+#[test]
+fn re_indexing_a_crawl_does_not_transfer_its_custody() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+    let location = staged.to_string_lossy().to_string();
+
+    let alice = crate::identity::SubjectId::parse("alice@x.edu").unwrap();
+    Ingest::new(home)
+        .actor(Some(&alice))
+        .index_location(&location, "custody")
+        .unwrap();
+    let filed = crate::index::archive_dir(home)
+        .join("custody")
+        .join("simple.wacz");
+    assert!(filed.is_file(), "the WACZ was filed into its collection");
+
+    // Bob re-indexes the same crawl. `force`, or it would simply be skipped and
+    // the test would prove nothing.
+    let bob = crate::identity::SubjectId::parse("bob@x.edu").unwrap();
+    Ingest::new(home)
+        .actor(Some(&bob))
+        .force(true)
+        .index_location(&filed.to_string_lossy(), "custody")
+        .unwrap();
+
+    let manifest = Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(manifest.waczs.len(), 1, "still one crawl");
+    assert_eq!(
+        manifest.waczs[0].added_by.as_ref().map(|s| s.as_str()),
+        Some("mailto:alice@x.edu"),
+        "custody stays with the curator who accessioned it"
+    );
+}
+
+/// A rebuild passes no actor, so recorded custody has to survive it — a reindex
+/// reconstructs each manifest entry from scratch.
+#[test]
+fn a_rebuild_preserves_recorded_custody() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+
+    let alice = crate::identity::SubjectId::parse("alice@x.edu").unwrap();
+    Ingest::new(home)
+        .actor(Some(&alice))
+        .index_location(&staged.to_string_lossy(), "custody")
+        .unwrap();
+
+    Ingest::new(home).reindex().unwrap();
+
+    let manifest = Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(
+        manifest.waczs[0].added_by.as_ref().map(|s| s.as_str()),
+        Some("mailto:alice@x.edu"),
+        "a rebuild must not orphan every crawl"
+    );
+}
+
+/// A value stored by an older version (or edited by hand) is preserved
+/// byte-for-byte rather than being rewritten into canonical form. Ownership
+/// still resolves, because `SubjectId::matches` canonicalizes at comparison
+/// time — which is why no migration is needed.
+#[test]
+fn a_raw_stored_custody_value_is_preserved_not_rewritten() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+    let alice = crate::identity::SubjectId::parse("alice@x.edu").unwrap();
+    Ingest::new(home)
+        .actor(Some(&alice))
+        .index_location(&staged.to_string_lossy(), "custody")
+        .unwrap();
+
+    // Rewrite it the way a pre-SubjectId version would have. Built by
+    // deserializing, which is the path a legacy manifest on disk takes.
+    let dir = crate::index::index_dir(home);
+    let mut manifest = Manifest::open(&dir).unwrap();
+    let legacy: crate::identity::SubjectId = serde_json::from_str(r#""bob@x.edu""#).unwrap();
+    manifest.waczs[0].added_by = Some(legacy);
+    manifest.save().unwrap();
+
+    let filed = crate::index::archive_dir(home)
+        .join("custody")
+        .join("simple.wacz");
+    let carol = crate::identity::SubjectId::parse("carol@x.edu").unwrap();
+    Ingest::new(home)
+        .actor(Some(&carol))
+        .force(true)
+        .index_location(&filed.to_string_lossy(), "custody")
+        .unwrap();
+
+    let manifest = Manifest::open(&dir).unwrap();
+    let stored = manifest.waczs[0].added_by.as_ref().unwrap();
+    assert_eq!(
+        stored.as_str(),
+        "bob@x.edu",
+        "stored as written, not canonicalized on the way through"
+    );
+    assert!(
+        crate::identity::SubjectId::parse("bob@x.edu")
+            .unwrap()
+            .matches(Some(stored.as_str())),
+        "and it still resolves to its owner"
+    );
+}
+
 #[test]
 fn provenance_is_recorded_on_the_manifest() {
     // a.wacz carries crawler software (datapackage + warcinfo) and real

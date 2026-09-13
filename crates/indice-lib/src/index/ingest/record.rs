@@ -17,7 +17,7 @@ use super::pages::CrawlStats;
 /// is worth more here than anywhere else in the pipeline: this is the frame
 /// where a new piece of provenance lands, and it is the frame crawl custody
 /// could not reach when `added_by` had to be set out of band instead of being
-/// threaded through (see `index::set_added_by`).
+/// threaded through. It reaches it now — `actor` below is that field.
 pub(super) struct Indexed<'a> {
     pub id: &'a str,
     /// The curated collection (id, display name) this crawl belongs to.
@@ -31,6 +31,9 @@ pub(super) struct Indexed<'a> {
     /// [`WaczAccess::fixity`](super::WaczAccess::fixity) — the hash is empty
     /// for a streamed remote, which is never read whole.
     pub fixity: (String, u64),
+    /// Who to credit if this crawl is new to the manifest; `None` for the CLI,
+    /// which has no request identity.
+    pub actor: Option<&'a crate::identity::SubjectId>,
 }
 
 /// Upsert this crawl's manifest entry and seed its collection's finding aid.
@@ -43,6 +46,7 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
         meta,
         stats,
         fixity,
+        actor,
     } = crawl;
     let (collection_id, collection_name) = collection;
     let (sha, file_size) = fixity;
@@ -82,9 +86,20 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
     // reindex, which otherwise rebuilds the entry from scratch.
     let browsertrix = manifest.wacz_by_id(id).and_then(|w| w.browsertrix.clone());
     let archive_it = manifest.wacz_by_id(id).and_then(|w| w.archive_it.clone());
-    // Custody is set out-of-band too (only the server knows who is acting), so
-    // it needs the same preservation or a reindex would orphan every crawl.
-    let added_by = manifest.wacz_by_id(id).and_then(|w| w.added_by.clone());
+    // Custody: keep what is already recorded, and only fall back to whoever is
+    // acting now. The order carries two invariants that look separate but are
+    // the same rule — an existing custody line is never overwritten:
+    //
+    // - a reindex passes no actor, so recorded custody survives a rebuild that
+    //   otherwise reconstructs the entry from scratch;
+    // - curator B re-indexing a crawl A accessioned finds A's id first, so
+    //   re-adding someone else's crawl cannot transfer it to you. The old
+    //   out-of-band setter spelled that as an `added_by.is_none()` check on
+    //   each entry; here it is the `and_then` running before the `or_else`.
+    let added_by = manifest
+        .wacz_by_id(id)
+        .and_then(|w| w.added_by.clone())
+        .or_else(|| actor.cloned());
 
     manifest.upsert_wacz(Wacz {
         id: id.to_string(),
