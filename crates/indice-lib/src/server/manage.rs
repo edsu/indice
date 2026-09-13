@@ -164,12 +164,12 @@ pub(super) fn acquire_write_lock<'a>(
 
 /// Start a background ingest job.
 ///
-/// Takes a `&Curator` it never reads. That is the point: `Curator`'s field is
-/// private to `auth.rs`, so one cannot be fabricated — a caller must have
-/// obtained it from the extractor, i.e. must have passed the check. This makes
-/// "I added a handler and forgot to gate it" a compile error rather than a
-/// silent exposure. (It will also be where the actor comes from once crawls
-/// record who added them — see bead rustyweb-manifest-provenance-sfu7.)
+/// Takes a `&Curator` for two reasons. It is read, for
+/// `principal().id()` — the actor credited with accessioning whatever this
+/// ingest records. And its field is private to `auth.rs`, so one cannot be
+/// fabricated: a caller must have obtained it from the extractor, i.e. must
+/// have passed the check. That makes "I added a handler and forgot to gate it"
+/// a compile error rather than a silent exposure.
 fn start_index_job(
     curator: &Curator,
     state: &Arc<AppState>,
