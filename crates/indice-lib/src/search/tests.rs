@@ -111,7 +111,7 @@ fn optimize_merges_segments_and_preserves_search() {
         "expected a fragmented index, got {before} segments"
     );
 
-    let (b, after) = idx.optimize(1, None).unwrap();
+    let (b, after) = idx.optimize(1, crate::index::no_progress()).unwrap();
     assert_eq!(b, before);
     assert_eq!(after, 1, "should compact to a single segment");
     assert_eq!(idx.segment_count().unwrap(), 1);
@@ -208,7 +208,7 @@ fn optimize_sweeps_orphaned_segment_files() {
     }
     std::fs::write(dir.join("keep-me.txt"), b"not a segment").unwrap();
 
-    idx.optimize(1, None).unwrap();
+    idx.optimize(1, crate::index::no_progress()).unwrap();
 
     for name in orphans {
         assert!(
@@ -262,7 +262,7 @@ fn optimize_expunges_deletes_at_default_target() {
         "under the default target, so the count-based merge alone would reclaim nothing"
     );
 
-    idx.optimize(8, None).unwrap();
+    idx.optimize(8, crate::index::no_progress()).unwrap();
 
     let deleted_after: u32 = idx
         .index
@@ -322,9 +322,9 @@ fn optimize_respects_target_and_is_a_noop_when_already_small() {
     }
     assert!(idx.segment_count().unwrap() >= 5);
     // Compact toward 2, then optimizing again is a no-op (already ≤ target).
-    let (_, after) = idx.optimize(2, None).unwrap();
+    let (_, after) = idx.optimize(2, crate::index::no_progress()).unwrap();
     assert_eq!(after, 2);
-    let (before2, after2) = idx.optimize(2, None).unwrap();
+    let (before2, after2) = idx.optimize(2, crate::index::no_progress()).unwrap();
     assert_eq!(
         (before2, after2),
         (2, 2),

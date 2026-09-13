@@ -17,7 +17,7 @@ use super::IndexProgress;
 pub fn optimize(
     home: &Path,
     target_segments: usize,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<(usize, usize)> {
     let full_text = index_dir(home).join("full_text");
     if !full_text.join("meta.json").exists() {
@@ -63,7 +63,7 @@ pub fn segment_count(home: &Path) -> Result<Option<usize>> {
 /// having to remember `optimize`.
 pub fn optimize_if_fragmented(
     home: &Path,
-    progress: Option<&dyn IndexProgress>,
+    progress: &dyn IndexProgress,
 ) -> Result<Option<(usize, usize)>> {
     match segment_count(home)? {
         Some(n) if n > FRAGMENTED_SEGMENT_THRESHOLD => {
@@ -111,7 +111,10 @@ mod tests {
 
         // No index yet → nothing to count, nothing to compact.
         assert_eq!(segment_count(home).unwrap(), None);
-        assert_eq!(optimize_if_fragmented(home, None).unwrap(), None);
+        assert_eq!(
+            optimize_if_fragmented(home, crate::index::no_progress()).unwrap(),
+            None
+        );
 
         // Build a deliberately fragmented index just past the threshold (one
         // segment per commit, background merges disabled).
@@ -135,7 +138,7 @@ mod tests {
         } // drop the writer before optimize re-opens the index
 
         // Fragmented → compacts down toward the default target.
-        let (before, after) = optimize_if_fragmented(home, None)
+        let (before, after) = optimize_if_fragmented(home, crate::index::no_progress())
             .unwrap()
             .expect("a fragmented index is compacted");
         assert!(before > FRAGMENTED_SEGMENT_THRESHOLD);
@@ -145,6 +148,9 @@ mod tests {
         );
 
         // Now healthy → a second call is a no-op.
-        assert_eq!(optimize_if_fragmented(home, None).unwrap(), None);
+        assert_eq!(
+            optimize_if_fragmented(home, crate::index::no_progress()).unwrap(),
+            None
+        );
     }
 }

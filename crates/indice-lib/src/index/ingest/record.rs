@@ -10,24 +10,40 @@ use crate::index::paths::year_prefix;
 
 use super::pages::CrawlStats;
 
-/// Upsert this crawl's manifest entry and seed its collection's finding aid.
+/// Everything the pipeline learned about one WACZ, for [`upsert`] to fold into
+/// a manifest entry.
 ///
-/// `fixity` is the `(sha256, file_size)` pair from
-/// [`WaczAccess::fixity`](super::WaczAccess::fixity) — the hash is empty for a
-/// streamed remote, which is never read whole.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn upsert(
-    manifest: &mut Manifest,
-    id: &str,
-    // The curated collection (id, display name) this crawl belongs to.
-    collection: (&CollectionId, &str),
-    // What the manifest records as the source (post-`--download` if that ran).
-    source: &Source,
-    display_name: &str,
-    meta: crate::wacz::WaczMetadata,
-    stats: CrawlStats,
-    fixity: (String, u64),
-) {
+/// The phases hand each other a named value rather than an argument list. That
+/// is worth more here than anywhere else in the pipeline: this is the frame
+/// where a new piece of provenance lands, and it is the frame crawl custody
+/// could not reach when `added_by` had to be set out of band instead of being
+/// threaded through (see `index::set_added_by`).
+pub(super) struct Indexed<'a> {
+    pub id: &'a str,
+    /// The curated collection (id, display name) this crawl belongs to.
+    pub collection: (&'a CollectionId, &'a str),
+    /// What the manifest records as the source (post-`--download` if that ran).
+    pub source: &'a Source,
+    pub display_name: &'a str,
+    pub meta: crate::wacz::WaczMetadata,
+    pub stats: CrawlStats,
+    /// `(sha256, file_size)` from
+    /// [`WaczAccess::fixity`](super::WaczAccess::fixity) — the hash is empty
+    /// for a streamed remote, which is never read whole.
+    pub fixity: (String, u64),
+}
+
+/// Upsert this crawl's manifest entry and seed its collection's finding aid.
+pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
+    let Indexed {
+        id,
+        collection,
+        source,
+        display_name,
+        meta,
+        stats,
+        fixity,
+    } = crawl;
     let (collection_id, collection_name) = collection;
     let (sha, file_size) = fixity;
     let date_indexed = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

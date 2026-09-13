@@ -373,7 +373,7 @@ impl SearchIndex {
     pub fn optimize(
         &mut self,
         target_segments: usize,
-        progress: Option<&dyn crate::index::IndexProgress>,
+        progress: &dyn crate::index::IndexProgress,
     ) -> Result<(usize, usize)> {
         // Segments merged per round: bounds each merge's size (hence peak disk)
         // and gives the spinner something to tick.
@@ -387,10 +387,8 @@ impl SearchIndex {
         self.writer_mut()
             .set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
         let before = self.index.searchable_segment_ids()?.len();
-        if let Some(p) = progress {
-            p.begin("optimize");
-            p.phase(&format!("{before} segments"));
-        }
+        progress.begin("optimize");
+        progress.phase(&format!("{before} segments"));
 
         let mut prev = usize::MAX;
         let mut retries = 0;
@@ -412,9 +410,7 @@ impl SearchIndex {
             match self.writer_mut().merge(&ids).wait() {
                 Ok(_) => {
                     retries = 0;
-                    if let Some(p) = progress {
-                        p.phase(&format!("{} segments", n - (take - 1)));
-                    }
+                    progress.phase(&format!("{} segments", n - (take - 1)));
                 }
                 Err(e) => {
                     // A background merge scheduled during a prior ingest can still
@@ -447,12 +443,10 @@ impl SearchIndex {
             .map(|m| m.id())
             .collect();
         if !with_deletes.is_empty() {
-            if let Some(p) = progress {
-                p.phase(&format!(
-                    "expunging deletes ({} segment(s))",
-                    with_deletes.len()
-                ));
-            }
+            progress.phase(&format!(
+                "expunging deletes ({} segment(s))",
+                with_deletes.len()
+            ));
             for id in with_deletes {
                 let mut retries = 0;
                 loop {
@@ -498,15 +492,11 @@ impl SearchIndex {
                 freed_bytes = freed,
                 "removed orphaned segment files (leftovers from an interrupted merge/ingest)"
             );
-            if let Some(p) = progress {
-                p.phase(&format!("removed {orphans} orphaned file(s)"));
-            }
+            progress.phase(&format!("removed {orphans} orphaned file(s)"));
         }
 
         let after = self.index.searchable_segment_ids()?.len();
-        if let Some(p) = progress {
-            p.finish();
-        }
+        progress.finish();
         Ok((before, after))
     }
 

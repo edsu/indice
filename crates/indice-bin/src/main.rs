@@ -803,6 +803,19 @@ impl indice_lib::index::IndexProgress for BarProgress {
     }
 }
 
+/// The progress sink for a command: the bar when one is being rendered, a no-op
+/// otherwise.
+///
+/// Whether to draw a bar is a UI decision (interactive stderr, not under `-v`),
+/// so the `Option` ends here and the library always receives a real sink. See
+/// `indice_lib::index::NoProgress` for why that distinction is deliberate.
+fn progress_sink(bar: &Option<BarProgress>) -> &dyn indice_lib::index::IndexProgress {
+    match bar {
+        Some(b) => b,
+        None => indice_lib::index::no_progress(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -954,9 +967,16 @@ async fn main() -> Result<()> {
             // record is a separate HTTP range request) visible. Shown only on an
             // interactive stderr and not under -v (see `show_bar` above).
             let bar = show_bar.then(BarProgress::new);
-            let progress = bar
-                .as_ref()
-                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let progress = progress_sink(&bar);
+
+            // Everything that does not vary per location, named once — so the
+            // loop body below is literally "index this one".
+            let ingest = indice_lib::index::Ingest::new(&home)
+                .name(name.as_deref())
+                .download(download)
+                .force(force)
+                .concurrency(concurrency)
+                .progress(progress);
 
             let total = locations.len();
             for (i, location) in locations.iter().enumerate() {
@@ -972,16 +992,7 @@ async fn main() -> Result<()> {
                 // filtered by log level. Silence stdout while indexing runs;
                 // our logs are on stderr and are unaffected.
                 let quiet = gag::Gag::stdout().ok();
-                let result = indice_lib::index::index_location(
-                    location,
-                    &home,
-                    name.as_deref(),
-                    collection,
-                    download,
-                    force,
-                    concurrency,
-                    progress,
-                );
+                let result = ingest.index_location(location, collection);
                 drop(quiet);
                 if let Err(e) = result {
                     // Clear any spinner/bar left up by an aborted WACZ before the
@@ -1147,16 +1158,18 @@ async fn main() -> Result<()> {
             // A full reindex re-streams every source, so the progress bar is even
             // more welcome here than for `index`. Same gating (interactive, not -v).
             let bar = show_bar.then(BarProgress::new);
-            let progress = bar
-                .as_ref()
-                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let progress = progress_sink(&bar);
             // Like `index`, silence stdout to hide third-party PDF extraction
             // noise; our logs are on stderr.
             let quiet = gag::Gag::stdout().ok();
             // Resolver for any Browsertrix sources in the manifest (logs in
             // lazily, so a manifest without them needs no credentials).
             let resolver = BrowsertrixResolver::new();
-            let result = indice_lib::index::reindex(&home, concurrency, Some(&resolver), progress);
+            let result = indice_lib::index::Ingest::new(&home)
+                .concurrency(concurrency)
+                .resolver(Some(&resolver))
+                .progress(progress)
+                .reindex();
             drop(quiet);
             if result.is_err() {
                 // Clear any spinner/bar left up before the error propagates.
@@ -1176,9 +1189,7 @@ async fn main() -> Result<()> {
             // spinner (begin/phase/finish) is the right fit — same gating as
             // the other commands (interactive, not -v).
             let bar = show_bar.then(BarProgress::new);
-            let progress = bar
-                .as_ref()
-                .map(|b| b as &dyn indice_lib::index::IndexProgress);
+            let progress = progress_sink(&bar);
             // Measure the on-disk footprint before/after so we can report the
             // disk reclaimed — this includes orphaned segment files swept away
             // (leftovers from an interrupted merge/ingest), not just the merge.
@@ -1401,9 +1412,7 @@ async fn main() -> Result<()> {
                 verbose: _,
             } => {
                 let bar = show_bar.then(BarProgress::new);
-                let progress = bar
-                    .as_ref()
-                    .map(|b| b as &dyn indice_lib::index::IndexProgress);
+                let progress = progress_sink(&bar);
                 let opts = ImportOpts {
                     public,
                     collection: collection.as_deref(),
@@ -1440,9 +1449,7 @@ async fn main() -> Result<()> {
                 verbose: _,
             } => {
                 let bar = show_bar.then(BarProgress::new);
-                let progress = bar
-                    .as_ref()
-                    .map(|b| b as &dyn indice_lib::index::IndexProgress);
+                let progress = progress_sink(&bar);
                 let opts = ArchiveItOpts {
                     collection,
                     crawl,
@@ -1638,20 +1645,12 @@ fn run_wacz_build(args: WaczBuildArgs) -> Result<()> {
 
     // Index it (shows the same progress bar as `index`).
     let bar = args.show_bar.then(BarProgress::new);
-    let progress = bar
-        .as_ref()
-        .map(|b| b as &dyn indice_lib::index::IndexProgress);
+    let progress = progress_sink(&bar);
     let quiet = gag::Gag::stdout().ok();
-    let result = indice_lib::index::index_location(
-        &built.path.to_string_lossy(),
-        &args.home,
-        args.name.as_deref().or(title.as_deref()),
-        &collection,
-        false,
-        false,
-        None,
-        progress,
-    );
+    let result = indice_lib::index::Ingest::new(&args.home)
+        .name(args.name.as_deref().or(title.as_deref()))
+        .progress(progress)
+        .index_location(&built.path.to_string_lossy(), &collection);
     drop(quiet);
     if result.is_err() {
         if let Some(b) = &bar {
@@ -2040,7 +2039,7 @@ fn run_browsertrix(
     org: Option<&str>,
     home: &std::path::Path,
     opts: &ImportOpts,
-    progress: Option<&dyn indice_lib::index::IndexProgress>,
+    progress: &dyn indice_lib::index::IndexProgress,
 ) -> Result<()> {
     use indice_lib::browsertrix::ItemQuery;
 
@@ -2207,17 +2206,15 @@ fn run_browsertrix(
                 };
                 eprintln!("↻ streaming {}{size}", res.name);
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = indice_lib::index::index_location_with_resolver(
-                    &source.location(),
-                    home,
-                    Some(&item.name),
-                    into,
-                    false, // download (stream in place)
-                    true,  // force: the importer already decided what to bring in
-                    opts.concurrency,
-                    Some(&resolver),
-                    progress,
-                );
+                // Streamed in place (no download), forced because the
+                // importer already decided what to bring in.
+                let indexed = indice_lib::index::Ingest::new(home)
+                    .name(Some(&item.name))
+                    .force(true)
+                    .concurrency(opts.concurrency)
+                    .resolver(Some(&resolver))
+                    .progress(progress)
+                    .index_location(&source.location(), into);
                 drop(quiet);
                 indexed.with_context(|| format!("streaming {}", res.name))?;
                 indice_lib::collections::wacz_id(&source)
@@ -2229,16 +2226,13 @@ fn run_browsertrix(
                 eprintln!("↓ downloading {filename}{size}");
                 indice_lib::index::download_wacz(&res.path, &dest)?;
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = indice_lib::index::index_location(
-                    &dest.to_string_lossy(),
-                    home,
-                    Some(&item.name),
-                    into,
-                    false, // download (already local)
-                    true,  // force: the importer already decided what to bring in
-                    opts.concurrency,
-                    progress,
-                );
+                // Already local, so no download; forced for the same reason.
+                let indexed = indice_lib::index::Ingest::new(home)
+                    .name(Some(&item.name))
+                    .force(true)
+                    .concurrency(opts.concurrency)
+                    .progress(progress)
+                    .index_location(&dest.to_string_lossy(), into);
                 drop(quiet);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
@@ -2293,7 +2287,7 @@ fn run_browsertrix_public(
     org: Option<&str>,
     home: &std::path::Path,
     opts: &ImportOpts,
-    progress: Option<&dyn indice_lib::index::IndexProgress>,
+    progress: &dyn indice_lib::index::IndexProgress,
 ) -> Result<()> {
     use indice_lib::browsertrix::Client;
 
@@ -2412,17 +2406,15 @@ fn run_browsertrix_public(
                 };
                 eprintln!("↻ streaming {}{size}", res.name);
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = indice_lib::index::index_location_with_resolver(
-                    &source.location(),
-                    home,
-                    Some(display),
-                    into,
-                    false, // download (stream in place)
-                    true,  // force: the importer already decided what to bring in
-                    opts.concurrency,
-                    Some(&resolver),
-                    progress,
-                );
+                // Streamed in place (no download), forced because the
+                // importer already decided what to bring in.
+                let indexed = indice_lib::index::Ingest::new(home)
+                    .name(Some(display))
+                    .force(true)
+                    .concurrency(opts.concurrency)
+                    .resolver(Some(&resolver))
+                    .progress(progress)
+                    .index_location(&source.location(), into);
                 drop(quiet);
                 indexed.with_context(|| format!("streaming {}", res.name))?;
                 indice_lib::collections::wacz_id(&source)
@@ -2438,16 +2430,13 @@ fn run_browsertrix_public(
                 eprintln!("↓ downloading {filename}{size}");
                 indice_lib::index::download_wacz(&res.path, &dest)?;
                 let quiet = gag::Gag::stdout().ok();
-                let indexed = indice_lib::index::index_location(
-                    &dest.to_string_lossy(),
-                    home,
-                    Some(display),
-                    into,
-                    false, // download (already local)
-                    true,  // force: the importer already decided what to bring in
-                    opts.concurrency,
-                    progress,
-                );
+                // Already local, so no download; forced for the same reason.
+                let indexed = indice_lib::index::Ingest::new(home)
+                    .name(Some(display))
+                    .force(true)
+                    .concurrency(opts.concurrency)
+                    .progress(progress)
+                    .index_location(&dest.to_string_lossy(), into);
                 drop(quiet);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
@@ -2699,7 +2688,7 @@ fn run_archiveit(
     host: &str,
     home: &std::path::Path,
     opts: &ArchiveItOpts,
-    progress: Option<&dyn indice_lib::index::IndexProgress>,
+    progress: &dyn indice_lib::index::IndexProgress,
 ) -> Result<()> {
     use indice_lib::archiveit::{self, WasapiQuery};
 

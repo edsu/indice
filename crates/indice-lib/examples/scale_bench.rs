@@ -149,7 +149,7 @@ fn main() -> anyhow::Result<()> {
         }
         idx.commit()?;
         println!("  compacting to {target_segments} segment(s)…");
-        idx.optimize(target_segments, None)?;
+        idx.optimize(target_segments, indice_lib::index::no_progress())?;
     }
     let build = build_start.elapsed();
 

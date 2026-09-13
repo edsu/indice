@@ -203,16 +203,10 @@ fn start_index_job(
             // One location can yield several crawls (a directory, nested
             // WACZs), so diff against a snapshot rather than guessing.
             let before = crate::index::crawl_ids(&job_state.home);
-            let result = crate::index::index_location(
-                &location,
-                &job_state.home,
-                name.as_deref(),
-                &collection,
-                false, // download
-                false, // force
-                None,
-                Some(&progress),
-            );
+            let result = crate::index::Ingest::new(&job_state.home)
+                .name(name.as_deref())
+                .progress(&progress)
+                .index_location(&location, &collection);
             // Deliberately not gated on `result`: a multi-WACZ add can fail
             // part way with earlier crawls already committed, and those are
             // exactly the ones their curator needs to be able to undo.

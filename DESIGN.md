@@ -86,7 +86,7 @@ it still resolves.
 - `optimize`: compacts the full-text index in place by **merging Tantivy segments** down toward `--max-segments` (default 8), **without re-reading any sources** — far cheaper than `reindex`. Every query (and `facet_overview`, and URL-grouping) fans out across *all* segments, so an index that has fragmented into hundreds/thousands of tiny segments — which happens when Tantivy's background merges fail (classically, on a full disk, since a merge needs transient ~2× space) — makes every search slow. `optimize` merges smallest-first in bounded batches, waiting for each merge before the next, so peak transient disk stays ~one batch rather than a second copy of the whole index; a smaller `--max-segments` compacts more but raises that peak (~index size / target). Needs a writer (takes the write lock) and some free disk; reports `before → after` segment counts. (`SearchIndex::segment_count()` exposes the health signal.) You rarely run it by hand: `index` and the server's bulk import **auto-compact** at the end of a run when they detect the index has fragmented past `FRAGMENTED_SEGMENT_THRESHOLD` (`index::optimize_if_fragmented`), so a big batch leaves a tidy index without the operator remembering — `index --no-optimize` opts out (and instead logs a reminder), and a healthy index or a single incremental add stays under the threshold and is left untouched. `serve` warns at startup if the index it opens is fragmented. (Running out of disk mid-ingest is *not* a correctness problem — Tantivy's commit is atomic, so an uncommitted WACZ simply re-indexes on re-run; the only symptom is a valid-but-fragmented index, which the auto-compaction and warnings now surface. A free-space preflight and segment-creation throttling were considered and deliberately dropped as premature; see `rustyweb-scale-footprint-qw5`.)
 - `serve`: opens Tantivy read-only (so `index` can run concurrently), starts Axum. Defaults: `127.0.0.1:8080`.
   - `serve --manage` (opt-in, default **off**) mounts a small **management** write surface on top of the read-only site. Default `serve` mounts none of this and stays strictly read-only. Endpoints + UI:
-    - `POST /api/archives` — reuses the exact `index::index_location` path the CLI uses to add a crawl to a collection (a local path is copied into `archive/`; an `http(s)://` URL is streamed in place). Runs on a blocking thread (returns a job id immediately), streams progress over Server-Sent Events at `GET /api/archives/{id}/events`, and on success **hot-reloads** the read-only searcher (held behind an `RwLock<Arc<SearchIndex>>`, swapped for a freshly-opened index) so new results appear without a restart. The server still never holds Tantivy's write lock itself — the ingest opens its own short-lived writer, exactly as the CLI does.
+    - `POST /api/archives` — reuses the exact `index::Ingest::index_location` path the CLI uses to add a crawl to a collection (a local path is copied into `archive/`; an `http(s)://` URL is streamed in place). Runs on a blocking thread (returns a job id immediately), streams progress over Server-Sent Events at `GET /api/archives/{id}/events`, and on success **hot-reloads** the read-only searcher (held behind an `RwLock<Arc<SearchIndex>>`, swapped for a freshly-opened index) so new results appear without a restart. The server still never holds Tantivy's write lock itself — the ingest opens its own short-lived writer, exactly as the CLI does.
     - `POST /api/archives/upload` — same as above but for a **browser file upload** (multipart/form-data): the `.wacz` bytes are streamed to a temp file, indexed exactly like a local path (copied into `archive/`), then the temp is deleted. The 2 MB default body limit is lifted on this route only. Reuses the same job + SSE + reload machinery as `/api/archives`.
     - `POST /api/collections` — create/edit a collection finding aid (wraps `index::set_collection`); form-encoded, POST-redirect-GET. No searcher reload needed (the homepage re-reads the manifest per request).
     - `POST /api/crawls/{id}/delete` · `POST /api/collections/{id}/delete` — remove content (wraps `index::delete_crawl` / `delete_collection`). A crawl delete drops its documents from Tantivy (delete-by-`crawl_id` term + commit), removes its manifest entry and — for a `File` source, when no other entry references the file — its local WACZ + thumbnail, then hot-reloads the searcher. Order is docs → files → manifest entry so a crash mid-delete is safe to re-run. A collection delete removes the grouping (empty by default; `with_crawls` also deletes every member crawl). Takes the same write lock as an add; a red *danger zone* on the crawl/collection pages gates it behind expand-then-confirm. Also `indice crawl delete <id>` / `collection delete <id|name> [--with-crawls]` on the CLI (with a `--yes`-skippable prompt). A delete only tombstones the docs, so the index doesn't shrink immediately; `indice optimize` reclaims the space by rewriting any segment that carries deletes (an expunge pass that runs regardless of `--max-segments`, since the count-based merge alone skips a small-but-tombstoned index).
@@ -865,11 +865,37 @@ UI falls back to a **CSS-only placeholder** (a gradient tinted by a hash of the
 name - no image bytes). Thumbnails are generated at index time, so populating
 them needs a (re)index.
 
+### Configuring an ingest
+
+The ingest entry points take one value, `index::Ingest`, built
+`std::process::Command`-style: `Ingest::new(home)` is already a valid ingest and
+each setter narrows it (`.name()`, `.download()`, `.force()`,
+`.concurrency()`, `.resolver()`, `.progress()`). `index_path` stays a free
+function for the common "just index this file" case.
+
+This is deliberate rather than cosmetic. The pipeline threads `&Ingest` through
+every phase, so **a new collaborator is one field and one setter**, reachable by
+the phase that needs it without any signature in between changing. Before it,
+the phases took 9 and 10 positional parameters and carried eight
+`#[allow(clippy::too_many_arguments)]`, and the cost was concrete: crawl custody
+(`Wacz.added_by`) could not be threaded to `record::upsert` without an eleventh
+parameter, so it was set out of band after ingest instead, and the
+before/after manifest snapshot that required produced two data-loss bugs. Values
+that vary per crawl rather than per run — notably the display-name override,
+which a reindex supplies per source — stay arguments.
+
 ### Progress reporting
 
 Indexing reports progress through a small, UI-agnostic `IndexProgress` trait
-(`begin` / `phase` / `set_total` / `set_records` / `finish`): the library only
-emits counts and phase labels, so it stays free of any UI dependency. The binary
+(`begin` / `phase` / `set_total` / `set_records` / `wacz_indexed` / `finish`):
+the library only emits counts and phase labels, so it stays free of any UI
+dependency. Every method has a default no-op body, so "no UI" is the value
+`NoProgress` rather than `None` — reporting progress is never a branch inside
+the pipeline. Whether to draw a bar is a UI decision, so that `Option` stops in
+the binary and the library always receives a real sink. (The rule generally:
+an `Option` in a signature should assert something about the *domain*.
+`Option<&dyn SourceResolver>` does — `None` means no credentials are
+configured — which is why that one stays optional.) The binary
 implements the trait with an [indicatif] bar - an indeterminate spinner during
 setup (probe / download / reading the CDX), which flips to a determinate bar with
 throughput and ETA once the CDX yields the page-record total. A fresh bar is

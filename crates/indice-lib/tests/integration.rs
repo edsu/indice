@@ -70,6 +70,53 @@ fn index_wacz_result_has_crawl_fields() {
     assert_eq!(page.crawl_name, "simple");
 }
 
+/// A page document must carry the *right* three tags, not merely non-empty
+/// ones.
+///
+/// These three travel together through every page-indexing function as adjacent
+/// `&str` arguments in a fixed order, so transposing two of them is an easy
+/// slip — and a slip that mis-tags every document in the index while leaving
+/// the manifest perfectly correct, so every manifest-focused test here would
+/// still pass. This asserts the search document instead, which is the only
+/// place the mistake would show.
+#[test]
+fn a_page_document_is_tagged_with_its_own_crawl_and_collection() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let dest = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &dest).unwrap();
+    indice_lib::index::index_path(&dest, home, Some("A Readable Name"), "Tagged Coll").unwrap();
+
+    // What the manifest says this crawl is.
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let wacz = &manifest.waczs[0];
+
+    let idx = indice_lib::search::SearchIndex::open(home.join("index").join("full_text").as_path())
+        .unwrap();
+    let results = idx.search("example", 10).unwrap();
+    let page = results
+        .iter()
+        .find(|r| r.doc_type == "page")
+        .expect("a page document");
+
+    assert_eq!(page.crawl_id, wacz.id, "crawl_id is the crawl's id");
+    assert_eq!(
+        page.crawl_name, "A Readable Name",
+        "crawl_name is the display name, not the id"
+    );
+    assert_eq!(
+        page.collection, "tagged-coll",
+        "collection is the slug, not the display name or the crawl"
+    );
+    // The three are pairwise distinct here on purpose: if any two were equal a
+    // transposition would pass unnoticed.
+    assert_ne!(page.crawl_id, page.crawl_name);
+    assert_ne!(page.crawl_name, page.collection);
+    assert_ne!(page.crawl_id, page.collection);
+}
+
 #[test]
 fn index_wacz_writes_manifest_with_metadata() {
     let tmp = make_index(&["simple.wacz"]);
@@ -90,7 +137,8 @@ fn index_wacz_writes_manifest_with_metadata() {
 fn optimize_compacts_in_place_and_keeps_search_working() {
     let tmp = make_index(&["simple.wacz"]);
     // Compact the existing index — no sources are re-read.
-    let (before, after) = indice_lib::index::optimize(tmp.path(), 8, None).unwrap();
+    let (before, after) =
+        indice_lib::index::optimize(tmp.path(), 8, indice_lib::index::no_progress()).unwrap();
     assert!(
         after >= 1 && after <= before,
         "before={before} after={after}"
@@ -108,7 +156,7 @@ fn optimize_compacts_in_place_and_keeps_search_working() {
 #[test]
 fn optimize_errors_clearly_when_there_is_no_index() {
     let tmp = TempDir::new().unwrap();
-    let err = indice_lib::index::optimize(tmp.path(), 8, None)
+    let err = indice_lib::index::optimize(tmp.path(), 8, indice_lib::index::no_progress())
         .unwrap_err()
         .to_string();
     assert!(err.contains("no search index"), "unexpected error: {err}");
@@ -1073,7 +1121,8 @@ async fn index_from_http_url_and_link_directly() {
     // index_location uses a blocking HTTP client; run it off the async runtime.
     let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
     tokio::task::spawn_blocking(move || {
-        indice_lib::index::index_location(&url_c, &dir_c, None, "test", false, false, None, None)
+        indice_lib::index::Ingest::new(&dir_c)
+            .index_location(&url_c, "test")
             .unwrap();
     })
     .await
@@ -1118,6 +1167,117 @@ async fn index_from_http_url_and_link_directly() {
     assert!(
         !html.contains(&format!("/files/{}", col.id)),
         "remote source should not be routed through /files/{{id}}"
+    );
+}
+
+/// A rebuild must not download a remote source, however the `Ingest` it is
+/// called on was configured. Downloading rewrites the source from `Url` to
+/// `File`, and since the crawl id is derived from the effective source, the
+/// rebuild would upsert a *second* entry under a new id rather than updating the
+/// first — leaving the original entry in place and its provenance
+/// (`browsertrix`, `archive_it`, `added_by`, all looked up by id) unfound.
+///
+/// `reindex` forces `download` off for exactly this reason. Before `Ingest`
+/// existed it passed `false` positionally, so this was unreachable; the builder
+/// made it expressible, and this test is the guard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebuild_does_not_download_a_remote_source() {
+    use axum::routing::get;
+
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let app = axum::Router::new().route(
+        "/simple.wacz",
+        get(move || {
+            let bytes = wacz.clone();
+            async move { bytes }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let url = format!("http://{addr}/simple.wacz");
+    let tmp = TempDir::new().unwrap();
+
+    // Register it as a streamed remote source: no download.
+    let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&dir_c)
+            .index_location(&url_c, "remote-coll")
+            .unwrap();
+    })
+    .await
+    .unwrap();
+
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(manifest.waczs.len(), 1);
+    let original_id = manifest.waczs[0].id.clone();
+
+    // Now rebuild with download explicitly on. The server is still up, so a
+    // fetch would succeed — nothing but reindex's own choice prevents it.
+    let dir_c = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&dir_c)
+            .download(true)
+            .reindex()
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    server.abort();
+
+    let after = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(
+        after.waczs.len(),
+        1,
+        "a rebuild must update the entry, not add one under a downloaded id"
+    );
+    assert_eq!(
+        after.waczs[0].id, original_id,
+        "the crawl id must be stable"
+    );
+    assert_eq!(
+        after.waczs[0].source,
+        indice_lib::collections::Source::Url(url),
+        "the source must still be the remote URL"
+    );
+    assert!(
+        std::fs::read_dir(tmp.path().join("archive"))
+            .map(|d| d.count() == 0)
+            .unwrap_or(true),
+        "nothing should have been written into the archive"
+    );
+}
+
+/// The `name` twin of the test above: a rebuild must not apply a `--name`
+/// override, because `index_one` is handed each crawl's *recorded* name from the
+/// manifest. No phase reads `cx.name` today, so this asserts the contract rather
+/// than catching a live bug — `reindex` sets `name(None)` so that stays true if
+/// one ever does.
+#[test]
+fn a_rebuild_does_not_rename_crawls() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let dest = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &dest).unwrap();
+    indice_lib::index::index_path(&dest, home, Some("Recorded Name"), "coll").unwrap();
+
+    indice_lib::index::Ingest::new(home)
+        .name(Some("Should Not Apply"))
+        .reindex()
+        .unwrap();
+
+    let after = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(after.waczs.len(), 1);
+    assert_eq!(
+        after.waczs[0].name, "Recorded Name",
+        "a rebuild keeps each crawl's recorded name"
     );
 }
 
