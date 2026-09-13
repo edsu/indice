@@ -1170,6 +1170,89 @@ async fn index_from_http_url_and_link_directly() {
     );
 }
 
+/// A rebuild must not download a remote source, however the `Ingest` it is
+/// called on was configured. Downloading rewrites the source from `Url` to
+/// `File`, and since the crawl id is derived from the effective source, the
+/// rebuild would upsert a *second* entry under a new id rather than updating the
+/// first — leaving the original entry in place and its provenance
+/// (`browsertrix`, `archive_it`, `added_by`, all looked up by id) unfound.
+///
+/// `reindex` forces `download` off for exactly this reason. Before `Ingest`
+/// existed it passed `false` positionally, so this was unreachable; the builder
+/// made it expressible, and this test is the guard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebuild_does_not_download_a_remote_source() {
+    use axum::routing::get;
+
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let app = axum::Router::new().route(
+        "/simple.wacz",
+        get(move || {
+            let bytes = wacz.clone();
+            async move { bytes }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let url = format!("http://{addr}/simple.wacz");
+    let tmp = TempDir::new().unwrap();
+
+    // Register it as a streamed remote source: no download.
+    let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&dir_c)
+            .index_location(&url_c, "remote-coll")
+            .unwrap();
+    })
+    .await
+    .unwrap();
+
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(manifest.waczs.len(), 1);
+    let original_id = manifest.waczs[0].id.clone();
+
+    // Now rebuild with download explicitly on. The server is still up, so a
+    // fetch would succeed — nothing but reindex's own choice prevents it.
+    let dir_c = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&dir_c)
+            .download(true)
+            .reindex()
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    server.abort();
+
+    let after = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(
+        after.waczs.len(),
+        1,
+        "a rebuild must update the entry, not add one under a downloaded id"
+    );
+    assert_eq!(
+        after.waczs[0].id, original_id,
+        "the crawl id must be stable"
+    );
+    assert_eq!(
+        after.waczs[0].source,
+        indice_lib::collections::Source::Url(url),
+        "the source must still be the remote URL"
+    );
+    assert!(
+        std::fs::read_dir(tmp.path().join("archive"))
+            .map(|d| d.count() == 0)
+            .unwrap_or(true),
+        "nothing should have been written into the archive"
+    );
+}
+
 // ── Real-fixture smoke tests ───────────────────────────────────────────────────
 
 const REAL_URL: &str = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";

@@ -25,11 +25,21 @@ use super::swap::{index_swap_paths, reconcile_index_swap, swap_in_new_index};
 impl crate::index::Ingest<'_> {
     /// Rebuild the full-text index from the sources recorded in the manifest.
     ///
-    /// Reads `home`, `concurrency`, `resolver` and `progress`. `name`,
-    /// `download` and `force` do not apply to a rebuild and are ignored: each
-    /// crawl keeps its recorded display name, which is passed per source.
+    /// Reads `home`, `concurrency`, `resolver` and `progress`. `name` and
+    /// `force` do not apply to a rebuild: each crawl keeps its recorded display
+    /// name, which is passed per source, and every source is rebuilt anyway.
+    /// `download` is forced off (see below).
     pub fn reindex(&self) -> Result<()> {
-        let cx = self;
+        // `download` is forced off rather than merely documented as ignored.
+        // Fetching a remote source during a rebuild would index it as a local
+        // file, and since the id is derived from the effective source, the
+        // rebuild would record a *second* manifest entry under a new id while
+        // the original `Url` entry survived — and the provenance carried on the
+        // old entry (`browsertrix`, `archive_it`, `added_by`), all looked up by
+        // id, would not be found. Downloading is `indice index --download`'s
+        // job. Before `Ingest` existed this was structurally impossible,
+        // because `reindex` passed `false` positionally.
+        let cx = &self.download(false);
         let (home, progress) = (self.home_dir(), self.progress_sink());
         let index_dir = index_dir(home);
 
