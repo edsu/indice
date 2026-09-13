@@ -677,13 +677,14 @@ pub(super) async fn ait_import(
                 let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                 crate::archiveit::import_crawls(
                     &client,
-                    &job_state.home,
+                    &crate::index::Ingest::new(&job_state.home)
+                        .actor(Some(&actor))
+                        .progress(&progress),
                     &req.into,
                     &plans,
                     &fields,
                     &catalog,
                     req.force,
-                    &progress,
                 )?
             };
             created.extend(outcome.crawls.iter().map(|(id, _)| id.clone()));
