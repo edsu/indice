@@ -113,6 +113,12 @@ impl WaczAccess {
 /// Every field is private: an `Ingest` can only come from `new` plus setters,
 /// the same one-way-in discipline as
 /// [`CollectionId`](crate::collections::CollectionId).
+///
+/// The setters are `#[must_use]` because this is a `Copy` builder: `ingest
+/// .force(true);` as a statement would otherwise compile silently and drop the
+/// setting, since there is no moved-out-of value for the compiler to complain
+/// about later. On a non-`Copy` builder the borrow checker catches that for
+/// free; here the attribute is what catches it.
 #[derive(Clone, Copy)]
 pub struct Ingest<'a> {
     /// indice home: `archive/`, `collections/` and `index/` hang off it.
@@ -141,6 +147,7 @@ pub struct Ingest<'a> {
 impl<'a> Ingest<'a> {
     /// An ingest into `home` with everything at its default: no name override,
     /// no download, no force, per-source concurrency, no resolver, no progress.
+    #[must_use]
     pub fn new(home: &'a Path) -> Self {
         Self {
             home,
@@ -154,31 +161,37 @@ impl<'a> Ingest<'a> {
     }
 
     /// Override the display name of each crawl this ingest records.
+    #[must_use]
     pub fn name(mut self, name: Option<&'a str>) -> Self {
         self.name = name;
         self
     }
     /// Fetch a remote WACZ into the archive instead of streaming it in place.
+    #[must_use]
     pub fn download(mut self, yes: bool) -> Self {
         self.download = yes;
         self
     }
     /// Re-index sources already registered in the collection.
+    #[must_use]
     pub fn force(mut self, yes: bool) -> Self {
         self.force = yes;
         self
     }
     /// Concurrent record fetches for streaming; `None` for the default.
+    #[must_use]
     pub fn concurrency(mut self, n: Option<usize>) -> Self {
         self.concurrency = n;
         self
     }
     /// Supply a resolver for refreshable remote sources (Browsertrix).
+    #[must_use]
     pub fn resolver(mut self, r: Option<&'a dyn SourceResolver>) -> Self {
         self.resolver = r;
         self
     }
     /// Report progress to `p`.
+    #[must_use]
     pub fn progress(mut self, p: &'a dyn IndexProgress) -> Self {
         self.progress = p;
         self
