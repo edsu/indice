@@ -156,6 +156,7 @@ fn indexed_local_wacz_is_filed_under_its_collection_relative_to_home() {
         "the WACZ was moved into its collection folder"
     );
 }
+
 /// Custody is recorded by the ingest itself, not stamped on afterwards.
 #[test]
 fn an_ingest_records_who_accessioned_the_crawl() {
@@ -261,6 +262,36 @@ fn a_rebuild_preserves_recorded_custody() {
         manifest.waczs[0].added_by.as_ref().map(|s| s.as_str()),
         Some("mailto:alice@x.edu"),
         "a rebuild must not orphan every crawl"
+    );
+}
+
+/// A rebuild must not attribute anything, even when handed an actor.
+///
+/// Nothing calls it this way today, but `Ingest::new(home).actor(Some(&who))
+/// .reindex()` is an easy server-side rebuild endpoint to write, and it is the
+/// shape of the fail-open PR #126's review found: one pass handing one curator
+/// every unattributed crawl in the archive. Two independent things stop it —
+/// `reindex` overrides `actor` to `None`, and `record::upsert` only credits an
+/// actor for a crawl that is new to the manifest.
+#[test]
+fn a_rebuild_does_not_attribute_an_unattributed_crawl() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    // Indexed with no actor, the way the CLI does it.
+    index_fixture("simple.wacz", home, None);
+    let manifest = Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(
+        manifest.waczs[0].added_by, None,
+        "unattributed to begin with"
+    );
+
+    let bob = crate::identity::SubjectId::parse("bob@x.edu").unwrap();
+    Ingest::new(home).actor(Some(&bob)).reindex().unwrap();
+
+    let after = Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(
+        after.waczs[0].added_by, None,
+        "a rebuild accessions nothing, so it credits nobody"
     );
 }
 

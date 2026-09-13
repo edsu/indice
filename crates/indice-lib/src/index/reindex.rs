@@ -26,10 +26,10 @@ impl crate::index::Ingest<'_> {
     /// Rebuild the full-text index from the sources recorded in the manifest.
     ///
     /// Reads `home`, `concurrency`, `resolver` and `progress`. `download`,
-    /// `name` and `force` are overridden with what a rebuild means, rather than
-    /// being documented as ignored (see below).
+    /// `name`, `force` and `actor` are overridden with what a rebuild means,
+    /// rather than being documented as ignored (see below).
     pub fn reindex(&self) -> Result<()> {
-        // Three fields say something a rebuild must not honour, so the rebuild
+        // Four fields say something a rebuild must not honour, so the rebuild
         // restates them here instead of relying on prose. Note that this is not
         // "reset them to their defaults": each is set to what a rebuild
         // actually means, which for `force` is the opposite of its default.
@@ -50,7 +50,15 @@ impl crate::index::Ingest<'_> {
         // - `force(true)`. A rebuild re-indexes every registered source
         //   unconditionally; "skip what is already registered" is meaningless
         //   here, so the truthful value is the *set* one.
-        let cx = &self.download(false).name(None).force(true);
+        // - `actor(None)`. A rebuild accessions nothing — every source it
+        //   touches is already in the manifest — so it must not present anyone
+        //   as the accessioning curator. `record::upsert` only credits an actor
+        //   for a crawl that is new to the manifest, so this is belt-and-braces
+        //   today; it is here because a server-side rebuild endpoint written as
+        //   `Ingest::new(home).actor(Some(&who)).reindex()` is an easy thing to
+        //   write, and that is the shape of the fail-open PR #126's review
+        //   found (one curator handed every unattributed crawl in one pass).
+        let cx = &self.download(false).name(None).force(true).actor(None);
         let (home, progress) = (cx.home_dir(), cx.progress_sink());
         let index_dir = index_dir(home);
 
