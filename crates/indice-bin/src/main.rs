@@ -2868,7 +2868,13 @@ fn run_archiveit(
         };
         fields.dates = archiveit::crawl_year_range(group);
         let outcome = archiveit::import_crawls(
-            &client, home, into, group, &fields, &catalog, opts.force, progress,
+            &client,
+            &indice_lib::index::Ingest::new(home).progress(progress),
+            into,
+            group,
+            &fields,
+            &catalog,
+            opts.force,
         )?;
         tracing::info!(
             collection = %into,

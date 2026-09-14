@@ -17,7 +17,7 @@ use super::pages::CrawlStats;
 /// is worth more here than anywhere else in the pipeline: this is the frame
 /// where a new piece of provenance lands, and it is the frame crawl custody
 /// could not reach when `added_by` had to be set out of band instead of being
-/// threaded through (see `index::set_added_by`).
+/// threaded through. It reaches it now — `actor` below is that field.
 pub(super) struct Indexed<'a> {
     pub id: &'a str,
     /// The curated collection (id, display name) this crawl belongs to.
@@ -31,6 +31,9 @@ pub(super) struct Indexed<'a> {
     /// [`WaczAccess::fixity`](super::WaczAccess::fixity) — the hash is empty
     /// for a streamed remote, which is never read whole.
     pub fixity: (String, u64),
+    /// Who to credit if this crawl is new to the manifest; `None` for the CLI,
+    /// which has no request identity.
+    pub actor: Option<&'a crate::identity::SubjectId>,
 }
 
 /// Upsert this crawl's manifest entry and seed its collection's finding aid.
@@ -43,6 +46,7 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
         meta,
         stats,
         fixity,
+        actor,
     } = crawl;
     let (collection_id, collection_name) = collection;
     let (sha, file_size) = fixity;
@@ -78,13 +82,36 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
         manifest.seed_fields(collection_id, collection_name, &seed, &date_indexed);
     }
 
-    // Preserve import provenance (set out-of-band by the importers) across a
-    // reindex, which otherwise rebuilds the entry from scratch.
-    let browsertrix = manifest.wacz_by_id(id).and_then(|w| w.browsertrix.clone());
-    let archive_it = manifest.wacz_by_id(id).and_then(|w| w.archive_it.clone());
-    // Custody is set out-of-band too (only the server knows who is acting), so
-    // it needs the same preservation or a reindex would orphan every crawl.
-    let added_by = manifest.wacz_by_id(id).and_then(|w| w.added_by.clone());
+    // What survives from an entry that is already in the manifest. `upsert_wacz`
+    // rebuilds the entry from scratch, so anything not carried here is lost —
+    // which is why a reindex has to read it back rather than recompute it.
+    //
+    // The single lookup matters: **custody is decided by whether this crawl is
+    // new to the manifest, not by whether it currently has a custody line.**
+    // Falling back to the actor whenever `added_by` happened to be `None` would
+    // let an existing *unattributed* crawl be claimed, and an unattributed
+    // crawl is deliberately nobody's — `may_delete_crawl` is owner-or-admin, so
+    // only an admin may remove it. A curator could otherwise take an
+    // admin-accessioned crawl simply by adding the same URL to a different
+    // collection: the already-indexed skip guard is scoped to the collection,
+    // so that add falls through here and re-homes the entry. Guarded by
+    // `tests/integration.rs::re_homing_an_unattributed_crawl_does_not_claim_it`.
+    //
+    // So: custody is set once, at accession, and an existing entry keeps
+    // whatever it has, including nothing. That also covers the two cases the
+    // out-of-band setter needed an `added_by.is_none()` check for — a rebuild
+    // keeps recorded custody, and re-indexing someone else's crawl cannot
+    // transfer it.
+    let (browsertrix, archive_it, added_by) = match manifest.wacz_by_id(id) {
+        Some(prior) => (
+            prior.browsertrix.clone(),
+            prior.archive_it.clone(),
+            prior.added_by.clone(),
+        ),
+        // Genuinely new to the manifest: this is the accession, so credit
+        // whoever is acting. `None` for the CLI, which has no identity.
+        None => (None, None, actor.cloned()),
+    };
 
     manifest.upsert_wacz(Wacz {
         id: id.to_string(),

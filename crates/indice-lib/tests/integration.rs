@@ -1281,6 +1281,77 @@ fn a_rebuild_does_not_rename_crawls() {
     );
 }
 
+/// Re-adding an *existing* unattributed crawl must not claim it.
+///
+/// The already-indexed skip guard is scoped to the collection, so adding the
+/// same URL into a different collection deliberately falls through and re-homes
+/// the entry. That path must not also hand over custody: DESIGN's rule is that
+/// an unattributed crawl is nobody's and only an admin may remove it, so
+/// claiming one is a privilege change. `may_delete_crawl` is owner-or-admin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn re_homing_an_unattributed_crawl_does_not_claim_it() {
+    use axum::routing::get;
+
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let app = axum::Router::new().route(
+        "/simple.wacz",
+        get(move || {
+            let bytes = wacz.clone();
+            async move { bytes }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    let url = format!("http://{addr}/simple.wacz");
+    let tmp = TempDir::new().unwrap();
+
+    // An admin indexes it from the CLI: no request identity, so unattributed.
+    let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&dir_c)
+            .index_location(&url_c, "coll-a")
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(manifest.waczs[0].added_by, None, "CLI attributes nobody");
+
+    // A curator adds the same URL into a different collection.
+    let (url_c, dir_c) = (url.clone(), tmp.path().to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        let curator = indice_lib::identity::SubjectId::parse("curator@x.edu").unwrap();
+        indice_lib::index::Ingest::new(&dir_c)
+            .actor(Some(&curator))
+            .index_location(&url_c, "coll-b")
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    server.abort();
+
+    let after = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert_eq!(
+        after.waczs.len(),
+        1,
+        "one crawl, re-homed rather than added"
+    );
+    assert_eq!(
+        after.waczs[0].collection.as_str(),
+        "coll-b",
+        "the re-home itself is intended and still happens"
+    );
+    assert_eq!(
+        after.waczs[0].added_by, None,
+        "but custody is set once, at accession, and an existing entry keeps it"
+    );
+}
+
 // ── Real-fixture smoke tests ───────────────────────────────────────────────────
 
 const REAL_URL: &str = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";

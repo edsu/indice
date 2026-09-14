@@ -556,18 +556,32 @@ impl Drop for DirGuard {
 /// collection id, derived from its files — `0` for an uncollected crawl). Then
 /// seed `into`'s finding aid from `fields`. Shared by the CLI and the server job
 /// so the download→build→index logic lives once.
-#[allow(clippy::too_many_arguments)]
+///
+/// `cx` supplies the home directory, the progress sink, and (from the server)
+/// who to credit for the crawls this creates. Taking the whole configured
+/// [`Ingest`](crate::index::Ingest) rather than its parts is what lets custody
+/// reach the ingest down at the bottom of this function without a ninth
+/// parameter — the ninth parameter being how custody ended up out-of-band the
+/// first time.
+///
+/// **`force` is not `Ingest::force`.** This one decides whether an
+/// already-imported Archive-It crawl is imported again; `Ingest::force` decides
+/// whether an already-registered *source* is re-indexed. The ingest below is
+/// always `force(true)`, because by then this function has already made the
+/// skip decision.
 pub fn import_crawls<T: Transport>(
     client: &Client<T>,
-    home: &Path,
+    cx: &crate::index::Ingest<'_>,
     into: &str,
     plans: &[CrawlPlan],
     fields: &crate::collections::CollectionFields,
     catalog: &Catalog,
     force: bool,
-    progress: &dyn crate::index::IndexProgress,
 ) -> Result<ImportOutcome> {
     use crate::collections::{slugify, wacz_id, Manifest, Source};
+
+    let home = cx.home_dir();
+    let progress = cx.progress_sink();
 
     let host = client.host().to_string();
     // Incremental: crawls already imported (by (host, collection, crawl)).
@@ -699,11 +713,11 @@ pub fn import_crawls<T: Transport>(
         progress.phase("building WACZ");
         tracing::info!(crawl = plan.crawl_id, warcs = warcs.len(), "building WACZ");
         let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
-        // force: the importer already made the skip decision.
-        crate::index::Ingest::new(home)
-            .name(Some(&display))
+        // Chained off the caller's context, so `actor` (and anything else it
+        // configured) reaches the ingest. force: this function already made the
+        // skip decision above.
+        cx.name(Some(&display))
             .force(true)
-            .progress(progress)
             .index_location(&built.path.to_string_lossy(), into)?;
         // The filed WACZ is in place under archive/<slug>/; its id is stable.
         let abs = built.path.canonicalize().unwrap_or(built.path.clone());
@@ -971,6 +985,71 @@ mod tests {
             .join(name)
     }
 
+    /// A partial import attributes exactly what landed.
+    ///
+    /// Custody used to be stamped on afterwards from `ImportOutcome.crawls`,
+    /// which an error never returns — so a crawl committed before the failure
+    /// stayed unattributed, and only an admin could remove it. That was filed as
+    /// a known edge on rustyweb-manifest-provenance-sfu7. Recording custody
+    /// inside the ingest closes it: each crawl is attributed as it is indexed,
+    /// so there is nothing left to report after the fact.
+    #[test]
+    fn a_partial_import_attributes_the_crawls_that_landed() {
+        let warc_bytes = std::fs::read(fixture("simple.warc.gz")).unwrap();
+        // Only the first crawl's WARC is served. The second 404s at the
+        // transport, which aborts the import after the first has committed.
+        let t = FakeTransport::default().with_bytes(
+            "https://warcs.example/one.warc.gz",
+            200,
+            warc_bytes,
+        );
+        let client = client(t);
+
+        let warc = |name: &str, crawl: i64| WarcFile {
+            filename: format!("{name}.warc.gz"),
+            size: 10,
+            checksums: Checksums::default(),
+            collection: Some(8232),
+            crawl: Some(crawl),
+            crawl_time: Some("2017-05-31T22:15:40Z".into()),
+            locations: vec![format!("https://warcs.example/{name}.warc.gz")],
+        };
+        // `plan_crawls` groups into a BTreeMap, so the lower crawl id is
+        // imported first: 304244 succeeds, then 304245 fails.
+        let plans = plan_crawls(vec![warc("one", 304244), warc("two", 304245)]);
+        assert_eq!(plans.len(), 2, "two crawls, imported in id order");
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let alice = crate::identity::SubjectId::parse("alice@x.edu").unwrap();
+        let err = import_crawls(
+            &client,
+            &crate::index::Ingest::new(home).actor(Some(&alice)),
+            "City Gov",
+            &plans,
+            &crate::collections::CollectionFields::default(),
+            &Catalog::default(),
+            false,
+        )
+        .expect_err("the second crawl's download fails");
+        assert!(
+            err.to_string().contains("two.warc.gz"),
+            "unexpected error: {err:#}"
+        );
+
+        let manifest = crate::collections::Manifest::open(&crate::index::index_dir(home)).unwrap();
+        assert_eq!(
+            manifest.waczs.len(),
+            1,
+            "the first crawl committed before the failure"
+        );
+        assert_eq!(
+            manifest.waczs[0].added_by.as_ref().map(|s| s.as_str()),
+            Some("mailto:alice@x.edu"),
+            "and it is attributed, even though the import as a whole failed"
+        );
+    }
+
     #[test]
     fn import_crawls_downloads_builds_indexes_and_is_incremental() {
         // Two WARC files under one crawl; their download locations serve a real
@@ -1042,13 +1121,12 @@ mod tests {
 
         let out = import_crawls(
             &client,
-            home,
+            &crate::index::Ingest::new(home),
             "City Gov",
             &plans,
             &fields,
             &catalog,
             false,
-            crate::index::no_progress(),
         )
         .unwrap();
         assert_eq!(out.imported, 1);
@@ -1121,13 +1199,12 @@ mod tests {
         // A re-run skips the already-imported crawl.
         let again = import_crawls(
             &client,
-            home,
+            &crate::index::Ingest::new(home),
             "City Gov",
             &plans,
             &fields,
             &catalog,
             false,
-            crate::index::no_progress(),
         )
         .unwrap();
         assert_eq!(again.imported, 0);
