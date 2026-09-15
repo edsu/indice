@@ -59,7 +59,8 @@
 //!   delete by hand after a crash.
 //! - **It queues rather than failing.** Tantivy's writer lock is
 //!   create-exclusive and non-blocking, so a second ingest fails outright;
-//!   here the second waits, after saying who it is waiting for.
+//!   here the second waits, after saying who it is waiting for
+//!   (`reindex (pid 4242) (started 7m ago)`, read back out of the lock file).
 //! - **Not honored across a network filesystem.** On NFS/SMB/sshfs `flock` may
 //!   be emulated or a silent no-op, and the re-entrancy map below cannot see
 //!   another host at all. Two hosts writing one home degrades to the old
@@ -93,75 +94,109 @@ use super::IndexProgress;
 
 /// The lock file's name inside `<home>/index/`.
 ///
-/// `index/` is derived state and already gitignored, so this never shows up in
-/// a curator's `git status`.
+/// It lives under `index/` because that is derived state — DESIGN recommends
+/// gitignoring it — rather than beside the curator's committable files.
 const LOCK_FILE: &str = ".index.lock";
 
 thread_local! {
-    /// How many times *this thread* currently holds each lock file.
+    /// The locks *this thread* holds, and how many times over.
+    ///
+    /// The `File` lives here rather than in the guard, which is not a detail.
+    /// If the guard owned it, dropping an outer guard while a nested one was
+    /// still alive would release the `flock` while the depth count still said
+    /// "held" — and the next acquisition on the thread would hand back a guard
+    /// backed by nothing, so an ingest or rebuild would run with no exclusion
+    /// at all and no error. Keeping the file here makes release depend on the
+    /// count reaching zero rather than on which guard drops first, so
+    /// out-of-order drops are simply correct.
     ///
     /// `flock` conflicts between two open file descriptions *including two in
-    /// the same process*, so any nesting deadlocks against itself — and it
-    /// deadlocks, rather than failing, which is the worst way for this to go
-    /// wrong. Nothing nests today; the near-term case is `delete_collection`
-    /// taking the lock and then calling `delete_crawl` per member, which
-    /// arrives with the short request-path writers.
+    /// the same process*, so re-entrancy is what stops a legitimate nesting
+    /// from deadlocking against itself — and it would hang rather than fail,
+    /// which is the worst way for this to go wrong. The server relies on it: a
+    /// job takes the lock for its whole run, and the `index_location` inside
+    /// takes it again.
     ///
     /// A thread-local is sound because every write path runs synchronously
     /// inside one `spawn_blocking` closure, and the guard is `!Send`, so it
     /// cannot be moved to a thread whose count would not know about it.
-    static DEPTH: RefCell<HashMap<PathBuf, u32>> = RefCell::new(HashMap::new());
+    static HELD: RefCell<HashMap<PathBuf, Held>> = RefCell::new(HashMap::new());
+}
+
+struct Held {
+    /// Dropping this releases the `flock`; `unlock` is called first so a
+    /// failure is at least observable in a debugger.
+    file: File,
+    depth: u32,
 }
 
 /// Exclusive permission to write the archive's search index, for as long as
 /// this value lives.
 ///
-/// Obtained from [`lock_index`]. Dropping it releases the lock (or, for a
-/// nested acquisition, hands it back to the outer guard).
+/// Obtained from [`lock_index`]. The lock is released when the last guard for
+/// that archive on this thread is dropped, in whatever order they drop.
 pub struct IndexLock {
-    path: PathBuf,
-    /// The locked file, held only by the *outermost* guard on this thread. A
-    /// nested guard carries `None` and merely decrements the depth on drop.
-    file: Option<File>,
+    /// `None` when locking is unsupported on this filesystem and we proceeded
+    /// without exclusion — the guard is then inert.
+    path: Option<PathBuf>,
     /// Makes the guard `!Send`, which is load-bearing twice over: the
-    /// thread-local depth count is only correct if the guard stays on its
-    /// thread, and an axum handler then *cannot* hold the index lock across an
-    /// `.await`.
+    /// thread-local count is only correct if the guard stays on its thread, and
+    /// an axum handler then *cannot* hold the index lock across an `.await`.
     _not_send: PhantomData<*const ()>,
 }
 
 impl Drop for IndexLock {
     fn drop(&mut self) {
-        DEPTH.with(|d| {
-            let mut d = d.borrow_mut();
-            match d.get_mut(&self.path) {
-                Some(n) if *n > 1 => *n -= 1,
-                _ => {
-                    d.remove(&self.path);
+        let Some(path) = self.path.take() else { return };
+        HELD.with(|h| {
+            let mut h = h.borrow_mut();
+            let Some(held) = h.get_mut(&path) else { return };
+            held.depth -= 1;
+            if held.depth == 0 {
+                // Deliberately no `remove_file`: unlinking it would let the
+                // next process create and lock a *different* inode while
+                // someone still holds this one.
+                if let Some(held) = h.remove(&path) {
+                    let _ = held.file.unlock();
                 }
             }
         });
-        // Only the outermost guard holds the file, and dropping it releases the
-        // flock. Deliberately no `remove_file`: unlinking it would let the next
-        // process create and lock a *different* inode while someone still holds
-        // this one.
-        if let Some(f) = self.file.take() {
-            let _ = f.unlock();
-        }
     }
 }
 
-fn lock_path(home: &Path) -> PathBuf {
-    index_dir(home).join(LOCK_FILE)
+/// Where the lock file lives for `home`, with the directory created and the
+/// path canonicalized.
+///
+/// Canonicalizing is what makes re-entrancy work. The depth map is keyed on
+/// this path, so `/srv/arc` and `/srv/arc/`, an absolute and a relative spelling
+/// of the same home, or one reached through a symlink would otherwise be
+/// different keys for the same inode: the nested check would miss, a second
+/// file description would be opened, and `flock` would block against the
+/// caller's own outer description — forever.
+fn lock_path(home: &Path) -> Result<PathBuf> {
+    let dir = index_dir(home);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating index dir {}", dir.display()))?;
+    // `canonicalize` needs the path to exist, which it now does. Falling back
+    // to the raw path keeps a weird filesystem working, just without the
+    // aliasing protection.
+    let dir = dir.canonicalize().unwrap_or(dir);
+    Ok(dir.join(LOCK_FILE))
 }
 
 /// Take the index write lock for `home`, blocking until it is free.
 ///
-/// `what` names the operation ("reindex", "index") and is recorded in the lock
-/// file so a waiter can say who it is waiting for rather than looking hung.
-/// If the lock is already held, that is reported through `progress` and at INFO
-/// before blocking — the same try-then-report-then-block shape the server's
-/// job queue already uses.
+/// `what` names the holder for anyone who has to wait ("reindex", "workroom
+/// add"), and is written into the lock file. Pass what a *person* would
+/// recognize: a curator reading `indice index` in a wait message will go
+/// looking for a shell that does not exist if the real holder is the server.
+///
+/// If the lock is already held, that is reported through `progress` *and* at
+/// WARN before blocking — the same try-then-report-then-block shape the
+/// server's job queue already uses. WARN rather than INFO because an
+/// interactive `index`/`reindex` sets the default filter to `warn` while its
+/// progress bar is up, and `progress.phase` is a no-op until `begin` has been
+/// called, so an INFO line would leave a waiting curator with no output at all.
 ///
 /// Re-entrant: taking it again on the same thread succeeds immediately.
 pub(crate) fn lock_index(
@@ -169,32 +204,25 @@ pub(crate) fn lock_index(
     what: &str,
     progress: &dyn IndexProgress,
 ) -> Result<IndexLock> {
-    let path = lock_path(home);
+    let path = lock_path(home)?;
 
-    // Already ours on this thread: hand back a nested guard without touching
-    // the file, since flock would conflict with our own open description.
-    let nested = DEPTH.with(|d| {
-        let mut d = d.borrow_mut();
-        match d.get_mut(&path) {
-            Some(n) => {
-                *n += 1;
-                true
-            }
-            None => false,
-        }
+    // Already ours on this thread: take another token without touching the
+    // file, since flock would conflict with our own open description. The
+    // holder line is left as the outermost acquisition wrote it, which is the
+    // one a waiter wants to hear about.
+    let nested = HELD.with(|h| {
+        h.borrow_mut()
+            .get_mut(&path)
+            .map(|held| held.depth += 1)
+            .is_some()
     });
     if nested {
         return Ok(IndexLock {
-            path,
-            file: None,
+            path: Some(path),
             _not_send: PhantomData,
         });
     }
 
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating index dir {}", dir.display()))?;
-    }
     // `write(true)` matters beyond writing the holder line: Windows'
     // `LockFileEx` needs the handle opened for writing.
     let mut file = OpenOptions::new()
@@ -211,14 +239,30 @@ pub(crate) fn lock_index(
             let holder = read_holder(&mut file).unwrap_or_else(|| "another operation".to_string());
             let msg = format!("waiting for {holder} to finish…");
             progress.phase(&msg);
-            tracing::info!("index is locked by {holder}; waiting");
+            tracing::warn!("the search index is locked by {holder}; waiting");
             file.lock()
                 .with_context(|| format!("waiting for the index lock {}", path.display()))?;
         }
+        // Advisory locking is not available here — some NFS/SMB mounts, and
+        // some container overlay and FUSE setups. Degrade to the old
+        // behaviour rather than refusing to index at all: a home that worked
+        // yesterday must keep working, and this is what the module docs
+        // promise. Loud, because the protection is genuinely absent.
+        Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
+            tracing::warn!(
+                "this filesystem does not support locking ({e}), so {} cannot be \
+                 serialized against other indice processes; do not run two at once \
+                 on {}",
+                what,
+                home.display()
+            );
+            return Ok(IndexLock {
+                path: None,
+                _not_send: PhantomData,
+            });
+        }
         Err(e) => {
-            return Err(e).with_context(|| {
-                format!("checking the index lock {} (is this home on a network filesystem? see the module docs)", path.display())
-            })
+            return Err(e).with_context(|| format!("locking the index at {}", path.display()))
         }
     }
 
@@ -226,31 +270,58 @@ pub(crate) fn lock_index(
     // write is not atomic.
     write_holder(&mut file, what);
 
-    DEPTH.with(|d| d.borrow_mut().insert(path.clone(), 1));
+    HELD.with(|h| h.borrow_mut().insert(path.clone(), Held { file, depth: 1 }));
     Ok(IndexLock {
-        path,
-        file: Some(file),
+        path: Some(path),
         _not_send: PhantomData,
     })
 }
 
-/// Describe the current holder, for a waiter's message. Best-effort: a lock
-/// taken by an older version (or interrupted before it wrote its line) has no
-/// holder recorded, and that must not turn into an error.
+/// Describe the current holder for a waiter's message, rendering how long it
+/// has been running rather than making the reader subtract a UTC timestamp.
+///
+/// Best-effort throughout: a lock taken by an older version, or interrupted
+/// before it wrote its line, has no holder recorded. On Windows the read can
+/// fail outright, because `LockFileEx` locks are mandatory rather than advisory
+/// and a second handle cannot read the locked region — so the message degrades
+/// to "another operation" there. The `flock` is what provides exclusion; this
+/// text only makes waiting legible.
 fn read_holder(file: &mut File) -> Option<String> {
     let mut s = String::new();
     file.seek(SeekFrom::Start(0)).ok()?;
     file.read_to_string(&mut s).ok()?;
     let line = s.lines().next()?.trim();
-    (!line.is_empty()).then(|| line.to_string())
+    if line.is_empty() {
+        return None;
+    }
+    let (what, since) = line.split_once(HOLDER_SEP)?;
+    let started = chrono::DateTime::parse_from_rfc3339(since.trim()).ok()?;
+    let ago = chrono::Utc::now().signed_duration_since(started);
+    Some(format!("{what} (started {} ago)", human_duration(ago)))
 }
 
-/// Stamp `pid`, operation and start time into the lock file. Best-effort: the
-/// lock is held by the `flock`, not by this text, so a failure to write it
-/// costs a helpful message and nothing else.
+/// A coarse "7m", "3h", "2d" — enough to tell a stuck job from a working one.
+fn human_duration(d: chrono::TimeDelta) -> String {
+    let secs = d.num_seconds().max(0);
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+/// Separates the holder description from its start time, so `read_holder` can
+/// render the age without re-parsing free text.
+const HOLDER_SEP: &str = " · started ";
+
+/// Stamp who we are and when we started into the lock file.
+///
+/// Best-effort: the lock is held by the `flock`, not by this text, so failing
+/// to write it costs a helpful message and nothing else.
 fn write_holder(file: &mut File, what: &str) {
     let line = format!(
-        "indice {what} (pid {}), started {}",
+        "{what} (pid {}){HOLDER_SEP}{}",
         std::process::id(),
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     );
@@ -264,6 +335,11 @@ fn write_holder(file: &mut File, what: &str) {
 mod tests {
     use super::*;
     use crate::index::no_progress;
+
+    fn depth(home: &Path) -> u32 {
+        let p = lock_path(home).unwrap();
+        HELD.with(|h| h.borrow().get(&p).map(|x| x.depth).unwrap_or(0))
+    }
 
     #[test]
     fn a_second_holder_waits_for_the_first() {
@@ -293,28 +369,81 @@ mod tests {
         h.join().unwrap();
     }
 
-    /// Without re-entrancy this deadlocks rather than failing, so a plain
-    /// `#[test]` would hang the suite. Keep the nesting shallow and obvious.
+    /// Without re-entrancy this deadlocks rather than failing, so a regression
+    /// here hangs the suite instead of reporting.
     #[test]
     fn taking_it_again_on_the_same_thread_succeeds() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let outer = lock_index(home, "index", no_progress()).unwrap();
         {
-            let inner = lock_index(home, "index", no_progress()).unwrap();
-            assert!(inner.file.is_none(), "the nested guard owns no file");
-            assert_eq!(DEPTH.with(|d| d.borrow()[&lock_path(home)]), 2);
+            let _inner = lock_index(home, "index", no_progress()).unwrap();
+            assert_eq!(depth(home), 2);
         }
         assert_eq!(
-            DEPTH.with(|d| d.borrow()[&lock_path(home)]),
+            depth(home),
             1,
             "dropping the inner guard hands the lock back, it does not release it"
         );
         drop(outer);
+        assert_eq!(depth(home), 0, "the last drop clears the entry");
+    }
+
+    /// Dropping the *outer* guard first must not release the lock while a
+    /// nested guard is still alive.
+    ///
+    /// This is why the `File` lives in the thread-local rather than in the
+    /// guard. When the guard owned it, this sequence released the flock while
+    /// the count still said "held", so the next acquisition on the thread
+    /// returned a guard backed by nothing and an ingest ran with no exclusion
+    /// at all — silently. Reachable with `drop(outer)`, or simply by holding
+    /// guards in a struct or `Vec` that drops in declaration order.
+    #[test]
+    fn dropping_the_outer_guard_first_keeps_the_lock_held() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let outer = lock_index(&home, "index", no_progress()).unwrap();
+        let inner = lock_index(&home, "index", no_progress()).unwrap();
+        drop(outer);
+        assert_eq!(depth(&home), 1, "still held by the nested guard");
+
+        // The real check: another thread must still be excluded.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = {
+            let home = home.clone();
+            std::thread::spawn(move || {
+                let g = lock_index(&home, "reindex", no_progress()).unwrap();
+                tx.send(()).unwrap();
+                drop(g);
+            })
+        };
         assert!(
-            DEPTH.with(|d| d.borrow().get(&lock_path(home)).is_none()),
-            "and the outermost drop clears the entry"
+            rx.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the flock must still be held after the outer guard dropped"
         );
+        drop(inner);
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("released once the last guard goes");
+        h.join().unwrap();
+        assert_eq!(depth(&home), 0);
+    }
+
+    /// Two spellings of one home must be the same lock, or the nested check
+    /// misses and the process blocks against its own open file description.
+    #[test]
+    fn a_differently_spelled_home_is_the_same_lock() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plain = tmp.path().to_path_buf();
+        let trailing = PathBuf::from(format!("{}/", plain.display()));
+        let indirect = plain.join("sub").join("..");
+        std::fs::create_dir_all(plain.join("sub")).unwrap();
+
+        let _outer = lock_index(&plain, "index", no_progress()).unwrap();
+        // Each of these deadlocks if it is treated as a different lock.
+        let _a = lock_index(&trailing, "index", no_progress()).unwrap();
+        let _b = lock_index(&indirect, "index", no_progress()).unwrap();
+        assert_eq!(depth(&plain), 3, "all three are the same lock");
     }
 
     #[test]
@@ -325,34 +454,70 @@ mod tests {
         let _gb = lock_index(b.path(), "index", no_progress()).unwrap();
     }
 
+    /// The holder line is what a waiter reports, so it has to round-trip.
+    ///
+    /// Read from the *holding* file description on purpose. On Windows
+    /// `LockFileEx` locks are mandatory, so a second handle cannot read the
+    /// locked region — reading through a fresh `File::open` here would pass on
+    /// Unix and panic on Windows, which is a shipped release target that CI
+    /// does not exercise. The degraded Windows behaviour (a waiter says
+    /// "another operation") is documented on `read_holder`.
     #[test]
     fn the_holder_is_recorded_for_a_waiter_to_report() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let _g = lock_index(home, "reindex", no_progress()).unwrap();
-        let mut f = File::open(lock_path(home)).unwrap();
-        let holder = read_holder(&mut f).expect("a holder line");
+        let path = lock_path(home).unwrap();
+        let holder = HELD
+            .with(|h| {
+                let mut b = h.borrow_mut();
+                read_holder(&mut b.get_mut(&path).unwrap().file)
+            })
+            .expect("a holder line");
         assert!(
-            holder.starts_with("indice reindex (pid "),
+            holder.starts_with("reindex (pid ") && holder.contains("(started "),
             "unexpected holder line: {holder}"
         );
+    }
+
+    #[test]
+    fn a_holder_line_without_a_timestamp_is_not_an_error() {
+        // A lock taken by an older version, or interrupted before it wrote its
+        // line: the waiter falls back to a generic description rather than
+        // failing to acquire.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("stray.lock");
+        std::fs::write(&p, b"garbage with no separator").unwrap();
+        let mut f = File::open(&p).unwrap();
+        assert!(read_holder(&mut f).is_none());
     }
 
     #[test]
     fn the_lock_file_survives_release_so_the_inode_is_stable() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
+        let path = lock_path(home).unwrap();
         let inode = {
             let _g = lock_index(home, "index", no_progress()).unwrap();
-            file_id(&lock_path(home))
+            file_id(&path)
         };
-        assert!(lock_path(home).exists(), "releasing must not unlink it");
+        assert!(path.exists(), "releasing must not unlink it");
         let _g = lock_index(home, "index", no_progress()).unwrap();
         assert_eq!(
             inode,
-            file_id(&lock_path(home)),
+            file_id(&path),
             "re-locking must find the same inode, or two holders could coexist"
         );
+    }
+
+    #[test]
+    fn human_duration_reads_at_a_glance() {
+        let s = |n| human_duration(chrono::TimeDelta::seconds(n));
+        assert_eq!(s(5), "5s");
+        assert_eq!(s(420), "7m");
+        assert_eq!(s(7200), "2h");
+        assert_eq!(s(200_000), "2d");
+        assert_eq!(s(-5), "0s", "a clock skew must not print nonsense");
     }
 
     fn file_id(p: &Path) -> u64 {
