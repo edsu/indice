@@ -62,6 +62,13 @@ impl crate::index::Ingest<'_> {
         let (home, progress) = (cx.home_dir(), cx.progress_sink());
         let index_dir = index_dir(home);
 
+        // Resolve config before anything else, so a malformed config.yaml aborts
+        // the rebuild rather than leaving no index — and before the lock, so it
+        // is reported immediately rather than after queueing behind a running
+        // ingest. reindex re-streams every source, so honoring the writer heap
+        // matters most here.
+        let config = crate::config::Config::load(home)?;
+
         // Exclusive for the whole rebuild, and taken *before the manifest is
         // read*, which is the part that is easy to get wrong. This is the
         // acquisition the lock exists for. The swap at the end deletes the old
@@ -97,11 +104,6 @@ impl crate::index::Ingest<'_> {
                 )
             })
             .collect();
-
-        // Resolve config before destroying the old index, so a malformed config.yaml
-        // aborts the reindex rather than leaving no index. reindex re-streams every
-        // source, so honoring the writer heap here matters most.
-        let config = crate::config::Config::load(home)?;
 
         // Atomic rebuild: build the fresh index into a sibling `full_text.new` and
         // swap it in only once the rebuild fully succeeds, so a hard failure (crash,

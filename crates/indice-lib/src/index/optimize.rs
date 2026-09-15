@@ -26,6 +26,17 @@ pub fn optimize(
             full_text.display()
         );
     }
+    // Same tier as an ingest or a rebuild: this opens a writer on
+    // `index/full_text` and merges segments for minutes at a time, and a
+    // concurrent rebuild's swap would `remove_dir_all` the tree underneath it —
+    // discarding the merge silently, or racing the merge's new segment files
+    // and failing the rebuild after it has already promoted its index.
+    // Tantivy's own writer lock cannot see that, because the rebuild's writer
+    // is on the sibling `full_text.new`.
+    //
+    // Re-entrant, so the automatic post-ingest and post-import compactions,
+    // which run inside a job that already holds the lock, do not wait.
+    let _index = super::lock::lock_index(home, "optimize", progress)?;
     let mut search = crate::search::SearchIndex::open(&full_text)
         .context("opening the search index to optimize")?;
     search.optimize(target_segments, progress)

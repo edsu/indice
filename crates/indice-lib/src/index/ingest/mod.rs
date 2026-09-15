@@ -254,12 +254,6 @@ impl Ingest<'_> {
             progress,
             ..
         } = *self;
-        // Exclusive across processes for the whole ingest, so a concurrent
-        // `indice reindex` cannot swap a freshly-built index over the top of
-        // the documents committed below (see `index::lock`). Re-entrant, so an
-        // importer that already holds it across a multi-crawl run is fine.
-        let _index = super::lock::lock_index(home, "index", progress)?;
-
         // Every crawl belongs to a collection (its id is the slug of the name).
         let group = (
             crate::collections::CollectionId::from_name(collection),
@@ -269,7 +263,17 @@ impl Ingest<'_> {
         // Resolve config (frugality cap + writer-heap ceiling) up front, so a
         // malformed config.yaml aborts here — before we copy files into archive/ or
         // touch the index — rather than silently indexing with the wrong setting.
+        // Deliberately *before* taking the index lock: nothing here reads the
+        // index, and failing fast is the whole point, so a typo in config.yaml
+        // must not be reported only after queueing behind a long rebuild.
         let config = crate::config::Config::load(home)?;
+
+        // Exclusive across processes for the rest of the ingest, so a concurrent
+        // `indice reindex` cannot swap a freshly-built index over the top of
+        // the documents committed below (see `index::lock`). Taken before the
+        // manifest is read, just below. Re-entrant, so a server job that
+        // already holds it across a whole run is fine.
+        let _index = super::lock::lock_index(home, "index", progress)?;
 
         let index_dir = index_dir(home);
         std::fs::create_dir_all(&index_dir)
