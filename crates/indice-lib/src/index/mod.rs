@@ -6,6 +6,7 @@ use crate::collections::Source;
 // re-exports every public item so external `index::<symbol>` paths keep resolving.
 mod delete;
 mod ingest;
+pub(crate) mod lock;
 mod metadata;
 mod optimize;
 mod paths;
