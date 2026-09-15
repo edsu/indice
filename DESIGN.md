@@ -891,6 +891,58 @@ rather than `home` + `progress` for the same reason — it is how the actor
 reaches the ingest at the bottom of that function without a ninth parameter,
 which is exactly the pressure that put custody out of band the first time.
 
+### Serializing the writers
+
+Two things write documents into the search index: an ingest
+(`Ingest::index_location`) and a rebuild (`Ingest::reindex`). Tantivy takes its
+own `INDEX_WRITER_LOCK` so only one `IndexWriter` can exist at a time, and that
+does cover two concurrent ingests — both open `index/full_text`, so the second
+fails immediately.
+
+It does **not** cover a rebuild, and that was the case where the loss was total.
+A rebuild builds into the sibling `index/full_text.new`, and Tantivy names its
+lock file relative to the index directory it was opened on, so a rebuild and an
+ingest took two different locks and neither saw the other. The rebuild then
+renamed `full_text` aside, promoted its own, and deleted the old one — taking a
+concurrently-indexed crawl's documents with it — and saved the manifest copy it
+had read before that crawl existed, erasing the entry too. Both halves, with no
+error on either side. Since there is no server rebuild endpoint, that is
+`indice reindex` against a serving `serve --manage`, which is a workflow the
+server documents as supported.
+
+So `index/lock.rs` takes an advisory `flock` on `<index_dir>/.index.lock` for
+the duration of either operation. Three properties are deliberate. It is
+**cross-process**, because the race is CLI-against-server by construction. It
+**queues** rather than failing, announcing the current holder first
+(`indice reindex (pid 4242), started 7m ago`, read from the lock file) so a
+waiting job does not look hung. And it **never goes stale**, since the OS
+releases an `flock` on panic, `exit` and `SIGKILL` — unlike Tantivy's writer
+lock, which leaves a file its own docs tell you to remove by hand.
+
+The lock file is never renamed or replaced, which is why the holder line is
+written in place: an `flock` belongs to the inode, so replacing the file by
+rename would leave one process holding an orphan while the next locks the new
+one — two exclusive holders and no symptom until data is lost. That is this
+crate's one deliberate exception to the atomic-write rule.
+
+It is acquired **before the manifest is read**, not just before the index is
+touched. Otherwise a crawl could land between the read and the acquisition,
+which leaves it out of the rebuild's snapshot and erased from the manifest the
+rebuild saves at the end — the same loss, through a smaller window.
+
+Readers take nothing: they open the index read-only, Tantivy's `META_LOCK`
+already stops segment files being collected under a reloading reader, and a
+shared lock here would queue every page render behind a multi-hour rebuild. An
+import does not hold the lock across its whole run either — each crawl's
+`index_location` holds it across both the Tantivy commit and the manifest save,
+so a crawl lands atomically with respect to a rebuild, and holding it for hours
+of downloading would block rebuilds and workroom adds for no extra safety.
+
+This is the *index* tier only. A write that touches just `waczs.json` or a
+finding aid adds no documents, so a rebuild's output is not stale with respect
+to it, and it gets its own always-brief hold rather than waiting behind a
+rebuild (`rustyweb-durable-writes-f4h5`).
+
 ### Progress reporting
 
 Indexing reports progress through a small, UI-agnostic `IndexProgress` trait
