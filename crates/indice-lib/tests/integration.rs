@@ -1577,13 +1577,24 @@ fn a_rebuild_and_an_ingest_do_not_destroy_each_other() {
     let second = archive.join("a.wacz");
     std::fs::copy(fixture("a.wacz"), &second).unwrap();
 
+    // Both threads wait on the barrier, so they are released together rather
+    // than merely spawned together. Without it the rebuild of a single small
+    // fixture can finish before the other thread even reaches its acquisition
+    // — on a faster machine, with warm caches, or if the fixtures shrink — and
+    // the test then passes without the lock ever being contended, which is the
+    // one way a regression could slip past it.
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
     let rebuild = {
-        let home = home.clone();
-        std::thread::spawn(move || indice_lib::index::Ingest::new(&home).reindex())
+        let (home, gate) = (home.clone(), gate.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            indice_lib::index::Ingest::new(&home).reindex()
+        })
     };
     let ingest = {
-        let home = home.clone();
+        let (home, gate) = (home.clone(), gate.clone());
         std::thread::spawn(move || {
+            gate.wait();
             indice_lib::index::Ingest::new(&home)
                 .index_location(&second.to_string_lossy(), "added-coll")
         })
