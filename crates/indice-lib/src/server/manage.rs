@@ -193,6 +193,29 @@ fn start_index_job(
         let _keepalive = keepalive;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
+            // The cross-process index lock is taken *before* the in-process
+            // one, and the order matters more than it looks. `index_location`
+            // takes this lock itself (re-entrantly, so this does not wait
+            // twice); if we let it do so from inside `write_lock`, a long
+            // `indice reindex` in another process would park this thread on the
+            // flock while it held the mutex that gates *every* workroom write —
+            // annotations, deletes, collection edits — so the whole write
+            // surface would hang with no 503 and no message, and each waiting
+            // request would sit on a blocking-pool thread. Waiting out here
+            // instead leaves the other writers free.
+            let _index = match crate::index::lock::lock_index(
+                &job_state.home,
+                "a workroom add",
+                &progress,
+            ) {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = tx.send(ProgressEvent::Error {
+                        message: format!("could not lock the search index: {e:#}"),
+                    });
+                    return;
+                }
+            };
             // `Manifest::save` rewrites waczs.json wholesale from an in-memory
             // vec, so every manifest write is a read-modify-write and has to
             // happen under the lock.

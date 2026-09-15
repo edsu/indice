@@ -314,11 +314,14 @@ derived = rebuildable index.*
     waczs.json              #   registration ledger (source + membership) + derived provenance
     full_text/              #   the Tantivy index
     thumbs/                 #   auto-selected representative-image cache
+    .index.lock             #   advisory lock serializing the index writers (empty of state)
 ```
 
 Recommended for a curator keeping their home in git: `echo '/index' >> .gitignore` and
 `git add collections/`. Everything a curator authors — prose, pinned images — lives under
 `collections/<slug>/`; everything the tool derives is rebuildable under `index/`.
+(`.index.lock` holds no state — it exists to be locked — but it should not be
+deleted while indice is running: see the note on inode stability below.)
 
 **Every crawl belongs to a collection** (there are no auto "singleton" collections): `import`
 supplies it; hand-`index` requires `--collection` (see *Two-level collection model*).
@@ -890,6 +893,87 @@ server were deleted. `archiveit::import_crawls` takes the configured `Ingest`
 rather than `home` + `progress` for the same reason — it is how the actor
 reaches the ingest at the bottom of that function without a ninth parameter,
 which is exactly the pressure that put custody out of band the first time.
+
+### Serializing the writers
+
+Two things write documents into the search index: an ingest
+(`Ingest::index_location`) and a rebuild (`Ingest::reindex`). Tantivy takes its
+own `INDEX_WRITER_LOCK` so only one `IndexWriter` can exist at a time, and that
+does cover two concurrent ingests — both open `index/full_text`, so the second
+fails immediately.
+
+It does **not** cover a rebuild, and that was the case where the loss was total.
+A rebuild builds into the sibling `index/full_text.new`, and Tantivy names its
+lock file relative to the index directory it was opened on, so a rebuild and an
+ingest took two different locks and neither saw the other. The rebuild then
+renamed `full_text` aside, promoted its own, and deleted the old one — taking a
+concurrently-indexed crawl's documents with it — and saved the manifest copy it
+had read before that crawl existed, erasing the entry too. Both halves, with no
+error on either side. Since there is no server rebuild endpoint, that is
+`indice reindex` against a serving `serve --manage`, which is a workflow the
+server documents as supported.
+
+So `index/lock.rs` takes an advisory `flock` on `<index_dir>/.index.lock` for
+the duration of either operation. Three properties are deliberate. It is
+**cross-process**, because the race is CLI-against-server by construction. It
+**queues** rather than failing, announcing the current holder first
+(`indice reindex (pid 4242), started 7m ago`, read from the lock file) so a
+waiting job does not look hung. And it **never goes stale**, since the OS
+releases an `flock` on panic, `exit` and `SIGKILL` — unlike Tantivy's writer
+lock, which leaves a file its own docs tell you to remove by hand.
+
+The lock file is never renamed or replaced, which is why the holder line is
+written in place: an `flock` belongs to the inode, so replacing the file by
+rename would leave one process holding an orphan while the next locks the new
+one — two exclusive holders and no symptom until data is lost. That is this
+crate's one deliberate exception to the atomic-write rule.
+
+It is acquired **before the manifest is read**, not just before the index is
+touched. Otherwise a crawl could land between the read and the acquisition,
+which leaves it out of the rebuild's snapshot and erased from the manifest the
+rebuild saves at the end — the same loss, through a smaller window.
+
+Readers take nothing: they open the index read-only, Tantivy's `META_LOCK`
+already stops segment files being collected under a reloading reader, and a
+shared lock here would queue every page render behind a multi-hour rebuild.
+
+An **import holds it across its whole run**, not merely per crawl. Per crawl
+would be enough if the ingest were the only write — `index_location` holds the
+lock across both its Tantivy commit and its manifest save, so documents and
+manifest entry land together — but an importer writes its provenance
+(`archive_it`, `browsertrix`) *after* that call returns. A rebuild reading the
+manifest in that gap sees the crawl without its provenance and later writes
+that back, and since the importers' incremental "already imported" check is
+built from exactly those fields, the next import stops recognizing the crawl
+and re-downloads every WARC to rebuild a WACZ that already exists.
+
+**Ordering against the server's own mutex matters more than it looks.** The
+server takes this cross-process lock *before* `AppState.write_lock`, never
+inside it. Acquiring it inside would park a blocking thread on an external
+`flock` while holding the mutex that gates every workroom write — annotations,
+deletes, collection edits — so a long CLI rebuild would hang the entire write
+surface with no 503 and no message, each waiting request sitting on a
+blocking-pool thread. Waiting outside leaves the other writers free. Since
+nothing under `index/` can see `AppState`, the order cannot invert.
+
+Where locking is genuinely unavailable — some NFS/SMB mounts, some container
+overlay and FUSE setups return `Unsupported` — indice **warns loudly and
+proceeds unlocked** rather than refusing to index. A home that worked yesterday
+keeps working; the protection is simply absent, and says so.
+
+This is the *index* tier only, and two writers are not yet under it:
+`delete_crawl`/`delete_collection` and the annotation index sync. Both write
+documents, so both belong here by the rule above — a rebuild can currently
+resurrect a deleted crawl (its snapshot re-indexes an entry whose file is gone,
+preserving it and pointing at nothing) or discard a note's document, recoverable
+from `annotations.jsonl` but silently unsearchable until the next rebuild. They
+are excluded for now because they run on the request path, where blocking behind
+a multi-hour rebuild is the wrong answer and the poll-then-503 policy they need
+does not exist yet. Tracked on `rustyweb-durable-writes-f4h5`.
+
+A write that touches just `waczs.json` or a finding aid adds no documents, so a
+rebuild's output is not stale with respect to it; that tier gets its own,
+always-brief, hold rather than waiting behind a rebuild.
 
 ### Progress reporting
 

@@ -583,6 +583,25 @@ pub fn import_crawls<T: Transport>(
     let home = cx.home_dir();
     let progress = cx.progress_sink();
 
+    // Exclusive for the whole import, not merely per crawl.
+    //
+    // Per-crawl would be enough if `index_location` were the only write: it
+    // holds the lock across both its Tantivy commit and its manifest save, so
+    // the documents and the manifest entry land together. But this function
+    // writes the Archive-It provenance *after* that call returns and the lock
+    // is released (`set_archiveit_provenance_by_id` below), and that write is
+    // manifest-only. A rebuild that reads the manifest in the gap sees the
+    // crawl without its provenance and later writes that back — so the
+    // provenance is silently lost, and because the incremental `seen` set below
+    // is built from `w.archive_it`, the next import no longer recognizes the
+    // crawl and re-downloads every WARC to rebuild a WACZ that already exists.
+    //
+    // Holding across the run costs a concurrent `indice reindex` the wait. The
+    // server already imposes that (it takes the lock before its own mutex, so
+    // the wait cannot happen while the workroom write surface is held), and
+    // this makes the CLI path behave the same.
+    let _index = crate::index::lock::lock_index(home, "an Archive-It import", progress)?;
+
     let host = client.host().to_string();
     // Incremental: crawls already imported (by (host, collection, crawl)).
     let seen: std::collections::HashSet<(String, i64, i64)> =
