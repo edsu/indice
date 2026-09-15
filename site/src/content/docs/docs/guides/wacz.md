@@ -78,7 +78,7 @@ web you're after and how much of a human needs to be in the loop.
 | [Scoop](#scoop) | CLI, one URL per run, high fidelity | You need a single page as *evidence*, with provenance and a signature |
 | [Browsertrix](#browsertrix) | Hosted service, scheduled crawls, multi-user | Recurring crawls, a team, review workflows, no servers to run |
 | [browsertrix-crawler](#browsertrix-crawler) | Docker CLI crawler, YAML config | You want the same crawler locally, scripted, on your own machine |
-| [browsertrix-crawler-claude](#browsertrix-crawler-claude) | Claude Code plugin wrapping the above | You'd rather describe the crawl than write the YAML |
+| [btrix](#btrix) | Conversational CLI wrapping the above | You'd rather describe the crawl than write the YAML |
 
 ### ArchiveWeb.page
 
@@ -157,33 +157,37 @@ JavaScript that performs custom clicks that feed back into the crawl queue.
 Behaviors are where crawling stops being declarative, and they're the main reason
 to be running the crawler yourself. Although you can also use these behaviors in the Browsertrix service itself.
 
-### browsertrix-crawler-claude
+### btrix
 
-[browsertrix-crawler-claude](https://github.com/edsu/browsertrix-crawler-claude) is a
-[Claude Code](https://claude.com/claude-code) plugin that puts a conversational front end on
-browsertrix-crawler. The crawl still runs in Webrecorder's container; the plugin supplies the
-scaffolding, the scripts, and a skill for writing and debugging custom behaviors.
+[btrix](https://edsu.github.io/btrix/) puts a conversational front end on browsertrix-crawler: you
+describe what you want archived, and it writes the config, runs the crawl, and tells you what it
+actually captured. The crawl still runs in Webrecorder's container, so the fidelity is the crawler's;
+what btrix supplies is the awkward middle.
 
+```sh
+npm install -g @edsu/btrix
+btrix
 ```
-/plugin marketplace add edsu/browsertrix-crawler-claude
-/plugin install btrix@browsertrix-crawler-claude
-```
 
-Then, from a working directory:
+Then `cd` to a working directory, run `btrix`, and say what you want:
 
-| Command | Does |
+| You say | What happens |
 |---|---|
-| `/btrix:new <name> <url>` | Scaffold `config/<name>.yaml`, asking about scope |
-| `/btrix:profile <url> [name]` | Create a browser login profile for an authenticated site |
-| `/btrix:run <name>` | Run the crawl in the background |
-| `/btrix:status <name>` | Progress and rate-limit check |
-| `/btrix:review <name>` | Finished-crawl summary and replay pointers |
-| `/btrix:view <name>` | Replay the finished WACZ locally in ReplayWeb.page |
+| "archive the news section of library.stanford.edu" | Writes a config, settling the scope with you first |
+| "crawl sulnews" | Starts the crawl in the background, with a live progress widget |
+| "did that crawl work?" | Reports what was actually captured, flagging anything suspicious |
+| "this site needs a login" | Opens a browser for *you* to sign into; btrix never sees the password |
+| "why did this site only give me one page?" | Opens a real browser to work out a custom behavior |
 
-Output lands in `./collections/<name>/<name>.wacz`, ready for `indice index`. The real advantage is
-the awkward middle of a crawl: describing scope in a sentence instead of remembering whether you
-want `prefix` or `host`, and getting help writing the behavior for the one site whose content only
-appears after three clicks. It needs Docker or Podman, since the crawler is still a container.
+Archives land in `./btrix/out/<name>.wacz`, ready for `indice index`, beside a
+`<name>.btrix.json` recording how each one was made. The real advantage is describing scope in a
+sentence instead of remembering whether you want `prefix` or `host`, and getting help writing the
+behavior for the one site whose content only appears after three clicks.
+
+It needs Docker or Podman, since the crawler is still a container, plus Node 22.19+; on Windows run
+it inside WSL2. It talks to whichever model you connect on first run — a Claude, ChatGPT or Copilot
+subscription, an API key, or a model running on your own machine — and crawling itself needs no
+account.
 
 ## I have WARCs, not WACZs
 
