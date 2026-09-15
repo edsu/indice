@@ -303,6 +303,17 @@ pub(super) async fn bx_import(
                             &format!("downloading {filename}{size}"),
                         );
                         crate::index::download_wacz(&res.path, &dest)?;
+                        // Index lock before the in-process one: the ingest
+                        // below takes it re-entrantly, and waiting for it from
+                        // inside `write_lock` would park this thread on a
+                        // cross-process flock while holding the mutex that
+                        // gates every other workroom write. Per resource, not
+                        // per job, so the hold still stays off the downloads.
+                        let _index = crate::index::lock::lock_index(
+                            &job_state.home,
+                            "a Browsertrix import",
+                            &progress,
+                        )?;
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                         // force: honor the explicitly selected crawl. No
                         // download: it is already a local file.
@@ -328,6 +339,17 @@ pub(super) async fn bx_import(
                     } else {
                         // Index-only: stream the crawl in place under the lock;
                         // replay/reindex re-resolve a fresh URL.
+                        // Index lock before the in-process one: the ingest
+                        // below takes it re-entrantly, and waiting for it from
+                        // inside `write_lock` would park this thread on a
+                        // cross-process flock while holding the mutex that
+                        // gates every other workroom write. Per resource, not
+                        // per job, so the hold still stays off the downloads.
+                        let _index = crate::index::lock::lock_index(
+                            &job_state.home,
+                            "a Browsertrix import",
+                            &progress,
+                        )?;
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                         let resolver = resolver.as_ref().expect("resolver present when streaming");
                         let source = crate::collections::Source::Browsertrix {
@@ -381,6 +403,13 @@ pub(super) async fn bx_import(
                 // the import, only leaves the index un-compacted. Needs the write
                 // lock (the per-resource loop above released it each time).
                 {
+                    // `optimize` takes the index lock itself, so take it out
+                    // here first for the same reason as above.
+                    let _index = crate::index::lock::lock_index(
+                        &job_state.home,
+                        "post-import compaction",
+                        &progress,
+                    );
                     let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                     match crate::index::optimize_if_fragmented(&job_state.home, &progress) {
                         Ok(Some((before, after))) => {
@@ -631,7 +660,21 @@ pub(super) async fn ait_import(
             // Hold the write lock across the whole import: `import_crawls`
             // interleaves per-crawl download and Tantivy writes, and single-user
             // management mode only ever needs one import in flight at a time.
+            //
+            // The index lock spans the same stretch, and is taken first. That
+            // does mean a CLI `indice reindex` waits out the whole import,
+            // downloads included, which the library's own per-crawl locking
+            // would not require — but the alternative is worse: acquiring it
+            // from inside `write_lock` (which is where `index_location` would
+            // otherwise take it) parks this thread on a cross-process flock
+            // while holding the mutex that gates every workroom write, hanging
+            // the entire write surface with no 503 and no message.
             let outcome = {
+                let _index = crate::index::lock::lock_index(
+                    &job_state.home,
+                    "an Archive-It import",
+                    &progress,
+                )?;
                 let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                 crate::archiveit::import_crawls(
                     &client,
@@ -656,6 +699,13 @@ pub(super) async fn ait_import(
                 // A per-crawl import commits a segment per WACZ; compact if that
                 // left the index fragmented (best-effort — see `bx_import`).
                 {
+                    // `optimize` takes the index lock itself, so take it out
+                    // here first for the same reason as above.
+                    let _index = crate::index::lock::lock_index(
+                        &job_state.home,
+                        "post-import compaction",
+                        &progress,
+                    );
                     let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                     match crate::index::optimize_if_fragmented(&job_state.home, &progress) {
                         Ok(Some((before, after))) => {
