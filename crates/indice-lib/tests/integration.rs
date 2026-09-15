@@ -1544,3 +1544,75 @@ async fn search_scope_param_folds_into_query() {
         "scoped search renders the collection filter chip"
     );
 }
+
+// ── Concurrent writers ──────────────────────────────────────────────────────
+
+/// A rebuild running concurrently with an ingest must not destroy it.
+///
+/// This is the race `index::lock` exists for, and the loss was total, not
+/// partial. `reindex` builds into the sibling `index/full_text.new` while an
+/// ingest writes `index/full_text`, and Tantivy's writer lock is named relative
+/// to the index directory, so the two took different locks and neither saw the
+/// other. The rebuild then renamed `full_text` aside, promoted its own, and
+/// `remove_dir_all`'d the old one — taking the freshly-indexed crawl's
+/// documents with it — and saved the manifest copy it had read before the
+/// ingest started, erasing the entry too.
+///
+/// Both halves, silently, with no error on either side. The two threads here
+/// stand in for `indice reindex` against a serving `serve --manage`; they get
+/// separate open file descriptions, so they contend on the flock for real.
+#[test]
+fn a_rebuild_and_an_ingest_do_not_destroy_each_other() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+
+    // Seed one crawl, so the rebuild has something to do and a manifest to read.
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let first = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &first).unwrap();
+    indice_lib::index::index_path(&first, &home, Some("seeded"), "seeded-coll").unwrap();
+
+    // The crawl the ingest will add, staged but not yet indexed.
+    let second = archive.join("a.wacz");
+    std::fs::copy(fixture("a.wacz"), &second).unwrap();
+
+    let rebuild = {
+        let home = home.clone();
+        std::thread::spawn(move || indice_lib::index::Ingest::new(&home).reindex())
+    };
+    let ingest = {
+        let home = home.clone();
+        std::thread::spawn(move || {
+            indice_lib::index::Ingest::new(&home)
+                .index_location(&second.to_string_lossy(), "added-coll")
+        })
+    };
+    rebuild.join().unwrap().expect("the rebuild succeeds");
+    ingest.join().unwrap().expect("the ingest succeeds");
+
+    // Whichever order they ran in, both crawls must be in the manifest...
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let names: Vec<&str> = manifest.waczs.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(
+        manifest.waczs.len(),
+        2,
+        "both crawls must survive; got {names:?}"
+    );
+
+    // ...and both must still have documents, which is the half the swap
+    // destroyed. Asked per collection rather than by searching for a word, so
+    // this does not depend on what the fixtures happen to say.
+    let idx = indice_lib::search::SearchIndex::open_read_only(
+        home.join("index").join("full_text").as_path(),
+    )
+    .unwrap();
+    for slug in ["seeded-coll", "added-coll"] {
+        let (total, _) = idx.collection_pages(slug, None, None, 0, 1).unwrap();
+        assert!(
+            total > 0,
+            "{slug} has a manifest entry but no documents: the rebuild's swap \
+             deleted them (manifest holds {names:?})"
+        );
+    }
+}

@@ -62,6 +62,17 @@ impl crate::index::Ingest<'_> {
         let (home, progress) = (cx.home_dir(), cx.progress_sink());
         let index_dir = index_dir(home);
 
+        // Exclusive for the whole rebuild, and taken *before the manifest is
+        // read*, which is the part that is easy to get wrong. This is the
+        // acquisition the lock exists for. The swap at the end deletes the old
+        // index outright, so a crawl another process indexed meanwhile would be
+        // destroyed with it — and if the lock were taken any later than this,
+        // such a crawl could land between the read and the acquisition, leaving
+        // it out of the `targets` snapshot below and erased from the manifest
+        // copy saved at the end. Acquiring first makes the snapshot and the
+        // rebuild it drives describe the same archive.
+        let _index = super::lock::lock_index(home, "reindex", progress)?;
+
         let mut manifest = Manifest::open(&index_dir)?;
         if manifest.waczs.is_empty() {
             info!("no WACZs registered; nothing to reindex");

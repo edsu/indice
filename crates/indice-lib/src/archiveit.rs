@@ -583,6 +583,14 @@ pub fn import_crawls<T: Transport>(
     let home = cx.home_dir();
     let progress = cx.progress_sink();
 
+    // No index lock here, deliberately. Each crawl's `index_location` takes it
+    // and holds it across both its Tantivy commit and its manifest save, so a
+    // crawl lands atomically with respect to a rebuild: a concurrent
+    // `indice reindex` either has not seen the crawl yet (there is nothing to
+    // lose) or sees its manifest entry and rebuilds it from the recorded
+    // source. Holding the lock across the whole import instead would block
+    // rebuilds and workroom adds for the entire run — hours, most of it
+    // downloading — and buy no extra safety.
     let host = client.host().to_string();
     // Incremental: crawls already imported (by (host, collection, crawl)).
     let seen: std::collections::HashSet<(String, i64, i64)> =

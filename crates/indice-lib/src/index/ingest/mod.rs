@@ -254,6 +254,12 @@ impl Ingest<'_> {
             progress,
             ..
         } = *self;
+        // Exclusive across processes for the whole ingest, so a concurrent
+        // `indice reindex` cannot swap a freshly-built index over the top of
+        // the documents committed below (see `index::lock`). Re-entrant, so an
+        // importer that already holds it across a multi-crawl run is fine.
+        let _index = super::lock::lock_index(home, "index", progress)?;
+
         // Every crawl belongs to a collection (its id is the slug of the name).
         let group = (
             crate::collections::CollectionId::from_name(collection),
