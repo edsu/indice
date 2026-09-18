@@ -67,18 +67,42 @@
 //!   behaviour. Documented rather than detected: you cannot probe for it
 //!   without a second host.
 //! - **Not FIFO.** `flock` makes no fairness guarantee, so a waiter can be
-//!   overtaken.
+//!   overtaken. Release is otherwise well behaved: the kernel wakes the
+//!   waiters, one acquires, the rest block again — nothing spins and nothing
+//!   errors. Starvation needs the lock to be essentially never free, which
+//!   several curators doing occasional adds does not produce; the shape that
+//!   would is an automated writer on a schedule or in a loop competing with an
+//!   interactive one. No failure is reachable today (one in-flight write at a
+//!   time is the assumption throughout `server`), so this is a property to
+//!   know about rather than something to build a fair queue for.
 //!
-//! # Lock ordering
+//! # Lock ordering — **this lock is always taken before `AppState.write_lock`**
 //!
-//! The server still has its own in-process `AppState.write_lock`, and a job
-//! takes that *before* calling into an ingest, which then takes this one. That
-//! order is not enforced anywhere, so it is worth saying why it cannot invert:
-//! nothing under `index/` can see `AppState`, so a library operation can never
-//! take the server's mutex, and the server never takes this lock directly. The
-//! same will hold for the manifest's critical section when it arrives — index
-//! tier first, manifest tier inside it, because an ingest needs both while a
-//! finding-aid save needs only the second.
+//! The server has its own in-process `AppState.write_lock`, and every site that
+//! needs both takes *this* one first. That is not a style preference: acquiring
+//! this lock from inside `write_lock` parks a blocking thread on a
+//! cross-process `flock` while holding the mutex that gates every workroom
+//! write, so a long rebuild in another process hangs the whole write surface.
+//!
+//! Nothing enforces the order, and it is now genuinely invertible — so it has
+//! to be a rule rather than an observation. A handler that holds `write_lock`
+//! and then calls a library function which takes this lock deadlocks against a
+//! job that took them in the documented order: classic AB-BA, and it hangs
+//! rather than failing. The handlers that hold `write_lock` today
+//! (`delete_crawl`, `delete_collection`, `set_collection`, the annotation
+//! writes) are safe only because the library functions they call do not take
+//! this lock *yet*. Bringing those under it — the next slice of
+//! `rustyweb-durable-writes-f4h5` — means hoisting the acquisition to the top
+//! of each handler, above `write_lock`, not simply adding it to the library
+//! function.
+//!
+//! Drop order follows from that: the guards are declared index-lock-first, so
+//! they drop in reverse and the mutex is released before the `flock`. A waiter
+//! that wakes therefore finds the mutex already free.
+//!
+//! The manifest's critical section, when it arrives, sits *inside* both: an
+//! ingest needs all three, while a finding-aid save needs only the manifest
+//! one.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
