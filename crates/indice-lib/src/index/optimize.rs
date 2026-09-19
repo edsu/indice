@@ -19,13 +19,10 @@ pub fn optimize(
     target_segments: usize,
     progress: &dyn IndexProgress,
 ) -> Result<(usize, usize)> {
-    let full_text = index_dir(home).join("full_text");
-    if !full_text.join("meta.json").exists() {
-        anyhow::bail!(
-            "no search index at {} — nothing to optimize (run `indice index` first)",
-            full_text.display()
-        );
-    }
+    // Locked before the "is there an index?" check: the rebuild's swap is two
+    // renames, and between them `full_text` does not exist — checking first
+    // would report "no search index" at a moment when there certainly is one.
+    //
     // Same tier as an ingest or a rebuild: this opens a writer on
     // `index/full_text` and merges segments for minutes at a time, and a
     // concurrent rebuild's swap would `remove_dir_all` the tree underneath it —
@@ -37,6 +34,13 @@ pub fn optimize(
     // Re-entrant, so the automatic post-ingest and post-import compactions,
     // which run inside a job that already holds the lock, do not wait.
     let _index = super::lock::lock_index(home, "optimize", progress)?;
+    let full_text = index_dir(home).join("full_text");
+    if !full_text.join("meta.json").exists() {
+        anyhow::bail!(
+            "no search index at {} — nothing to optimize (run `indice index` first)",
+            full_text.display()
+        );
+    }
     let mut search = crate::search::SearchIndex::open(&full_text)
         .context("opening the search index to optimize")?;
     search.optimize(target_segments, progress)
