@@ -262,13 +262,9 @@ pub(super) async fn create_annotation(
         ),
         None => annotations::Annotation::page(req.url, req.timestamp, req.note, creator),
     };
-    audit_detail(
-        &state,
-        &author,
-        Action::AnnotationCreate,
-        &ann.id,
-        Some(serde_json::json!({ "collection": req.collection.as_str() })),
-    );
+    let audit_target = ann.id.clone();
+    let audit_actor = author.clone();
+    let audit_coll = req.collection.as_str().to_string();
     let view = annotation_view(&ann, Some(&author));
     let st = state.clone();
     let collection = req.collection;
@@ -281,6 +277,16 @@ pub(super) async fn create_annotation(
             Ok(l) => l,
             Err(holder) => return Ok(Write::Busy(holder)),
         };
+        // Audited only once the write can actually proceed: recording it
+        // before the lock would log a change for every request that then 503s
+        // — one that provably never happened.
+        audit_detail(
+            &st,
+            &audit_actor,
+            Action::AnnotationCreate,
+            &audit_target,
+            Some(serde_json::json!({ "collection": audit_coll })),
+        );
         let _guard = st.write_lock.lock().expect("write lock poisoned");
         annotations::create(&st.home, &collection, &ann)?;
         // Keep full-text search in step with the new note, then publish it.
@@ -308,13 +314,9 @@ pub(super) async fn update_annotation(
         return (StatusCode::BAD_REQUEST, "note is empty").into_response();
     }
     let author = curator.principal().clone();
-    audit_detail(
-        &state,
-        &author,
-        Action::AnnotationUpdate,
-        &id,
-        Some(serde_json::json!({ "collection": req.collection.as_str() })),
-    );
+    let audit_actor = author.clone();
+    let audit_target = id.clone();
+    let audit_coll = req.collection.as_str().to_string();
     let st = state.clone();
     let AnnotationUpdateReq { collection, note } = req;
     let author_key = author.clone();
@@ -327,6 +329,16 @@ pub(super) async fn update_annotation(
             Ok(l) => l,
             Err(holder) => return Ok(Write::Busy(holder)),
         };
+        // Audited only once the write can actually proceed: recording it
+        // before the lock would log a change for every request that then 503s
+        // — one that provably never happened.
+        audit_detail(
+            &st,
+            &audit_actor,
+            Action::AnnotationUpdate,
+            &audit_target,
+            Some(serde_json::json!({ "collection": audit_coll })),
+        );
         let _guard = st.write_lock.lock().expect("write lock poisoned");
         // `may_edit`, not `owns`: an admin moderates anyone's notes.
         let res = annotations::update(&st.home, &collection, &id, &note, |k| {
@@ -364,13 +376,9 @@ pub(super) async fn delete_annotation(
     Json(req): Json<AnnotationDeleteReq>,
 ) -> Response {
     let author = curator.principal().clone();
-    audit_detail(
-        &state,
-        &author,
-        Action::AnnotationDelete,
-        &id,
-        Some(serde_json::json!({ "collection": req.collection.as_str() })),
-    );
+    let audit_actor = author.clone();
+    let audit_target = id.clone();
+    let audit_coll = req.collection.as_str().to_string();
     let st = state.clone();
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {
@@ -382,6 +390,16 @@ pub(super) async fn delete_annotation(
             Ok(l) => l,
             Err(holder) => return Ok(Write::Busy(holder)),
         };
+        // Audited only once the write can actually proceed: recording it
+        // before the lock would log a change for every request that then 503s
+        // — one that provably never happened.
+        audit_detail(
+            &st,
+            &audit_actor,
+            Action::AnnotationDelete,
+            &audit_target,
+            Some(serde_json::json!({ "collection": audit_coll })),
+        );
         let _guard = st.write_lock.lock().expect("write lock poisoned");
         let outcome = annotations::delete(&st.home, &collection, &id, |k| author.may_edit(k))?;
         // Drop the note from search and publish, when it was actually removed.

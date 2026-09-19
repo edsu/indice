@@ -642,13 +642,7 @@ pub(super) async fn delete_collection_handler(
         .with_crawls
         .as_deref()
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
-    audit_detail(
-        &state,
-        admin.principal(),
-        Action::CollectionDelete,
-        &id,
-        Some(serde_json::json!({ "with_crawls": with_crawls })),
-    );
+    let actor = admin.principal().clone();
     // This ends in a recursive remove_dir_all, so the id has to be a valid
     // single path component before it goes anywhere near the filesystem.
     let Some(cid) = CollectionId::parse(&id) else {
@@ -656,18 +650,35 @@ pub(super) async fn delete_collection_handler(
     };
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        // Refusing a non-empty collection is a client choice, not a server fault,
-        // so surface it as 409 rather than letting the lib error become a 500.
-        let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
-        if plan.member_count > 0 && !with_crawls {
-            return Ok(DeleteOutcome::Refused(plan.member_count));
-        }
         // Index lock before the in-process one, as everywhere else.
         let _index = match acquire_index_for_request(&state.home, "deleting a collection")? {
             Ok(l) => l,
             Err(holder) => return Ok(DeleteOutcome::Busy(holder)),
         };
         let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Planned INSIDE the lock, like the custody read in the crawl handler.
+        // Refusing a non-empty collection is a client choice, not a server
+        // fault, so it is a 409 rather than letting the lib error become a 500
+        // — and that only holds if the count this decides on is the count
+        // `delete_collection` will see. Planning outside meant an ingest could
+        // add a member while we waited up to ten seconds for the lock, leaving
+        // the library to re-check, `bail!`, and surface a 500 telling a browser
+        // user to pass a CLI flag.
+        let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
+        if plan.member_count > 0 && !with_crawls {
+            return Ok(DeleteOutcome::Refused(plan.member_count));
+        }
+        // Audited here, not at the top of the handler: recording it before the
+        // lock would log a CollectionDelete for every request that then 503s,
+        // and recording it before the plan would log one for every 409 — writes
+        // that provably never happened. Same rule the crawl handler states.
+        audit_detail(
+            &state,
+            &actor,
+            Action::CollectionDelete,
+            &id,
+            Some(serde_json::json!({ "with_crawls": with_crawls })),
+        );
         crate::index::delete_collection(&state.home, &cid, with_crawls)?;
         state.reload_searcher()?;
         Ok::<_, anyhow::Error>(DeleteOutcome::Done)
