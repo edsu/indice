@@ -110,6 +110,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -228,6 +229,61 @@ pub(crate) fn lock_index(
     what: &str,
     progress: &dyn IndexProgress,
 ) -> Result<IndexLock> {
+    match acquire(home, what, progress, Wait::Forever)? {
+        Acquisition::Held(l) => Ok(l),
+        // `Wait::Forever` blocks until it has the lock, so this cannot happen.
+        Acquisition::Busy { .. } => unreachable!("Wait::Forever does not give up"),
+    }
+}
+
+/// Take the index write lock for `home`, giving up after `wait`.
+///
+/// For the **request path**. A handler must not block on a cross-process lock
+/// for as long as a rebuild takes, so it waits briefly and then reports who has
+/// it, which the caller turns into a 503 with `Retry-After`. Background jobs and
+/// the CLI use [`lock_index`] and block, because for them queueing is the right
+/// answer.
+///
+/// Re-entrant in the same way, and an already-held lock returns immediately
+/// without consuming any of the budget.
+pub(crate) fn lock_index_within(home: &Path, what: &str, wait: Duration) -> Result<Acquisition> {
+    acquire(
+        home,
+        what,
+        crate::index::no_progress(),
+        Wait::Until(Instant::now() + wait),
+    )
+}
+
+/// The outcome of a bounded attempt.
+pub(crate) enum Acquisition {
+    Held(IndexLock),
+    /// Someone else still holds it. `holder` describes them well enough to put
+    /// in a 503 body.
+    Busy {
+        holder: String,
+    },
+}
+
+/// How long an acquisition is prepared to wait.
+enum Wait {
+    /// Block. Correct for the CLI and for background jobs.
+    Forever,
+    /// Poll until this instant, then give up.
+    Until(Instant),
+}
+
+/// How often a bounded wait re-checks. Short enough that a handler hands the
+/// lock straight on to the work it is waiting to do, long enough that a queue
+/// of waiters is not a busy loop.
+const POLL: Duration = Duration::from_millis(50);
+
+fn acquire(
+    home: &Path,
+    what: &str,
+    progress: &dyn IndexProgress,
+    wait: Wait,
+) -> Result<Acquisition> {
     let path = lock_path(home)?;
 
     // Already ours on this thread: take another token without touching the
@@ -241,10 +297,10 @@ pub(crate) fn lock_index(
             .is_some()
     });
     if nested {
-        return Ok(IndexLock {
+        return Ok(Acquisition::Held(IndexLock {
             path: Some(path),
             _not_send: PhantomData,
-        });
+        }));
     }
 
     // `write(true)` matters beyond writing the holder line: Windows'
@@ -257,36 +313,54 @@ pub(crate) fn lock_index(
         .open(&path)
         .with_context(|| format!("opening the index lock {}", path.display()))?;
 
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            let holder = read_holder(&mut file).unwrap_or_else(|| "another operation".to_string());
-            let msg = format!("waiting for {holder} to finish…");
-            progress.phase(&msg);
-            tracing::warn!("the search index is locked by {holder}; waiting");
-            file.lock()
-                .with_context(|| format!("waiting for the index lock {}", path.display()))?;
-        }
-        // Advisory locking is not available here — some NFS/SMB mounts, and
-        // some container overlay and FUSE setups. Degrade to the old
-        // behaviour rather than refusing to index at all: a home that worked
-        // yesterday must keep working, and this is what the module docs
-        // promise. Loud, because the protection is genuinely absent.
-        Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
-            tracing::warn!(
-                "this filesystem does not support locking ({e}), so {} cannot be \
-                 serialized against other indice processes; do not run two at once \
-                 on {}",
-                what,
-                home.display()
-            );
-            return Ok(IndexLock {
-                path: None,
-                _not_send: PhantomData,
-            });
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("locking the index at {}", path.display()))
+    let mut announced = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let holder =
+                    read_holder(&mut file).unwrap_or_else(|| "another operation".to_string());
+                if !announced {
+                    progress.phase(&format!("waiting for {holder} to finish…"));
+                    tracing::warn!("the search index is locked by {holder}; waiting");
+                    announced = true;
+                }
+                match wait {
+                    Wait::Forever => {
+                        file.lock().with_context(|| {
+                            format!("waiting for the index lock {}", path.display())
+                        })?;
+                        break;
+                    }
+                    Wait::Until(deadline) => {
+                        if Instant::now() >= deadline {
+                            return Ok(Acquisition::Busy { holder });
+                        }
+                        std::thread::sleep(POLL);
+                    }
+                }
+            }
+            // Advisory locking is not available here — some NFS/SMB mounts, and
+            // some container overlay and FUSE setups. Degrade to the old
+            // behaviour rather than refusing to index at all: a home that worked
+            // yesterday must keep working, and this is what the module docs
+            // promise. Loud, because the protection is genuinely absent.
+            Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
+                tracing::warn!(
+                    "this filesystem does not support locking ({e}), so {} cannot be \
+                     serialized against other indice processes; do not run two at once \
+                     on {}",
+                    what,
+                    home.display()
+                );
+                return Ok(Acquisition::Held(IndexLock {
+                    path: None,
+                    _not_send: PhantomData,
+                }));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("locking the index at {}", path.display()))
+            }
         }
     }
 
@@ -295,10 +369,10 @@ pub(crate) fn lock_index(
     write_holder(&mut file, what);
 
     HELD.with(|h| h.borrow_mut().insert(path.clone(), Held { file, depth: 1 }));
-    Ok(IndexLock {
+    Ok(Acquisition::Held(IndexLock {
         path: Some(path),
         _not_send: PhantomData,
-    })
+    }))
 }
 
 /// Describe the current holder for a waiter's message, rendering how long it
