@@ -78,6 +78,17 @@ pub fn plan_crawl_deletion(home: &Path, crawl_id: &str) -> Result<CrawlDeletion>
 /// last, so a retry can still find and finish any leftovers. Tantivy reclaims
 /// disk only on a later segment merge, so the index won't shrink immediately.
 pub fn delete_crawl(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
+    // Held across the whole deletion, including the manifest write below.
+    // Without it a concurrent rebuild resurrects the crawl: the rebuild
+    // snapshots the manifest while the entry still exists, this deletes the
+    // documents, the file and the entry, and then the rebuild saves its
+    // snapshot — putting the entry back, pointing at a file that is gone.
+    //
+    // Taken here so `indice crawl delete` is covered too; the server takes it
+    // again, earlier, so the wait never happens under `AppState.write_lock`
+    // (see `index::lock`'s ordering rule). Re-entrant, so paying for it twice
+    // costs nothing.
+    let _index = super::lock::lock_index(home, "a crawl deletion", crate::index::no_progress())?;
     let plan = plan_crawl_deletion(home, crawl_id)?;
 
     // 1. Drop the crawl's documents from the search index and commit.
@@ -156,6 +167,11 @@ pub fn delete_collection(
     id: &CollectionId,
     with_crawls: bool,
 ) -> Result<CollectionDeletion> {
+    // One hold for the whole collection, not one per member: `delete_crawl`
+    // below takes it re-entrantly, so a rebuild cannot slot in between two
+    // members and resurrect the ones already removed.
+    let _index =
+        super::lock::lock_index(home, "a collection deletion", crate::index::no_progress())?;
     let mut plan = plan_collection_deletion(home, id)?;
     if plan.member_count > 0 && !with_crawls {
         anyhow::bail!(
