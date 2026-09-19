@@ -578,6 +578,14 @@ pub(super) async fn delete_crawl_handler(
     let principal = curator.principal().clone();
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        // Index lock first, with a deadline. `delete_crawl` takes it too (so
+        // `indice crawl delete` is covered), but a handler must not wait on a
+        // cross-process lock from inside `write_lock` — see `index::lock`'s
+        // ordering rule. Re-entrant, so the inner acquisition is free.
+        let _index = match acquire_index_for_request(&state.home, "deleting a crawl")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(CrawlDeleteOutcome::Busy(holder)),
+        };
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it
         // takes the same write lock as an add (poison-tolerant); it's quick, so
         // there's no queued-progress channel to announce a wait on.
@@ -591,21 +599,24 @@ pub(super) async fn delete_crawl_handler(
             .wacz_by_id(&id)
             .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string()));
         if !principal.may_delete_crawl(added_by.as_deref()) {
-            return Ok(None);
+            return Ok(CrawlDeleteOutcome::Denied);
         }
         // Audited here rather than before the check, so a refused delete is not
         // recorded as an authorized attempt.
         audit(&state, &principal, Action::CrawlDelete, &id);
         let plan = crate::index::delete_crawl(&state.home, &id)?;
         state.reload_searcher()?;
-        Ok::<_, anyhow::Error>(Some(plan))
+        Ok::<_, anyhow::Error>(CrawlDeleteOutcome::Deleted(plan))
     })
     .await;
     match result {
-        Ok(Ok(Some(plan))) => {
+        Ok(Ok(CrawlDeleteOutcome::Deleted(plan))) => {
             Redirect::to(&format!("/collection/{}", plan.collection)).into_response()
         }
-        Ok(Ok(None)) => Denied::Insufficient("deleting a crawl someone else added").into_response(),
+        Ok(Ok(CrawlDeleteOutcome::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(CrawlDeleteOutcome::Denied)) => {
+            Denied::Insufficient("deleting a crawl someone else added").into_response()
+        }
         Ok(Err(e)) => error_response(e).into_response(),
         Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
     }
@@ -651,6 +662,11 @@ pub(super) async fn delete_collection_handler(
         if plan.member_count > 0 && !with_crawls {
             return Ok(DeleteOutcome::Refused(plan.member_count));
         }
+        // Index lock before the in-process one, as everywhere else.
+        let _index = match acquire_index_for_request(&state.home, "deleting a collection")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(DeleteOutcome::Busy(holder)),
+        };
         let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         crate::index::delete_collection(&state.home, &cid, with_crawls)?;
         state.reload_searcher()?;
@@ -659,6 +675,7 @@ pub(super) async fn delete_collection_handler(
     .await;
     match result {
         Ok(Ok(DeleteOutcome::Done)) => Redirect::to("/").into_response(),
+        Ok(Ok(DeleteOutcome::Busy(holder))) => busy_response(&holder),
         Ok(Ok(DeleteOutcome::Refused(n))) => (
             StatusCode::CONFLICT,
             format!(
@@ -672,9 +689,20 @@ pub(super) async fn delete_collection_handler(
     }
 }
 
-/// Outcome of a collection-delete attempt: done, or refused because it still has
-/// members and `with_crawls` wasn't set (a 409, not a 500).
+/// Outcome of a crawl-delete attempt.
+enum CrawlDeleteOutcome {
+    Deleted(crate::index::CrawlDeletion),
+    /// The caller may not delete a crawl someone else accessioned (403).
+    Denied,
+    /// Another process holds the index lock (503); `String` describes it.
+    Busy(String),
+}
+
+/// Outcome of a collection-delete attempt: done, refused because it still has
+/// members and `with_crawls` wasn't set (a 409, not a 500), or the index was
+/// busy (503).
 enum DeleteOutcome {
     Done,
     Refused(usize),
+    Busy(String),
 }

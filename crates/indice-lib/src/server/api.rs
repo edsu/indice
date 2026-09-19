@@ -273,16 +273,25 @@ pub(super) async fn create_annotation(
     let st = state.clone();
     let collection = req.collection;
     let saved = tokio::task::spawn_blocking(move || {
+        // Index lock before the in-process one: `index_annotation_upsert`
+        // takes it too, and waiting on a cross-process lock from inside
+        // `write_lock` would hang every other workroom write behind this
+        // request (see `index::lock`'s ordering rule).
+        let _index = match acquire_index_for_request(&st.home, "an annotation write")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(Write::Busy(holder)),
+        };
         let _guard = st.write_lock.lock().expect("write lock poisoned");
         annotations::create(&st.home, &collection, &ann)?;
         // Keep full-text search in step with the new note, then publish it.
         crate::index::index_annotation_upsert(&st.home, &collection, &ann)?;
         st.reload_searcher()?;
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(Write::Done(()))
     })
     .await;
     match saved {
-        Ok(Ok(())) => (StatusCode::CREATED, Json(view)).into_response(),
+        Ok(Ok(Write::Done(()))) => (StatusCode::CREATED, Json(view)).into_response(),
+        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
         Ok(Err(e)) => error_response(e),
         Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
@@ -310,6 +319,14 @@ pub(super) async fn update_annotation(
     let AnnotationUpdateReq { collection, note } = req;
     let author_key = author.clone();
     let done = tokio::task::spawn_blocking(move || {
+        // Index lock before the in-process one: `index_annotation_upsert`
+        // takes it too, and waiting on a cross-process lock from inside
+        // `write_lock` would hang every other workroom write behind this
+        // request (see `index::lock`'s ordering rule).
+        let _index = match acquire_index_for_request(&st.home, "an annotation write")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(Write::Busy(holder)),
+        };
         let _guard = st.write_lock.lock().expect("write lock poisoned");
         // `may_edit`, not `owns`: an admin moderates anyone's notes.
         let res = annotations::update(&st.home, &collection, &id, &note, |k| {
@@ -320,19 +337,20 @@ pub(super) async fn update_annotation(
             crate::index::index_annotation_upsert(&st.home, &collection, a)?;
             st.reload_searcher()?;
         }
-        Ok::<_, anyhow::Error>(res)
+        Ok::<_, anyhow::Error>(Write::Done(res))
     })
     .await;
     match done {
-        Ok(Ok(UpdateResult::Updated(a))) => {
+        Ok(Ok(Write::Done(UpdateResult::Updated(a)))) => {
             Json(annotation_view(&a, Some(&author))).into_response()
         }
-        Ok(Ok(UpdateResult::NotFound)) => {
+        Ok(Ok(Write::Done(UpdateResult::NotFound))) => {
             (StatusCode::NOT_FOUND, "no such annotation").into_response()
         }
-        Ok(Ok(UpdateResult::Forbidden)) => {
+        Ok(Ok(Write::Done(UpdateResult::Forbidden))) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
+        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
         Ok(Err(e)) => error_response(e),
         Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
@@ -356,6 +374,14 @@ pub(super) async fn delete_annotation(
     let st = state.clone();
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {
+        // Index lock before the in-process one: `index_annotation_upsert`
+        // takes it too, and waiting on a cross-process lock from inside
+        // `write_lock` would hang every other workroom write behind this
+        // request (see `index::lock`'s ordering rule).
+        let _index = match acquire_index_for_request(&st.home, "an annotation write")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(Write::Busy(holder)),
+        };
         let _guard = st.write_lock.lock().expect("write lock poisoned");
         let outcome = annotations::delete(&st.home, &collection, &id, |k| author.may_edit(k))?;
         // Drop the note from search and publish, when it was actually removed.
@@ -363,15 +389,16 @@ pub(super) async fn delete_annotation(
             crate::index::delete_annotation_from_index(&st.home, &id)?;
             st.reload_searcher()?;
         }
-        Ok::<_, anyhow::Error>(outcome)
+        Ok::<_, anyhow::Error>(Write::Done(outcome))
     })
     .await;
     match done {
-        Ok(Ok(EditOutcome::Done)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(EditOutcome::NotFound)) => {
+        Ok(Ok(Write::Done(EditOutcome::Done))) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(Write::Done(EditOutcome::NotFound))) => {
             (StatusCode::NOT_FOUND, "no such annotation").into_response()
         }
-        Ok(Ok(EditOutcome::Forbidden)) => {
+        Ok(Ok(Write::Done(EditOutcome::Forbidden))) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
         Ok(Err(e)) => error_response(e),

@@ -1094,3 +1094,83 @@ async fn a_finding_aid_save_cannot_erase_a_concurrent_ingest() {
         server.abort();
     }
 }
+
+/// A request-path write returns 503 rather than blocking when another process
+/// holds the index lock.
+///
+/// Background jobs and the CLI queue; a request must not, because a rebuild can
+/// hold the lock for hours and a browser (and the thread serving it) cannot wait
+/// that long. The reply names the holder and carries `Retry-After`.
+///
+/// The lock is taken here from a second thread, which is what another *process*
+/// would look like: the re-entrancy count is per thread, so this contends on the
+/// real flock rather than being handed a nested guard.
+#[tokio::test]
+async fn a_write_returns_503_while_the_index_is_locked() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+
+    // Index something so there is a crawl to try to delete.
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+    indice_lib::index::index_path(&staged, &home, Some("held"), "held-coll").unwrap();
+    let id = indice_lib::collections::Manifest::open(&home.join("index"))
+        .unwrap()
+        .waczs[0]
+        .id
+        .clone();
+
+    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+
+    // Hold the lock for longer than the handler is willing to wait.
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let home = home.clone();
+        std::thread::spawn(move || {
+            let path = home.join("index").join(".index.lock");
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(&path)
+                .unwrap();
+            f.lock().unwrap();
+            held_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        })
+    };
+    held_rx.recv().unwrap();
+
+    let url = format!("{base}/api/crawls/{id}/delete");
+    let origin = base.clone();
+    let (status, retry_after) = tokio::task::spawn_blocking(move || {
+        let res = agent()
+            .post(&url)
+            // Same-origin, or the CSRF check refuses it before the lock matters.
+            .header("Origin", &origin)
+            .send_empty()
+            .unwrap();
+        let retry = res
+            .headers()
+            .get("retry-after")
+            .map(|v| v.to_str().unwrap().to_string());
+        (res.status().as_u16(), retry)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(status, 503, "a busy index must not block the request");
+    assert_eq!(retry_after.as_deref(), Some("30"), "Retry-After is set");
+
+    // The crawl is still there: a 503 means the write did not happen.
+    let after = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(after.waczs.len(), 1, "the refused delete changed nothing");
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    server.abort();
+}
