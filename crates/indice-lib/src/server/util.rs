@@ -108,14 +108,22 @@ pub(super) fn error_response(e: anyhow::Error) -> Response {
 /// (and the thread serving it) must not wait that long.
 pub(super) const REQUEST_LOCK_WAIT: Duration = Duration::from_secs(10);
 
-/// 503 for a write that could not get the index lock in time.
+/// How long to tell a client to wait before retrying.
 ///
-/// `Retry-After: 30` rather than the true remaining time, which nothing knows —
-/// the holder records when it started, not how long it will take.
+/// Nothing knows the true remaining time — the holder records when it started,
+/// not how long it will take — so this is a guess. It is derived from
+/// [`REQUEST_LOCK_WAIT`] rather than written as a literal so the two cannot
+/// drift: telling a client to come back sooner than the next attempt's own
+/// budget would just build a queue of parked threads.
+fn retry_after_secs() -> u64 {
+    REQUEST_LOCK_WAIT.as_secs() * 3
+}
+
+/// 503 for a write that could not get the index lock in time.
 pub(super) fn busy_response(holder: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        [("Retry-After", "30")],
+        [("Retry-After", retry_after_secs().to_string())],
         format!(
             "The search index is busy: {holder} is running. \
              Your change was not saved — try again shortly."

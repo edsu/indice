@@ -137,7 +137,7 @@
         note: text,
       });
       if (r.ok) await reload();
-      else alert("Could not save note (" + r.status + ")");
+      else await reportFailure("save", r);
     });
     body.after(form);
     form.querySelector("textarea").focus();
@@ -165,7 +165,7 @@
         clearSelection();
         await reload();
       } else {
-        alert("Could not add note (" + r.status + ")");
+        await reportFailure("add", r);
       }
     });
     els.composerHost.append(hint, form);
@@ -202,13 +202,27 @@
     return form;
   }
 
+  // Report a failed write. The server explains a 503 in the body — which
+  // operation holds the search index, how long it has been running, and that
+  // nothing was saved — so show that rather than a bare status code, which
+  // tells a curator nothing they can act on.
+  async function reportFailure(verb, r) {
+    let detail = "";
+    try {
+      detail = (await r.text()).trim();
+    } catch (e) {
+      /* fall back to the status alone */
+    }
+    alert(detail || "Could not " + verb + " note (" + r.status + ")");
+  }
+
   async function remove(id) {
     if (!confirm("Delete this note?")) return;
     const r = await postJson("/" + encodeURIComponent(id) + "/delete", {
       collection: state.collection,
     });
     if (r.ok) await reload();
-    else alert("Could not delete note (" + r.status + ")");
+    else await reportFailure("delete", r);
   }
 
   // ── Data flow ─────────────────────────────────────────────────────────────

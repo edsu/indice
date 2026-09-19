@@ -57,10 +57,13 @@
 //! - **It never goes stale.** The OS releases an `flock` on panic, `exit` and
 //!   `SIGKILL`, so unlike Tantivy's writer lock there is no leftover file to
 //!   delete by hand after a crash.
-//! - **It queues rather than failing.** Tantivy's writer lock is
-//!   create-exclusive and non-blocking, so a second ingest fails outright;
-//!   here the second waits, after saying who it is waiting for
-//!   (`reindex (pid 4242) (started 7m ago)`, read back out of the lock file).
+//! - **It queues rather than failing**, for the CLI and for background jobs.
+//!   Tantivy's writer lock is create-exclusive and non-blocking, so a second
+//!   ingest fails outright; here the second waits, after saying who it is
+//!   waiting for (`reindex (pid 4242) (started 7m ago)`, read back out of the
+//!   lock file). A **request** is the exception: it waits only briefly and then
+//!   reports the holder so the handler can answer 503 — see
+//!   [`lock_index_within`]. A browser cannot sit out a multi-hour rebuild.
 //! - **Not honored across a network filesystem.** On NFS/SMB/sshfs `flock` may
 //!   be emulated or a silent no-op, and the re-entrancy map below cannot see
 //!   another host at all. Two hosts writing one home degrades to the old
@@ -84,17 +87,21 @@
 //! cross-process `flock` while holding the mutex that gates every workroom
 //! write, so a long rebuild in another process hangs the whole write surface.
 //!
-//! Nothing enforces the order, and it is now genuinely invertible — so it has
-//! to be a rule rather than an observation. A handler that holds `write_lock`
-//! and then calls a library function which takes this lock deadlocks against a
-//! job that took them in the documented order: classic AB-BA, and it hangs
-//! rather than failing. The handlers that hold `write_lock` today
-//! (`delete_crawl`, `delete_collection`, `set_collection`, the annotation
-//! writes) are safe only because the library functions they call do not take
-//! this lock *yet*. Bringing those under it — the next slice of
-//! `rustyweb-durable-writes-f4h5` — means hoisting the acquisition to the top
-//! of each handler, above `write_lock`, not simply adding it to the library
-//! function.
+//! Nothing enforces the order, and it is genuinely invertible — so it is a rule
+//! rather than an observation. A handler that holds `write_lock` and then calls
+//! a library function which takes this lock deadlocks against a job that took
+//! them in the documented order: classic AB-BA, and it hangs rather than
+//! failing.
+//!
+//! Every handler that writes documents now takes this lock first, via
+//! `server::acquire_index_for_request`, and the library functions they call
+//! take it again re-entrantly. The one remaining `write_lock` holder that does
+//! not is the finding-aid save (`set_collection`), and only because it touches
+//! the manifest and no documents. When the manifest tier arrives it must follow
+//! the same order.
+//!
+//! The way to get this wrong is to add the acquisition to the library function
+//! and leave the handler alone. It compiles, it looks tidier, and it hangs.
 //!
 //! Drop order follows from that: the guards are declared index-lock-first, so
 //! they drop in reverse and the mutex is released before the `flock`. A waiter
