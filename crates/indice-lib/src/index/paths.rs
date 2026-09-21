@@ -90,6 +90,17 @@ pub fn index_dir(home: &Path) -> PathBuf {
     home.join("index")
 }
 
+/// Whether `home` has an index directory at all.
+///
+/// The cheap "is this an archive?" test, for operations that should do nothing
+/// (or fail) rather than create one. Unlike `full_text/meta.json`, this is safe
+/// to check *outside* the index lock: a rebuild's swap renames directories
+/// **inside** `index/` and never removes `index/` itself, so there is no window
+/// where this is momentarily false for an initialized archive.
+pub(crate) fn index_initialized(home: &Path) -> bool {
+    index_dir(home).is_dir()
+}
+
 /// The 4-digit year prefix of an ISO-8601-ish date string (`2022-…` → `2022`),
 /// or `None` if the first four characters aren't all digits. Used to turn a
 /// datapackage `created` / a Browsertrix date range into a coverage-year for the

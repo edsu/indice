@@ -88,6 +88,12 @@ pub fn delete_crawl(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
     // again, earlier, so the wait never happens under `AppState.write_lock`
     // (see `index::lock`'s ordering rule). Re-entrant, so paying for it twice
     // costs nothing.
+    // Nothing to delete from a home with no index, and locking would create
+    // one (see `optimize`). Safe outside the lock: the swap never removes
+    // `index/` itself.
+    if !super::paths::index_initialized(home) {
+        return plan_crawl_deletion(home, crawl_id);
+    }
     let _index = super::lock::lock_index(home, "a crawl deletion", crate::index::no_progress())?;
     let plan = plan_crawl_deletion(home, crawl_id)?;
 
