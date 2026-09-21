@@ -1164,7 +1164,14 @@ async fn a_write_returns_503_while_the_index_is_locked() {
     .unwrap();
 
     assert_eq!(status, 503, "a busy index must not block the request");
-    assert_eq!(retry_after.as_deref(), Some("30"), "Retry-After is set");
+    // Not a literal: the header is derived from the wait budget, so hard-coding
+    // it here would fail with a complaint about Retry-After when someone tunes
+    // the budget, which is not what went wrong.
+    let retry: u64 = retry_after.expect("Retry-After is set").parse().unwrap();
+    assert!(
+        retry >= 1,
+        "Retry-After must never tell a client to retry immediately; got {retry}"
+    );
 
     // The crawl is still there: a 503 means the write did not happen.
     let after = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();

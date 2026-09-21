@@ -202,16 +202,21 @@
     return form;
   }
 
-  // Report a failed write. The server explains a 503 in the body — which
-  // operation holds the search index, how long it has been running, and that
-  // nothing was saved — so show that rather than a bare status code, which
-  // tells a curator nothing they can act on.
+  // Report a failed write. A 503 from indice explains itself in the body —
+  // which operation holds the search index, how long it has been running, and
+  // that nothing was saved — so show that rather than a bare status code.
+  //
+  // Only for 503, deliberately. Other statuses can carry a proxy's HTML error
+  // page or an internal error string with absolute paths in it, neither of
+  // which belongs in an alert().
   async function reportFailure(verb, r) {
     let detail = "";
-    try {
-      detail = (await r.text()).trim();
-    } catch (e) {
-      /* fall back to the status alone */
+    if (r.status === 503) {
+      try {
+        detail = (await r.text()).trim();
+      } catch (e) {
+        /* fall back to the status alone */
+      }
     }
     alert(detail || "Could not " + verb + " note (" + r.status + ")");
   }

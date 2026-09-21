@@ -116,7 +116,10 @@ pub(super) const REQUEST_LOCK_WAIT: Duration = Duration::from_secs(10);
 /// drift: telling a client to come back sooner than the next attempt's own
 /// budget would just build a queue of parked threads.
 fn retry_after_secs() -> u64 {
-    REQUEST_LOCK_WAIT.as_secs() * 3
+    // `as_secs` floors, so a sub-second budget would send `Retry-After: 0` and
+    // invite clients to hammer — the queue of parked threads this is meant to
+    // avoid. At least a second, always.
+    ((REQUEST_LOCK_WAIT.as_secs_f64() * 3.0).ceil() as u64).max(1)
 }
 
 /// 503 for a write that could not get the index lock in time.

@@ -320,18 +320,38 @@ fn acquire(
         .open(&path)
         .with_context(|| format!("opening the index lock {}", path.display()))?;
 
-    let mut announced = false;
+    // Read once, when we first find it busy, and reused if we end up giving up.
+    // Re-reading on every poll tick would seek + parse the lock file ~200 times
+    // per bounded wait and throw all but the last away.
+    let mut holder: Option<String> = None;
     loop {
         match file.try_lock() {
             Ok(()) => break,
             Err(std::fs::TryLockError::WouldBlock) => {
-                let holder =
-                    read_holder(&mut file).unwrap_or_else(|| "another operation".to_string());
-                if !announced {
-                    progress.phase(&format!("waiting for {holder} to finish…"));
-                    tracing::warn!("the search index is locked by {holder}; waiting");
-                    announced = true;
-                }
+                let who = match &holder {
+                    Some(h) => h.clone(),
+                    None => {
+                        let h = read_holder(&mut file)
+                            .unwrap_or_else(|| "another operation".to_string());
+                        match wait {
+                            // A blocking caller really is about to wait, however
+                            // long it takes, so say so where an operator sees it.
+                            Wait::Forever => {
+                                progress.phase(&format!("waiting for {h} to finish…"));
+                                tracing::warn!("the search index is locked by {h}; waiting");
+                            }
+                            // A bounded caller is not going to wait it out — it
+                            // gives up and answers 503. Saying "waiting" at WARN
+                            // once per attempt would fill the log with hundreds
+                            // of wrong lines across one long rebuild.
+                            Wait::Until(_) => {
+                                tracing::debug!("the search index is locked by {h}; will not wait")
+                            }
+                        }
+                        holder = Some(h.clone());
+                        h
+                    }
+                };
                 match wait {
                     Wait::Forever => {
                         file.lock().with_context(|| {
@@ -341,7 +361,7 @@ fn acquire(
                     }
                     Wait::Until(deadline) => {
                         if Instant::now() >= deadline {
-                            return Ok(Acquisition::Busy { holder });
+                            return Ok(Acquisition::Busy { holder: who });
                         }
                         std::thread::sleep(POLL);
                     }
@@ -549,6 +569,99 @@ mod tests {
         let _a = lock_index(&trailing, "index", no_progress()).unwrap();
         let _b = lock_index(&indirect, "index", no_progress()).unwrap();
         assert_eq!(depth(&plain), 3, "all three are the same lock");
+    }
+
+    /// The bounded acquire gives up, and says who it gave up on.
+    #[test]
+    fn a_bounded_acquire_reports_the_holder_and_stops() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let home = home.clone();
+            std::thread::spawn(move || {
+                let g = lock_index(&home, "reindex", no_progress()).unwrap();
+                held_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+                drop(g);
+            })
+        };
+        held_rx.recv().unwrap();
+
+        let started = Instant::now();
+        match lock_index_within(&home, "a delete", Duration::from_millis(150)).unwrap() {
+            Acquisition::Busy { holder } => assert!(
+                holder.starts_with("reindex (pid "),
+                "the 503 needs to name the holder, not fall back: {holder}"
+            ),
+            Acquisition::Held(_) => panic!("must not acquire while another thread holds it"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it must give up near its deadline, not block"
+        );
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    /// It does acquire if the lock frees up partway through the budget — the
+    /// only path where the holder line is written after a sleep.
+    #[test]
+    fn a_bounded_acquire_succeeds_when_the_lock_frees_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let home = home.clone();
+            std::thread::spawn(move || {
+                let g = lock_index(&home, "reindex", no_progress()).unwrap();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(150));
+                drop(g);
+            })
+        };
+        held_rx.recv().unwrap();
+
+        match lock_index_within(&home, "a delete", Duration::from_secs(10)).unwrap() {
+            Acquisition::Held(_) => {}
+            Acquisition::Busy { holder } => panic!("should have acquired, got busy: {holder}"),
+        }
+        holder.join().unwrap();
+        // The winner rewrote the holder line, so a later waiter blames the
+        // right operation.
+        let path = lock_path(&home).unwrap();
+        let _g = lock_index(&home, "index", no_progress()).unwrap();
+        let recorded = HELD
+            .with(|h| {
+                let mut b = h.borrow_mut();
+                read_holder(&mut b.get_mut(&path).unwrap().file)
+            })
+            .unwrap();
+        assert!(
+            recorded.starts_with("index (pid "),
+            "stale holder: {recorded}"
+        );
+    }
+
+    /// An already-held lock returns at once and spends none of the budget —
+    /// which is what makes it safe for a handler to take it and then call a
+    /// library function that takes it again.
+    #[test]
+    fn a_bounded_acquire_nested_in_a_held_lock_is_free() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let _outer = lock_index(home, "a delete", no_progress()).unwrap();
+        let started = Instant::now();
+        match lock_index_within(home, "a delete", Duration::from_secs(30)).unwrap() {
+            Acquisition::Held(_) => {}
+            Acquisition::Busy { .. } => panic!("a re-entrant acquire must never report busy"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the nested acquire must not poll"
+        );
+        assert_eq!(depth(home), 1, "and the nested guard was dropped again");
     }
 
     #[test]
