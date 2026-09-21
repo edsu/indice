@@ -264,7 +264,6 @@ pub(super) async fn create_annotation(
     };
     let audit_target = ann.id.clone();
     let audit_actor = author.clone();
-    let audit_coll = req.collection.as_str().to_string();
     let view = annotation_view(&ann, Some(&author));
     let st = state.clone();
     let collection = req.collection;
@@ -277,18 +276,19 @@ pub(super) async fn create_annotation(
             Ok(l) => l,
             Err(holder) => return Ok(Write::Busy(holder)),
         };
-        // Audited only once the write can actually proceed: recording it
-        // before the lock would log a change for every request that then 503s
-        // — one that provably never happened.
+        let _guard = st.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        annotations::create(&st.home, &collection, &ann)?;
+        // Audited after the write, not before the lock: a 503'd request must
+        // not leave a record of a change the client was told was not saved.
+        // A create has no permission branch to sit behind — any curator may
+        // write a note — so this is the first point where it has happened.
         audit_detail(
             &st,
             &audit_actor,
             Action::AnnotationCreate,
             &audit_target,
-            Some(serde_json::json!({ "collection": audit_coll })),
+            Some(serde_json::json!({ "collection": collection })),
         );
-        let _guard = st.write_lock.lock().expect("write lock poisoned");
-        annotations::create(&st.home, &collection, &ann)?;
         // Keep full-text search in step with the new note, then publish it.
         crate::index::index_annotation_upsert(&st.home, &collection, &ann)?;
         st.reload_searcher()?;
@@ -316,7 +316,6 @@ pub(super) async fn update_annotation(
     let author = curator.principal().clone();
     let audit_actor = author.clone();
     let audit_target = id.clone();
-    let audit_coll = req.collection.as_str().to_string();
     let st = state.clone();
     let AnnotationUpdateReq { collection, note } = req;
     let author_key = author.clone();
@@ -329,23 +328,23 @@ pub(super) async fn update_annotation(
             Ok(l) => l,
             Err(holder) => return Ok(Write::Busy(holder)),
         };
-        // Audited only once the write can actually proceed: recording it
-        // before the lock would log a change for every request that then 503s
-        // — one that provably never happened.
-        audit_detail(
-            &st,
-            &audit_actor,
-            Action::AnnotationUpdate,
-            &audit_target,
-            Some(serde_json::json!({ "collection": audit_coll })),
-        );
-        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        let _guard = st.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         // `may_edit`, not `owns`: an admin moderates anyone's notes.
         let res = annotations::update(&st.home, &collection, &id, &note, |k| {
             author_key.may_edit(k)
         })?;
         // Re-index the edited note (upsert by id) and publish, when it changed.
         if let UpdateResult::Updated(a) = &res {
+            // Audited here: not before the lock (a 503'd request would log a
+            // change that never happened) and not before this check (a 403 or
+            // a 404 would log one too). Only the branch that actually wrote.
+            audit_detail(
+                &st,
+                &audit_actor,
+                Action::AnnotationUpdate,
+                &audit_target,
+                Some(serde_json::json!({ "collection": collection })),
+            );
             crate::index::index_annotation_upsert(&st.home, &collection, a)?;
             st.reload_searcher()?;
         }
@@ -376,9 +375,7 @@ pub(super) async fn delete_annotation(
     Json(req): Json<AnnotationDeleteReq>,
 ) -> Response {
     let author = curator.principal().clone();
-    let audit_actor = author.clone();
     let audit_target = id.clone();
-    let audit_coll = req.collection.as_str().to_string();
     let st = state.clone();
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {
@@ -390,20 +387,18 @@ pub(super) async fn delete_annotation(
             Ok(l) => l,
             Err(holder) => return Ok(Write::Busy(holder)),
         };
-        // Audited only once the write can actually proceed: recording it
-        // before the lock would log a change for every request that then 503s
-        // — one that provably never happened.
-        audit_detail(
-            &st,
-            &audit_actor,
-            Action::AnnotationDelete,
-            &audit_target,
-            Some(serde_json::json!({ "collection": audit_coll })),
-        );
-        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        let _guard = st.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let outcome = annotations::delete(&st.home, &collection, &id, |k| author.may_edit(k))?;
         // Drop the note from search and publish, when it was actually removed.
         if let EditOutcome::Done = outcome {
+            // Audited only on the branch that wrote — see `update_annotation`.
+            audit_detail(
+                &st,
+                &author,
+                Action::AnnotationDelete,
+                &audit_target,
+                Some(serde_json::json!({ "collection": collection })),
+            );
             crate::index::delete_annotation_from_index(&st.home, &id)?;
             st.reload_searcher()?;
         }

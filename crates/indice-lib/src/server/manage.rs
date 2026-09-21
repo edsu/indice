@@ -646,6 +646,16 @@ pub(super) async fn delete_collection_handler(
     // This ends in a recursive remove_dir_all, so the id has to be a valid
     // single path component before it goes anywhere near the filesystem.
     let Some(cid) = CollectionId::parse(&id) else {
+        // Logged rather than audited. Moving the audit to the point of writing
+        // (so a 503 or a 409 stops recording a deletion that never happened)
+        // otherwise loses this entirely, and a rejected id — a typo, or a
+        // traversal attempt — is exactly the attempt worth keeping. It is not
+        // a CollectionDelete, though, so it does not belong in that record.
+        tracing::warn!(
+            actor = %actor.id(),
+            collection = %id,
+            "refused a collection delete: not a valid collection id"
+        );
         return (StatusCode::NOT_FOUND, "unknown collection").into_response();
     };
     let state = state.clone();
