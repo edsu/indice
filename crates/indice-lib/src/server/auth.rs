@@ -633,10 +633,17 @@ pub(super) fn local_redirect_target(referer: &str) -> Option<String> {
     (path.starts_with('/') && !offsite).then(|| path.to_string())
 }
 
-/// `GET /logout` — clear the display session cookie, then redirect. Public and
-/// un-gated on purpose: logging out shouldn't require auth, and it must NOT pass
-/// through the forward-auth middleware (which would immediately re-set the
-/// cookie). By default it redirects to `/`; behind an SSO proxy `logout_redirect`
+/// `POST /logout` — clear the display session cookie, then redirect.
+///
+/// A POST, not a GET, because it changes state: as a GET it was triggerable
+/// from any other site with an `<img src=".../logout">`, since the same-origin
+/// guard only gates state-changing methods. As a POST the existing guard covers
+/// it.
+///
+/// It must still NOT pass through the forward-auth middleware, which re-sets
+/// the display cookie on the way out and would sign you straight back in — so
+/// it is mounted on its own router carrying the CSRF guard alone (see
+/// `server::build_router`). By default it redirects to `/`; behind an SSO proxy `logout_redirect`
 /// points at the proxy's sign-out (e.g. `/oauth2/sign_out?rd=/`) so one click ends
 /// both sessions. With the HTTP Basic stopgap there's no proxy sign-out, so the
 /// browser keeps its cached credentials until it's closed — logout only hides the

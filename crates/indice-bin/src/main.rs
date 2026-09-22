@@ -1064,6 +1064,30 @@ async fn main() -> Result<()> {
                 mc.logout_redirect = std::env::var("INDICE_LOGOUT_REDIRECT")
                     .ok()
                     .filter(|s| !s.is_empty());
+                // Validated at startup, because the handler cannot. `Redirect::to`
+                // panics on anything that is not a valid header value — a stray
+                // newline out of a heredoc or a .env file is enough — and there is
+                // no catch-panic layer, so the first curator to click Log out gets
+                // a dropped connection and the operator gets a backtrace naming
+                // neither the setting nor the cause. Fail here instead, where the
+                // other configuration errors already exit(2).
+                if let Some(dest) = &mc.logout_redirect {
+                    // The same rule `HeaderValue` applies: visible ASCII, plus
+                    // space and tab. Checked here rather than by constructing a
+                    // `HeaderValue`, because axum is only a dev-dependency of
+                    // this crate and one predicate is cheaper than making it a
+                    // real one.
+                    let usable = dest
+                        .bytes()
+                        .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b));
+                    if !usable {
+                        eprintln!(
+                            "error: INDICE_LOGOUT_REDIRECT is not a usable redirect target: {dest:?}\n\
+                             It must be a single line of printable ASCII, e.g. /oauth2/sign_out?rd=/"
+                        );
+                        std::process::exit(2);
+                    }
+                }
                 mc
             } else {
                 indice_lib::server::ManageConfig::local()

@@ -765,3 +765,99 @@ async fn a_failing_audit_log_does_not_fail_the_operation() {
 
     server.abort();
 }
+
+// ── Logout is a state change, so it is a POST behind the same-origin guard ──
+
+/// A GET can no longer log anyone out. See `server::auth::logout` for why it
+/// used to be able to.
+#[tokio::test]
+async fn logout_refuses_a_get() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let status = request("GET", format!("{base}/logout"), None, None).await;
+    assert_eq!(
+        status, 405,
+        "a GET must not log anyone out; it is method-not-allowed now"
+    );
+    server.abort();
+}
+
+/// And a cross-site POST is refused by the existing guard, which is the point
+/// of making it a POST at all.
+#[tokio::test]
+async fn logout_refuses_a_cross_site_post() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let url = format!("{base}/logout");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&url)
+            .header("Origin", "https://evil.example")
+            .send("")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 403, "a cross-site logout must be refused");
+    server.abort();
+}
+
+/// A same-origin POST still works, and still expires the cookie.
+///
+/// Also pins that it is *not* behind forward-auth: that middleware re-sets the
+/// display cookie on its way out, so logging out through it would sign you
+/// straight back in. This request carries no proxy credentials at all.
+#[tokio::test]
+async fn logout_clears_the_cookie_for_a_same_origin_post() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let url = format!("{base}/logout");
+    let origin = base.clone();
+    let (status, cookies) = tokio::task::spawn_blocking(move || {
+        let res = agent()
+            .post(&url)
+            .header("Origin", &origin)
+            .send("")
+            .unwrap();
+        // ALL of them, not the first. Both `clear_session_cookie` and
+        // `set_session_cookie` *append*, so if logout ever ended up behind
+        // forward-auth the response would carry the expiry followed by a fresh
+        // session — and reading only the first header would report success
+        // while the user was signed straight back in. That is the exact
+        // regression this test exists to catch.
+        let cookies: Vec<String> = res
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        (res.status().as_u16(), cookies)
+    })
+    .await
+    .unwrap();
+
+    // 303 See Other, which is the right redirect for a POST: the browser
+    // follows it with a GET, so a refresh afterwards does not re-submit.
+    assert_eq!(status, 303, "a same-origin logout must be allowed");
+    assert!(
+        cookies.iter().any(|c| c.starts_with("indice_session=;")
+            && (c.contains("Max-Age=0") || c.contains("Expires="))),
+        "logout must expire the session cookie, got: {cookies:?}"
+    );
+    assert!(
+        !cookies
+            .iter()
+            .any(|c| c.starts_with("indice_session=") && !c.starts_with("indice_session=;")),
+        "and must not set a fresh one — that would mean it is behind \
+         forward-auth, which re-sets the cookie on its way out: {cookies:?}"
+    );
+    server.abort();
+}

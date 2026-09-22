@@ -65,7 +65,14 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--line); padding-bottom: 0.
 .appbar .who b { color: var(--ink); font-weight: 650; }
 .appbar .login { margin-left: auto; font-size: 0.82rem; color: var(--muted); white-space: nowrap; text-decoration: none; }
 .appbar .login:hover { color: var(--ink); text-decoration: underline; }
-.appbar .logout { margin-left: 0.75rem; font-size: 0.82rem; color: var(--muted); white-space: nowrap; text-decoration: none; }
+/* Log out is a POST, so it is a button in a form; these rules make it read as
+   the plain link it replaced. */
+/* `display: contents` and not `inline`: .appbar is a flex container, which
+   blockifies its items, so `inline` would be silently ignored. This removes the
+   wrapper from layout entirely and makes the button itself the flex item, so it
+   aligns with the adjacent text the way the old link did. */
+.appbar .logout-form { display: contents; }
+.appbar .logout { margin-left: 0.75rem; font: inherit; font-size: 0.82rem; color: var(--muted); white-space: nowrap; background: none; border: 0; padding: 0; cursor: pointer; }
 .appbar .logout:hover { color: var(--ink); text-decoration: underline; }
 /* Workroom: same bar, clay-tinted with a top rule (the accent itself flips via
    the .mode-manage body class). */
