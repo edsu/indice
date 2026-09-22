@@ -315,13 +315,17 @@ derived = rebuildable index.*
     full_text/              #   the Tantivy index
     thumbs/                 #   auto-selected representative-image cache
     .index.lock             #   advisory lock serializing the index writers (empty of state)
+    .manifest.lock          #   advisory lock serializing manifest read-modify-writes
 ```
 
 Recommended for a curator keeping their home in git: `echo '/index' >> .gitignore` and
 `git add collections/`. Everything a curator authors — prose, pinned images — lives under
 `collections/<slug>/`; everything the tool derives is rebuildable under `index/`.
-(`.index.lock` holds no state — it exists to be locked — but it should not be
-deleted while indice is running: see the note on inode stability below.)
+(The two `.lock` files hold no state — they exist to be locked — but neither
+should be deleted while indice is running: see the note on inode stability
+below. Removing one out from under a running process leaves it holding an
+orphaned inode while the next process locks a fresh one, which is two
+"exclusive" holders and no error.)
 
 **Every crawl belongs to a collection** (there are no auto "singleton" collections): `import`
 supplies it; hand-`index` requires `--collection` (see *Two-level collection model*).
@@ -929,9 +933,15 @@ one — two exclusive holders and no symptom until data is lost. That is this
 crate's one deliberate exception to the atomic-write rule.
 
 It is acquired **before the manifest is read**, not just before the index is
-touched. Otherwise a crawl could land between the read and the acquisition,
-which leaves it out of the rebuild's snapshot and erased from the manifest the
-rebuild saves at the end — the same loss, through a smaller window.
+touched. Otherwise a crawl could land between the read and the acquisition and
+be left out of the rebuild's `targets`, so the swap deletes its documents.
+
+That reason is worth stating precisely, because half of the original one has
+since gone away. It used to be that such a crawl was *also* erased from the
+manifest, because the rebuild saved the copy it had read at the start; the
+manifest tier below removed that half by re-reading inside a brief hold at the
+end. The document loss remains, and it is sufficient on its own — moving the
+acquisition after the read would reintroduce it.
 
 Readers take nothing: they open the index read-only, Tantivy's `META_LOCK`
 already stops segment files being collected under a reloading reader, and a

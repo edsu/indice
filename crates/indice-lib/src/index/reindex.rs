@@ -231,10 +231,13 @@ impl crate::index::Ingest<'_> {
         //
         // The manifest is re-opened inside the hold rather than reused from
         // the snapshot above, which is the whole point: a rebuild takes hours,
-        // and anything a curator saved meanwhile — a description, a pinned
-        // thumbnail — would be erased by saving a copy read before they
-        // started. Only the entries this rebuild actually produced are
-        // touched; a skipped source keeps whatever is already recorded.
+        // and anything a curator saved meanwhile would be erased by saving a
+        // copy read before they started. What that covers is what
+        // `Manifest::save` writes — `waczs.json` and the finding aids, so a
+        // description, a curator, a rights statement. (Not a pinned thumbnail:
+        // that is a plain file under `collections/<slug>/`, which `save` never
+        // touches.) Only the entries this rebuild produced are upserted; a
+        // skipped source keeps whatever is already recorded.
         super::manifest::manifest_write(home, "a rebuild", |m| {
             for indexed in rebuilt {
                 super::ingest::upsert(m, indexed);

@@ -286,9 +286,17 @@ impl Ingest<'_> {
             .with_context(|| format!("creating index dir {}", index_dir.display()))?;
 
         // A read-only snapshot, for planning only: which sources the location
-        // resolves to, and which are already registered. Reads take no lock —
-        // an atomic rename means there is no torn read — and the writes below
-        // each re-open the manifest inside their own hold.
+        // resolves to, and which are already registered. Reads take no lock,
+        // and the writes below each re-open the manifest inside their own hold.
+        //
+        // Worth being exact about what unlocked reading does and does not give
+        // you. No *file* can be read half-written, because every write is an
+        // atomic rename. The manifest is not one file though — it is
+        // `waczs.json` plus a finding aid per collection, saved as separate
+        // atomic writes — so a reader interleaved with a writer can see the new
+        // `waczs.json` beside an old README. Fine here, where the snapshot only
+        // decides which sources to skip, and the reason the *writes* re-read
+        // rather than reusing it.
         let manifest = Manifest::open(&index_dir)?;
 
         // Validate the argument and file local WACZs into the collection's archive

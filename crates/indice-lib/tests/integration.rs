@@ -1803,7 +1803,9 @@ fn a_description_saved_during_an_ingest_is_not_erased() {
         let (home, gate) = (home.clone(), gate.clone());
         std::thread::spawn(move || {
             gate.wait();
-            indice_lib::index::Ingest::new(&home).index_location(&big.to_string_lossy(), "Notes")
+            let r = indice_lib::index::Ingest::new(&home)
+                .index_location(&big.to_string_lossy(), "Notes");
+            (r, std::time::Instant::now())
         })
     };
     let describe = {
@@ -1812,7 +1814,8 @@ fn a_description_saved_during_an_ingest_is_not_erased() {
             gate.wait();
             // Land inside the ingest, which is where the old code lost it.
             std::thread::sleep(std::time::Duration::from_millis(40));
-            indice_lib::index::set_collection(
+            let started = std::time::Instant::now();
+            let r = indice_lib::index::set_collection(
                 &home,
                 "Notes",
                 &indice_lib::collections::CollectionFields {
@@ -1820,11 +1823,27 @@ fn a_description_saved_during_an_ingest_is_not_erased() {
                     ..Default::default()
                 },
                 None,
-            )
+            );
+            (r, started)
         })
     };
-    ingest.join().unwrap().expect("the ingest succeeds");
-    describe.join().unwrap().expect("the description saves");
+    let (ingest_result, ingest_finished) = ingest.join().unwrap();
+    let (describe_result, describe_started) = describe.join().unwrap();
+    ingest_result.expect("the ingest succeeds");
+    describe_result.expect("the description saves");
+
+    // Without this the test could pass vacuously. The two threads are released
+    // together, but if the ingest finished inside the 40ms head start — a
+    // faster machine, a warm cache, a smaller fixture — the description would
+    // be saved after it was already over, never entering the window the old
+    // code lost it in, and the assertions below would hold against the unfixed
+    // code too. Fail loudly instead, so the fixture gets made bigger rather
+    // than the guard quietly becoming decorative.
+    assert!(
+        describe_started < ingest_finished,
+        "the two writes did not overlap, so this run proved nothing: the ingest \
+         finished before the description started"
+    );
 
     let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
     let coll = manifest
