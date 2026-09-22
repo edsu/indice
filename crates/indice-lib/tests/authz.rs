@@ -861,3 +861,80 @@ async fn logout_clears_the_cookie_for_a_same_origin_post() {
     );
     server.abort();
 }
+
+// ── /files stays anonymous-only cross-origin ───────────────────────────────
+
+/// `/files/{id}` serves raw WACZ bytes with `Access-Control-Allow-Origin: *`,
+/// which is intentional: the bytes are already public, and ReplayWeb.page has
+/// to range-read them from another origin.
+///
+/// That is only safe while it stays *anonymous*. `ACAO: *` and
+/// `Access-Control-Allow-Credentials: true` must never appear together — the
+/// combination would let any site read a private archive using the visitor's
+/// own credentials, and browsers reject the pair for exactly that reason. This
+/// pins it now, so credentialed access or private collections cannot introduce
+/// it quietly later.
+#[tokio::test]
+async fn files_allows_anonymous_cross_origin_reads_only() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+    indice_lib::index::index_path(&staged, &home, Some("cors"), "cors-coll").unwrap();
+    let id = indice_lib::collections::Manifest::open(&home.join("index"))
+        .unwrap()
+        .waczs[0]
+        .id
+        .clone();
+
+    let (base, server) = serve(home, indice_lib::server::ManageConfig::off()).await;
+    let url = format!("{base}/files/{id}");
+
+    // Both branches. `serve_file` builds the 206 (range) and 200 (whole file)
+    // responses from two separate `Response::builder()` chains that each spell
+    // the CORS headers out, so testing one proves nothing about the other —
+    // and the range branch is the one replay actually uses, which makes it the
+    // one a credentialed-read feature would touch first.
+    for range in [None, Some("bytes=0-99")] {
+        let url = url.clone();
+        let (status, acao, acac) = tokio::task::spawn_blocking(move || {
+            let mut req = agent().get(&url).header("Origin", "https://replayweb.page");
+            if let Some(r) = range {
+                req = req.header("Range", r);
+            }
+            let res = req.call().unwrap();
+            let h = |n: &str| {
+                res.headers()
+                    .get(n)
+                    .map(|v| v.to_str().unwrap().to_string())
+            };
+            (
+                res.status().as_u16(),
+                h("access-control-allow-origin"),
+                h("access-control-allow-credentials"),
+            )
+        })
+        .await
+        .unwrap();
+
+        let which = if range.is_some() { "range" } else { "whole" };
+        assert_eq!(
+            status,
+            if range.is_some() { 206 } else { 200 },
+            "{which} request"
+        );
+        assert_eq!(
+            acao.as_deref(),
+            Some("*"),
+            "{which}: replay reads these bytes from another origin"
+        );
+        assert_eq!(
+            acac, None,
+            "{which}: ACAO:* with credentials would let any site read the \
+             archive as the visitor; the pair must never appear"
+        );
+    }
+    server.abort();
+}
