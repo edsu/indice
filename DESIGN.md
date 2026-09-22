@@ -977,9 +977,39 @@ rather than one per member, which is where the re-entrancy earns its keep: a
 rebuild cannot slot in between two members and resurrect the ones already
 removed.
 
-A write that touches just `waczs.json` or a finding aid adds no documents, so a
-rebuild's output is not stale with respect to it; that tier gets its own,
-always-brief, hold rather than waiting behind a rebuild.
+### The manifest's critical section
+
+A write that touches just `waczs.json` adds no documents, so a rebuild's output
+is not stale with respect to it, and queueing a description edit behind a
+multi-hour rebuild would be the wrong trade. The manifest gets its own lock,
+`<index_dir>/.manifest.lock`, ordered *inside* the index lock: an ingest needs
+both, a finding-aid save needs only the second.
+
+The hazard it closes is not a torn file — atomic rename already prevents that.
+It is that **every manifest change is a read-modify-write**: `Manifest::save`
+rewrites the file wholesale from an in-memory vec, so a writer that reads,
+thinks, and then saves erases whatever anyone else committed in between. Both
+halves look like ordinary correct code, which is why this never showed up in a
+diff. Locking `save` alone would not help, because by then the stale read has
+already happened — so the lock has to span the read, which is what
+`index::manifest::manifest_write` is: open, hand to the caller, save, all
+inside one hold.
+
+The rule that follows is **nobody may hold the manifest across a long
+operation**. An ingest used to open it before its loop and save after each
+crawl, and a rebuild used to open it at the start and save at the end — both
+the stale-read window above, with the whole operation in the middle, so a
+description saved during either was simply lost. Neither holds it now:
+`index_one` returns what it learned instead of writing it, and the caller
+applies that under a brief hold. An ingest applies one crawl at a time. A
+rebuild collects and applies all of them in a single hold after the swap, which
+keeps its all-or-nothing behaviour: a rebuild that dies partway leaves the
+manifest untouched, rather than leaving entries that describe documents sitting
+in `full_text.new` that were never swapped in.
+
+Reads take no lock, and the planning reads — which sources a location resolves
+to, which are already registered, what a rebuild's targets are — stay outside
+it.
 
 ### Progress reporting
 
