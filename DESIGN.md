@@ -310,17 +310,43 @@ derived = rebuildable index.*
     crawls/<id>.md          #   optional per-crawl curator note
     crawls/<id>.jpg         #   optional curator-pinned crawl thumbnail
   archive/<slug>/…          # local WACZ files, organized by collection (browsable)
-  index/                    # derived — add to .gitignore
-    waczs.json              #   registration ledger (source + membership) + derived provenance
-    full_text/              #   the Tantivy index
-    thumbs/                 #   auto-selected representative-image cache
+  index/                    # mostly derived — but see waczs.json below
+    waczs.json              #   NOT derived: the only record of which crawls exist
+    full_text/              #   the Tantivy index (rebuildable: `indice reindex`)
+    thumbs/                 #   auto-selected representative-image cache (rebuildable)
     .index.lock             #   advisory lock serializing the index writers (empty of state)
     .manifest.lock          #   advisory lock serializing manifest read-modify-writes
 ```
 
 Recommended for a curator keeping their home in git: `echo '/index' >> .gitignore` and
 `git add collections/`. Everything a curator authors — prose, pinned images — lives under
-`collections/<slug>/`; everything the tool derives is rebuildable under `index/`.
+`collections/<slug>/`.
+
+**`index/waczs.json` is the exception, and it is not rebuildable.** Everything
+else under `index/` can be reconstructed by re-indexing, which makes it easy to
+treat the whole directory as throwaway — and it is not. `waczs.json` holds the
+only copy of:
+
+- **which crawls exist at all**, and which collection each belongs to;
+- **where a remote crawl came from** — the URL, or the Browsertrix org/item —
+  since nothing else records it;
+- **crawl custody** (`added_by`), which decides who may delete what;
+- **import provenance** (`browsertrix`, `archive_it`), which is also how an
+  incremental re-import knows what it already has.
+
+Lose it and local WACZs under `archive/` survive, finding aids survive, and the
+index can be rebuilt — so it looks recoverable. What is actually gone is every
+remote crawl (nothing remembers where to fetch it), every custody record, and
+the ability to re-import without re-downloading. So back it up, or commit it.
+
+Committing it works and diffs reasonably, with one thing to weigh first: it
+stores `added_by` as a `SubjectId`, derived from a login address. That is
+deliberate everywhere else — the crawl page is public, so names resolve through
+`users.yaml` at render time rather than being baked in — but a *public* git
+repository would publish those identifiers in its history, where they are
+awkward to remove later. A private repo, or a backup outside git, avoids the
+question.
+
 (The two `.lock` files hold no state — they exist to be locked — but neither
 should be deleted while indice is running: see the note on inode stability
 below. Removing one out from under a running process leaves it holding an
