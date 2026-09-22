@@ -310,18 +310,48 @@ derived = rebuildable index.*
     crawls/<id>.md          #   optional per-crawl curator note
     crawls/<id>.jpg         #   optional curator-pinned crawl thumbnail
   archive/<slug>/…          # local WACZ files, organized by collection (browsable)
-  index/                    # derived — add to .gitignore
-    waczs.json              #   registration ledger (source + membership) + derived provenance
-    full_text/              #   the Tantivy index
-    thumbs/                 #   auto-selected representative-image cache
+  index/                    # mostly derived — but see waczs.json below
+    waczs.json              #   NOT derived: the only record of which crawls exist
+    full_text/              #   the Tantivy index (rebuildable: `indice reindex`)
+    thumbs/                 #   auto-selected representative-image cache (rebuildable)
     .index.lock             #   advisory lock serializing the index writers (empty of state)
+    .manifest.lock          #   advisory lock serializing manifest read-modify-writes
 ```
 
 Recommended for a curator keeping their home in git: `echo '/index' >> .gitignore` and
 `git add collections/`. Everything a curator authors — prose, pinned images — lives under
-`collections/<slug>/`; everything the tool derives is rebuildable under `index/`.
-(`.index.lock` holds no state — it exists to be locked — but it should not be
-deleted while indice is running: see the note on inode stability below.)
+`collections/<slug>/`.
+
+**`index/waczs.json` is the exception, and it is not rebuildable.** Everything
+else under `index/` can be reconstructed by re-indexing, which makes it easy to
+treat the whole directory as throwaway — and it is not. `waczs.json` holds the
+only copy of:
+
+- **which crawls exist at all**, and which collection each belongs to;
+- **where a remote crawl came from** — the URL, or the Browsertrix org/item —
+  since nothing else records it;
+- **crawl custody** (`added_by`), which decides who may delete what;
+- **import provenance** (`browsertrix`, `archive_it`), which is also how an
+  incremental re-import knows what it already has.
+
+Lose it and local WACZs under `archive/` survive, finding aids survive, and the
+index can be rebuilt — so it looks recoverable. What is actually gone is every
+remote crawl (nothing remembers where to fetch it), every custody record, and
+the ability to re-import without re-downloading. So back it up, or commit it.
+
+Committing it works and diffs reasonably, with one thing to weigh first: it
+stores `added_by` as a `SubjectId`, derived from a login address. That is
+deliberate everywhere else — the crawl page is public, so names resolve through
+`users.yaml` at render time rather than being baked in — but a *public* git
+repository would publish those identifiers in its history, where they are
+awkward to remove later. A private repo, or a backup outside git, avoids the
+question.
+
+(The two `.lock` files hold no state — they exist to be locked — but neither
+should be deleted while indice is running: see the note on inode stability
+below. Removing one out from under a running process leaves it holding an
+orphaned inode while the next process locks a fresh one, which is two
+"exclusive" holders and no error.)
 
 **Every crawl belongs to a collection** (there are no auto "singleton" collections): `import`
 supplies it; hand-`index` requires `--collection` (see *Two-level collection model*).
@@ -929,9 +959,15 @@ one — two exclusive holders and no symptom until data is lost. That is this
 crate's one deliberate exception to the atomic-write rule.
 
 It is acquired **before the manifest is read**, not just before the index is
-touched. Otherwise a crawl could land between the read and the acquisition,
-which leaves it out of the rebuild's snapshot and erased from the manifest the
-rebuild saves at the end — the same loss, through a smaller window.
+touched. Otherwise a crawl could land between the read and the acquisition and
+be left out of the rebuild's `targets`, so the swap deletes its documents.
+
+That reason is worth stating precisely, because half of the original one has
+since gone away. It used to be that such a crawl was *also* erased from the
+manifest, because the rebuild saved the copy it had read at the start; the
+manifest tier below removed that half by re-reading inside a brief hold at the
+end. The document loss remains, and it is sufficient on its own — moving the
+acquisition after the read would reintroduce it.
 
 Readers take nothing: they open the index read-only, Tantivy's `META_LOCK`
 already stops segment files being collected under a reloading reader, and a
@@ -977,9 +1013,39 @@ rather than one per member, which is where the re-entrancy earns its keep: a
 rebuild cannot slot in between two members and resurrect the ones already
 removed.
 
-A write that touches just `waczs.json` or a finding aid adds no documents, so a
-rebuild's output is not stale with respect to it; that tier gets its own,
-always-brief, hold rather than waiting behind a rebuild.
+### The manifest's critical section
+
+A write that touches just `waczs.json` adds no documents, so a rebuild's output
+is not stale with respect to it, and queueing a description edit behind a
+multi-hour rebuild would be the wrong trade. The manifest gets its own lock,
+`<index_dir>/.manifest.lock`, ordered *inside* the index lock: an ingest needs
+both, a finding-aid save needs only the second.
+
+The hazard it closes is not a torn file — atomic rename already prevents that.
+It is that **every manifest change is a read-modify-write**: `Manifest::save`
+rewrites the file wholesale from an in-memory vec, so a writer that reads,
+thinks, and then saves erases whatever anyone else committed in between. Both
+halves look like ordinary correct code, which is why this never showed up in a
+diff. Locking `save` alone would not help, because by then the stale read has
+already happened — so the lock has to span the read, which is what
+`index::manifest::manifest_write` is: open, hand to the caller, save, all
+inside one hold.
+
+The rule that follows is **nobody may hold the manifest across a long
+operation**. An ingest used to open it before its loop and save after each
+crawl, and a rebuild used to open it at the start and save at the end — both
+the stale-read window above, with the whole operation in the middle, so a
+description saved during either was simply lost. Neither holds it now:
+`index_one` returns what it learned instead of writing it, and the caller
+applies that under a brief hold. An ingest applies one crawl at a time. A
+rebuild collects and applies all of them in a single hold after the swap, which
+keeps its all-or-nothing behaviour: a rebuild that dies partway leaves the
+manifest untouched, rather than leaving entries that describe documents sitting
+in `full_text.new` that were never swapped in.
+
+Reads take no lock, and the planning reads — which sources a location resolves
+to, which are already registered, what a rebuild's targets are — stay outside
+it.
 
 ### Progress reporting
 

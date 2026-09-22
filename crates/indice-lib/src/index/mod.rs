@@ -7,6 +7,7 @@ use crate::collections::Source;
 mod delete;
 mod ingest;
 pub(crate) mod lock;
+pub(crate) mod manifest;
 mod metadata;
 mod optimize;
 mod paths;

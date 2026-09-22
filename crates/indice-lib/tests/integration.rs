@@ -1772,3 +1772,94 @@ fn an_annotation_write_waits_for_the_index_lock() {
     writer.join().unwrap();
     holder.join().unwrap();
 }
+
+/// A description saved during an ingest must survive it.
+///
+/// This is what the manifest tier is for. `Manifest::save` rewrites
+/// `waczs.json` wholesale from an in-memory vec, and an ingest used to open the
+/// manifest before its loop and save after each crawl — so a curator editing a
+/// finding aid in that window had their edit read, overwritten and lost, with
+/// no error on either side. The window was the length of the ingest.
+///
+/// Both sides now re-open the manifest inside their own brief hold, so neither
+/// can be writing from a stale copy.
+#[test]
+fn a_description_saved_during_an_ingest_is_not_erased() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    // Seed the collection so there is something to describe, and so the ingest
+    // below is adding a second crawl to an existing manifest.
+    let seed = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &seed).unwrap();
+    indice_lib::index::index_path(&seed, &home, Some("seed"), "Notes").unwrap();
+
+    let big = archive.join("a.wacz");
+    std::fs::copy(fixture("a.wacz"), &big).unwrap();
+
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let ingest = {
+        let (home, gate) = (home.clone(), gate.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            let r = indice_lib::index::Ingest::new(&home)
+                .index_location(&big.to_string_lossy(), "Notes");
+            (r, std::time::Instant::now())
+        })
+    };
+    let describe = {
+        let (home, gate) = (home.clone(), gate.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            // Land inside the ingest, which is where the old code lost it.
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            let started = std::time::Instant::now();
+            let r = indice_lib::index::set_collection(
+                &home,
+                "Notes",
+                &indice_lib::collections::CollectionFields {
+                    narrative: Some("A description a curator typed mid-ingest.".into()),
+                    ..Default::default()
+                },
+                None,
+            );
+            (r, started)
+        })
+    };
+    let (ingest_result, ingest_finished) = ingest.join().unwrap();
+    let (describe_result, describe_started) = describe.join().unwrap();
+    ingest_result.expect("the ingest succeeds");
+    describe_result.expect("the description saves");
+
+    // Without this the test could pass vacuously. The two threads are released
+    // together, but if the ingest finished inside the 40ms head start — a
+    // faster machine, a warm cache, a smaller fixture — the description would
+    // be saved after it was already over, never entering the window the old
+    // code lost it in, and the assertions below would hold against the unfixed
+    // code too. Fail loudly instead, so the fixture gets made bigger rather
+    // than the guard quietly becoming decorative.
+    assert!(
+        describe_started < ingest_finished,
+        "the two writes did not overlap, so this run proved nothing: the ingest \
+         finished before the description started"
+    );
+
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let coll = manifest
+        .collections
+        .iter()
+        .find(|c| c.id.as_str() == "notes")
+        .expect("the collection");
+    assert_eq!(
+        coll.narrative.as_deref(),
+        Some("A description a curator typed mid-ingest."),
+        "the curator's description was erased by the ingest"
+    );
+    assert_eq!(
+        manifest.waczs.len(),
+        2,
+        "and both crawls are registered: {:?}",
+        manifest.waczs.iter().map(|w| &w.name).collect::<Vec<_>>()
+    );
+}

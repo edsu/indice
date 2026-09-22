@@ -21,13 +21,13 @@ pub fn set_collection(
     // identity — an unattributed edit is recorded as such rather than invented.
     actor: Option<&crate::identity::SubjectId>,
 ) -> Result<String> {
-    let index_dir = index_dir(home);
-    std::fs::create_dir_all(&index_dir)
-        .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-    let mut manifest = Manifest::open(&index_dir)?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let id = manifest.apply_fields(name, fields, &now, actor);
-    manifest.save()?;
+    // No `create_dir_all` here: `manifest_write` takes the lock, and taking the
+    // lock creates `index/`. Doing it twice is two syscalls for nothing and a
+    // second place that has to agree about where the index dir comes from.
+    let id = super::manifest::manifest_write(home, "a collection edit", |manifest| {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        Ok(manifest.apply_fields(name, fields, &now, actor))
+    })?;
     info!(collection = %id, "collection metadata updated");
     Ok(id)
 }
@@ -41,14 +41,13 @@ pub fn seed_collection(
     name: &str,
     fields: &crate::collections::CollectionFields,
 ) -> Result<String> {
-    let index_dir = index_dir(home);
-    std::fs::create_dir_all(&index_dir)
-        .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-    let mut manifest = Manifest::open(&index_dir)?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    // See `set_collection`: taking the manifest lock creates `index/`.
     let id = crate::collections::CollectionId::from_name(name);
-    manifest.seed_fields(&id, name, fields, &now);
-    manifest.save()?;
+    super::manifest::manifest_write(home, "a collection seed", |manifest| {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        manifest.seed_fields(&id, name, fields, &now);
+        Ok(())
+    })?;
     Ok(id.to_string())
 }
 

@@ -165,7 +165,7 @@ struct MergedPage {
 /// Provenance and capture stats gathered during one WACZ indexing pass, so the
 /// manifest can record them without re-reading the WARCs.
 #[derive(Default, Debug)]
-pub(super) struct CrawlStats {
+pub(in crate::index) struct CrawlStats {
     pub pages: u64,
     pub earliest_capture: Option<String>,
     pub latest_capture: Option<String>,

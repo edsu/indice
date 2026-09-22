@@ -131,11 +131,11 @@ pub fn delete_crawl(home: &Path, crawl_id: &str) -> Result<CrawlDeletion> {
     ));
 
     // 3. Remove the manifest entry last.
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    manifest.remove_wacz(crawl_id);
-    manifest
-        .save()
-        .context("saving the manifest after deletion")?;
+    super::manifest::manifest_write(home, "a crawl deletion", |manifest| {
+        manifest.remove_wacz(crawl_id);
+        Ok(())
+    })
+    .context("saving the manifest after deletion")?;
 
     info!(crawl = %crawl_id, "crawl deleted");
     Ok(plan)
@@ -207,15 +207,37 @@ pub fn delete_collection(
         .map(|a| a.id)
         .collect();
 
-    // Remove the grouping last: the manifest entry, then its finding-aid dir.
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let removed = manifest.remove_collection(id);
-    manifest
-        .save()
-        .context("saving the manifest after deleting a collection")?;
-    if removed.is_some() {
-        let _ = std::fs::remove_dir_all(crate::collections::collection_dir(home, id));
-    }
+    // Remove the grouping last: the manifest entry and its finding-aid dir,
+    // both inside one manifest hold.
+    //
+    // The directory removal has to be in here, not after. A finding aid *is*
+    // how a collection is stored — `Manifest::open` reads
+    // `collections/<slug>/README.md`, and `save` only rewrites the collections
+    // still present, so dropping one from the in-memory vec deletes nothing on
+    // disk. `remove_dir_all` is the delete. Doing it after releasing the lock
+    // left a window in which a concurrent `set_collection` for the same slug
+    // could recreate the finding aid — bringing the collection back after its
+    // crawls and documents were already gone — or make the removal fail with
+    // ENOTEMPTY. That window is wider now than it was, because a description
+    // can be saved during a long index-locked operation, which is the whole
+    // point of the manifest tier.
+    //
+    // The error is also no longer discarded: a collection whose finding aid
+    // survives is a collection that comes back on the next read, which the
+    // caller should hear about rather than discover later.
+    super::manifest::manifest_write(home, "a collection deletion", |manifest| {
+        if manifest.remove_collection(id).is_some() {
+            let dir = crate::collections::collection_dir(home, id);
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(anyhow::Error::new(e))
+                        .with_context(|| format!("removing the finding aid at {}", dir.display()));
+                }
+            }
+        }
+        Ok(())
+    })
+    .context("deleting the collection")?;
 
     if !ann_ids.is_empty() {
         let full_text = index_dir(home).join("full_text");

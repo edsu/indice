@@ -548,13 +548,20 @@ pub(super) async fn create_collection(
     // it off the async runtime. The homepage re-reads the manifest per request,
     // so the new/edited collection shows immediately (no searcher reload needed).
     let result = tokio::task::spawn_blocking(move || {
-        // Takes the same write lock as every other manifest mutation. It is
-        // easy to assume a finding-aid edit doesn't need it, but `Manifest::save`
-        // rewrites waczs.json wholesale whatever changed — so saving a
-        // description while an add-crawls job runs could install a stale copy
-        // and erase that job's entry, leaving its documents in Tantivy with no
-        // manifest record. Same bug as PR #126, different handler.
-        let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Deliberately does NOT take `write_lock`.
+        //
+        // It used to, for a good reason: `Manifest::save` rewrites waczs.json
+        // wholesale whatever changed, so saving a description while an
+        // add-crawls job ran could install a stale copy and erase that job's
+        // entry. `set_collection` now does its read-modify-write inside the
+        // manifest lock, which gives that exclusion properly — against other
+        // processes too, which the mutex never did.
+        //
+        // Keeping the mutex as well would undo the point of the two tiers. An
+        // add-crawls job holds `write_lock` for its whole run, so a curator
+        // saving a description would still queue behind the entire ingest —
+        // the very thing the manifest tier exists to stop. Describing is
+        // supposed to stay available while crawls are being added.
         crate::index::set_collection(&state.home, &name, &fields, Some(&actor))
     })
     .await;

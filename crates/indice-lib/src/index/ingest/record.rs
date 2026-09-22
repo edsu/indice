@@ -13,18 +13,24 @@ use super::pages::CrawlStats;
 /// Everything the pipeline learned about one WACZ, for [`upsert`] to fold into
 /// a manifest entry.
 ///
+/// Owned rather than borrowed, because it now outlives the frame that built
+/// it: `index_one` hands it back and the *caller* decides when to apply it.
+/// That is what keeps the manifest hold brief — an ingest applies one per
+/// crawl, a rebuild applies all of them in a single hold at the end — instead
+/// of keeping the manifest open across the whole operation.
+///
 /// The phases hand each other a named value rather than an argument list. That
 /// is worth more here than anywhere else in the pipeline: this is the frame
 /// where a new piece of provenance lands, and it is the frame crawl custody
 /// could not reach when `added_by` had to be set out of band instead of being
 /// threaded through. It reaches it now — `actor` below is that field.
-pub(super) struct Indexed<'a> {
-    pub id: &'a str,
+pub(in crate::index) struct Indexed {
+    pub id: String,
     /// The curated collection (id, display name) this crawl belongs to.
-    pub collection: (&'a CollectionId, &'a str),
+    pub collection: (CollectionId, String),
     /// What the manifest records as the source (post-`--download` if that ran).
-    pub source: &'a Source,
-    pub display_name: &'a str,
+    pub source: Source,
+    pub display_name: String,
     pub meta: crate::wacz::WaczMetadata,
     pub stats: CrawlStats,
     /// `(sha256, file_size)` from
@@ -33,11 +39,11 @@ pub(super) struct Indexed<'a> {
     pub fixity: (String, u64),
     /// Who to credit if this crawl is new to the manifest; `None` for the CLI,
     /// which has no request identity.
-    pub actor: Option<&'a crate::identity::SubjectId>,
+    pub actor: Option<crate::identity::SubjectId>,
 }
 
 /// Upsert this crawl's manifest entry and seed its collection's finding aid.
-pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
+pub(in crate::index) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
     let Indexed {
         id,
         collection,
@@ -48,7 +54,7 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
         fixity,
         actor,
     } = crawl;
-    let (collection_id, collection_name) = collection;
+    let (collection_id, collection_name) = (&collection.0, collection.1.as_str());
     let (sha, file_size) = fixity;
     let date_indexed = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
@@ -102,7 +108,7 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
     // out-of-band setter needed an `added_by.is_none()` check for — a rebuild
     // keeps recorded custody, and re-indexing someone else's crawl cannot
     // transfer it.
-    let (browsertrix, archive_it, added_by) = match manifest.wacz_by_id(id) {
+    let (browsertrix, archive_it, added_by) = match manifest.wacz_by_id(&id) {
         Some(prior) => (
             prior.browsertrix.clone(),
             prior.archive_it.clone(),
@@ -110,14 +116,14 @@ pub(super) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
         ),
         // Genuinely new to the manifest: this is the accession, so credit
         // whoever is acting. `None` for the CLI, which has no identity.
-        None => (None, None, actor.cloned()),
+        None => (None, None, actor),
     };
 
     manifest.upsert_wacz(Wacz {
-        id: id.to_string(),
+        id: id.clone(),
         collection: collection_id.clone(),
-        source: source.clone(),
-        name: display_name.to_string(),
+        source,
+        name: display_name,
         date_indexed,
         file_size,
         sha256: sha,

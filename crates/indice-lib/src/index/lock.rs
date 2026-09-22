@@ -124,11 +124,50 @@ use anyhow::{Context, Result};
 use super::paths::index_dir;
 use super::IndexProgress;
 
-/// The lock file's name inside `<home>/index/`.
+/// Which of the archive's two write locks.
 ///
-/// It lives under `index/` because that is derived state — DESIGN recommends
-/// gitignoring it — rather than beside the curator's committable files.
-const LOCK_FILE: &str = ".index.lock";
+/// They are separate because they protect different things for different
+/// lengths of time, and collapsing them would undo the point. A rebuild holds
+/// [`Scope::Index`] for hours; a curator saving a finding aid touches no
+/// documents, so making them wait on it would be wrong. The manifest's own
+/// hold is always brief.
+///
+/// **Order: `Index` before `Manifest`, always** — an ingest needs both, a
+/// finding-aid save needs only the second. See the module docs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// Serializes everything that writes Tantivy documents: ingest, rebuild,
+    /// optimize, delete, annotation sync. Held for the length of the
+    /// operation.
+    Index,
+    /// Serializes one read-modify-write of `waczs.json`. Held for as long as
+    /// that takes and no longer, which is what lets a description be saved
+    /// while a rebuild is running — the rebuild's own hold is at the very end
+    /// and is proportional to what it rebuilt, not to how long it ran.
+    Manifest,
+}
+
+impl Scope {
+    /// The lock file's name inside `<home>/index/`.
+    ///
+    /// They live under `index/` because that is derived state — DESIGN
+    /// recommends gitignoring it — rather than beside the curator's
+    /// committable files.
+    fn file_name(self) -> &'static str {
+        match self {
+            Scope::Index => ".index.lock",
+            Scope::Manifest => ".manifest.lock",
+        }
+    }
+
+    /// How a waiter refers to it.
+    fn describe(self) -> &'static str {
+        match self {
+            Scope::Index => "the search index",
+            Scope::Manifest => "the manifest",
+        }
+    }
+}
 
 thread_local! {
     /// The locks *this thread* holds, and how many times over.
@@ -205,7 +244,7 @@ impl Drop for IndexLock {
 /// different keys for the same inode: the nested check would miss, a second
 /// file description would be opened, and `flock` would block against the
 /// caller's own outer description — forever.
-fn lock_path(home: &Path) -> Result<PathBuf> {
+fn lock_path(home: &Path, scope: Scope) -> Result<PathBuf> {
     let dir = index_dir(home);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating index dir {}", dir.display()))?;
@@ -213,7 +252,7 @@ fn lock_path(home: &Path) -> Result<PathBuf> {
     // to the raw path keeps a weird filesystem working, just without the
     // aliasing protection.
     let dir = dir.canonicalize().unwrap_or(dir);
-    Ok(dir.join(LOCK_FILE))
+    Ok(dir.join(scope.file_name()))
 }
 
 /// Take the index write lock for `home`, blocking until it is free.
@@ -236,7 +275,7 @@ pub(crate) fn lock_index(
     what: &str,
     progress: &dyn IndexProgress,
 ) -> Result<IndexLock> {
-    match acquire(home, what, progress, Wait::Forever)? {
+    match acquire(home, Scope::Index, what, progress, Wait::Forever)? {
         Acquisition::Held(l) => Ok(l),
         // `Wait::Forever` blocks until it has the lock, so this cannot happen.
         Acquisition::Busy { .. } => unreachable!("Wait::Forever does not give up"),
@@ -256,10 +295,56 @@ pub(crate) fn lock_index(
 pub(crate) fn lock_index_within(home: &Path, what: &str, wait: Duration) -> Result<Acquisition> {
     acquire(
         home,
+        Scope::Index,
         what,
         crate::index::no_progress(),
         Wait::Until(Instant::now() + wait),
     )
+}
+
+/// Whether *this thread* already holds `scope` for `home`.
+///
+/// Only [`crate::index::manifest::manifest_write`] needs this, and for a
+/// specific reason: the lock is re-entrant, which is right for the index tier
+/// (a handler takes it, then the library function it calls takes it again) and
+/// actively dangerous for the manifest. A nested manifest write would open a
+/// *second* copy from disk without the outer one's uncommitted edits, save it,
+/// and then be overwritten when the outer save runs — the exact silent
+/// read-modify-write loss the manifest lock exists to prevent, arrived at
+/// through the lock rather than in spite of it.
+pub(crate) fn held_by_this_thread(home: &Path, scope: Scope) -> bool {
+    let Ok(path) = lock_path(home, scope) else {
+        return false;
+    };
+    HELD.with(|h| h.borrow().contains_key(&path))
+}
+
+/// Take the manifest lock for `home`, blocking until it is free.
+///
+/// Blocking, with no bounded variant, on the grounds that the hold is short:
+/// one read-modify-write of `waczs.json` and any finding aid it dirties. See
+/// [`crate::index::manifest::manifest_write`], the only intended caller —
+/// going through it is what keeps the read and the write inside one hold.
+///
+/// One hold is **not** short, and it is worth knowing which: a rebuild applies
+/// every crawl it rebuilt in a single closure, so that one is proportional to
+/// the size of the archive (a linear scan per upsert, plus rewriting every
+/// dirty finding aid). On a large archive a request-path writer blocks for the
+/// whole of it, past the ten-second budget it gets on the index lock, with no
+/// 503. Acceptable while rebuilds are rare and archives are the size they are;
+/// a bounded variant for the request path is on
+/// `rustyweb-durable-writes-f4h5` if that stops being true.
+pub(crate) fn lock_manifest(home: &Path, what: &str) -> Result<IndexLock> {
+    match acquire(
+        home,
+        Scope::Manifest,
+        what,
+        crate::index::no_progress(),
+        Wait::Forever,
+    )? {
+        Acquisition::Held(l) => Ok(l),
+        Acquisition::Busy { .. } => unreachable!("Wait::Forever does not give up"),
+    }
 }
 
 /// The outcome of a bounded attempt.
@@ -287,11 +372,12 @@ const POLL: Duration = Duration::from_millis(50);
 
 fn acquire(
     home: &Path,
+    scope: Scope,
     what: &str,
     progress: &dyn IndexProgress,
     wait: Wait,
 ) -> Result<Acquisition> {
-    let path = lock_path(home)?;
+    let path = lock_path(home, scope)?;
 
     // Already ours on this thread: take another token without touching the
     // file, since flock would conflict with our own open description. The
@@ -318,7 +404,7 @@ fn acquire(
         .write(true)
         .truncate(false)
         .open(&path)
-        .with_context(|| format!("opening the index lock {}", path.display()))?;
+        .with_context(|| format!("opening the lock {}", path.display()))?;
 
     // Read once, when we first find it busy, and reused if we end up giving up.
     // Re-reading on every poll tick would seek + parse the lock file ~200 times
@@ -338,14 +424,17 @@ fn acquire(
                             // long it takes, so say so where an operator sees it.
                             Wait::Forever => {
                                 progress.phase(&format!("waiting for {h} to finish…"));
-                                tracing::warn!("the search index is locked by {h}; waiting");
+                                tracing::warn!("{} is locked by {h}; waiting", scope.describe());
                             }
                             // A bounded caller is not going to wait it out — it
                             // gives up and answers 503. Saying "waiting" at WARN
                             // once per attempt would fill the log with hundreds
                             // of wrong lines across one long rebuild.
                             Wait::Until(_) => {
-                                tracing::debug!("the search index is locked by {h}; will not wait")
+                                tracing::debug!(
+                                    "{} is locked by {h}; will not wait",
+                                    scope.describe()
+                                )
                             }
                         }
                         holder = Some(h.clone());
@@ -354,9 +443,8 @@ fn acquire(
                 };
                 match wait {
                     Wait::Forever => {
-                        file.lock().with_context(|| {
-                            format!("waiting for the index lock {}", path.display())
-                        })?;
+                        file.lock()
+                            .with_context(|| format!("waiting for the lock {}", path.display()))?;
                         break;
                     }
                     Wait::Until(deadline) => {
@@ -385,9 +473,7 @@ fn acquire(
                     _not_send: PhantomData,
                 }));
             }
-            Err(e) => {
-                return Err(e).with_context(|| format!("locking the index at {}", path.display()))
-            }
+            Err(e) => return Err(e).with_context(|| format!("locking {}", path.display())),
         }
     }
 
@@ -462,7 +548,7 @@ mod tests {
     use crate::index::no_progress;
 
     fn depth(home: &Path) -> u32 {
-        let p = lock_path(home).unwrap();
+        let p = lock_path(home, Scope::Index).unwrap();
         HELD.with(|h| h.borrow().get(&p).map(|x| x.depth).unwrap_or(0))
     }
 
@@ -630,7 +716,7 @@ mod tests {
         holder.join().unwrap();
         // The winner rewrote the holder line, so a later waiter blames the
         // right operation.
-        let path = lock_path(&home).unwrap();
+        let path = lock_path(&home, Scope::Index).unwrap();
         let _g = lock_index(&home, "index", no_progress()).unwrap();
         let recorded = HELD
             .with(|h| {
@@ -685,7 +771,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let _g = lock_index(home, "reindex", no_progress()).unwrap();
-        let path = lock_path(home).unwrap();
+        let path = lock_path(home, Scope::Index).unwrap();
         let holder = HELD
             .with(|h| {
                 let mut b = h.borrow_mut();
@@ -714,7 +800,7 @@ mod tests {
     fn the_lock_file_survives_release_so_the_inode_is_stable() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
-        let path = lock_path(home).unwrap();
+        let path = lock_path(home, Scope::Index).unwrap();
         let inode = {
             let _g = lock_index(home, "index", no_progress()).unwrap();
             file_id(&path)
