@@ -24,10 +24,10 @@ pub fn set_collection(
     let index_dir = index_dir(home);
     std::fs::create_dir_all(&index_dir)
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-    let mut manifest = Manifest::open(&index_dir)?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let id = manifest.apply_fields(name, fields, &now, actor);
-    manifest.save()?;
+    let id = super::manifest::manifest_write(home, "a collection edit", |manifest| {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        Ok(manifest.apply_fields(name, fields, &now, actor))
+    })?;
     info!(collection = %id, "collection metadata updated");
     Ok(id)
 }
@@ -44,11 +44,12 @@ pub fn seed_collection(
     let index_dir = index_dir(home);
     std::fs::create_dir_all(&index_dir)
         .with_context(|| format!("creating index dir {}", index_dir.display()))?;
-    let mut manifest = Manifest::open(&index_dir)?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let id = crate::collections::CollectionId::from_name(name);
-    manifest.seed_fields(&id, name, fields, &now);
-    manifest.save()?;
+    super::manifest::manifest_write(home, "a collection seed", |manifest| {
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        manifest.seed_fields(&id, name, fields, &now);
+        Ok(())
+    })?;
     Ok(id.to_string())
 }
 

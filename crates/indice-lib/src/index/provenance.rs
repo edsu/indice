@@ -5,9 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::collections::{wacz_id, BrowsertrixRef, Manifest, Source};
-
-use super::paths::index_dir;
+use crate::collections::{wacz_id, BrowsertrixRef, Source};
 
 /// Record Browsertrix import provenance on an already-indexed WACZ. `wacz_file`
 /// is the local file (under `<home>/archive`) that was just indexed; it's looked
@@ -40,20 +38,20 @@ pub fn set_browsertrix_provenance_by_id(
     resource_hash: &str,
     review_status: Option<u8>,
 ) -> Result<()> {
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest
-        .waczs
-        .iter_mut()
-        .find(|w| w.id == crawl_id)
-        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
-    wacz.browsertrix = Some(BrowsertrixRef {
-        host: host.to_string(),
-        item_id: item_id.to_string(),
-        resource_hash: resource_hash.to_string(),
-        review_status,
-    });
-    manifest.save()?;
-    Ok(())
+    super::manifest::manifest_write(home, "recording import provenance", |manifest| {
+        let wacz = manifest
+            .waczs
+            .iter_mut()
+            .find(|w| w.id == crawl_id)
+            .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
+        wacz.browsertrix = Some(BrowsertrixRef {
+            host: host.to_string(),
+            item_id: item_id.to_string(),
+            resource_hash: resource_hash.to_string(),
+            review_status,
+        });
+        Ok(())
+    })
 }
 
 /// Record Archive-It import provenance on an already-indexed crawl (by its id),
@@ -67,19 +65,19 @@ pub fn set_archiveit_provenance_by_id(
     warc_count: u64,
     collection_title: &str,
 ) -> Result<()> {
-    let mut manifest = Manifest::open(&index_dir(home))?;
-    let wacz = manifest
-        .waczs
-        .iter_mut()
-        .find(|w| w.id == crawl_id)
-        .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
-    wacz.archive_it = Some(crate::collections::ArchiveItRef {
-        host: host.to_string(),
-        collection_id: ait_collection_id,
-        crawl_id: ait_crawl_id,
-        warc_count,
-        collection_title: collection_title.to_string(),
-    });
-    manifest.save()?;
-    Ok(())
+    super::manifest::manifest_write(home, "recording import provenance", |manifest| {
+        let wacz = manifest
+            .waczs
+            .iter_mut()
+            .find(|w| w.id == crawl_id)
+            .with_context(|| format!("no indexed crawl with id {crawl_id}"))?;
+        wacz.archive_it = Some(crate::collections::ArchiveItRef {
+            host: host.to_string(),
+            collection_id: ait_collection_id,
+            crawl_id: ait_crawl_id,
+            warc_count,
+            collection_title: collection_title.to_string(),
+        });
+        Ok(())
+    })
 }
