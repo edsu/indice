@@ -1627,3 +1627,148 @@ fn a_rebuild_and_an_ingest_do_not_destroy_each_other() {
         );
     }
 }
+
+/// A deletion must survive a concurrent rebuild.
+///
+/// Without the index lock this half-undid itself. The rebuild snapshots the
+/// manifest while the crawl is still registered; the delete then drops its
+/// documents, removes `archive/<slug>/<file>.wacz`, and removes the manifest
+/// entry; the rebuild re-indexes from its snapshot, finds the file missing,
+/// warns "skipping missing local WACZ" but *preserves* the entry, and saves the
+/// snapshot. The crawl is back in `waczs.json` pointing at nothing, and the
+/// rebuild exits non-zero into the bargain.
+#[test]
+fn a_deletion_survives_a_concurrent_rebuild() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    for (src, name) in [("simple.wacz", "keep.wacz"), ("a.wacz", "doomed.wacz")] {
+        std::fs::copy(fixture(src), archive.join(name)).unwrap();
+    }
+    indice_lib::index::index_path(&archive.join("keep.wacz"), &home, Some("keep"), "keep-coll")
+        .unwrap();
+    indice_lib::index::index_path(
+        &archive.join("doomed.wacz"),
+        &home,
+        Some("doomed"),
+        "doomed-coll",
+    )
+    .unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let doomed = manifest
+        .waczs
+        .iter()
+        .find(|w| w.name == "doomed")
+        .expect("the crawl to delete")
+        .id
+        .clone();
+
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let rebuild = {
+        let (home, gate) = (home.clone(), gate.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            indice_lib::index::Ingest::new(&home).reindex()
+        })
+    };
+    let delete = {
+        let (home, gate, id) = (home.clone(), gate.clone(), doomed.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            indice_lib::index::delete_crawl(&home, &id)
+        })
+    };
+    // The rebuild may legitimately fail: if the delete wins the lock, the
+    // rebuild's own snapshot is taken afterwards and is consistent, but if the
+    // rebuild wins, it rebuilds a crawl that is then deleted. Either way the
+    // delete must stick.
+    let _ = rebuild.join().unwrap();
+    delete.join().unwrap().expect("the delete succeeds");
+
+    let after = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert!(
+        after.waczs.iter().all(|w| w.id != doomed),
+        "the deleted crawl must not be resurrected; manifest holds {:?}",
+        after.waczs.iter().map(|w| &w.name).collect::<Vec<_>>()
+    );
+    assert!(
+        after.waczs.iter().any(|w| w.name == "keep"),
+        "and the untouched crawl must still be there"
+    );
+}
+
+/// An annotation write is serialized against a rebuild.
+///
+/// A rebuild re-indexes annotations from the JSONL and then swaps the whole
+/// index directory, so a note indexed between those two steps had its document
+/// deleted along with the old index. `annotations.jsonl` survives, so the note
+/// itself was never lost — but it was silently unsearchable until someone
+/// rebuilt again, and nothing reported it.
+///
+/// Asserted as "the write waits" rather than by racing a rebuild, because the
+/// losing interleaving is a narrow window and a test that only sometimes
+/// exercises it is worse than one that always does.
+#[test]
+fn an_annotation_write_waits_for_the_index_lock() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+    indice_lib::index::index_path(&staged, &home, Some("noted"), "noted-coll").unwrap();
+
+    // Hold the lock from another thread, which is what another process looks
+    // like: the re-entrancy count is per thread, so this contends for real.
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let home = home.clone();
+        std::thread::spawn(move || {
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(home.join("index").join(".index.lock"))
+                .unwrap();
+            f.lock().unwrap();
+            held_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        })
+    };
+    held_rx.recv().unwrap();
+
+    let ann = indice_lib::annotations::Annotation::page(
+        "https://example.com/",
+        "20240101000000",
+        "a note",
+        indice_lib::annotations::Creator {
+            kind: Some("Person".into()),
+            id: Some("mailto:a@x.edu".into()),
+            name: None,
+        },
+    );
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let writer = {
+        let home = home.clone();
+        std::thread::spawn(move || {
+            indice_lib::index::index_annotation_upsert(&home, "noted-coll", &ann).unwrap();
+            done_tx.send(()).unwrap();
+        })
+    };
+
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_millis(400))
+            .is_err(),
+        "the annotation write must not proceed while the index is locked"
+    );
+    release_tx.send(()).unwrap();
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("and it completes once the lock is free");
+    writer.join().unwrap();
+    holder.join().unwrap();
+}

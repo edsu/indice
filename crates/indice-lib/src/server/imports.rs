@@ -23,6 +23,41 @@ use crate::events::Action;
 
 use super::*;
 
+/// Compact the index after an import, if the per-WACZ commits left it
+/// fragmented (which slows every query, notably the homepage facet overview).
+///
+/// Best-effort throughout: a failure here does not fail the import, it just
+/// leaves the index un-compacted until someone runs `indice optimize`.
+///
+/// The early return is the part that matters. `optimize` takes the index lock
+/// itself, so this takes it first — never from inside `write_lock`, per
+/// `index::lock`'s ordering rule, which the request-path handlers now depend on
+/// being universal. Writing it as `let _index = lock_index(..);` without `?`
+/// compiles and does not warn (`Result` is `#[must_use]`, but a binding counts
+/// as a use) and holds nothing on the error path, so `optimize` would take the
+/// lock from inside `write_lock` — an AB-BA deadlock against any handler that
+/// took them in the documented order, hanging both with no error.
+fn compact_after_import(job_state: &Arc<AppState>, progress: &ChannelProgress) {
+    let _index =
+        match crate::index::lock::lock_index(&job_state.home, "post-import compaction", progress) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!("skipping post-import compaction: could not lock the index ({e:#})");
+                return;
+            }
+        };
+    let _guard = acquire_write_lock(&job_state.write_lock, progress);
+    match crate::index::optimize_if_fragmented(&job_state.home, progress) {
+        Ok(Some((before, after))) => {
+            tracing::info!("compacted fragmented index: {before} → {after} segments");
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(
+            "post-import index compaction failed ({e:#}); run `indice optimize` later"
+        ),
+    }
+}
+
 /// Mint a job id for an import.
 ///
 /// Takes a `&Curator` it never reads, for the same reason `start_index_job`
@@ -402,25 +437,7 @@ pub(super) async fn bx_import(
                 // overview) stays fast. Best-effort — a failure here doesn't fail
                 // the import, only leaves the index un-compacted. Needs the write
                 // lock (the per-resource loop above released it each time).
-                {
-                    // `optimize` takes the index lock itself, so take it out
-                    // here first for the same reason as above.
-                    let _index = crate::index::lock::lock_index(
-                        &job_state.home,
-                        "post-import compaction",
-                        &progress,
-                    );
-                    let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-                    match crate::index::optimize_if_fragmented(&job_state.home, &progress) {
-                        Ok(Some((before, after))) => {
-                            tracing::info!("compacted fragmented index: {before} → {after} segments");
-                        }
-                        Ok(None) => {}
-                        Err(e) => tracing::warn!(
-                            "post-import index compaction failed ({e:#}); run `indice optimize` later"
-                        ),
-                    }
-                }
+                compact_after_import(&job_state, &progress);
                 match job_state.reload_searcher() {
                     Ok(()) => tx
                         .send(ProgressEvent::Done {
@@ -698,25 +715,7 @@ pub(super) async fn ait_import(
             Ok(crawls) => {
                 // A per-crawl import commits a segment per WACZ; compact if that
                 // left the index fragmented (best-effort — see `bx_import`).
-                {
-                    // `optimize` takes the index lock itself, so take it out
-                    // here first for the same reason as above.
-                    let _index = crate::index::lock::lock_index(
-                        &job_state.home,
-                        "post-import compaction",
-                        &progress,
-                    );
-                    let _guard = acquire_write_lock(&job_state.write_lock, &progress);
-                    match crate::index::optimize_if_fragmented(&job_state.home, &progress) {
-                        Ok(Some((before, after))) => {
-                            tracing::info!("compacted fragmented index: {before} → {after} segments")
-                        }
-                        Ok(None) => {}
-                        Err(e) => tracing::warn!(
-                            "post-import index compaction failed ({e:#}); run `indice optimize` later"
-                        ),
-                    }
-                }
+                compact_after_import(&job_state, &progress);
                 match job_state.reload_searcher() {
                     Ok(()) => tx
                         .send(ProgressEvent::Done {

@@ -961,15 +961,21 @@ overlay and FUSE setups return `Unsupported` — indice **warns loudly and
 proceeds unlocked** rather than refusing to index. A home that worked yesterday
 keeps working; the protection is simply absent, and says so.
 
-This is the *index* tier only, and two writers are not yet under it:
-`delete_crawl`/`delete_collection` and the annotation index sync. Both write
-documents, so both belong here by the rule above — a rebuild can currently
-resurrect a deleted crawl (its snapshot re-indexes an entry whose file is gone,
-preserving it and pointing at nothing) or discard a note's document, recoverable
-from `annotations.jsonl` but silently unsearchable until the next rebuild. They
-are excluded for now because they run on the request path, where blocking behind
-a multi-hour rebuild is the wrong answer and the poll-then-503 policy they need
-does not exist yet. Tracked on `rustyweb-durable-writes-f4h5`.
+**Request-path writes do not queue; they give up and say so.** Deleting a crawl
+or a collection, and writing an annotation, all write documents and so belong to
+this tier — a rebuild could otherwise resurrect a deleted crawl (its snapshot
+re-indexes an entry whose file is gone, preserving it and pointing at nothing) or
+discard a note's document. But a browser cannot wait out a multi-hour rebuild, so
+those handlers wait ten seconds and then return **503 with `Retry-After`**,
+naming the holder. Background jobs and the CLI still block, because for them
+queueing is the right answer.
+
+Each of those library functions takes the lock itself, so the CLI is covered
+too, and the handler takes it first so the wait never happens under
+`AppState.write_lock`. `delete_collection` holds one lock across all its members
+rather than one per member, which is where the re-entrancy earns its keep: a
+rebuild cannot slot in between two members and resurrect the ones already
+removed.
 
 A write that touches just `waczs.json` or a finding aid adds no documents, so a
 rebuild's output is not stale with respect to it; that tier gets its own,

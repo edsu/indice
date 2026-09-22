@@ -3,6 +3,7 @@
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use std::time::Duration;
 
 use crate::collections::{Manifest, Wacz};
 
@@ -97,6 +98,69 @@ pub(super) fn collection_default_page(members: &[&Wacz]) -> Option<(String, Stri
 pub(super) fn error_response(e: anyhow::Error) -> Response {
     tracing::error!("{e:#}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+}
+
+/// How long a request-path write waits for the cross-process index lock before
+/// giving up and telling the client to come back.
+///
+/// Background jobs and the CLI block instead — queueing is right for them. A
+/// request is different: a rebuild can hold the lock for hours, and a browser
+/// (and the thread serving it) must not wait that long.
+pub(super) const REQUEST_LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// How long to tell a client to wait before retrying.
+///
+/// Nothing knows the true remaining time — the holder records when it started,
+/// not how long it will take — so this is a guess. It is derived from
+/// [`REQUEST_LOCK_WAIT`] rather than written as a literal so the two cannot
+/// drift: telling a client to come back sooner than the next attempt's own
+/// budget would just build a queue of parked threads.
+fn retry_after_secs() -> u64 {
+    // `as_secs` floors, so a sub-second budget would send `Retry-After: 0` and
+    // invite clients to hammer — the queue of parked threads this is meant to
+    // avoid. At least a second, always.
+    ((REQUEST_LOCK_WAIT.as_secs_f64() * 3.0).ceil() as u64).max(1)
+}
+
+/// 503 for a write that could not get the index lock in time.
+pub(super) fn busy_response(holder: &str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [("Retry-After", retry_after_secs().to_string())],
+        format!(
+            "The search index is busy: {holder} is running. \
+             Your change was not saved — try again shortly."
+        ),
+    )
+        .into_response()
+}
+
+/// A request-path write's result, or the reason it never ran.
+///
+/// Lets a handler keep its own outcome type (`UpdateResult`, `EditOutcome`, …)
+/// and add "the index was busy" without threading a variant through it.
+pub(super) enum Write<T> {
+    Done(T),
+    Busy(String),
+}
+
+/// Take the index lock for a request-path write, or say who has it.
+///
+/// **Call this before `AppState.write_lock`, never inside it.** Waiting on a
+/// cross-process lock while holding the in-process mutex would hang every other
+/// workroom write behind this one, and once the library functions this handler
+/// calls take the index lock too, the inverted order is an outright deadlock.
+/// See `index::lock`'s ordering rule.
+pub(super) fn acquire_index_for_request(
+    home: &std::path::Path,
+    what: &str,
+) -> anyhow::Result<Result<crate::index::lock::IndexLock, String>> {
+    Ok(
+        match crate::index::lock::lock_index_within(home, what, REQUEST_LOCK_WAIT)? {
+            crate::index::lock::Acquisition::Held(l) => Ok(l),
+            crate::index::lock::Acquisition::Busy { holder } => Err(holder),
+        },
+    )
 }
 
 /// `YYYY-MM-DD` from the first 8 digits of a 14-digit timestamp; the input as-is

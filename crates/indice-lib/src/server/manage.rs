@@ -578,6 +578,14 @@ pub(super) async fn delete_crawl_handler(
     let principal = curator.principal().clone();
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
+        // Index lock first, with a deadline. `delete_crawl` takes it too (so
+        // `indice crawl delete` is covered), but a handler must not wait on a
+        // cross-process lock from inside `write_lock` — see `index::lock`'s
+        // ordering rule. Re-entrant, so the inner acquisition is free.
+        let _index = match acquire_index_for_request(&state.home, "deleting a crawl")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(CrawlDeleteOutcome::Busy(holder)),
+        };
         // Delete opens Tantivy's exclusive writer + rewrites the manifest, so it
         // takes the same write lock as an add (poison-tolerant); it's quick, so
         // there's no queued-progress channel to announce a wait on.
@@ -591,21 +599,24 @@ pub(super) async fn delete_crawl_handler(
             .wacz_by_id(&id)
             .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string()));
         if !principal.may_delete_crawl(added_by.as_deref()) {
-            return Ok(None);
+            return Ok(CrawlDeleteOutcome::Denied);
         }
         // Audited here rather than before the check, so a refused delete is not
         // recorded as an authorized attempt.
         audit(&state, &principal, Action::CrawlDelete, &id);
         let plan = crate::index::delete_crawl(&state.home, &id)?;
         state.reload_searcher()?;
-        Ok::<_, anyhow::Error>(Some(plan))
+        Ok::<_, anyhow::Error>(CrawlDeleteOutcome::Deleted(plan))
     })
     .await;
     match result {
-        Ok(Ok(Some(plan))) => {
+        Ok(Ok(CrawlDeleteOutcome::Deleted(plan))) => {
             Redirect::to(&format!("/collection/{}", plan.collection)).into_response()
         }
-        Ok(Ok(None)) => Denied::Insufficient("deleting a crawl someone else added").into_response(),
+        Ok(Ok(CrawlDeleteOutcome::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(CrawlDeleteOutcome::Denied)) => {
+            Denied::Insufficient("deleting a crawl someone else added").into_response()
+        }
         Ok(Err(e)) => error_response(e).into_response(),
         Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
     }
@@ -631,27 +642,53 @@ pub(super) async fn delete_collection_handler(
         .with_crawls
         .as_deref()
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
-    audit_detail(
-        &state,
-        admin.principal(),
-        Action::CollectionDelete,
-        &id,
-        Some(serde_json::json!({ "with_crawls": with_crawls })),
-    );
+    let actor = admin.principal().clone();
     // This ends in a recursive remove_dir_all, so the id has to be a valid
     // single path component before it goes anywhere near the filesystem.
     let Some(cid) = CollectionId::parse(&id) else {
+        // Logged rather than audited. Moving the audit to the point of writing
+        // (so a 503 or a 409 stops recording a deletion that never happened)
+        // otherwise loses this entirely, and a rejected id — a typo, or a
+        // traversal attempt — is exactly the attempt worth keeping. It is not
+        // a CollectionDelete, though, so it does not belong in that record.
+        tracing::warn!(
+            actor = %actor.id(),
+            collection = %id,
+            "refused a collection delete: not a valid collection id"
+        );
         return (StatusCode::NOT_FOUND, "unknown collection").into_response();
     };
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        // Refusing a non-empty collection is a client choice, not a server fault,
-        // so surface it as 409 rather than letting the lib error become a 500.
+        // Index lock before the in-process one, as everywhere else.
+        let _index = match acquire_index_for_request(&state.home, "deleting a collection")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(DeleteOutcome::Busy(holder)),
+        };
+        let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Planned INSIDE the lock, like the custody read in the crawl handler.
+        // Refusing a non-empty collection is a client choice, not a server
+        // fault, so it is a 409 rather than letting the lib error become a 500
+        // — and that only holds if the count this decides on is the count
+        // `delete_collection` will see. Planning outside meant an ingest could
+        // add a member while we waited up to ten seconds for the lock, leaving
+        // the library to re-check, `bail!`, and surface a 500 telling a browser
+        // user to pass a CLI flag.
         let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
         if plan.member_count > 0 && !with_crawls {
             return Ok(DeleteOutcome::Refused(plan.member_count));
         }
-        let _guard = state.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Audited here, not at the top of the handler: recording it before the
+        // lock would log a CollectionDelete for every request that then 503s,
+        // and recording it before the plan would log one for every 409 — writes
+        // that provably never happened. Same rule the crawl handler states.
+        audit_detail(
+            &state,
+            &actor,
+            Action::CollectionDelete,
+            &id,
+            Some(serde_json::json!({ "with_crawls": with_crawls })),
+        );
         crate::index::delete_collection(&state.home, &cid, with_crawls)?;
         state.reload_searcher()?;
         Ok::<_, anyhow::Error>(DeleteOutcome::Done)
@@ -659,6 +696,7 @@ pub(super) async fn delete_collection_handler(
     .await;
     match result {
         Ok(Ok(DeleteOutcome::Done)) => Redirect::to("/").into_response(),
+        Ok(Ok(DeleteOutcome::Busy(holder))) => busy_response(&holder),
         Ok(Ok(DeleteOutcome::Refused(n))) => (
             StatusCode::CONFLICT,
             format!(
@@ -672,9 +710,20 @@ pub(super) async fn delete_collection_handler(
     }
 }
 
-/// Outcome of a collection-delete attempt: done, or refused because it still has
-/// members and `with_crawls` wasn't set (a 409, not a 500).
+/// Outcome of a crawl-delete attempt.
+enum CrawlDeleteOutcome {
+    Deleted(crate::index::CrawlDeletion),
+    /// The caller may not delete a crawl someone else accessioned (403).
+    Denied,
+    /// Another process holds the index lock (503); `String` describes it.
+    Busy(String),
+}
+
+/// Outcome of a collection-delete attempt: done, refused because it still has
+/// members and `with_crawls` wasn't set (a 409, not a 500), or the index was
+/// busy (503).
 enum DeleteOutcome {
     Done,
     Refused(usize),
+    Busy(String),
 }

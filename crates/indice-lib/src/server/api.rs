@@ -262,27 +262,42 @@ pub(super) async fn create_annotation(
         ),
         None => annotations::Annotation::page(req.url, req.timestamp, req.note, creator),
     };
-    audit_detail(
-        &state,
-        &author,
-        Action::AnnotationCreate,
-        &ann.id,
-        Some(serde_json::json!({ "collection": req.collection.as_str() })),
-    );
+    let audit_target = ann.id.clone();
+    let audit_actor = author.clone();
     let view = annotation_view(&ann, Some(&author));
     let st = state.clone();
     let collection = req.collection;
     let saved = tokio::task::spawn_blocking(move || {
-        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        // Index lock before the in-process one: `index_annotation_upsert`
+        // takes it too, and waiting on a cross-process lock from inside
+        // `write_lock` would hang every other workroom write behind this
+        // request (see `index::lock`'s ordering rule).
+        let _index = match acquire_index_for_request(&st.home, "an annotation write")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(Write::Busy(holder)),
+        };
+        let _guard = st.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         annotations::create(&st.home, &collection, &ann)?;
+        // Audited after the write, not before the lock: a 503'd request must
+        // not leave a record of a change the client was told was not saved.
+        // A create has no permission branch to sit behind — any curator may
+        // write a note — so this is the first point where it has happened.
+        audit_detail(
+            &st,
+            &audit_actor,
+            Action::AnnotationCreate,
+            &audit_target,
+            Some(serde_json::json!({ "collection": collection })),
+        );
         // Keep full-text search in step with the new note, then publish it.
         crate::index::index_annotation_upsert(&st.home, &collection, &ann)?;
         st.reload_searcher()?;
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(Write::Done(()))
     })
     .await;
     match saved {
-        Ok(Ok(())) => (StatusCode::CREATED, Json(view)).into_response(),
+        Ok(Ok(Write::Done(()))) => (StatusCode::CREATED, Json(view)).into_response(),
+        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
         Ok(Err(e)) => error_response(e),
         Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
@@ -299,40 +314,54 @@ pub(super) async fn update_annotation(
         return (StatusCode::BAD_REQUEST, "note is empty").into_response();
     }
     let author = curator.principal().clone();
-    audit_detail(
-        &state,
-        &author,
-        Action::AnnotationUpdate,
-        &id,
-        Some(serde_json::json!({ "collection": req.collection.as_str() })),
-    );
+    let audit_actor = author.clone();
+    let audit_target = id.clone();
     let st = state.clone();
     let AnnotationUpdateReq { collection, note } = req;
     let author_key = author.clone();
     let done = tokio::task::spawn_blocking(move || {
-        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        // Index lock before the in-process one: `index_annotation_upsert`
+        // takes it too, and waiting on a cross-process lock from inside
+        // `write_lock` would hang every other workroom write behind this
+        // request (see `index::lock`'s ordering rule).
+        let _index = match acquire_index_for_request(&st.home, "an annotation write")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(Write::Busy(holder)),
+        };
+        let _guard = st.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         // `may_edit`, not `owns`: an admin moderates anyone's notes.
         let res = annotations::update(&st.home, &collection, &id, &note, |k| {
             author_key.may_edit(k)
         })?;
         // Re-index the edited note (upsert by id) and publish, when it changed.
         if let UpdateResult::Updated(a) = &res {
+            // Audited here: not before the lock (a 503'd request would log a
+            // change that never happened) and not before this check (a 403 or
+            // a 404 would log one too). Only the branch that actually wrote.
+            audit_detail(
+                &st,
+                &audit_actor,
+                Action::AnnotationUpdate,
+                &audit_target,
+                Some(serde_json::json!({ "collection": collection })),
+            );
             crate::index::index_annotation_upsert(&st.home, &collection, a)?;
             st.reload_searcher()?;
         }
-        Ok::<_, anyhow::Error>(res)
+        Ok::<_, anyhow::Error>(Write::Done(res))
     })
     .await;
     match done {
-        Ok(Ok(UpdateResult::Updated(a))) => {
+        Ok(Ok(Write::Done(UpdateResult::Updated(a)))) => {
             Json(annotation_view(&a, Some(&author))).into_response()
         }
-        Ok(Ok(UpdateResult::NotFound)) => {
+        Ok(Ok(Write::Done(UpdateResult::NotFound))) => {
             (StatusCode::NOT_FOUND, "no such annotation").into_response()
         }
-        Ok(Ok(UpdateResult::Forbidden)) => {
+        Ok(Ok(Write::Done(UpdateResult::Forbidden))) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
+        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
         Ok(Err(e)) => error_response(e),
         Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
@@ -346,32 +375,43 @@ pub(super) async fn delete_annotation(
     Json(req): Json<AnnotationDeleteReq>,
 ) -> Response {
     let author = curator.principal().clone();
-    audit_detail(
-        &state,
-        &author,
-        Action::AnnotationDelete,
-        &id,
-        Some(serde_json::json!({ "collection": req.collection.as_str() })),
-    );
+    let audit_target = id.clone();
     let st = state.clone();
     let AnnotationDeleteReq { collection } = req;
     let done = tokio::task::spawn_blocking(move || {
-        let _guard = st.write_lock.lock().expect("write lock poisoned");
+        // Index lock before the in-process one: `index_annotation_upsert`
+        // takes it too, and waiting on a cross-process lock from inside
+        // `write_lock` would hang every other workroom write behind this
+        // request (see `index::lock`'s ordering rule).
+        let _index = match acquire_index_for_request(&st.home, "an annotation write")? {
+            Ok(l) => l,
+            Err(holder) => return Ok(Write::Busy(holder)),
+        };
+        let _guard = st.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let outcome = annotations::delete(&st.home, &collection, &id, |k| author.may_edit(k))?;
         // Drop the note from search and publish, when it was actually removed.
         if let EditOutcome::Done = outcome {
+            // Audited only on the branch that wrote — see `update_annotation`.
+            audit_detail(
+                &st,
+                &author,
+                Action::AnnotationDelete,
+                &audit_target,
+                Some(serde_json::json!({ "collection": collection })),
+            );
             crate::index::delete_annotation_from_index(&st.home, &id)?;
             st.reload_searcher()?;
         }
-        Ok::<_, anyhow::Error>(outcome)
+        Ok::<_, anyhow::Error>(Write::Done(outcome))
     })
     .await;
     match done {
-        Ok(Ok(EditOutcome::Done)) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(EditOutcome::NotFound)) => {
+        Ok(Ok(Write::Done(EditOutcome::Done))) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(Write::Done(EditOutcome::NotFound))) => {
             (StatusCode::NOT_FOUND, "no such annotation").into_response()
         }
-        Ok(Ok(EditOutcome::Forbidden)) => {
+        Ok(Ok(Write::Done(EditOutcome::Forbidden))) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
         Ok(Err(e)) => error_response(e),

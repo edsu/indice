@@ -57,10 +57,13 @@
 //! - **It never goes stale.** The OS releases an `flock` on panic, `exit` and
 //!   `SIGKILL`, so unlike Tantivy's writer lock there is no leftover file to
 //!   delete by hand after a crash.
-//! - **It queues rather than failing.** Tantivy's writer lock is
-//!   create-exclusive and non-blocking, so a second ingest fails outright;
-//!   here the second waits, after saying who it is waiting for
-//!   (`reindex (pid 4242) (started 7m ago)`, read back out of the lock file).
+//! - **It queues rather than failing**, for the CLI and for background jobs.
+//!   Tantivy's writer lock is create-exclusive and non-blocking, so a second
+//!   ingest fails outright; here the second waits, after saying who it is
+//!   waiting for (`reindex (pid 4242) (started 7m ago)`, read back out of the
+//!   lock file). A **request** is the exception: it waits only briefly and then
+//!   reports the holder so the handler can answer 503 — see
+//!   [`lock_index_within`]. A browser cannot sit out a multi-hour rebuild.
 //! - **Not honored across a network filesystem.** On NFS/SMB/sshfs `flock` may
 //!   be emulated or a silent no-op, and the re-entrancy map below cannot see
 //!   another host at all. Two hosts writing one home degrades to the old
@@ -84,17 +87,21 @@
 //! cross-process `flock` while holding the mutex that gates every workroom
 //! write, so a long rebuild in another process hangs the whole write surface.
 //!
-//! Nothing enforces the order, and it is now genuinely invertible — so it has
-//! to be a rule rather than an observation. A handler that holds `write_lock`
-//! and then calls a library function which takes this lock deadlocks against a
-//! job that took them in the documented order: classic AB-BA, and it hangs
-//! rather than failing. The handlers that hold `write_lock` today
-//! (`delete_crawl`, `delete_collection`, `set_collection`, the annotation
-//! writes) are safe only because the library functions they call do not take
-//! this lock *yet*. Bringing those under it — the next slice of
-//! `rustyweb-durable-writes-f4h5` — means hoisting the acquisition to the top
-//! of each handler, above `write_lock`, not simply adding it to the library
-//! function.
+//! Nothing enforces the order, and it is genuinely invertible — so it is a rule
+//! rather than an observation. A handler that holds `write_lock` and then calls
+//! a library function which takes this lock deadlocks against a job that took
+//! them in the documented order: classic AB-BA, and it hangs rather than
+//! failing.
+//!
+//! Every handler that writes documents now takes this lock first, via
+//! `server::acquire_index_for_request`, and the library functions they call
+//! take it again re-entrantly. The one remaining `write_lock` holder that does
+//! not is the finding-aid save (`set_collection`), and only because it touches
+//! the manifest and no documents. When the manifest tier arrives it must follow
+//! the same order.
+//!
+//! The way to get this wrong is to add the acquisition to the library function
+//! and leave the handler alone. It compiles, it looks tidier, and it hangs.
 //!
 //! Drop order follows from that: the guards are declared index-lock-first, so
 //! they drop in reverse and the mutex is released before the `flock`. A waiter
@@ -110,6 +117,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -228,6 +236,61 @@ pub(crate) fn lock_index(
     what: &str,
     progress: &dyn IndexProgress,
 ) -> Result<IndexLock> {
+    match acquire(home, what, progress, Wait::Forever)? {
+        Acquisition::Held(l) => Ok(l),
+        // `Wait::Forever` blocks until it has the lock, so this cannot happen.
+        Acquisition::Busy { .. } => unreachable!("Wait::Forever does not give up"),
+    }
+}
+
+/// Take the index write lock for `home`, giving up after `wait`.
+///
+/// For the **request path**. A handler must not block on a cross-process lock
+/// for as long as a rebuild takes, so it waits briefly and then reports who has
+/// it, which the caller turns into a 503 with `Retry-After`. Background jobs and
+/// the CLI use [`lock_index`] and block, because for them queueing is the right
+/// answer.
+///
+/// Re-entrant in the same way, and an already-held lock returns immediately
+/// without consuming any of the budget.
+pub(crate) fn lock_index_within(home: &Path, what: &str, wait: Duration) -> Result<Acquisition> {
+    acquire(
+        home,
+        what,
+        crate::index::no_progress(),
+        Wait::Until(Instant::now() + wait),
+    )
+}
+
+/// The outcome of a bounded attempt.
+pub(crate) enum Acquisition {
+    Held(IndexLock),
+    /// Someone else still holds it. `holder` describes them well enough to put
+    /// in a 503 body.
+    Busy {
+        holder: String,
+    },
+}
+
+/// How long an acquisition is prepared to wait.
+enum Wait {
+    /// Block. Correct for the CLI and for background jobs.
+    Forever,
+    /// Poll until this instant, then give up.
+    Until(Instant),
+}
+
+/// How often a bounded wait re-checks. Short enough that a handler hands the
+/// lock straight on to the work it is waiting to do, long enough that a queue
+/// of waiters is not a busy loop.
+const POLL: Duration = Duration::from_millis(50);
+
+fn acquire(
+    home: &Path,
+    what: &str,
+    progress: &dyn IndexProgress,
+    wait: Wait,
+) -> Result<Acquisition> {
     let path = lock_path(home)?;
 
     // Already ours on this thread: take another token without touching the
@@ -241,10 +304,10 @@ pub(crate) fn lock_index(
             .is_some()
     });
     if nested {
-        return Ok(IndexLock {
+        return Ok(Acquisition::Held(IndexLock {
             path: Some(path),
             _not_send: PhantomData,
-        });
+        }));
     }
 
     // `write(true)` matters beyond writing the holder line: Windows'
@@ -257,36 +320,74 @@ pub(crate) fn lock_index(
         .open(&path)
         .with_context(|| format!("opening the index lock {}", path.display()))?;
 
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            let holder = read_holder(&mut file).unwrap_or_else(|| "another operation".to_string());
-            let msg = format!("waiting for {holder} to finish…");
-            progress.phase(&msg);
-            tracing::warn!("the search index is locked by {holder}; waiting");
-            file.lock()
-                .with_context(|| format!("waiting for the index lock {}", path.display()))?;
-        }
-        // Advisory locking is not available here — some NFS/SMB mounts, and
-        // some container overlay and FUSE setups. Degrade to the old
-        // behaviour rather than refusing to index at all: a home that worked
-        // yesterday must keep working, and this is what the module docs
-        // promise. Loud, because the protection is genuinely absent.
-        Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
-            tracing::warn!(
-                "this filesystem does not support locking ({e}), so {} cannot be \
-                 serialized against other indice processes; do not run two at once \
-                 on {}",
-                what,
-                home.display()
-            );
-            return Ok(IndexLock {
-                path: None,
-                _not_send: PhantomData,
-            });
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("locking the index at {}", path.display()))
+    // Read once, when we first find it busy, and reused if we end up giving up.
+    // Re-reading on every poll tick would seek + parse the lock file ~200 times
+    // per bounded wait and throw all but the last away.
+    let mut holder: Option<String> = None;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let who = match &holder {
+                    Some(h) => h.clone(),
+                    None => {
+                        let h = read_holder(&mut file)
+                            .unwrap_or_else(|| "another operation".to_string());
+                        match wait {
+                            // A blocking caller really is about to wait, however
+                            // long it takes, so say so where an operator sees it.
+                            Wait::Forever => {
+                                progress.phase(&format!("waiting for {h} to finish…"));
+                                tracing::warn!("the search index is locked by {h}; waiting");
+                            }
+                            // A bounded caller is not going to wait it out — it
+                            // gives up and answers 503. Saying "waiting" at WARN
+                            // once per attempt would fill the log with hundreds
+                            // of wrong lines across one long rebuild.
+                            Wait::Until(_) => {
+                                tracing::debug!("the search index is locked by {h}; will not wait")
+                            }
+                        }
+                        holder = Some(h.clone());
+                        h
+                    }
+                };
+                match wait {
+                    Wait::Forever => {
+                        file.lock().with_context(|| {
+                            format!("waiting for the index lock {}", path.display())
+                        })?;
+                        break;
+                    }
+                    Wait::Until(deadline) => {
+                        if Instant::now() >= deadline {
+                            return Ok(Acquisition::Busy { holder: who });
+                        }
+                        std::thread::sleep(POLL);
+                    }
+                }
+            }
+            // Advisory locking is not available here — some NFS/SMB mounts, and
+            // some container overlay and FUSE setups. Degrade to the old
+            // behaviour rather than refusing to index at all: a home that worked
+            // yesterday must keep working, and this is what the module docs
+            // promise. Loud, because the protection is genuinely absent.
+            Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
+                tracing::warn!(
+                    "this filesystem does not support locking ({e}), so {} cannot be \
+                     serialized against other indice processes; do not run two at once \
+                     on {}",
+                    what,
+                    home.display()
+                );
+                return Ok(Acquisition::Held(IndexLock {
+                    path: None,
+                    _not_send: PhantomData,
+                }));
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("locking the index at {}", path.display()))
+            }
         }
     }
 
@@ -295,10 +396,10 @@ pub(crate) fn lock_index(
     write_holder(&mut file, what);
 
     HELD.with(|h| h.borrow_mut().insert(path.clone(), Held { file, depth: 1 }));
-    Ok(IndexLock {
+    Ok(Acquisition::Held(IndexLock {
         path: Some(path),
         _not_send: PhantomData,
-    })
+    }))
 }
 
 /// Describe the current holder for a waiter's message, rendering how long it
@@ -468,6 +569,99 @@ mod tests {
         let _a = lock_index(&trailing, "index", no_progress()).unwrap();
         let _b = lock_index(&indirect, "index", no_progress()).unwrap();
         assert_eq!(depth(&plain), 3, "all three are the same lock");
+    }
+
+    /// The bounded acquire gives up, and says who it gave up on.
+    #[test]
+    fn a_bounded_acquire_reports_the_holder_and_stops() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let home = home.clone();
+            std::thread::spawn(move || {
+                let g = lock_index(&home, "reindex", no_progress()).unwrap();
+                held_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+                drop(g);
+            })
+        };
+        held_rx.recv().unwrap();
+
+        let started = Instant::now();
+        match lock_index_within(&home, "a delete", Duration::from_millis(150)).unwrap() {
+            Acquisition::Busy { holder } => assert!(
+                holder.starts_with("reindex (pid "),
+                "the 503 needs to name the holder, not fall back: {holder}"
+            ),
+            Acquisition::Held(_) => panic!("must not acquire while another thread holds it"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it must give up near its deadline, not block"
+        );
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+    }
+
+    /// It does acquire if the lock frees up partway through the budget — the
+    /// only path where the holder line is written after a sleep.
+    #[test]
+    fn a_bounded_acquire_succeeds_when_the_lock_frees_up() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let home = home.clone();
+            std::thread::spawn(move || {
+                let g = lock_index(&home, "reindex", no_progress()).unwrap();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(150));
+                drop(g);
+            })
+        };
+        held_rx.recv().unwrap();
+
+        match lock_index_within(&home, "a delete", Duration::from_secs(10)).unwrap() {
+            Acquisition::Held(_) => {}
+            Acquisition::Busy { holder } => panic!("should have acquired, got busy: {holder}"),
+        }
+        holder.join().unwrap();
+        // The winner rewrote the holder line, so a later waiter blames the
+        // right operation.
+        let path = lock_path(&home).unwrap();
+        let _g = lock_index(&home, "index", no_progress()).unwrap();
+        let recorded = HELD
+            .with(|h| {
+                let mut b = h.borrow_mut();
+                read_holder(&mut b.get_mut(&path).unwrap().file)
+            })
+            .unwrap();
+        assert!(
+            recorded.starts_with("index (pid "),
+            "stale holder: {recorded}"
+        );
+    }
+
+    /// An already-held lock returns at once and spends none of the budget —
+    /// which is what makes it safe for a handler to take it and then call a
+    /// library function that takes it again.
+    #[test]
+    fn a_bounded_acquire_nested_in_a_held_lock_is_free() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let _outer = lock_index(home, "a delete", no_progress()).unwrap();
+        let started = Instant::now();
+        match lock_index_within(home, "a delete", Duration::from_secs(30)).unwrap() {
+            Acquisition::Held(_) => {}
+            Acquisition::Busy { .. } => panic!("a re-entrant acquire must never report busy"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the nested acquire must not poll"
+        );
+        assert_eq!(depth(home), 1, "and the nested guard was dropped again");
     }
 
     #[test]
