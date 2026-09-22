@@ -1772,3 +1772,75 @@ fn an_annotation_write_waits_for_the_index_lock() {
     writer.join().unwrap();
     holder.join().unwrap();
 }
+
+/// A description saved during an ingest must survive it.
+///
+/// This is what the manifest tier is for. `Manifest::save` rewrites
+/// `waczs.json` wholesale from an in-memory vec, and an ingest used to open the
+/// manifest before its loop and save after each crawl — so a curator editing a
+/// finding aid in that window had their edit read, overwritten and lost, with
+/// no error on either side. The window was the length of the ingest.
+///
+/// Both sides now re-open the manifest inside their own brief hold, so neither
+/// can be writing from a stale copy.
+#[test]
+fn a_description_saved_during_an_ingest_is_not_erased() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    // Seed the collection so there is something to describe, and so the ingest
+    // below is adding a second crawl to an existing manifest.
+    let seed = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &seed).unwrap();
+    indice_lib::index::index_path(&seed, &home, Some("seed"), "Notes").unwrap();
+
+    let big = archive.join("a.wacz");
+    std::fs::copy(fixture("a.wacz"), &big).unwrap();
+
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let ingest = {
+        let (home, gate) = (home.clone(), gate.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            indice_lib::index::Ingest::new(&home).index_location(&big.to_string_lossy(), "Notes")
+        })
+    };
+    let describe = {
+        let (home, gate) = (home.clone(), gate.clone());
+        std::thread::spawn(move || {
+            gate.wait();
+            // Land inside the ingest, which is where the old code lost it.
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            indice_lib::index::set_collection(
+                &home,
+                "Notes",
+                &indice_lib::collections::CollectionFields {
+                    narrative: Some("A description a curator typed mid-ingest.".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+        })
+    };
+    ingest.join().unwrap().expect("the ingest succeeds");
+    describe.join().unwrap().expect("the description saves");
+
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let coll = manifest
+        .collections
+        .iter()
+        .find(|c| c.id.as_str() == "notes")
+        .expect("the collection");
+    assert_eq!(
+        coll.narrative.as_deref(),
+        Some("A description a curator typed mid-ingest."),
+        "the curator's description was erased by the ingest"
+    );
+    assert_eq!(
+        manifest.waczs.len(),
+        2,
+        "and both crawls are registered: {:?}",
+        manifest.waczs.iter().map(|w| &w.name).collect::<Vec<_>>()
+    );
+}

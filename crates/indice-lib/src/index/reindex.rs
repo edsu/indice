@@ -80,7 +80,9 @@ impl crate::index::Ingest<'_> {
         // rebuild it drives describe the same archive.
         let _index = super::lock::lock_index(home, "reindex", progress)?;
 
-        let mut manifest = Manifest::open(&index_dir)?;
+        // Read-only: the targets snapshot. The rebuild's own writes re-open
+        // the manifest inside their hold at the end, so nothing is held here.
+        let manifest = Manifest::open(&index_dir)?;
         if manifest.waczs.is_empty() {
             info!("no WACZs registered; nothing to reindex");
             return Ok(());
@@ -120,6 +122,9 @@ impl crate::index::Ingest<'_> {
         search_index.set_stored_body_cap(config.stored_body_cap_bytes());
         let search = Mutex::new(search_index);
 
+        // What each rebuilt crawl turned out to be, applied to the manifest in
+        // one brief hold after the swap.
+        let mut rebuilt: Vec<super::ingest::Indexed> = Vec::new();
         let total = targets.len();
         let mut done = 0usize;
         let mut skipped = 0usize;
@@ -154,17 +159,20 @@ impl crate::index::Ingest<'_> {
             match index_one(
                 cx,
                 source,
-                &mut manifest,
                 &search,
                 Some(name),
                 (collection_id, collection_name),
             ) {
-                Ok((wacz_name, pages)) => {
+                Ok(indexed) => {
                     done += 1;
                     // Print the per-WACZ summary as each one finishes, so the next
                     // WACZ's progress bar doesn't erase the record of it (the line
                     // persists above the new bar).
-                    progress.wacz_indexed(&wacz_name, pages);
+                    progress.wacz_indexed(&indexed.display_name, indexed.stats.pages);
+                    // Collected, not written. Unlike an ingest, a rebuild
+                    // applies everything in one hold at the very end — see the
+                    // save below for why.
+                    rebuilt.push(indexed);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -215,7 +223,24 @@ impl crate::index::Ingest<'_> {
         // partial rebuild (some sources skipped) is still swapped in — it's usable
         // and no worse than the old index — but we still exit non-zero below.
         swap_in_new_index(&index_dir)?;
-        manifest.save()?;
+        // Applied here, in one brief hold, and only now: a rebuild that dies
+        // partway leaves the manifest untouched, exactly as before this
+        // changed. Writing each crawl as it finished would be simpler, but a
+        // failed rebuild would then leave entries describing documents that
+        // are sitting in `full_text.new` and were never swapped in.
+        //
+        // The manifest is re-opened inside the hold rather than reused from
+        // the snapshot above, which is the whole point: a rebuild takes hours,
+        // and anything a curator saved meanwhile — a description, a pinned
+        // thumbnail — would be erased by saving a copy read before they
+        // started. Only the entries this rebuild actually produced are
+        // touched; a skipped source keeps whatever is already recorded.
+        super::manifest::manifest_write(home, "a rebuild", |m| {
+            for indexed in rebuilt {
+                super::ingest::upsert(m, indexed);
+            }
+            Ok(())
+        })?;
         progress.finish();
         if skipped > 0 {
             // Usable but incomplete: return an error so the process exits non-zero and

@@ -29,6 +29,12 @@ mod acquire;
 mod pages;
 mod record;
 
+// `reindex` is a sibling of this module, not a descendant, so it cannot reach
+// `record` directly. It needs both halves because it drives the same pipeline
+// but applies the results on its own schedule: collected per source, written
+// once at the end.
+pub(super) use record::{upsert, Indexed};
+
 #[cfg(test)]
 mod tests;
 
@@ -279,7 +285,11 @@ impl Ingest<'_> {
         std::fs::create_dir_all(&index_dir)
             .with_context(|| format!("creating index dir {}", index_dir.display()))?;
 
-        let mut manifest = Manifest::open(&index_dir)?;
+        // A read-only snapshot, for planning only: which sources the location
+        // resolves to, and which are already registered. Reads take no lock —
+        // an atomic rename means there is no torn read — and the writes below
+        // each re-open the manifest inside their own hold.
+        let manifest = Manifest::open(&index_dir)?;
 
         // Validate the argument and file local WACZs into the collection's archive
         // folder (a bad path errors before we touch the index; the manifest lets us
@@ -310,14 +320,8 @@ impl Ingest<'_> {
                 continue;
             }
 
-            let (wacz_name, pages) = index_one(
-                cx,
-                source,
-                &mut manifest,
-                &search,
-                name,
-                (&group.0, group.1.as_str()),
-            )?;
+            let indexed = index_one(cx, source, &search, name, (&group.0, group.1.as_str()))?;
+            let (wacz_name, pages) = (indexed.display_name.clone(), indexed.stats.pages);
 
             // Commit + save per WACZ so an interrupted large ingest keeps every
             // completed crawl (and a re-run resumes past it), rather than losing the
@@ -330,7 +334,13 @@ impl Ingest<'_> {
                 wacz = %wacz_name,
                 "committed index"
             );
-            manifest.save()?;
+            // One brief manifest hold per crawl, opened and saved inside it, so
+            // a curator saving a description is never waiting on the whole
+            // ingest — and so this ingest cannot erase what they saved.
+            super::manifest::manifest_write(home, "an ingest", |m| {
+                record::upsert(m, indexed);
+                Ok(())
+            })?;
 
             // Per-WACZ summary persists above the next WACZ's progress bar.
             progress.wacz_indexed(&wacz_name, pages);
@@ -359,7 +369,6 @@ pub fn index_path(path: &Path, home: &Path, name: Option<&str>, collection: &str
 pub(super) fn index_one(
     cx: &Ingest,
     source: &Source,
-    manifest: &mut Manifest,
     search: &Mutex<SearchIndex>,
     // Display-name override for *this* crawl: `--name` for an ingest, the
     // preserved manifest name for a reindex. Per-call rather than a field on
@@ -368,7 +377,7 @@ pub(super) fn index_one(
     // The collection (id, display name) this WACZ joins — always set; every
     // crawl belongs to a collection (no singletons).
     collection: (&CollectionId, &str),
-) -> Result<(String, u64)> {
+) -> Result<record::Indexed> {
     let (home, concurrency, progress) = (cx.home, cx.concurrency, cx.progress);
     // Show an indeterminate spinner from the very start: the setup work (probing
     // the host, downloading, reading the ZIP directory and CDX) happens before
@@ -416,10 +425,6 @@ pub(super) fn index_one(
         },
     )?;
 
-    // Capture the outcome to report once the index is committed (see
-    // `index_location`), not here - the commit could still fail.
-    let outcome = (crawl_name.clone(), stats.pages);
-
     // Index the WACZ's metadata as a searchable document, tagged with its collection.
     let coll_body = record::collection_body(&meta);
     search
@@ -427,27 +432,29 @@ pub(super) fn index_one(
         .unwrap()
         .index_collection(&id, &crawl_name, collection.0, &coll_body)?;
 
-    // 3. Record it: fixity + provenance into the manifest entry.
+    // 3. Record what we learned — but do not write it. The caller applies it,
+    // under a brief manifest hold, at a moment of its choosing: per crawl for
+    // an ingest, all at once at the end for a rebuild. Holding the manifest
+    // open across the whole operation is the stale-read window this slice
+    // exists to close (see `index::manifest`).
     let fixity = access.fixity(progress)?;
-    record::upsert(
-        manifest,
-        record::Indexed {
-            id: &id,
-            collection,
-            source: &effective_source,
-            display_name: &crawl_name,
-            meta,
-            stats,
-            fixity,
-            actor: cx.actor,
-        },
-    );
+    let indexed = record::Indexed {
+        id,
+        collection: (collection.0.clone(), collection.1.to_string()),
+        source: effective_source,
+        display_name: crawl_name,
+        meta,
+        stats,
+        fixity,
+        actor: cx.actor.cloned(),
+    };
 
     // Note: the spinner/bar is *not* finished here - the Tantivy commit happens
     // once per `index_location` (after all sources), and that's where it's cleared
     // (via a final "committing" spinner) and the summary is emitted. See
-    // `index_location`.
-    Ok(outcome)
+    // `index_location`. The caller reports the crawl only after the commit,
+    // because that can still fail.
+    Ok(indexed)
 }
 
 /// The crawl's display name: an explicit `--name` wins, then the WACZ
