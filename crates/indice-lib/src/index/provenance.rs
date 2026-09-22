@@ -38,6 +38,14 @@ pub fn set_browsertrix_provenance_by_id(
     resource_hash: &str,
     review_status: Option<u8>,
 ) -> Result<()> {
+    // A home with no index has no crawl to annotate, and locking would create
+    // one: `lock_path` does `create_dir_all`, so a typo'd `--home` would be
+    // left with an `index/` and a lock file before we got as far as saying the
+    // crawl is unknown. Same guard as `optimize`, and safe outside the lock —
+    // the swap renames inside `index/`, never `index/` itself.
+    if !super::paths::index_initialized(home) {
+        anyhow::bail!("no indexed crawl with id {crawl_id}");
+    }
     super::manifest::manifest_write(home, "recording import provenance", |manifest| {
         let wacz = manifest
             .waczs
@@ -65,6 +73,14 @@ pub fn set_archiveit_provenance_by_id(
     warc_count: u64,
     collection_title: &str,
 ) -> Result<()> {
+    // A home with no index has no crawl to annotate, and locking would create
+    // one: `lock_path` does `create_dir_all`, so a typo'd `--home` would be
+    // left with an `index/` and a lock file before we got as far as saying the
+    // crawl is unknown. Same guard as `optimize`, and safe outside the lock —
+    // the swap renames inside `index/`, never `index/` itself.
+    if !super::paths::index_initialized(home) {
+        anyhow::bail!("no indexed crawl with id {crawl_id}");
+    }
     super::manifest::manifest_write(home, "recording import provenance", |manifest| {
         let wacz = manifest
             .waczs
