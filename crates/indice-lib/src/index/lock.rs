@@ -142,7 +142,8 @@ pub(crate) enum Scope {
     Index,
     /// Serializes one read-modify-write of `waczs.json`. Held for as long as
     /// that takes and no longer, which is what lets a description be saved
-    /// while a rebuild is running.
+    /// while a rebuild is running — the rebuild's own hold is at the very end
+    /// and is proportional to what it rebuilt, not to how long it ran.
     Manifest,
 }
 
@@ -301,13 +302,38 @@ pub(crate) fn lock_index_within(home: &Path, what: &str, wait: Duration) -> Resu
     )
 }
 
+/// Whether *this thread* already holds `scope` for `home`.
+///
+/// Only [`crate::index::manifest::manifest_write`] needs this, and for a
+/// specific reason: the lock is re-entrant, which is right for the index tier
+/// (a handler takes it, then the library function it calls takes it again) and
+/// actively dangerous for the manifest. A nested manifest write would open a
+/// *second* copy from disk without the outer one's uncommitted edits, save it,
+/// and then be overwritten when the outer save runs — the exact silent
+/// read-modify-write loss the manifest lock exists to prevent, arrived at
+/// through the lock rather than in spite of it.
+pub(crate) fn held_by_this_thread(home: &Path, scope: Scope) -> bool {
+    let Ok(path) = lock_path(home, scope) else {
+        return false;
+    };
+    HELD.with(|h| h.borrow().contains_key(&path))
+}
+
 /// Take the manifest lock for `home`, blocking until it is free.
 ///
-/// Always brief: the only thing that should happen under it is one
-/// read-modify-write of `waczs.json`, which is why blocking is fine even on
-/// the request path. See [`crate::index::manifest::manifest_write`], which is
-/// the only intended caller — going through it is what keeps the read and the
-/// write inside one hold.
+/// Blocking, with no bounded variant, on the grounds that the hold is short:
+/// one read-modify-write of `waczs.json` and any finding aid it dirties. See
+/// [`crate::index::manifest::manifest_write`], the only intended caller —
+/// going through it is what keeps the read and the write inside one hold.
+///
+/// One hold is **not** short, and it is worth knowing which: a rebuild applies
+/// every crawl it rebuilt in a single closure, so that one is proportional to
+/// the size of the archive (a linear scan per upsert, plus rewriting every
+/// dirty finding aid). On a large archive a request-path writer blocks for the
+/// whole of it, past the ten-second budget it gets on the index lock, with no
+/// 503. Acceptable while rebuilds are rare and archives are the size they are;
+/// a bounded variant for the request path is on
+/// `rustyweb-durable-writes-f4h5` if that stops being true.
 pub(crate) fn lock_manifest(home: &Path, what: &str) -> Result<IndexLock> {
     match acquire(
         home,

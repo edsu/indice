@@ -31,7 +31,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::collections::Manifest;
 
@@ -43,10 +43,12 @@ use super::paths::index_dir;
 /// the index lock ("a crawl deletion", "an ingest").
 ///
 /// Keep the closure short: it runs with the lock held, and every other writer
-/// in every other process is waiting on it. Do no I/O beyond the manifest, and
-/// in particular never acquire another lock inside it — this is the innermost
-/// one, and taking the index lock or the server's mutex here would invert the
-/// order and deadlock.
+/// in every other process is waiting on it. Do no I/O beyond the manifest's own
+/// storage — which does include `collections/<slug>/README.md`, since a finding
+/// aid is how a collection is stored rather than a separate thing — and in
+/// particular never acquire another lock inside it. This is the innermost one:
+/// taking the index lock or the server's mutex here would invert the order and
+/// deadlock, and taking *this* one again is refused outright (see below).
 ///
 /// The manifest is saved only if the closure returns `Ok`. A closure that
 /// fails leaves the file untouched, so a caller can bail out mid-change
@@ -56,11 +58,32 @@ pub(crate) fn manifest_write<T>(
     what: &str,
     f: impl FnOnce(&mut Manifest) -> Result<T>,
 ) -> Result<T> {
+    // Nesting is a bug, and a silent one, so refuse it loudly.
+    //
+    // The lock is re-entrant — which the index tier needs, because a handler
+    // takes it and then the library function it calls takes it again. Here that
+    // would be the worst possible behaviour: the inner call would sail through,
+    // open a *second* manifest from disk without the outer one's uncommitted
+    // edits, save it, and then be silently overwritten when the outer save
+    // runs. That is precisely the read-modify-write loss this module exists to
+    // prevent, arrived at through the lock instead of in spite of it. Nothing
+    // nests today; this is here so that the refactor which introduces it fails
+    // instead of losing a write.
+    if super::lock::held_by_this_thread(home, super::lock::Scope::Manifest) {
+        anyhow::bail!(
+            "manifest_write ({what}) was called inside another manifest_write; \
+             nesting them would silently discard the inner change — do the whole \
+             read-modify-write in one closure instead"
+        );
+    }
     let _guard = super::lock::lock_manifest(home, what)?;
     let index_dir = index_dir(home);
-    let mut manifest = Manifest::open(&index_dir)?;
+    let mut manifest =
+        Manifest::open(&index_dir).with_context(|| format!("opening the manifest for {what}"))?;
     let out = f(&mut manifest)?;
-    manifest.save()?;
+    manifest
+        .save()
+        .with_context(|| format!("saving the manifest after {what}"))?;
     Ok(out)
 }
 
@@ -140,6 +163,22 @@ mod tests {
         assert!(
             ids.contains(&"slow") && ids.contains(&"fast"),
             "got {ids:?}"
+        );
+    }
+
+    /// Nesting must fail loudly rather than silently discarding the inner
+    /// change. Re-entrancy is right for the index lock and wrong here.
+    #[test]
+    fn nesting_is_refused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir_all(index_dir(home)).unwrap();
+        let err = manifest_write(home, "outer", |_| manifest_write(home, "inner", |_| Ok(())))
+            .expect_err("a nested manifest_write must not be allowed to proceed");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("inside another manifest_write"),
+            "unexpected error: {msg}"
         );
     }
 
