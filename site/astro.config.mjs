@@ -67,6 +67,16 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Rust primer',
+          items: [
+            { label: 'Introduction', slug: 'primer' },
+            'primer/ownership',
+            'primer/errors',
+            'primer/traits',
+            'primer/modules',
+          ],
+        },
+        {
           label: 'Contributing',
           items: [
             'docs/contributing/building-and-testing',
