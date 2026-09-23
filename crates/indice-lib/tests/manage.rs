@@ -388,6 +388,41 @@ async fn forward_auth_gates_management_routes() {
     server.abort();
 }
 
+/// Logout is mounted only under `--manage`, and that is a deliberate removal
+/// worth pinning: it used to be mounted unconditionally.
+///
+/// There is nothing for it to do on a read-only server — `resolve_caller`
+/// returns `None` when management is off, so no session exists and no control
+/// offers it. The risk is a later refactor hoisting it back out of the
+/// management block to "simplify", which would restore the old public surface
+/// with the suite green.
+#[tokio::test]
+async fn read_only_server_has_no_logout_route() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ManageConfig::off(),
+    )
+    .await;
+
+    let url = format!("{base}/logout");
+    let origin = base.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&url)
+            .header("Origin", &origin)
+            .send("")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 404, "logout must be absent in read-only mode");
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn read_only_server_has_no_add_archive_route() {
     let tmp = tempfile::TempDir::new().unwrap();

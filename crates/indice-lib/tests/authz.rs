@@ -765,3 +765,176 @@ async fn a_failing_audit_log_does_not_fail_the_operation() {
 
     server.abort();
 }
+
+// ── Logout is a state change, so it is a POST behind the same-origin guard ──
+
+/// A GET can no longer log anyone out. See `server::auth::logout` for why it
+/// used to be able to.
+#[tokio::test]
+async fn logout_refuses_a_get() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let status = request("GET", format!("{base}/logout"), None, None).await;
+    assert_eq!(
+        status, 405,
+        "a GET must not log anyone out; it is method-not-allowed now"
+    );
+    server.abort();
+}
+
+/// And a cross-site POST is refused by the existing guard, which is the point
+/// of making it a POST at all.
+#[tokio::test]
+async fn logout_refuses_a_cross_site_post() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let url = format!("{base}/logout");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&url)
+            .header("Origin", "https://evil.example")
+            .send("")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 403, "a cross-site logout must be refused");
+    server.abort();
+}
+
+/// A same-origin POST still works, and still expires the cookie.
+///
+/// Also pins that it is *not* behind forward-auth: that middleware re-sets the
+/// display cookie on its way out, so logging out through it would sign you
+/// straight back in. This request carries no proxy credentials at all.
+#[tokio::test]
+async fn logout_clears_the_cookie_for_a_same_origin_post() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let url = format!("{base}/logout");
+    let origin = base.clone();
+    let (status, cookies) = tokio::task::spawn_blocking(move || {
+        let res = agent()
+            .post(&url)
+            .header("Origin", &origin)
+            .send("")
+            .unwrap();
+        // ALL of them, not the first. Both `clear_session_cookie` and
+        // `set_session_cookie` *append*, so if logout ever ended up behind
+        // forward-auth the response would carry the expiry followed by a fresh
+        // session — and reading only the first header would report success
+        // while the user was signed straight back in. That is the exact
+        // regression this test exists to catch.
+        let cookies: Vec<String> = res
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        (res.status().as_u16(), cookies)
+    })
+    .await
+    .unwrap();
+
+    // 303 See Other, which is the right redirect for a POST: the browser
+    // follows it with a GET, so a refresh afterwards does not re-submit.
+    assert_eq!(status, 303, "a same-origin logout must be allowed");
+    assert!(
+        cookies.iter().any(|c| c.starts_with("indice_session=;")
+            && (c.contains("Max-Age=0") || c.contains("Expires="))),
+        "logout must expire the session cookie, got: {cookies:?}"
+    );
+    assert!(
+        !cookies
+            .iter()
+            .any(|c| c.starts_with("indice_session=") && !c.starts_with("indice_session=;")),
+        "and must not set a fresh one — that would mean it is behind \
+         forward-auth, which re-sets the cookie on its way out: {cookies:?}"
+    );
+    server.abort();
+}
+
+// ── /files stays anonymous-only cross-origin ───────────────────────────────
+
+/// `/files/{id}` serves raw WACZ bytes with `Access-Control-Allow-Origin: *`,
+/// which is intentional: the bytes are already public, and ReplayWeb.page has
+/// to range-read them from another origin.
+///
+/// That is only safe while it stays *anonymous*. `ACAO: *` and
+/// `Access-Control-Allow-Credentials: true` must never appear together — the
+/// combination would let any site read a private archive using the visitor's
+/// own credentials, and browsers reject the pair for exactly that reason. This
+/// pins it now, so credentialed access or private collections cannot introduce
+/// it quietly later.
+#[tokio::test]
+async fn files_allows_anonymous_cross_origin_reads_only() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let staged = archive.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &staged).unwrap();
+    indice_lib::index::index_path(&staged, &home, Some("cors"), "cors-coll").unwrap();
+    let id = indice_lib::collections::Manifest::open(&home.join("index"))
+        .unwrap()
+        .waczs[0]
+        .id
+        .clone();
+
+    let (base, server) = serve(home, indice_lib::server::ManageConfig::off()).await;
+    let url = format!("{base}/files/{id}");
+
+    // Both branches. `serve_file` builds the 206 (range) and 200 (whole file)
+    // responses from two separate `Response::builder()` chains that each spell
+    // the CORS headers out, so testing one proves nothing about the other —
+    // and the range branch is the one replay actually uses, which makes it the
+    // one a credentialed-read feature would touch first.
+    for range in [None, Some("bytes=0-99")] {
+        let url = url.clone();
+        let (status, acao, acac) = tokio::task::spawn_blocking(move || {
+            let mut req = agent().get(&url).header("Origin", "https://replayweb.page");
+            if let Some(r) = range {
+                req = req.header("Range", r);
+            }
+            let res = req.call().unwrap();
+            let h = |n: &str| {
+                res.headers()
+                    .get(n)
+                    .map(|v| v.to_str().unwrap().to_string())
+            };
+            (
+                res.status().as_u16(),
+                h("access-control-allow-origin"),
+                h("access-control-allow-credentials"),
+            )
+        })
+        .await
+        .unwrap();
+
+        let which = if range.is_some() { "range" } else { "whole" };
+        assert_eq!(
+            status,
+            if range.is_some() { 206 } else { 200 },
+            "{which} request"
+        );
+        assert_eq!(
+            acao.as_deref(),
+            Some("*"),
+            "{which}: replay reads these bytes from another origin"
+        );
+        assert_eq!(
+            acac, None,
+            "{which}: ACAO:* with credentials would let any site read the \
+             archive as the visitor; the pair must never appear"
+        );
+    }
+    server.abort();
+}

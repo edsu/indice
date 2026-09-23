@@ -397,11 +397,23 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     );
     assert!(!anon.contains("signed in as"));
 
-    // Signed in → the identity + a logout link, and no login link.
+    // Signed in → the identity + a logout control, and no login link.
     let authed = views::layout("t", true, Some("ed"), false, None, html! {}).into_string();
     assert!(authed.contains("signed in as") && authed.contains("ed"));
-    assert!(authed.contains(r#"href="/logout""#) && authed.contains("Log out"));
+    assert!(authed.contains("Log out"));
     assert!(!authed.contains("/manage/login"));
+    // A POST form, not a link (see `server::auth::logout`). Asserted as two
+    // properties rather than one literal: maud's attribute order is not the
+    // behaviour under test, and coupling to it would send the next reader
+    // hunting for a routing bug that does not exist.
+    assert!(
+        authed.contains(r#"action="/logout""#) && authed.contains(r#"method="post""#),
+        "logout must be a POST form: {authed}"
+    );
+    assert!(
+        !authed.contains(r#"href="/logout""#),
+        "and must not still be a link: {authed}"
+    );
 
     // Plain read-only server (no forward-auth): neither affordance.
     let plain = views::layout("t", false, None, false, None, html! {}).into_string();
