@@ -18,10 +18,9 @@ fn changes(m: &mut Manifest) // may modify it; nobody else may touch it meanwhil
 ```
 
 The rule the compiler enforces is that you may have **either** any number of `&`
-borrows **or** exactly one `&mut`, never both. That is not bureaucracy for its
-own sake — it is the same rule that makes data races impossible, and it shows up
-again in [Guards, `Drop` and `!Send`](/primer/guards/) as the reason a lock can be
-made unforgettable.
+borrows **or** exactly one `&mut`, never both. That same rule is what makes data
+races impossible, and it comes back in [Guards, `Drop` and
+`!Send`](/primer/guards/) as the reason you can make a lock unforgettable.
 
 ## Reading a real one
 
@@ -38,11 +37,12 @@ pub(in crate::index) fn index_one(
 ```
 
 Every parameter is a borrow, so this function reads all of them and takes none of
-them away from the caller. `search` is a `&Mutex<…>`, which is a shared borrow of
-something that can still be mutated — that is the escape hatch, and it comes up in
+them away from the caller. `search` is a `&Mutex<…>`, a shared borrow of
+something you can still mutate. That escape hatch comes up in
 [Concurrency](/primer/concurrency/).
 
-The return type is where something interesting happened.
+The return type used to be different, and the reason it changed is a lifetime
+story.
 
 ## Lifetimes, and why `Indexed` is owned
 
@@ -62,19 +62,18 @@ Read `'a` as "some scope"; the struct is promising not to outlive whatever it
 borrowed. You never pick the scope yourself, the compiler does, and most of the
 time you only notice lifetimes when one is too short.
 
-`record::Indexed` — everything the pipeline learned about one WACZ — used to look
+`record::Indexed` (everything the pipeline learned about one WACZ) used to look
 the same way, holding `&str` and `&Source` pointing into `index_one`'s own
 variables. That was fine while `index_one` applied it to the manifest itself. When
 the locking work changed the design so that `index_one` *returns* the value and
 its caller decides when to write it, those borrows stopped being possible: the
 value now outlives the function that built it.
 
-So `Indexed` became owned — `String` instead of `&str`, `Source` instead of
-`&Source`. That is a handful of clones per crawl, which is nothing next to reading
-a WACZ, and it bought the ability to hold the value across a decision. That is the
-usual shape of a lifetime problem in practice: not a puzzle to solve, but a
-question about how long something needs to live, with cloning as a perfectly
-respectable answer.
+So `Indexed` became owned: `String` instead of `&str`, `Source` instead of
+`&Source`. That costs a handful of clones per crawl, nothing next to reading a
+WACZ, and it bought the ability to hold the value across a decision. Most
+lifetime problems have that shape. They are a question about how long something
+needs to live, and cloning is a respectable answer.
 
 ## Clone is not a failure
 
@@ -82,12 +81,12 @@ Coming from a GC language it is easy to read `.clone()` as something you got
 wrong. Sometimes it is, in a hot loop. Usually it is the cheapest way to stop
 threading a lifetime through six signatures to save an allocation that does not
 matter. indice clones freely at the edges and is careful in `index::ingest::pages`,
-where the per-record work actually is hot.
+where the per-record work is hot.
 
 ## What to take forward
 
 - A `&` in a signature means the caller keeps the value.
 - A `&mut` means exclusive access for the duration.
 - A `'a` means the struct is holding a borrow and cannot outlive it.
-- If a lifetime is fighting you, the question to ask is "how long does this
-  actually need to live?" — and owning it is often the right answer.
+- If a lifetime is fighting you, ask how long the value needs to live. Owning
+  it is often the answer.
