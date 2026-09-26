@@ -83,11 +83,15 @@ pub struct CollectionId(String);
 ```
 
 `derive` generates the obvious implementation. `Debug` gives `{:?}` formatting,
-`Clone` gives `.clone()`, `Serialize` gives JSON. It is worth noticing what is
-*absent*: `CollectionId` derives `Serialize` but not `Deserialize`, because
-deserializing one would let an invalid id in through the back door. That omission
-is load-bearing, and it is the subject of
-the chapter on making illegal states unrepresentable.
+`Clone` gives `.clone()`, `Serialize` gives JSON.
+
+Worth noticing what is *not* derived. `CollectionId` takes `Serialize` from the
+macro but writes `Deserialize` by hand, so that a value arriving from JSON goes
+through `CollectionId::parse` like every other one. A derived `Deserialize` would
+have built the type straight from any string in the file, which is the back door
+the type exists to close. Writing an impl yourself, rather than deriving it, is
+sometimes the whole point — see [Making illegal states
+unrepresentable](/primer/illegal-states/).
 
 ## What to take forward
 

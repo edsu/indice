@@ -74,6 +74,8 @@ export default defineConfig({
             'primer/errors',
             'primer/traits',
             'primer/modules',
+            'primer/illegal-states',
+            'primer/compile-time-checks',
           ],
         },
         {
