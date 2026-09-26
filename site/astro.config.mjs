@@ -78,6 +78,9 @@ export default defineConfig({
             'primer/compile-time-checks',
             'primer/signatures',
             'primer/options',
+            'primer/guards',
+            'primer/critical-sections',
+            'primer/concurrency',
           ],
         },
         {
