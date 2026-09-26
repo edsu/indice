@@ -76,6 +76,8 @@ export default defineConfig({
             'primer/modules',
             'primer/illegal-states',
             'primer/compile-time-checks',
+            'primer/signatures',
+            'primer/options',
           ],
         },
         {

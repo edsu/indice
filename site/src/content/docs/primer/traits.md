@@ -71,7 +71,7 @@ pub trait IndexProgress: Sync {
 Every method does nothing unless overridden, so `index::NoProgress` is an empty
 struct implementing an empty block. That is the **null object pattern**, and the
 reason it is here rather than `Option<&dyn IndexProgress>` gets a chapter of its
-own: a later chapter, on deleting an `Option` that asserts nothing.
+own: [Deleting an `Option` that asserts nothing](/primer/options/).
 
 ## Deriving
 
