@@ -7,7 +7,8 @@ indice is a small, fast, **single-binary** web-archive server: it indexes WACZ
 files into a Tantivy full-text index and replays them in the browser via
 ReplayWeb.page / wabac.js. See [README.md](README.md) for user-facing docs and
 [DESIGN.md](DESIGN.md) for the architecture (a **living document** — update it as
-the design changes). [PRIMER.md](PRIMER.md) teaches Rust *through this codebase*.
+the design changes). The [Rust primer](https://indice.page/primer/) teaches
+Rust *through this codebase* (sources under `site/src/content/docs/primer/`).
 
 ## Working with the maintainer
 
@@ -88,8 +89,9 @@ When reviewing a change (ours or a PR), look for:
 * Dead code: code that once was used but is no longer.
 - **Test sufficiency.** Do unit *and* integration tests adequately cover the new
   code and its edge cases (error paths, fallbacks, boundaries)?
-- **Docs that need updating** — `README.md`, `DESIGN.md`, `AGENTS.md`, `PRIMER.md`,
-  CLI `--help`, or code comments.
+- **Docs that need updating** — `README.md`, `DESIGN.md`, `AGENTS.md`, the
+  guides and Rust primer under `site/src/content/docs/`, CLI `--help`, or code
+  comments.
 
 Also worth checking:
 
