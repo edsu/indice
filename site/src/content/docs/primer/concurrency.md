@@ -1,15 +1,15 @@
 ---
-title: Concurrency — threads, async, and the boundary between them
+title: "Concurrency: threads, async, and the boundary between them"
 description: Three kinds of concurrency in one codebase, and the rule that keeps them apart.
 ---
 
-indice runs three different concurrency models at once, which sounds like a mess
-and is not, because each is doing a job the others are bad at:
+indice runs three different concurrency models at once, which sounds like a mess.
+Each one does a job the others are bad at:
 
 | Where | What | Why that one |
 |---|---|---|
-| Indexing a WACZ | **rayon** — a thread pool | CPU-bound work over a list: extract text from every record |
-| The web server | **tokio** — async | Thousands of mostly-idle connections |
+| Indexing a WACZ | **rayon**, a thread pool | CPU-bound work over a list: extract text from every record |
+| The web server | **tokio**, async | Thousands of mostly-idle connections |
 | Between them | **`spawn_blocking`** | Indexing must not run on an async thread |
 
 The reason it holds together is that Rust makes the boundary a type error rather
@@ -19,12 +19,12 @@ than a convention.
 
 Two marker traits the compiler derives for you:
 
-- **`Send`** — safe to *move* to another thread.
-- **`Sync`** — safe to *share* by reference between threads (`&T` is `Send`).
+- **`Send`**: safe to *move* to another thread.
+- **`Sync`**: safe to *share* by reference between threads (`&T` is `Send`).
 
 Almost everything is both. The interesting types are the ones that are not:
 `Rc` is neither (its count is not atomic), `MutexGuard` is not `Send`, and
-indice's own `IndexLock` is deliberately neither, as
+indice's own `IndexLock` is neither by design, as
 [Guards, `Drop` and `!Send`](/primer/guards/) explains. You rarely write these;
 you notice them when the compiler refuses something, and the refusal is usually
 correct.
@@ -50,9 +50,9 @@ let per_warc: Vec<(Vec<RawRecord>, Option<Warcinfo>)> = warc_paths
 ```
 
 `par_iter()` instead of `iter()`, and the work spreads across a thread pool.
-That is genuinely most of it — rayon's data-parallel API is a drop-in for the
-iterator you already wrote, and it will not compile unless the closure and its
-captures are `Send`.
+That is most of it. rayon's data-parallel API is a drop-in for the iterator you
+already wrote, and it will not compile unless the closure and its captures are
+`Send`.
 
 Where the work needs a bounded pool rather than the global one, indice builds
 its own:
@@ -71,28 +71,27 @@ Inside `pool.install`, the `par_iter` uses that pool instead of the global one.
 Shared mutable state in there goes behind the usual things: an `AtomicU64` for a
 progress counter, a `Mutex<SearchIndex>` for the writer.
 
-The `Mutex` is worth being precise about, because it is easy to assume the wrong
-reason. `SearchIndex` *is* `Sync`, so sharing a `&SearchIndex` across threads
+The `Mutex` deserves a precise explanation, because the obvious guess about it is
+wrong. `SearchIndex` *is* `Sync`, so sharing a `&SearchIndex` across threads
 would be fine. The problem is that writing a document takes `&mut self`, and
-several workers cannot each hold an exclusive borrow at once. `Mutex` is what
-turns "one exclusive borrow, statically" into "one at a time, checked at
-runtime" — interior mutability, which is the standard answer whenever shared
-access needs to be mutable.
+several workers cannot each hold an exclusive borrow at once. `Mutex` turns "one
+exclusive borrow, statically" into "one at a time, checked at runtime". That is
+interior mutability, the standard answer when shared access has to be mutable.
 
-## tokio: async, and what it is actually for
+## tokio: async, and what it is for
 
-An async function returns a future — a value describing work — which does
-nothing until polled. `.await` polls it and yields control if it is not ready, so
-one OS thread can drive many tasks that are mostly waiting on sockets. That is
-the case async is *for*: lots of concurrent waiting.
+An async function returns a future, a value describing work, which does nothing
+until polled. `.await` polls it and yields control if it is not ready, so one OS
+thread can drive many tasks that are mostly waiting on sockets. That is the case
+async is *for*: lots of concurrent waiting.
 
 It is not for CPU work. An `.await`-free stretch of computation cannot yield, so
 it blocks the executor thread, and a handful of those stall every other request
 on that thread.
 
-## The boundary, and why it is a hard rule
+## The boundary is a hard rule
 
-Indexing is exactly that kind of work: read a WACZ, extract text, commit to
+Indexing is that kind of work: read a WACZ, extract text, commit to
 Tantivy. Seconds to hours, no awaits, all CPU and file I/O. So the server never
 does it on an async thread:
 
@@ -102,14 +101,14 @@ tokio::task::spawn_blocking(move || {
 })
 ```
 
-`spawn_blocking` moves the closure to a separate pool meant for exactly this,
-leaving the async threads free. The closure must be `Send + 'static`, which is
+`spawn_blocking` moves the closure to a separate pool meant for it, leaving the
+async threads free. The closure must be `Send + 'static`, which is
 the compiler making sure you are not smuggling a borrow across.
 
 This is also where `!Send` pays off. Because `IndexLock` cannot cross an await
-point, the *only* place it can be held is inside a blocking closure — precisely
-where it belongs. An attempt to hold a cross-process file lock across an HTTP
-await does not compile.
+point, a blocking closure is the only place you can hold one, which is where it
+belongs. An attempt to hold a cross-process file lock across an HTTP await does
+not compile.
 
 ## Read-mostly state: `RwLock<Arc<T>>`
 
@@ -124,8 +123,8 @@ writer. `Arc` is an atomically reference-counted pointer, so a value can have
 several owners across threads and is dropped when the last one goes.
 
 Together they give a cheap swap. A search handler takes the read lock only long
-enough to **clone the `Arc`** — bumping a counter — then releases it and queries
-the snapshot it now owns. A reload replaces the whole thing:
+enough to **clone the `Arc`**, which bumps a counter, then releases it and
+queries the snapshot it now owns. A reload replaces the whole thing:
 
 ```rust
 fn reload_searcher(&self) -> Result<()> {
