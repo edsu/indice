@@ -20,7 +20,7 @@ fn changes(m: &mut Manifest) // may modify it; nobody else may touch it meanwhil
 The rule the compiler enforces is that you may have **either** any number of `&`
 borrows **or** exactly one `&mut`, never both. That is not bureaucracy for its
 own sake — it is the same rule that makes data races impossible, and it shows up
-again in the chapter on guards and `!Send` as the reason a lock can be
+again in [Guards, `Drop` and `!Send`](/primer/guards/) as the reason a lock can be
 made unforgettable.
 
 ## Reading a real one
@@ -40,7 +40,7 @@ pub(in crate::index) fn index_one(
 Every parameter is a borrow, so this function reads all of them and takes none of
 them away from the caller. `search` is a `&Mutex<…>`, which is a shared borrow of
 something that can still be mutated — that is the escape hatch, and it comes up in
-the concurrency chapter.
+[Concurrency](/primer/concurrency/).
 
 The return type is where something interesting happened.
 

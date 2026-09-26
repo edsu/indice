@@ -20,7 +20,7 @@ exists.
 `Send + Sync` after the colon are **supertraits**: any implementor must also be
 safe to move between threads and share between them. That is not decoration — it
 is what lets a resolver be used from the worker threads in
-the concurrency chapter, checked at compile time.
+[Concurrency](/primer/concurrency/), checked at compile time.
 
 ## The decision: `dyn` or generic
 
