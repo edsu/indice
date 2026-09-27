@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use indice_lib::collections::Manifest;
-use indice_lib::index::{missing_remedy, orphan_remedy, reconcile};
+use indice_lib::index::{missing_remedy, orphan_remedy, reconcile, unrecoverable_remedy, Outcome};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
@@ -19,6 +19,21 @@ fn index_dir(home: &Path) -> PathBuf {
 
 fn no_progress() -> &'static dyn indice_lib::index::IndexProgress {
     indice_lib::index::no_progress()
+}
+
+/// `home` as the report prints it: canonical, so a pasted command works from
+/// any directory. On macOS this is the difference between `/var/...` and
+/// `/private/var/...`.
+fn canonical(path: &Path) -> String {
+    path.canonicalize().unwrap().display().to_string()
+}
+
+/// Reconcile a home that is expected to have an index.
+fn checked(home: &Path) -> indice_lib::index::Reconciliation {
+    match reconcile(home, no_progress()).unwrap() {
+        Outcome::Checked(report) => report,
+        Outcome::NoIndex => panic!("expected an initialized index at {}", home.display()),
+    }
 }
 
 /// Index a private copy of the fixture into `collection`, returning its id.
@@ -53,7 +68,7 @@ fn a_healthy_archive_reconciles_clean() {
     let home = tmp.path();
     index_fixture(home, "c");
 
-    let report = reconcile(home, no_progress()).unwrap();
+    let report = checked(home);
     assert!(
         report.is_consistent(),
         "nothing to report on a healthy archive: {report:?}"
@@ -69,7 +84,7 @@ fn an_orphaned_crawl_is_found_and_its_file_located() {
     let id = index_fixture(home, "c");
     simulate_crash_before_manifest_save(home, &id);
 
-    let report = reconcile(home, no_progress()).unwrap();
+    let report = checked(home);
     assert!(!report.is_consistent());
     assert_eq!(
         report.missing.len(),
@@ -81,7 +96,7 @@ fn an_orphaned_crawl_is_found_and_its_file_located() {
     let orphan = &report.orphans[0];
     assert_eq!(orphan.crawl_id, id);
     assert!(
-        orphan.live_docs > 0,
+        orphan.live_pages > 0,
         "the documents a search would still turn up"
     );
 
@@ -97,13 +112,26 @@ fn an_orphaned_crawl_is_found_and_its_file_located() {
     // The command has to be runnable as printed. The collection comes off the
     // orphan's own documents, because the manifest entry that would otherwise
     // say which collection it belonged to is the thing that went missing.
-    let remedy = orphan_remedy(orphan);
+    let remedy = orphan_remedy(home, orphan).expect("a file on disk means a command");
     assert_eq!(orphan.collection.as_deref(), Some("c"));
     assert!(remedy.contains("--force"), "{remedy}");
     assert!(remedy.contains("--collection 'c'"), "{remedy}");
     assert!(
         !remedy.contains("<collection>"),
         "no placeholder left for the curator to guess at: {remedy}"
+    );
+    // Without --home the command only works from inside the archive, and the
+    // path it names is home-relative, so pasting it anywhere else fails.
+    assert!(
+        remedy.contains(&format!("--home '{}'", canonical(home))),
+        "the command has to name the archive: {remedy}"
+    );
+    // `--home` alone is not enough: `index` resolves its location argument
+    // against the current directory, not against home, so a home-relative
+    // path would find the right archive and the wrong file.
+    assert!(
+        remedy.contains(&canonical(&on_disk)),
+        "the location has to be absolute: {remedy}"
     );
 }
 
@@ -124,16 +152,24 @@ fn an_orphan_whose_file_is_gone_reports_no_source() {
     std::fs::remove_file(source.resolve(home).unwrap()).unwrap();
     simulate_crash_before_manifest_save(home, &id);
 
-    let report = reconcile(home, no_progress()).unwrap();
+    let report = checked(home);
     assert_eq!(report.orphans.len(), 1);
     assert!(
         report.orphans[0].source.is_none(),
         "no file hashes to this id any more"
     );
     assert!(
-        orphan_remedy(&report.orphans[0]).contains("only copy left"),
-        "the remedy has to say the documents are all that is left: {}",
-        orphan_remedy(&report.orphans[0])
+        orphan_remedy(home, &report.orphans[0]).is_none(),
+        "there is no re-index command when nothing on disk hashes to the id"
+    );
+    // `indice crawl delete` cannot clear it either: that plans from the
+    // manifest entry, which is the thing that went missing. A rebuild can,
+    // but only if the manifest still lists something to rebuild from, and
+    // here it does not.
+    assert!(
+        unrecoverable_remedy(home, &report).is_none(),
+        "a rebuild with nothing registered exits early and would leave the \
+         orphan where it is, so offering it would be bad advice"
     );
 }
 
@@ -149,7 +185,7 @@ fn a_deleted_crawl_is_not_an_orphan() {
     let id = index_fixture(home, "c");
     indice_lib::index::delete_crawl(home, &id).unwrap();
 
-    let report = reconcile(home, no_progress()).unwrap();
+    let report = checked(home);
     assert!(
         report.is_consistent(),
         "a deleted crawl left nothing to reconcile: {report:?}"
@@ -170,7 +206,7 @@ fn a_manifest_entry_without_documents_is_reported_as_confirmed() {
     search.commit().unwrap();
     drop(search);
 
-    let report = reconcile(home, no_progress()).unwrap();
+    let report = checked(home);
     assert_eq!(report.orphans.len(), 0);
     assert_eq!(report.missing.len(), 1, "{report:?}");
 
@@ -182,7 +218,12 @@ fn a_manifest_entry_without_documents_is_reported_as_confirmed() {
          rather than a crawl that never had any",
         missing.recorded_pages
     );
-    assert!(missing_remedy(missing).contains("--force"));
+    let remedy = missing_remedy(home, missing);
+    assert!(remedy.contains("--force"), "{remedy}");
+    // The manifest knows the collection for certain in this direction, so a
+    // placeholder here would be worse than in the orphan case.
+    assert!(remedy.contains("--collection 'c'"), "{remedy}");
+    assert!(!remedy.contains("<collection>"), "{remedy}");
 }
 
 #[test]
@@ -208,7 +249,7 @@ fn an_entry_that_never_had_pages_is_reported_but_not_confirmed() {
         .page_count = None;
     manifest.save().unwrap();
 
-    let report = reconcile(home, no_progress()).unwrap();
+    let report = checked(home);
     assert_eq!(report.missing.len(), 1);
     assert!(
         !report.missing[0].is_confirmed(),
@@ -218,5 +259,90 @@ fn an_entry_that_never_had_pages_is_reported_but_not_confirmed() {
         report.confirmed_findings(),
         0,
         "so an exit code keyed off confirmed findings stays quiet"
+    );
+}
+
+#[test]
+fn an_unrecoverable_orphan_beside_a_live_crawl_is_cleared_by_a_rebuild() {
+    // The other half of the case above. With something still registered, a
+    // rebuild writes a fresh index from the manifest and leaves unreferenced
+    // documents behind, so there is a command worth printing.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let doomed = index_fixture(home, "c");
+    index_fixture(home, "keep");
+
+    let source = Manifest::open(&index_dir(home))
+        .unwrap()
+        .wacz_by_id(&doomed)
+        .expect("indexed")
+        .source
+        .clone();
+    std::fs::remove_file(source.resolve(home).unwrap()).unwrap();
+    simulate_crash_before_manifest_save(home, &doomed);
+
+    let report = checked(home);
+    assert_eq!(report.orphans.len(), 1);
+    assert!(report.orphans[0].source.is_none());
+    let clear = unrecoverable_remedy(home, &report).expect("one crawl is still registered");
+    assert!(clear.contains("reindex"), "{clear}");
+    assert!(
+        clear.contains(&format!("--home '{}'", canonical(home))),
+        "{clear}"
+    );
+}
+
+#[test]
+fn a_home_with_no_index_is_not_reported_as_agreeing() {
+    // Running this from the wrong directory must not claim the stores agree,
+    // and must not bring an archive into being. Both the lock and opening the
+    // index would create `index/` if reached.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+
+    match reconcile(home, no_progress()).unwrap() {
+        Outcome::NoIndex => {}
+        Outcome::Checked(report) => panic!("claimed a verdict on a non-archive: {report:?}"),
+    }
+    assert!(
+        !index_dir(home).exists(),
+        "a read-only pass must not create {}",
+        index_dir(home).display()
+    );
+    assert_eq!(
+        std::fs::read_dir(home).unwrap().count(),
+        0,
+        "nothing at all should have been written"
+    );
+}
+
+#[test]
+fn a_path_holding_a_quote_still_produces_one_shell_argument() {
+    // A single-quoted path breaks on an apostrophe, which turns a paste into a
+    // command targeting something else entirely.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let input = home.join("o'brien-2024.wacz");
+    std::fs::copy(Path::new(FIXTURES).join("simple.wacz"), &input).unwrap();
+    indice_lib::index::Ingest::new(home)
+        .name(Some("Quoted"))
+        .index_location(&input.to_string_lossy(), "c")
+        .unwrap();
+    let id = Manifest::open(&index_dir(home))
+        .unwrap()
+        .waczs
+        .first()
+        .unwrap()
+        .id
+        .clone();
+    simulate_crash_before_manifest_save(home, &id);
+
+    let report = checked(home);
+    let remedy = orphan_remedy(home, &report.orphans[0]).expect("the file is on disk");
+    assert!(remedy.contains("brien-2024.wacz"), "{remedy}");
+    assert!(
+        remedy.contains(r"o'\''brien"),
+        "the apostrophe has to be escaped for the shell, not left to split the \
+         argument: {remedy}"
     );
 }
