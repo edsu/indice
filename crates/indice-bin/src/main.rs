@@ -858,12 +858,16 @@ async fn main() -> Result<()> {
     );
     // `index`, `reindex`, `browsertrix` (which indexes what it downloads), and
     // `wacz build` (which indexes what it packages) all show the progress bar.
+    // `reconcile` joins them not for its own speed (it is seconds) but because
+    // it queues on the index lock, and the phase is what says "waiting for
+    // indice reindex (pid 4242) to finish" instead of looking hung.
     let shows_progress = matches!(
         &cli.command,
         Commands::Index { .. }
             | Commands::Reindex { .. }
             | Commands::Import { .. }
             | Commands::Wacz { .. }
+            | Commands::Reconcile { .. }
     );
     let show_bar = shows_progress && !verbose && std::io::stderr().is_terminal();
     let default_level = if verbose {
@@ -1273,7 +1277,8 @@ async fn main() -> Result<()> {
         }
 
         Commands::Reconcile { home } => {
-            if !run_reconcile(&home)? {
+            let bar = show_bar.then(BarProgress::new);
+            if !run_reconcile(&home, progress_sink(&bar))? {
                 std::process::exit(1);
             }
         }
@@ -1983,8 +1988,21 @@ fn run_verify(home: &std::path::Path) -> Result<bool> {
 /// than repairing it here: re-indexing is safe and additive, but the other
 /// remedy throws away the only surviving copy of a crawl's text, and that is a
 /// decision to take one crawl at a time with the file path in view.
-fn run_reconcile(home: &std::path::Path) -> Result<bool> {
-    let report = indice_lib::index::reconcile(home, indice_lib::index::no_progress())?;
+fn run_reconcile(
+    home: &std::path::Path,
+    progress: &dyn indice_lib::index::IndexProgress,
+) -> Result<bool> {
+    use indice_lib::index::{missing_remedy, orphan_remedy, unrecoverable_remedy, Outcome};
+
+    let report = match indice_lib::index::reconcile(home, progress)? {
+        // Not "everything agrees": there is no archive here to disagree. Saying
+        // OK would be a lie the default `--home .` makes easy to hit.
+        Outcome::NoIndex => {
+            println!("No index in {} - nothing to reconcile", home.display());
+            return Ok(true);
+        }
+        Outcome::Checked(report) => report,
+    };
 
     if report.is_consistent() {
         println!(
@@ -2001,17 +2019,28 @@ fn run_reconcile(home: &std::path::Path) -> Result<bool> {
         );
         println!("These pages appear in search results, but the crawl page 404s.\n");
         for orphan in &report.orphans {
-            println!("  {}  {} live page(s)", orphan.crawl_id, orphan.live_docs);
-            match &orphan.source {
-                Some(source) => println!(
-                    "      file still on disk: {}\n      repair: {}",
-                    source.location(),
-                    indice_lib::index::orphan_remedy(orphan)
-                ),
-                None => println!(
-                    "      {}\n      nothing to re-index from; dropping the documents is the \n                           only way to clear it, and they are the last copy of the text",
-                    indice_lib::index::orphan_remedy(orphan)
-                ),
+            println!("  {}  {} live page(s)", orphan.crawl_id, orphan.live_pages);
+            match (&orphan.source, orphan_remedy(home, orphan)) {
+                (Some(source), Some(command)) => {
+                    println!("      file still on disk: {}", source.location());
+                    println!("      repair: {command}");
+                }
+                // Nothing on disk hashes to the id, so there is nothing to
+                // re-index from and these documents are the crawl. A rebuild is
+                // what clears them; `crawl delete` cannot, because it plans
+                // from the manifest entry that is missing.
+                _ => {
+                    println!("      no file on disk hashes to this id, so these documents are");
+                    println!("      the only copy of the crawl left. Clearing them discards it.");
+                    match unrecoverable_remedy(home, &report) {
+                        Some(command) => println!("      clear with: {command}"),
+                        None => println!(
+                            "      the manifest is empty, so a rebuild would do nothing; \
+                             remove {} to clear it",
+                            indice_lib::index::index_dir(home).display()
+                        ),
+                    }
+                }
             }
         }
         println!();
@@ -2029,10 +2058,7 @@ fn run_reconcile(home: &std::path::Path) -> Result<bool> {
                 _ => "no page count recorded, so it may never have had any".to_string(),
             };
             println!("  {}  {} - {note}", missing.crawl_id, missing.name);
-            println!(
-                "      repair: {}",
-                indice_lib::index::missing_remedy(missing)
-            );
+            println!("      repair: {}", missing_remedy(home, missing));
         }
         println!();
     }

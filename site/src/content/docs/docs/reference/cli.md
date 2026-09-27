@@ -192,9 +192,12 @@ looking at, this is the command to run.
 It reports two kinds of disagreement:
 
 - **Orphaned documents** are in the index with no manifest entry. Usually the WACZ is still sitting
-  in `archive/`, so the fix is to re-index it, and the report prints that command with the file path
-  and collection already filled in. If the file is gone, it says so, because then the text in the
-  index is the last copy of the crawl.
+  in `archive/`, so the fix is to re-index it, and the report prints that command with the absolute
+  file path, the collection and `--home` already filled in, so it runs from anywhere. If the file
+  is gone there is nothing to re-index from, and the report says so, because then the text in the
+  index is the last copy of the crawl. Clearing those documents is a rebuild
+  ([`indice reindex`](#indice-reindex)) rather than `indice crawl delete`, which cannot help: it
+  plans from the manifest entry, and the missing entry is the whole problem.
 - **Missing documents** are the other way round: a manifest entry whose pages are not searchable.
   Re-indexing fixes those too.
 
@@ -205,6 +208,10 @@ text away.
 Exits non-zero when it finds damage the manifest confirms, so it suits a cron job. A crawl with no
 recorded page count is reported but does not fail the run, since a WACZ with nothing extractable
 indexes to nothing and was never broken.
+
+Run against a directory that holds no index, it says so rather than reporting agreement, and writes
+nothing. Worth knowing because `--home` defaults to the current directory, so this is what you see
+if you run it from the wrong place.
 
 This is a different question from [`indice verify`](#indice-verify): fixity asks whether the files
 still match what was recorded, reconciliation asks whether the two records agree with each other.
