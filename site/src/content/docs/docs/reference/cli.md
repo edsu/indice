@@ -172,6 +172,43 @@ Reports each as `OK`, `MODIFIED`, or `MISSING`, and exits non-zero if any fail, 
 cron job or CI. This is indice's fixity check, a small guard against the archive quietly bit-rotting
 or being tampered with.
 
+## `indice reconcile`
+
+Check that the search index and the manifest list the same crawls.
+
+```text
+indice reconcile
+```
+
+`indice` keeps two records of a crawl: its pages in the search index, and its entry in
+`index/waczs.json`. Writing both is not one atomic step, and cannot be, because the manifest is a
+file on disk rather than a row in a database. So a crash, a power cut or a `kill -9` partway
+through an add can leave the two disagreeing.
+
+The symptom is a crawl that behaves like a ghost: its pages turn up in search results, but clicking
+through gives a 404, and it cannot be deleted from the workroom either. If that is what you are
+looking at, this is the command to run.
+
+It reports two kinds of disagreement:
+
+- **Orphaned documents** are in the index with no manifest entry. Usually the WACZ is still sitting
+  in `archive/`, so the fix is to re-index it, and the report prints that command with the file path
+  and collection already filled in. If the file is gone, it says so, because then the text in the
+  index is the last copy of the crawl.
+- **Missing documents** are the other way round: a manifest entry whose pages are not searchable.
+  Re-indexing fixes those too.
+
+It never changes anything. Every finding comes with the command that repairs it, so you decide one
+crawl at a time, which matters because clearing an orphan whose file has gone means throwing its
+text away.
+
+Exits non-zero when it finds damage the manifest confirms, so it suits a cron job. A crawl with no
+recorded page count is reported but does not fail the run, since a WACZ with nothing extractable
+indexes to nothing and was never broken.
+
+This is a different question from [`indice verify`](#indice-verify): fixity asks whether the files
+still match what was recorded, reconciliation asks whether the two records agree with each other.
+
 ## `indice stats`
 
 Report the search index's on-disk footprint.

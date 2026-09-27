@@ -1047,6 +1047,63 @@ Reads take no lock, and the planning reads — which sources a location resolves
 to, which are already registered, what a rebuild's targets are — stay outside
 it.
 
+### The gap locking cannot close, and the pass that repairs it
+
+Both locks serialize *writers*. Neither makes a write **atomic across both
+stores**, and nothing can: there is no transaction spanning Tantivy and
+`waczs.json`. An ingest commits its documents and then saves the manifest
+entry, so a crash, a power loss or a `SIGKILL` between those two leaves
+documents in the index that no manifest entry mentions.
+
+This is the same end state as the lost-update bug in #126, reached by hardware
+instead of by a race, which is exactly why no amount of locking helps. For a curator it presents as a haunting: the crawl's
+pages come back in search results, its crawl page 404s (rendering goes through
+the manifest), and it cannot be deleted through the UI either, because
+`delete_crawl` plans from the manifest entry that is not there.
+
+The gap is permanent *by construction*, and deliberately so. indice keeps
+human-readable files on disk rather than putting the manifest in a database, so
+a single transaction over both stores is not on offer. Repair replaces
+prevention: `indice reconcile` (`index::reconcile`) compares the two and
+reports where they disagree.
+
+Three details carry the design:
+
+- **It counts live documents, not terms.** Tantivy keeps a term in a segment's
+  dictionary until that segment merges, so reading the `crawl_id` dictionary
+  alone reports every correctly-deleted crawl as an orphan. Candidates come
+  from the dictionary and are then counted through the searcher, which applies
+  the alive bitsets.
+- **It takes the index lock, despite writing nothing.** The lock is what makes
+  a finding mean something. An ingest that has committed and not yet saved is
+  *momentarily* in precisely the state the pass hunts for, so without the lock
+  a healthy archive mid-ingest reports as damaged. Holding it means every
+  writer has finished and anything left is durable.
+- **An orphan is usually recoverable, and the report says so.** `wacz_id`
+  hashes a crawl's home-relative *location string* rather than its contents,
+  and a local ingest files the WACZ under `archive/<collection>/`. So scanning
+  the archive directory and recomputing ids finds the orphan's file, and the
+  remedy is a re-index that rebuilds the manifest entry with real provenance
+  rather than a reconstruction. The collection comes off the orphan's own
+  documents, since the entry that would otherwise name it is the missing thing,
+  which is what makes the printed command runnable as typed.
+
+The reverse direction (a manifest entry whose documents are gone) is reported
+too, and `Wacz::page_count` is what separates damage from a crawl that never
+had anything to index: a recorded count above zero is the manifest asserting
+pages existed, so their absence is real, while no count means there is nothing
+to contradict. Only the confirmed findings set the exit code.
+
+The pass **never writes**. Each finding prints the command that repairs it,
+because the two remedies have very different stakes: re-indexing is additive,
+while dropping documents discards the last surviving copy of a crawl's text.
+That is a decision to take one crawl at a time with the file path in view.
+
+What remains uncovered is the window itself. Nothing detects the gap as it
+happens; reconciliation is something an operator runs, or is pointed at when a
+crawl starts behaving strangely. Surfacing it in the workroom would mean
+deciding when the check runs, which is a separate question.
+
 ### Progress reporting
 
 Indexing reports progress through a small, UI-agnostic `IndexProgress` trait
