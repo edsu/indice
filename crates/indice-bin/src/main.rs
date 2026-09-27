@@ -206,6 +206,22 @@ enum Commands {
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
+    /// Check that the search index and the manifest agree, and report how to
+    /// repair them where they do not.
+    ///
+    /// Finds crawls whose pages are in the index with no manifest entry (they
+    /// show up in search results but their crawl page 404s), and manifest
+    /// entries whose pages are missing. Locking cannot prevent either: there is
+    /// no transaction spanning Tantivy and `waczs.json`, so a crash between the
+    /// two writes leaves them disagreeing.
+    ///
+    /// Reports only, and never changes the archive. Exits 1 if it finds damage
+    /// the manifest confirms.
+    Reconcile {
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
     /// Probe a running server's `/health` and exit 0 if healthy, non-zero
     /// otherwise. Self-contained (no curl needed), so a distroless container's
     /// HEALTHCHECK / a compose healthcheck can call the binary itself.
@@ -842,12 +858,16 @@ async fn main() -> Result<()> {
     );
     // `index`, `reindex`, `browsertrix` (which indexes what it downloads), and
     // `wacz build` (which indexes what it packages) all show the progress bar.
+    // `reconcile` joins them not for its own speed (it is seconds) but because
+    // it queues on the index lock, and the phase is what says "waiting for
+    // indice reindex (pid 4242) to finish" instead of looking hung.
     let shows_progress = matches!(
         &cli.command,
         Commands::Index { .. }
             | Commands::Reindex { .. }
             | Commands::Import { .. }
             | Commands::Wacz { .. }
+            | Commands::Reconcile { .. }
     );
     let show_bar = shows_progress && !verbose && std::io::stderr().is_terminal();
     let default_level = if verbose {
@@ -1252,6 +1272,13 @@ async fn main() -> Result<()> {
         Commands::Verify { home } => {
             let all_ok = run_verify(&home)?;
             if !all_ok {
+                std::process::exit(1);
+            }
+        }
+
+        Commands::Reconcile { home } => {
+            let bar = show_bar.then(BarProgress::new);
+            if !run_reconcile(&home, progress_sink(&bar))? {
                 std::process::exit(1);
             }
         }
@@ -1945,7 +1972,103 @@ fn run_verify(home: &std::path::Path) -> Result<bool> {
     }
 
     println!("\n{ok} OK, {missing} missing, {modified} modified, {remote} remote (skipped)");
+    // Fixity is a different question from agreement: this pass says whether the
+    // files still match what was recorded, and says nothing about whether the
+    // search index and the manifest list the same crawls.
+    println!(
+        "(this checks file fixity; run `indice reconcile` to check the index against the manifest)"
+    );
     Ok(missing == 0 && modified == 0)
+}
+
+/// Report where the index and the manifest disagree. Returns false if the
+/// manifest confirms damage, which the caller turns into a non-zero exit.
+///
+/// Read-only on purpose. Each finding prints the command that repairs it rather
+/// than repairing it here: re-indexing is safe and additive, but the other
+/// remedy throws away the only surviving copy of a crawl's text, and that is a
+/// decision to take one crawl at a time with the file path in view.
+fn run_reconcile(
+    home: &std::path::Path,
+    progress: &dyn indice_lib::index::IndexProgress,
+) -> Result<bool> {
+    use indice_lib::index::{missing_remedy, orphan_remedy, unrecoverable_remedy, Outcome};
+
+    let report = match indice_lib::index::reconcile(home, progress)? {
+        // Not "everything agrees": there is no archive here to disagree. Saying
+        // OK would be a lie the default `--home .` makes easy to hit.
+        Outcome::NoIndex => {
+            println!("No index in {} - nothing to reconcile", home.display());
+            return Ok(true);
+        }
+        Outcome::Checked(report) => report,
+    };
+
+    if report.is_consistent() {
+        println!(
+            "OK  {} crawls, index and manifest agree",
+            report.in_manifest
+        );
+        return Ok(true);
+    }
+
+    if !report.orphans.is_empty() {
+        println!(
+            "ORPHANED DOCUMENTS ({}) - in the search index, absent from the manifest.",
+            report.orphans.len()
+        );
+        println!("These pages appear in search results, but the crawl page 404s.\n");
+        for orphan in &report.orphans {
+            println!("  {}  {} live page(s)", orphan.crawl_id, orphan.live_pages);
+            match (&orphan.source, orphan_remedy(home, orphan)) {
+                (Some(source), Some(command)) => {
+                    println!("      file still on disk: {}", source.location());
+                    println!("      repair: {command}");
+                }
+                // Nothing on disk hashes to the id, so there is nothing to
+                // re-index from and these documents are the crawl. A rebuild is
+                // what clears them; `crawl delete` cannot, because it plans
+                // from the manifest entry that is missing.
+                _ => {
+                    println!("      no file on disk hashes to this id, so these documents are");
+                    println!("      the only copy of the crawl left. Clearing them discards it.");
+                    match unrecoverable_remedy(home, &report) {
+                        Some(command) => println!("      clear with: {command}"),
+                        None => println!(
+                            "      the manifest is empty, so a rebuild would do nothing; \
+                             remove {} to clear it",
+                            indice_lib::index::index_dir(home).display()
+                        ),
+                    }
+                }
+            }
+        }
+        println!();
+    }
+
+    if !report.missing.is_empty() {
+        println!(
+            "MISSING DOCUMENTS ({}) - in the manifest, absent from the search index.",
+            report.missing.len()
+        );
+        println!("These crawls render, but their pages are not searchable.\n");
+        for missing in &report.missing {
+            let note = match missing.recorded_pages {
+                Some(n) if n > 0 => format!("{n} page(s) recorded at ingest"),
+                _ => "no page count recorded, so it may never have had any".to_string(),
+            };
+            println!("  {}  {} - {note}", missing.crawl_id, missing.name);
+            println!("      repair: {}", missing_remedy(home, missing));
+        }
+        println!();
+    }
+
+    let confirmed = report.confirmed_findings();
+    println!(
+        "{} crawls in the manifest, {} in the index, {confirmed} confirmed finding(s)",
+        report.in_manifest, report.in_index
+    );
+    Ok(confirmed == 0)
 }
 
 /// First 8 characters of a hex hash for compact display.

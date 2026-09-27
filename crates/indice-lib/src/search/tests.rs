@@ -1296,3 +1296,106 @@ fn malformed_query_does_not_error() {
     assert!(idx.search("\"hello", 10).is_ok());
     assert!(idx.search("title:", 10).is_ok());
 }
+
+#[test]
+fn live_crawl_ids_counts_only_live_documents() {
+    // The reconciliation pass keys off this, so the property that matters is
+    // the awkward one: a crawl whose documents were all deleted must NOT be
+    // reported, even though its term is still in the segment's dictionary.
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    for i in 0..3 {
+        let url = format!("https://keep.example/{i}");
+        idx.index_page(&page(&url, "T", "hello", "keepme", "Keep"))
+            .unwrap();
+    }
+    idx.index_page(&page(
+        "https://drop.example/1",
+        "T",
+        "hello",
+        "dropme",
+        "Drop",
+    ))
+    .unwrap();
+    idx.commit().unwrap();
+
+    let live = idx.live_crawl_ids().unwrap();
+    assert_eq!(live.get("keepme"), Some(&3), "three pages under one crawl");
+    assert_eq!(live.get("dropme"), Some(&1));
+
+    idx.delete_crawl_docs("dropme");
+    idx.commit().unwrap();
+
+    // The term survives in the dictionary until the segment merges, which is
+    // exactly the false positive this must not produce.
+    let live = idx.live_crawl_ids().unwrap();
+    assert_eq!(live.get("keepme"), Some(&3), "untouched by the delete");
+    assert_eq!(
+        live.get("dropme"),
+        None,
+        "a fully deleted crawl is not an orphan; its term is still in the \
+         term dictionary, so counting terms rather than live docs would \
+         report it and send a curator chasing damage that is not there"
+    );
+}
+
+#[test]
+fn live_crawl_ids_counts_pages_not_the_collection_doc() {
+    // A crawl carries one `collection` document under the same crawl_id as its
+    // pages. Counting that too is wrong twice over: the count reads one higher
+    // than the manifest's page_count, so a curator comparing them chases a
+    // discrepancy that is not there; and a crawl whose pages are gone while the
+    // collection doc survives still looks present, which hides exactly the
+    // damage reconciliation exists to find.
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    idx.index_page(&page("https://ex.com/1", "T", "hello", "c1", "C1"))
+        .unwrap();
+    idx.index_collection("c1", "C1", "coll", "about this crawl")
+        .unwrap();
+    idx.commit().unwrap();
+
+    assert_eq!(
+        idx.live_crawl_ids().unwrap().get("c1"),
+        Some(&1),
+        "one page, not two documents"
+    );
+
+    // Lose the pages and keep the collection doc, which is the shape of a
+    // half-lost crawl.
+    let field = idx.index.schema().get_field("doc_type").unwrap();
+    idx.writer_mut()
+        .delete_term(tantivy::Term::from_field_text(field, "page"));
+    idx.commit().unwrap();
+
+    assert_eq!(
+        idx.live_crawl_ids().unwrap().get("c1"),
+        None,
+        "with its pages gone the crawl must not look present, or the missing \
+         documents are never reported"
+    );
+}
+
+#[test]
+fn live_crawl_ids_ignores_annotation_documents() {
+    // Annotation docs carry no crawl_id, so they must not turn up as an
+    // orphan with an empty id.
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    idx.index_page(&page("https://ex.com/1", "T", "hello", "c1", "C1"))
+        .unwrap();
+    idx.index_annotation(
+        "ann-1",
+        "coll",
+        "https://ex.com/1",
+        "2026-01-01T00:00:00Z",
+        "ed@x.edu",
+        "a note about the page",
+    )
+    .unwrap();
+    idx.commit().unwrap();
+
+    let live = idx.live_crawl_ids().unwrap();
+    assert_eq!(live.len(), 1, "only the page's crawl: {live:?}");
+    assert_eq!(live.get("c1"), Some(&1));
+}

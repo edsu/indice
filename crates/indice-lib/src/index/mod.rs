@@ -12,6 +12,7 @@ mod metadata;
 mod optimize;
 mod paths;
 mod provenance;
+mod reconcile;
 mod reindex;
 mod search_sync;
 mod stats;
@@ -23,6 +24,7 @@ pub use metadata::*;
 pub use optimize::*;
 pub use paths::*;
 pub use provenance::*;
+pub use reconcile::*;
 pub use search_sync::*;
 pub use stats::*;
 
