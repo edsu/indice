@@ -165,9 +165,18 @@ impl SearchIndex {
     /// the count really does have documents someone can still find.
     ///
     /// Annotation documents carry no `crawl_id`, so they never appear here.
+    ///
+    /// **Only `page` documents count.** A crawl also gets one `collection`
+    /// document under the same id, and counting that too would be wrong twice
+    /// over: every count would read one higher than the manifest's
+    /// `page_count`, so a curator comparing the two would chase a discrepancy
+    /// that is not there, and a crawl whose pages were lost while its
+    /// collection document survived would still look present, hiding the
+    /// damage this is supposed to find.
     pub fn live_crawl_ids(&self) -> Result<BTreeMap<String, u64>> {
         let searcher = self.index.reader()?.searcher();
-        let field = self.index.schema().get_field(FIELD_CRAWL_ID)?;
+        let schema = self.index.schema();
+        let field = schema.get_field(FIELD_CRAWL_ID)?;
 
         let mut candidates: BTreeSet<String> = BTreeSet::new();
         for segment in searcher.segment_readers() {
@@ -184,16 +193,32 @@ impl SearchIndex {
 
         let mut live = BTreeMap::new();
         for id in candidates {
-            let query = tantivy::query::TermQuery::new(
-                Term::from_field_text(field, &id),
-                tantivy::schema::IndexRecordOption::Basic,
-            );
-            let count = searcher.search(&query, &tantivy::collector::Count)?;
+            let count = searcher.search(&self.page_of_crawl(&id)?, &tantivy::collector::Count)?;
             if count > 0 {
                 live.insert(id, count as u64);
             }
         }
         Ok(live)
+    }
+
+    /// `doc_type:page AND crawl_id:<id>`, the query behind both
+    /// [`live_crawl_ids`](Self::live_crawl_ids) and
+    /// [`crawl_collection`](Self::crawl_collection).
+    fn page_of_crawl(&self, crawl_id: &str) -> Result<tantivy::query::BooleanQuery> {
+        use tantivy::query::{Occur, Query, TermQuery};
+        use tantivy::schema::IndexRecordOption;
+
+        let schema = self.index.schema();
+        let term = |name, value| -> Result<Box<dyn Query>> {
+            Ok(Box::new(TermQuery::new(
+                Term::from_field_text(schema.get_field(name)?, value),
+                IndexRecordOption::Basic,
+            )))
+        };
+        Ok(tantivy::query::BooleanQuery::new(vec![
+            (Occur::Must, term(FIELD_DOC_TYPE, "page")?),
+            (Occur::Must, term(FIELD_CRAWL_ID, crawl_id)?),
+        ]))
     }
 
     /// The collection slug recorded on a crawl's documents, if the index holds
@@ -207,12 +232,8 @@ impl SearchIndex {
     pub fn crawl_collection(&self, crawl_id: &str) -> Result<Option<String>> {
         let searcher = self.index.reader()?.searcher();
         let schema = self.index.schema();
-        let query = tantivy::query::TermQuery::new(
-            Term::from_field_text(schema.get_field(FIELD_CRAWL_ID)?, crawl_id),
-            tantivy::schema::IndexRecordOption::Basic,
-        );
         let hits = searcher.search(
-            &query,
+            &self.page_of_crawl(crawl_id)?,
             &tantivy::collector::TopDocs::with_limit(1).order_by_score(),
         )?;
         let Some((_, address)) = hits.first() else {

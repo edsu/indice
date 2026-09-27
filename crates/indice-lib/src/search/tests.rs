@@ -1340,6 +1340,43 @@ fn live_crawl_ids_counts_only_live_documents() {
 }
 
 #[test]
+fn live_crawl_ids_counts_pages_not_the_collection_doc() {
+    // A crawl carries one `collection` document under the same crawl_id as its
+    // pages. Counting that too is wrong twice over: the count reads one higher
+    // than the manifest's page_count, so a curator comparing them chases a
+    // discrepancy that is not there; and a crawl whose pages are gone while the
+    // collection doc survives still looks present, which hides exactly the
+    // damage reconciliation exists to find.
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    idx.index_page(&page("https://ex.com/1", "T", "hello", "c1", "C1"))
+        .unwrap();
+    idx.index_collection("c1", "C1", "coll", "about this crawl")
+        .unwrap();
+    idx.commit().unwrap();
+
+    assert_eq!(
+        idx.live_crawl_ids().unwrap().get("c1"),
+        Some(&1),
+        "one page, not two documents"
+    );
+
+    // Lose the pages and keep the collection doc, which is the shape of a
+    // half-lost crawl.
+    let field = idx.index.schema().get_field("doc_type").unwrap();
+    idx.writer_mut()
+        .delete_term(tantivy::Term::from_field_text(field, "page"));
+    idx.commit().unwrap();
+
+    assert_eq!(
+        idx.live_crawl_ids().unwrap().get("c1"),
+        None,
+        "with its pages gone the crawl must not look present, or the missing \
+         documents are never reported"
+    );
+}
+
+#[test]
 fn live_crawl_ids_ignores_annotation_documents() {
     // Annotation docs carry no crawl_id, so they must not turn up as an
     // orphan with an empty id.
