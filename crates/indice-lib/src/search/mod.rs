@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tantivy::schema::Value;
 
@@ -149,6 +150,80 @@ impl SearchIndex {
         let field = self.index.schema().get_field(FIELD_CRAWL_ID).unwrap();
         self.writer_mut()
             .delete_term(Term::from_field_text(field, crawl_id));
+    }
+
+    /// Every distinct `crawl_id` with at least one **live** document, and how
+    /// many. The input to reconciling the index against the manifest (see
+    /// [`crate::index::reconcile`]).
+    ///
+    /// Liveness is the whole difficulty. A segment's term dictionary keeps a
+    /// term until that segment merges, so a crawl whose documents were all
+    /// deleted still has an entry in it, and reading the dictionary alone would
+    /// report a correctly-deleted crawl as an orphan. So the dictionary is used
+    /// only to gather *candidates*, and each one is then counted through the
+    /// searcher, which applies the segments' alive bitsets. An id that survives
+    /// the count really does have documents someone can still find.
+    ///
+    /// Annotation documents carry no `crawl_id`, so they never appear here.
+    pub fn live_crawl_ids(&self) -> Result<BTreeMap<String, u64>> {
+        let searcher = self.index.reader()?.searcher();
+        let field = self.index.schema().get_field(FIELD_CRAWL_ID)?;
+
+        let mut candidates: BTreeSet<String> = BTreeSet::new();
+        for segment in searcher.segment_readers() {
+            let inverted = segment.inverted_index(field)?;
+            let mut terms = inverted.terms().stream()?;
+            while terms.advance() {
+                // A non-UTF-8 key cannot be a crawl id (they are hex), so
+                // skipping one is right rather than an error worth failing on.
+                if let Ok(id) = std::str::from_utf8(terms.key()) {
+                    candidates.insert(id.to_string());
+                }
+            }
+        }
+
+        let mut live = BTreeMap::new();
+        for id in candidates {
+            let query = tantivy::query::TermQuery::new(
+                Term::from_field_text(field, &id),
+                tantivy::schema::IndexRecordOption::Basic,
+            );
+            let count = searcher.search(&query, &tantivy::collector::Count)?;
+            if count > 0 {
+                live.insert(id, count as u64);
+            }
+        }
+        Ok(live)
+    }
+
+    /// The collection slug recorded on a crawl's documents, if the index holds
+    /// any for `crawl_id`.
+    ///
+    /// For the reconciliation pass, so it can print a repair command that runs
+    /// as typed instead of one with a `<collection>` placeholder in it. The
+    /// manifest entry is what would normally answer "which collection?", and
+    /// for an orphan that entry is exactly what is missing, so the documents
+    /// are the only remaining record of where it belonged.
+    pub fn crawl_collection(&self, crawl_id: &str) -> Result<Option<String>> {
+        let searcher = self.index.reader()?.searcher();
+        let schema = self.index.schema();
+        let query = tantivy::query::TermQuery::new(
+            Term::from_field_text(schema.get_field(FIELD_CRAWL_ID)?, crawl_id),
+            tantivy::schema::IndexRecordOption::Basic,
+        );
+        let hits = searcher.search(
+            &query,
+            &tantivy::collector::TopDocs::with_limit(1).order_by_score(),
+        )?;
+        let Some((_, address)) = hits.first() else {
+            return Ok(None);
+        };
+        let doc: TantivyDocument = searcher.doc(*address)?;
+        let slug = doc
+            .get_first(schema.get_field(FIELD_COLLECTION)?)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Ok((!slug.is_empty()).then(|| slug.to_string()))
     }
 
     /// Index a single page from an archive. Fields not set on the [`Page`]
