@@ -30,7 +30,9 @@ The default `serve` (without `--manage`) mounts none of this, so a public, read-
 
 ## Running as a service (forward-auth)
 
-To offer management to real users over the network, run indice behind an **authenticating reverse proxy**: nginx, Caddy, [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/), Authelia, Cloudflare Access, Tailscale, an institutional SSO gateway, and so on. The proxy performs the login and forwards the authenticated user to indice in a header; indice trusts that header only when the request also carries a shared secret:
+To offer management to real users over the network, run indice behind a reverse proxy that authenticates the request and sets two headers: the caller's identity, and a shared secret. Caddy and nginx both do this, with a login service such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) or [Authelia](https://www.authelia.com/) alongside them, which is what the [shipped stack](/docs/guides/deploy/) wires up.
+
+Anything that can set both headers qualifies. Note the second one rules out some otherwise-plausible options: `tailscale serve` forwards its own identity headers but gives you no way to add a static secret, so it needs a real proxy behind it rather than replacing one.
 
 ```bash
 indice serve --manage \
@@ -84,7 +86,9 @@ The file is read at startup, so a change takes effect on restart. It's plain YAM
 `users.yaml` grants privilege to an identity your proxy has already verified. It is not a credential store: indice never sees or checks a password. Anyone who can make your proxy emit `alice@example.org` is Alice, as far as indice is concerned.
 :::
 
-The management routes show the workroom chrome + signed-in identity from the proxy's identity header. The public pages (home, collection, crawl) are ungated, and browsers won't send the proxy's credentials there. So at login indice sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) and reads it on those pages. A signed-in admin or curator gets the edit-in-place controls everywhere. The cookie only drives *rendering*. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login and returns you to where you were). A **Log out** button clears the display cookie (a button rather than a link because logging out changes state, so it is a POST and covered by the same-origin check). If logging out returns *cross-site request blocked*, that is the same-origin check and the same fix applies: start indice with `--site-url` so it knows its own public URL. But note that with the Basic-auth stopgap the browser keeps its cached credentials until it's closed, so logout only hides the chrome; a full sign-out (and single sign-on) comes with the [SSO path](/docs/guides/deploy/#single-sign-on-oauth2-proxy).
+A signed-in admin or curator gets the edit-in-place controls everywhere, including the public pages. That works as long as your proxy forwards the identity on **every** request rather than only on `/manage` and the write APIs, which is what the shipped `Caddyfile` does.
+
+If your proxy gates only the management routes, browsers will not send its credentials to the public pages, and the chrome would vanish there. For that case indice also sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) at login and reads it on those pages. The cookie only drives *rendering*. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login; after a redirect-based login you may come back to the homepage rather than the page you left). A **Log out** button clears the display cookie (a button rather than a link because logging out changes state, so it is a POST and covered by the same-origin check). If logging out returns *cross-site request blocked*, that is the same-origin check and the same fix applies: start indice with `--site-url` so it knows its own public URL. Logging out clears both indice's display cookie and the proxy's session when `INDICE_LOGOUT_REDIRECT` points at your provider's sign-out URL, which the [shipped stack](/docs/guides/deploy/) sets for you.
 
 ## Cross-site protection
 
@@ -92,7 +96,7 @@ Management writes are refused unless the request came from indice's own pages. i
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
 
-This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and both example configs below rely on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host`, which is nginx's default (`proxy_set_header Host $proxy_host`). Then tell indice its public address:
+This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and the shipped `Caddyfile` relies on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host`, which is nginx's default (`proxy_set_header Host $proxy_host`). Then tell indice its public address:
 
 ```bash
 indice serve --manage --site-url https://archive.example.org   # or INDICE_SITE_URL
@@ -107,20 +111,6 @@ If you get a `403` mentioning a cross-site request when using the workroom norma
 - Set the static `X-Indice-Auth-Secret` header in the proxy, and terminate TLS there.
 - Make sure the proxy passes through `X-Forwarded-Host` (or pass `--site-url`), so the cross-site check knows what the browser sees.
 
-Illustrative Caddy config (adapt directives to your proxy/version):
+One more, easy to miss: **forward the identity on every request, including the ordinary pages.** indice draws the workroom chrome on the homepage for a signed-in curator, so it needs to know who you are there too.
 
-```text
-example.org {
-    # 1. require an SSO login (oauth2-proxy talks to your IdP)
-    forward_auth 127.0.0.1:4180 {
-        uri /oauth2/auth
-        copy_headers X-Forwarded-Email          # the authenticated identity
-    }
-    # 2. proxy to indice, adding the shared secret
-    reverse_proxy 127.0.0.1:8080 {
-        header_up X-Indice-Auth-Secret {env.INDICE_AUTH_PROXY_SECRET}
-    }
-}
-```
-
-For turnkey Docker Compose overlays that wire this up (Basic auth or GitHub SSO), see [Deploy indice](/docs/guides/deploy/#management-over-the-network).
+A sample config here would drift out of step with the real one, so read the [shipped `Caddyfile`](https://github.com/edsu/indice/blob/main/Caddyfile) instead; it is commented. [Deploy & run](/docs/guides/deploy/) sets out the contract your own proxy has to satisfy.
