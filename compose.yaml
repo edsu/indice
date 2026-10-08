@@ -48,7 +48,7 @@ services:
     # Once images are published you can drop `build:` above and pull instead:
     #   image: ghcr.io/edsu/indice:latest
     image: indice:local
-    command: ["serve", "--manage", "--bind", "0.0.0.0:8080", "--home", "/data",
+    command: ["serve", "--bind", "0.0.0.0:8080", "--home", "/data",
               "--auth-proxy-header", "X-Forwarded-Email"]
     environment:
       # indice reads the shared secret from the env, keeping it out of process args.

@@ -23,8 +23,9 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/indice", "health", "--url", "http://127.0.0.1:8080/health"]
 
-# Default: serve read-only, bound to all interfaces in the container (loopback
-# would be unreachable from outside). Override the args to change host/home, e.g.
-# management mode behind an auth proxy.
+# No default arguments. Serving on a public interface needs an authenticating
+# proxy in front, and indice refuses to start otherwise rather than trusting
+# whoever reaches the port, so there is no useful command we can guess here.
+# compose.yaml supplies the real one; `docker run` without arguments prints the
+# help, which is the honest answer to "what do I pass?".
 ENTRYPOINT ["/usr/local/bin/indice"]
-CMD ["serve", "--bind", "0.0.0.0:8080", "--home", "/data"]
