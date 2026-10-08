@@ -11,3 +11,18 @@
 /chrome
 /chromedriver
 env.sh
+
+# Not needed to build the binary, and excluding them keeps an edit to the docs
+# or the deployment files from busting the cached `cargo build --release` layer
+# (the Dockerfile does `COPY . .`, so any file in the context invalidates it).
+# `site/` is only read by tests/primer.rs, which the release build does not run.
+/site
+/scripts
+/images
+/dist
+/collections
+/events
+*.md
+/compose*.yaml
+/Caddyfile
+/Makefile

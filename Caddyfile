@@ -1,13 +1,127 @@
-# indice behind Caddy. SITE_ADDRESS is supplied by compose: it defaults to :80
-# (plain HTTP, for local/dev); set it to your domain (e.g. archive.example.org)
-# and Caddy obtains and auto-renews a Let's Encrypt certificate — no certbot.
+# indice behind Caddy, with an identity provider in front.
+#
+# SITE_ADDRESS comes from compose. It defaults to :80 (plain HTTP, for local
+# work); set it to your domain, say archive.example.org, and Caddy obtains and
+# renews a Let's Encrypt certificate for you.
+#
+# ── Who decides what ──
+#
+# This file answers one question per request: who is the caller? It asks
+# oauth2-proxy, forwards the email it reports to indice when there is one, and
+# forwards nothing otherwise. indice decides which routes are privileged, using typed
+# Curator/Admin extractors that turn a missing check into a compile error.
+#
+# An earlier version of this file kept a second copy of indice's privilege policy
+# (`path /manage/* /api/*`, `not path /api/search*`) so it could start a login
+# before indice answered 403. We had to update that copy by hand whenever the
+# router changed, and we forgot. `GET /api/annotations` is a public route, the
+# matcher caught it anyway, and logged-out visitors lost the annotations panel
+# inside replay. The fetch failed without logging anything, so the bug sat there
+# until someone went looking. We gave up a nicer redirect to get one place that
+# knows who may do what.
+#
+# Caddy's reverse_proxy preserves Range, Accept-Ranges and Content-Range, and
+# streams rather than buffering, so ReplayWeb.page's ranged reads of /files/{id}
+# work through the proxy. Do not add `encode`: indice compresses in process, and
+# gzipping a byte-range response breaks replay.
 {$SITE_ADDRESS} {
-	# Pass the WACZ bytes straight through. Caddy's reverse_proxy preserves
-	# Range / Accept-Ranges / Content-Range and streams responses (it doesn't
-	# buffer the whole body), so ReplayWeb.page's ranged reads of /files/{id}
-	# work unchanged — the critical requirement for WACZ replay through a proxy.
+	# `route` keeps these in the order written, rather than Caddy's standard
+	# directive order, so the reasoning below reads top to bottom.
+	route {
+		# oauth2-proxy's own endpoints: login start, OAuth callback, sign-out, and
+		# the /oauth2/auth subrequest used below.
+		handle /oauth2/* {
+			reverse_proxy oauth2-proxy:4180
+		}
+
+		# Static assets and archive bytes. Identity cannot change these responses,
+		# so skip the auth subrequest: replay issues many ranged reads of
+		# /files/{id}, and each one would otherwise cost a round-trip to
+		# oauth2-proxy.
+		#
+		# Treat this as a performance list. Getting it wrong costs a round-trip or
+		# a missing chrome element. Do not grow it into a list of routes that need
+		# auth; indice decides that, for the reasons in the header comment.
+		@bytes path /files/* /assets/* /replay/* /thumb/* /collection-thumb/* /health
+		handle @bytes {
+			reverse_proxy indice:8080 {
+				header_up -X-Forwarded-Email
+				header_up -X-Indice-Auth-Secret
+			}
+		}
+
+		# The one path that requires a login. indice's /manage/login exists to trip
+		# the proxy and bounce you back to the page you came from, so on an
+		# unauthenticated request this starts the OAuth flow instead of passing
+		# through.
+		handle /manage/login {
+			reverse_proxy oauth2-proxy:4180 {
+				method GET
+				rewrite /oauth2/auth
+				@ok status 2xx
+				handle_response @ok {
+					request_header X-Forwarded-Email {rp.header.X-Auth-Request-Email}
+					request_header X-Indice-Auth-Secret {$INDICE_AUTH_PROXY_SECRET}
+				}
+				handle_response {
+					redir * /oauth2/start?rd={http.request.uri}
+				}
+			}
+			reverse_proxy indice:8080
+		}
+
+		# Everything else: ask oauth2-proxy who this is and forward the answer,
+		# authenticated or not. Nothing is gated here.
+		handle {
+			reverse_proxy oauth2-proxy:4180 {
+				method GET
+				rewrite /oauth2/auth
+
+				# Authenticated. Set the identity and the shared secret together.
+				# `request_header` replaces whatever the client sent, so a client
+				# cannot spoof either one. A header-only handle_response lets the
+				# original request continue to indice below.
+				@ok status 2xx
+				handle_response @ok {
+					request_header X-Forwarded-Email {rp.header.X-Auth-Request-Email}
+					request_header X-Indice-Auth-Secret {$INDICE_AUTH_PROXY_SECRET}
+				}
+
+				# Anonymous. This is the catch-all, because Caddy cannot negate a
+				# response matcher. Continue with neither header, so indice sees an
+				# unauthenticated request and renders the public site. Stripping the
+				# identity is belt and braces: indice trusts an identity only when
+				# the secret arrives with it, so it already refuses a client-forged
+				# X-Forwarded-Email that turns up alone.
+				handle_response {
+					request_header -X-Forwarded-Email
+					request_header -X-Indice-Auth-Secret
+				}
+			}
+			reverse_proxy indice:8080
+		}
+	}
+
+	# Serve the request as an anonymous visitor when the identity service is
+	# unreachable. Readers came for the archive, and the one reason to ask who they
+	# are is to decide whether to draw the edit controls, so a dead login sidecar
+	# should not take the site down with it.
 	#
-	# Note there is deliberately no `encode` directive: indice already compresses
-	# in-process, and gzipping a byte-range response would break replay.
-	reverse_proxy indice:8080
+	# This fails in the safe direction. Without an identity there is no secret, so
+	# indice refuses every write, and a dead auth service leaves everyone anonymous.
+	#
+	# Two Caddy details, both found by testing. `handle_errors` has to sit outside
+	# the `route` above, because Caddy allows only handler directives inside a
+	# route. And it carries no status filter, because the documented
+	# `handle_errors 502 503 504` form adapts and validates but matches nothing, so
+	# the fallback never fires. Leaving it unfiltered is safe here: only errors
+	# Caddy raises reach this block, while indice's own 4xx and 5xx are ordinary
+	# responses that pass through. When indice is the service that is down, Caddy
+	# retries it once here and returns 502. Tested; it does not loop.
+	handle_errors {
+		reverse_proxy indice:8080 {
+			header_up -X-Forwarded-Email
+			header_up -X-Indice-Auth-Secret
+		}
+	}
 }

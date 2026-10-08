@@ -1,31 +1,120 @@
-# Self-host indice behind Caddy, which terminates TLS for you.
+# Self-host indice as a server: Caddy terminates TLS, oauth2-proxy brokers the
+# login against your OIDC identity provider, indice serves the archive.
 #
-#   # local / dev — plain HTTP on :80
-#   docker compose up -d
-#
-#   # production — set your domain and Caddy fetches + renews a Let's Encrypt cert
 #   SITE_ADDRESS=archive.example.org docker compose up -d
 #
-# This serves the read-only public site. For management (write) mode, indice must
-# sit behind an authenticating proxy — see the Deployment section of the README.
+# Caddy fetches and renews a Let's Encrypt certificate for that domain. There is
+# no plain-HTTP quickstart here any more: this stack needs an identity provider,
+# and the five-minute way to try indice is `indice serve` on a workstation, which
+# uses none of these files. To run it on localhost anyway, point
+# OIDC_REDIRECT_URL at http://localhost/oauth2/callback and set
+# OAUTH2_PROXY_COOKIE_SECURE=false, or the login will loop.
+#
+# This is the server shape: anyone may read the archive, and the people listed in
+# <home>/users.yaml may change it. The other shape is a workstation, running
+# plain `indice serve` on loopback, where you are the operator and there is
+# nothing to configure. See the deployment guide.
+#
+# ── What you must provide (e.g. in a .env file) ──
+#
+#   OIDC_ISSUER_URL
+#       Your identity provider's issuer, e.g. https://accounts.google.com or
+#       https://keycloak.example.edu/realms/staff. oauth2-proxy reads its
+#       discovery document, so any OIDC provider works.
+#   OIDC_CLIENT_ID / OIDC_CLIENT_SECRET
+#       A confidential client registered with that issuer.
+#   OIDC_REDIRECT_URL
+#       <your site>/oauth2/callback, registered with the issuer as a redirect URI.
+#   OAUTH2_PROXY_COOKIE_SECRET
+#       A 32-char secret: openssl rand -hex 16
+#   INDICE_AUTH_PROXY_SECRET
+#       A long random string, shared between Caddy and indice. indice trusts a
+#       forwarded identity only on requests that carry this secret.
+#
+# ── Who gets in, and who can write ──
+#
+# Anyone your issuer authenticates may sign in, and signing in on its own grants
+# nothing beyond public read. <home>/users.yaml holds the privilege: list someone as a curator
+# and they can accession, list them as an admin and they can deaccession. Anyone
+# you have not listed reads the site like a stranger.
+#
+# We split it that way so you approve a colleague by editing one line in a file
+# you can commit and diff, instead of reconfiguring your identity provider and
+# restarting it. To narrow who may authenticate at all, set OIDC_EMAIL_DOMAINS,
+# or restrict the client's audience at the issuer.
 services:
   indice:
     build: .
-    # Once images are published you can drop `build:` above and just pull:
+    # Once images are published you can drop `build:` above and pull instead:
     #   image: ghcr.io/edsu/indice:latest
     image: indice:local
-    command: ["serve", "--bind", "0.0.0.0:8080", "--home", "/data"]
+    command: ["serve", "--manage", "--bind", "0.0.0.0:8080", "--home", "/data",
+              "--auth-proxy-header", "X-Forwarded-Email"]
+    environment:
+      # indice reads the shared secret from the env, keeping it out of process args.
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
+      # One click ends both sessions: indice clears its display cookie, then
+      # bounces to oauth2-proxy's sign-out, which clears its own and returns to /.
+      INDICE_LOGOUT_REDIRECT: "/oauth2/sign_out?rd=/"
     volumes:
-      - indice-data:/data # archive/ + index/, persisted across restarts
+      - indice-data:/data # archive/ + index/ + collections/, kept across restarts
     restart: unless-stopped
     # The image already declares a HEALTHCHECK (via `indice health`), so Caddy
     # can wait for indice to be healthy before it starts (below).
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    depends_on:
+      indice:
+        condition: service_healthy
+    environment:
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      # Generic OIDC rather than a provider-specific integration. Every
+      # provider-specific one in oauth2-proxy carries its own quirks: the GitHub
+      # one, which this stack used to ship, calls GitHub's /user/orgs on every
+      # login and so demands `read:org` from people whose organizations indice
+      # never looks at. The OIDC provider makes no calls beyond the issuer's own
+      # endpoints, and it speaks to Google, Microsoft Entra, Okta, Auth0,
+      # Keycloak, Authentik, Dex, GitLab and anything else with a discovery
+      # document.
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?set OIDC_ISSUER_URL, e.g. https://accounts.google.com}
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}
+      OAUTH2_PROXY_REDIRECT_URL: ${OIDC_REDIRECT_URL:?set OIDC_REDIRECT_URL to <your site>/oauth2/callback}
+      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_PROXY_COOKIE_SECRET:?a 32-char secret from: openssl rand -hex 16}"
+
+      # Ask for an email and nothing else. oauth2-proxy's OIDC default is
+      # "openid email profile"; `profile` only adds a display name, which indice
+      # does not use, so drop it. Add it back if your issuer withholds the email
+      # claim without it, or set OAUTH2_PROXY_SCOPE to taste.
+      OAUTH2_PROXY_SCOPE: ${OAUTH2_PROXY_SCOPE:-openid email}
+
+      # Which addresses may sign in. "*" lets anyone your issuer authenticates
+      # through to the public site; users.yaml still decides who may write. Set
+      # it to your domain (example.edu) to keep outsiders from signing in at all.
+      OAUTH2_PROXY_EMAIL_DOMAINS: ${OIDC_EMAIL_DOMAINS:-*}
+
+      # Secure by default, because this file describes a real server behind TLS.
+      # Set it to false only to run the stack on plain-HTTP localhost, where a
+      # Secure cookie would never be sent and the login would loop.
+      OAUTH2_PROXY_COOKIE_SECURE: ${OAUTH2_PROXY_COOKIE_SECURE:-true}
+
+      # Auth-request mode: oauth2-proxy only serves /oauth2/*; Caddy calls
+      # /oauth2/auth to ask who the caller is and proxies the app itself.
+      OAUTH2_PROXY_UPSTREAMS: static://200
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+    restart: unless-stopped
 
   caddy:
     image: caddy:2
     depends_on:
       indice:
         condition: service_healthy
+      oauth2-proxy:
+        condition: service_started
     ports:
       - "80:80"
       - "443:443"
@@ -33,9 +122,10 @@ services:
       # Defaults to :80 (plain HTTP) for local use; set SITE_ADDRESS to a domain
       # for automatic HTTPS.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data # ACME account + issued certs — persist to avoid re-issuing
+      - caddy-data:/data # ACME account + issued certs; persist to avoid re-issuing
       - caddy-config:/config
     restart: unless-stopped
 
