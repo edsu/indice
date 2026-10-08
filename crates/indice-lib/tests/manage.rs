@@ -1,8 +1,8 @@
-//! Integration tests for management mode (`serve --manage`): the opt-in
-//! add-archive endpoints. These exercise the real HTTP path — POST a job, stream
-//! its Server-Sent-Events progress to completion, and confirm the read-only
-//! searcher hot-reloads so the newly-indexed crawl becomes searchable without a
-//! restart — and confirm the routes are absent in the default read-only server.
+//! Integration tests for the write surface. These exercise the real HTTP path:
+//! POST a job, stream its Server-Sent-Events progress to completion, and confirm
+//! the read-only searcher hot-reloads so the newly-indexed crawl becomes
+//! searchable without a restart. Also that an anonymous caller is refused, and
+//! that local access means local.
 
 use std::path::Path;
 
@@ -1066,10 +1066,15 @@ async fn a_write_returns_503_while_the_index_is_locked() {
 ///
 /// 403 rather than 404 is the point. A 404 for an authorization failure is
 /// obscurity, and it meant the same request answered differently depending on a
-/// startup flag rather than on who was asking. The risk this guards is the
-/// inverse of the old one: not a route escaping its gate, but a route whose
-/// extractor someone drops while refactoring, which would turn a 403 into a
-/// silent 200.
+/// startup flag rather than on who was asking.
+///
+/// What this does *not* guard, despite the obvious reading: a route whose
+/// extractor someone drops while refactoring. In proxy mode the forward-auth
+/// middleware refuses an anonymous request before any extractor runs, so
+/// deleting `Admin` from a handler would leave this test green. The matrix in
+/// `authz.rs` covers that, by sending authenticated-but-unprivileged requests.
+/// What this one proves is narrower and still worth having: every route exists
+/// and refuses a stranger, with no mode in which that answer changes.
 #[tokio::test]
 async fn anonymous_is_refused_from_every_management_route() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1106,6 +1111,8 @@ async fn anonymous_is_refused_from_every_management_route() {
         "/api/archiveit/import",
         "/api/browsertrix/import",
         "/api/annotations",
+        "/api/annotations/anything",
+        "/api/annotations/anything/delete",
     ] {
         let url = format!("{base}{path}");
         let origin = base.clone();
@@ -1129,17 +1136,26 @@ async fn anonymous_is_refused_from_every_management_route() {
 
 /// A tunnelled request is refused in local mode, even with no `Origin`.
 ///
-/// Local access trusts whoever reaches the port. `tailscale serve` and `ssh -L`
-/// break that premise: they proxy from elsewhere and arrive on 127.0.0.1, so the
-/// peer address proves nothing and every tunnel user was the operator.
+/// Local access trusts whoever reaches the port. An HTTP proxy such as
+/// `tailscale serve` breaks that premise: it dials the local port itself, so the
+/// peer address proves nothing and every tailnet peer was the operator. A raw
+/// TCP forward (`ssh -L`) relays bytes unchanged and is not caught; the guard's
+/// own comment explains why port matching is not worth it.
+///
+/// Three cases, and the first version of this test missed two of them.
+///
+/// It drove the refusal with `X-Forwarded-Host`, which the guard read through
+/// `expected_authority`. That header is only meaningful when a trusted proxy
+/// sets it, and local mode has none, so a caller could send
+/// `X-Forwarded-Host: localhost` and walk straight through. The test passed and
+/// the guard was decorative.
 ///
 /// The `Origin`-free cases are the ones that matter. A tunnelled *browser* was
 /// already refused on writes, because the CSRF check requires a loopback
-/// authority when it sees an `Origin`. `curl` sends none, the check deliberately
-/// lets those through on the grounds that a non-browser carries no ambient
-/// credentials, and `curl -X POST .../delete` therefore reached `remove_dir_all`.
-/// A test that only sent a browser-shaped request would have passed against the
-/// unfixed code.
+/// authority when it sees an `Origin`. `curl` sends none, that path deliberately
+/// lets it through on the grounds that a non-browser carries no ambient
+/// credentials, and `curl -X POST .../delete` therefore reached
+/// `remove_dir_all`.
 #[tokio::test]
 async fn a_tunnelled_request_is_refused_in_local_mode() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1149,33 +1165,59 @@ async fn a_tunnelled_request_is_refused_in_local_mode() {
     let (status, _) = get(format!("{base}/")).await;
     assert_eq!(status, 200, "a direct loopback request is fine");
 
-    // Arriving for a tunnel's hostname is refused, reads included.
-    let (status, body) =
-        get_with_headers(format!("{base}/"), vec![("X-Forwarded-Host", "box.ts.net")]).await;
+    // Arriving for a proxy's hostname is refused, reads included.
+    let (status, body) = get_with_headers(format!("{base}/"), vec![("Host", "box.ts.net")]).await;
     assert_eq!(status, 403, "a tunnelled read must be refused");
     assert!(
         body.contains("loopback"),
         "the refusal should say why, got: {body}"
     );
 
-    // The hole: a write with no Origin at all.
-    let url = format!("{base}/api/collections");
-    let status = tokio::task::spawn_blocking(move || {
-        agent()
-            .post(&url)
-            .header("X-Forwarded-Host", "box.ts.net")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .send("name=Tunnelled")
+    // A write with no Origin at all.
+    let tunnelled = post_headers(
+        format!("{base}/api/collections"),
+        vec![("Host", "box.ts.net")],
+        "name=Tunnelled",
+    )
+    .await;
+    assert_eq!(
+        tunnelled, 403,
+        "a tunnelled write with no Origin must be refused"
+    );
+
+    // `X-Forwarded-Host` must not launder it. Only a trusted proxy should set
+    // that header, and local mode has none.
+    let spoofed = post_headers(
+        format!("{base}/api/collections"),
+        vec![("Host", "box.ts.net"), ("X-Forwarded-Host", "localhost")],
+        "name=Spoofed",
+    )
+    .await;
+    assert_eq!(spoofed, 403, "X-Forwarded-Host must not launder a tunnel");
+
+    // Nothing was written by any of them.
+    assert!(
+        !tmp.path().join("collections").exists(),
+        "a refused write must not reach the archive"
+    );
+
+    server.abort();
+}
+
+/// POST a form body with extra headers, returning the status.
+async fn post_headers(url: String, headers: Vec<(&'static str, &'static str)>, body: &str) -> u16 {
+    let body = body.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut req = agent().post(&url);
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        req.header("content-type", "application/x-www-form-urlencoded")
+            .send(body)
             .unwrap()
             .status()
             .as_u16()
     })
     .await
-    .unwrap();
-    assert_eq!(
-        status, 403,
-        "a tunnelled write with no Origin must be refused"
-    );
-
-    server.abort();
+    .unwrap()
 }

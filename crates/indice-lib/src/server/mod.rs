@@ -301,7 +301,18 @@ fn build_router(
     // roster, and printing "every authenticated user is an admin" to someone
     // running on their laptop invites them to go fix a file that changes
     // nothing.
-    if !config.access.is_local() {
+    if config.access.is_local() {
+        // Local access never consults the roster, and a malformed one still
+        // aborts startup, so someone can write a users.yaml, demote themselves
+        // in it, have a typo stop the server, fix the typo, and still be an
+        // admin. Say so rather than letting them find out by experiment.
+        if crate::identity::Users::path(home).exists() {
+            tracing::warn!(
+                "users.yaml is present but not consulted: this indice trusts every caller \
+                 on its loopback port, so roles apply only behind an authenticating proxy"
+            );
+        }
+    } else {
         tracing::info!("roles: {}", users.summary());
     }
     let state = Arc::new(AppState {
@@ -353,71 +364,66 @@ fn build_router(
     // gets 403 rather than 404. A 404 for an authorization failure is obscurity,
     // and it used to mean the same request answered differently depending on a
     // flag rather than on who was asking.
-    {
-        let mut manage_routes = Router::new()
-            .route("/manage/collections/new", get(new_collection_form))
-            .route("/manage/edit/{id}", get(edit_collection_form))
-            .route("/manage/add", get(accession_desk_page))
-            // A login entry point: being gated, visiting it forces the proxy's
-            // login, then bounces back to where the user came from.
-            .route("/manage/login", get(manage_login))
-            .route("/api/archives", post(add_archive))
-            // File upload can be large (a whole WACZ), so lift axum's 2 MB default
-            // body limit on this route only.
-            .route(
-                "/api/archives/upload",
-                post(upload_archive).layer(DefaultBodyLimit::disable()),
-            )
-            .route("/api/archives/{id}/events", get(add_archive_events))
-            .route("/api/collections", post(create_collection))
-            // Delete a crawl or a collection (removes files + updates the index).
-            .route("/api/crawls/{id}/delete", post(delete_crawl_handler))
-            .route(
-                "/api/collections/{id}/delete",
-                post(delete_collection_handler),
-            )
-            // Browsertrix import: browse (orgs → collections → items) using the
-            // binary-supplied credentials, then import selected items as a job.
-            .route("/api/browsertrix/orgs", get(bx_orgs))
-            .route("/api/browsertrix/collections", get(bx_collections))
-            .route("/api/browsertrix/items", get(bx_items))
-            .route("/api/browsertrix/import", post(bx_import))
-            // Archive-It import: browse (collections → crawls) using the
-            // binary-supplied credentials, then import selected crawls as a job.
-            .route("/api/archiveit/collections", get(ait_collections))
-            .route("/api/archiveit/crawls", get(ait_crawls))
-            .route("/api/archiveit/import", post(ait_import))
-            // Page annotations: create/edit/delete, gated like the rest. The
-            // public GET /api/annotations lives in the read block above.
-            .route("/api/annotations", post(create_annotation))
-            .route("/api/annotations/{id}", post(update_annotation))
-            .route("/api/annotations/{id}/delete", post(delete_annotation));
+    let mut manage_routes = Router::new()
+        .route("/manage/collections/new", get(new_collection_form))
+        .route("/manage/edit/{id}", get(edit_collection_form))
+        .route("/manage/add", get(accession_desk_page))
+        // A login entry point: being gated, visiting it forces the proxy's
+        // login, then bounces back to where the user came from.
+        .route("/manage/login", get(manage_login))
+        .route("/api/archives", post(add_archive))
+        // File upload can be large (a whole WACZ), so lift axum's 2 MB default
+        // body limit on this route only.
+        .route(
+            "/api/archives/upload",
+            post(upload_archive).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/archives/{id}/events", get(add_archive_events))
+        .route("/api/collections", post(create_collection))
+        // Delete a crawl or a collection (removes files + updates the index).
+        .route("/api/crawls/{id}/delete", post(delete_crawl_handler))
+        .route(
+            "/api/collections/{id}/delete",
+            post(delete_collection_handler),
+        )
+        // Browsertrix import: browse (orgs → collections → items) using the
+        // binary-supplied credentials, then import selected items as a job.
+        .route("/api/browsertrix/orgs", get(bx_orgs))
+        .route("/api/browsertrix/collections", get(bx_collections))
+        .route("/api/browsertrix/items", get(bx_items))
+        .route("/api/browsertrix/import", post(bx_import))
+        // Archive-It import: browse (collections → crawls) using the
+        // binary-supplied credentials, then import selected crawls as a job.
+        .route("/api/archiveit/collections", get(ait_collections))
+        .route("/api/archiveit/crawls", get(ait_crawls))
+        .route("/api/archiveit/import", post(ait_import))
+        // Page annotations: create/edit/delete, gated like the rest. The
+        // public GET /api/annotations lives in the read block above.
+        .route("/api/annotations", post(create_annotation))
+        .route("/api/annotations/{id}", post(update_annotation))
+        .route("/api/annotations/{id}/delete", post(delete_annotation));
 
-        // Forward-auth: reject any management request that doesn't carry the
-        // trusted proxy's shared secret + a non-empty identity header. Layered
-        // outermost so it runs before a body is read (e.g. a large upload).
-        if let Some(fa) = config.access.forward_auth().cloned() {
-            let guard = Arc::new(fa);
-            manage_routes = manage_routes.layer(axum::middleware::from_fn(
-                move |req: axum::extract::Request, next: axum::middleware::Next| {
-                    let guard = guard.clone();
-                    async move { forward_auth(&guard, req, next).await }
-                },
-            ));
-        }
-
-        app = app.merge(manage_routes);
-
-        // Outside `manage_routes` on purpose: logout must NOT be
-        // forward-auth-gated, because that middleware re-sets the display
-        // cookie on its way out and would sign you straight back in. The
-        // server-wide CSRF guard still covers it, which is what makes being a
-        // POST sufficient — see `auth::logout`.
-        //
-        // Only under `--manage`: `resolve_caller` returns `None` when
-        // management is off, so there is no signed-in state to end.
-        app = app.route("/logout", post(logout));
+    // Forward-auth: reject any management request that doesn't carry the
+    // trusted proxy's shared secret + a non-empty identity header. Layered
+    // outermost so it runs before a body is read (e.g. a large upload).
+    if let Some(fa) = config.access.forward_auth().cloned() {
+        let guard = Arc::new(fa);
+        manage_routes = manage_routes.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let guard = guard.clone();
+                async move { forward_auth(&guard, req, next).await }
+            },
+        ));
     }
+
+    app = app.merge(manage_routes);
+
+    // Outside `manage_routes` on purpose: logout must NOT be
+    // forward-auth-gated, because that middleware re-sets the display
+    // cookie on its way out and would sign you straight back in. The
+    // server-wide CSRF guard still covers it, which is what makes being a
+    // POST sufficient — see `auth::logout`.
+    app = app.route("/logout", post(logout));
 
     // CSRF: refuse any state-changing request that some *other* site's page
     // initiated. Applied once, over the WHOLE server, rather than onto the
@@ -430,17 +436,24 @@ fn build_router(
     // the default is protected and a route has to be *safe* to opt out, which
     // it does by being a GET.
     //
-    // Cheap to apply this broadly: the guard returns immediately for safe
-    // methods (GET/HEAD/OPTIONS/TRACE), which is every public route, so a
-    // read-only server pays one `match` per request and changes no behaviour.
+    // Cheap to apply broadly: for safe methods (GET/HEAD/OPTIONS/TRACE) the
+    // cross-site half returns immediately, so a read request pays one `match`
+    // and, on a server, nothing else.
     //
     // In local mode `Host` is whatever the browser sends, so matching it
     // against `Origin` can be satisfied by DNS rebinding; local mode is
-    // loopback-only anyway, so also require a loopback authority there. Behind
+    // loopback-only anyway, so also require a loopback authority there, on
+    // every request rather than only the state-changing ones. Behind
     // a proxy (or with an explicit --site-url) the authority comes from a
     // trusted source and needs no such check.
     let csrf = Arc::new(CsrfPolicy {
-        require_loopback: access_is_local && site_authority.is_none(),
+        // Not `&& site_authority.is_none()`. `--site-url` exists to fix Origin
+        // comparison behind a proxy that rewrites `Host`, a situation local mode
+        // cannot be in, and letting it clear this turned a stray INDICE_SITE_URL
+        // in a shared .env into a silent kill switch for the whole loopback
+        // requirement. The two settings are now independent: the loopback check
+        // reads `Host` directly and ignores `site_authority` entirely.
+        require_loopback: access_is_local,
         site_authority,
     });
 

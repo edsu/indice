@@ -72,15 +72,23 @@ pub(super) async fn same_origin_guard(
     next: axum::middleware::Next,
 ) -> Response {
     // Local access trusts whoever reaches the port, and "bound to loopback" is
-    // not the same claim as "reached over loopback". `tailscale serve`, `ssh -L`
-    // and an editor's port forwarding all proxy from somewhere else and arrive
-    // on 127.0.0.1, so the peer address proves nothing: tailscaled dials the
-    // local port itself. Every tailnet peer was therefore the operator, able to
-    // delete a collection.
+    // not the same claim as "reached over loopback". An HTTP proxy such as
+    // `tailscale serve` dials the local port itself, so the peer address proves
+    // nothing and every tailnet peer was the operator, able to delete a
+    // collection.
     //
-    // The authority the *client* used does distinguish them. A browser or curl
-    // reaching the port directly sends `localhost` or `127.0.0.1`; anything
-    // arriving through a tunnel carries the tunnel's hostname.
+    // What distinguishes them is the authority the client asked for: an HTTP
+    // proxy forwards the name the client used, so a tailnet request arrives for
+    // `box.ts.net` while a direct one says `localhost`.
+    //
+    // This does NOT catch a raw TCP forward. `ssh -L 9000:localhost:8080` copies
+    // bytes verbatim, so the request genuinely says `Host: localhost:9000` and is
+    // indistinguishable from a local browser. Matching the port against our own
+    // would catch the common case and miss `-L 8080:localhost:8080`, which is
+    // worse than not claiming it. Anyone who can open that tunnel already has a
+    // shell on the machine and could run indice themselves, so the exposure is
+    // smaller than the tailnet one; it is still worth knowing the guard does not
+    // reach it.
     //
     // Checked here rather than in `same_site_request` because that only gates
     // state-changing methods, and only when an `Origin` is present. A tunnelled
@@ -88,15 +96,23 @@ pub(super) async fn same_origin_guard(
     // `Origin` was not, and that is the hole. Reads are refused too: local
     // access means local.
     if policy.require_loopback {
-        if let Some(authority) = expected_authority(req.headers(), req.uri(), None) {
-            if !is_loopback_authority(authority) {
+        // `client_authority`, not `expected_authority`: the latter prefers
+        // `X-Forwarded-Host`, which only a trusted proxy should ever set. In
+        // local mode there is no proxy by definition, so that header is
+        // attacker-controlled and `X-Forwarded-Host: localhost` would wave the
+        // check through. The first version of this guard used it and was
+        // bypassable with one header.
+        match client_authority(req.headers(), req.uri()) {
+            Some(authority) if is_loopback_authority(authority) => {}
+            other => {
+                let asked_for = other.unwrap_or("nothing");
                 return (
                     StatusCode::FORBIDDEN,
                     format!(
                         "refused: this indice trusts every caller, so it answers only on \
-                         a loopback address, and this request arrived for {authority}. \
-                         Reaching it through a tunnel would hand that trust to everyone \
-                         who can use the tunnel. To share an archive, run it as a server \
+                         a loopback address, and this request asked for {asked_for}. \
+                         Reaching it through a proxy would hand that trust to everyone \
+                         who can use the proxy. To share an archive, run it as a server \
                          behind an authenticating proxy: \
                          https://indice.page/docs/guides/deploy/"
                     ),
@@ -104,9 +120,6 @@ pub(super) async fn same_origin_guard(
                     .into_response();
             }
         }
-        // An authority we cannot determine (no `Host`, no URI authority) is
-        // allowed through: that is an HTTP/1.0 client or a health checker, not a
-        // browser carrying someone else's trust.
     }
     if same_site_request(req.method(), req.headers(), req.uri(), policy) {
         return next.run(req).await;
@@ -216,12 +229,12 @@ pub(super) struct CsrfPolicy {
 /// loopback block (`127.0.0.0/8`), and IPv6 `::1` in its bracketed form.
 fn is_loopback_authority(authority: &str) -> bool {
     // Strip the port. An IPv6 literal is bracketed, so split after the bracket.
+    // Borrowed rather than owned: local mode runs this on every request, and
+    // replay issues many ranged reads per page, so there is no reason to
+    // allocate twice for a comparison.
     let host = match authority.rsplit_once(']') {
-        Some((bracketed, _)) => bracketed.trim_start_matches('[').to_string(),
-        None => authority
-            .rsplit_once(':')
-            .map_or(authority, |(h, _)| h)
-            .to_string(),
+        Some((bracketed, _)) => bracketed.trim_start_matches('['),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
     };
     if host.eq_ignore_ascii_case("localhost") {
         return true;
@@ -237,6 +250,27 @@ fn is_loopback_authority(authority: &str) -> bool {
 /// where the authority is a pseudo-header rather than `Host`). Trusting
 /// `X-Forwarded-Host` is safe *for this purpose*: a CSRF attacker drives a
 /// browser, and script cannot set `Host`, `Origin`, `Sec-*`, or `X-Forwarded-*`.
+/// The authority the client asked for, trusting nothing but `Host`.
+///
+/// Deliberately not [`expected_authority`], which prefers `X-Forwarded-Host`
+/// because behind a proxy that is the browser-facing name. Local mode has no
+/// proxy, so nothing has the standing to set that header and a client can send
+/// whatever it likes. `Host` is the only field a raw HTTP client cannot forge
+/// *without* also changing what it claims to be addressing.
+///
+/// `None` when there is no `Host` and no absolute-form URI, which the caller
+/// treats as a refusal rather than a pass: an HTTP/1.0 request with no `Host`
+/// is a non-browser, and a non-browser arriving through a tunnel is exactly the
+/// case this guards.
+fn client_authority<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str> {
+    headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
+}
+
 fn expected_authority<'a>(
     headers: &'a HeaderMap,
     uri: &'a Uri,
@@ -722,9 +756,9 @@ pub(super) async fn html_no_cache(
 
 // ── Management mode: add-archive ────────────────────────────────────────────
 //
-// Opt-in (`serve --manage`) write surface. `POST /api/archives` starts an ingest
+// The write surface. `POST /api/archives` starts an ingest
 // job that reuses the exact library path the CLI uses (`index::index_location`),
 // running it on a blocking thread and returning a job id immediately. The browser
 // then streams `GET /api/archives/{id}/events` (Server-Sent Events) to watch
 // progress. On success the read-only searcher is hot-reloaded so results appear
-// without a restart. None of this is mounted in the default read-only server.
+// without a restart. Always mounted; the `Curator` extractor decides who gets in.

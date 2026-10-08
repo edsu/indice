@@ -1070,19 +1070,50 @@ async fn main() -> Result<()> {
                     );
                     std::process::exit(2);
                 };
+                // An empty or malformed name is accepted by clap and then matches
+                // nothing: `HeaderMap::get("")` is `None` for every request, so the
+                // server starts, logs that it is in forward-auth mode, serves reads,
+                // and refuses every write whatever the proxy sends. Easy to produce
+                // with `--auth-proxy-header "$AUTH_HEADER"` and the variable unset,
+                // and proxy mode is the only networked shape, so this is the setting
+                // that has to be hard to get wrong.
+                //
+                // A header name is an RFC 9110 token: non-empty, every byte a letter,
+                // digit or one of a small set of marks. Checked by hand for the same
+                // reason the redirect below is, since axum is only a dev-dependency
+                // of this crate.
+                let token = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b);
+                if header.is_empty() || !header.bytes().all(token) {
+                    eprintln!(
+                        "--auth-proxy-header is not a usable header name: {header:?}\n\
+                         Expected something like X-Forwarded-Email."
+                    );
+                    std::process::exit(2);
+                }
                 indice_lib::server::Access::proxy(header, secret)
             } else {
                 // No proxy named, so every caller is the operator. `Access::local`
                 // refuses anything but a loopback address. Resolve the bind string
                 // first, since it may be a name: `serve_on_listener` re-checks
                 // against the real socket, but failing here names the flag.
-                use std::net::ToSocketAddrs;
-                let addr = bind.to_socket_addrs().ok().and_then(|mut a| a.next());
-                let Some(addr) = addr else {
-                    eprintln!("--bind is not an address this machine can resolve: {bind}");
+                //
+                // `lookup_host` rather than `ToSocketAddrs`, which would block the
+                // runtime for the resolver timeout. And every resolved address, not
+                // just the first: a name answering with both a public and a loopback
+                // address should be refused on the strength of the public one.
+                let resolved = match tokio::net::lookup_host(&bind).await {
+                    Ok(addrs) => addrs.collect::<Vec<_>>(),
+                    Err(e) => {
+                        eprintln!("error: --bind {bind:?} could not be resolved: {e}");
+                        std::process::exit(2);
+                    }
+                };
+                let Some(first) = resolved.first().copied() else {
+                    eprintln!("error: --bind {bind:?} resolved to no addresses");
                     std::process::exit(2);
                 };
-                match indice_lib::server::Access::local(addr) {
+                let public = resolved.iter().find(|a| !a.ip().is_loopback()).copied();
+                match indice_lib::server::Access::local(public.unwrap_or(first)) {
                     Ok(a) => a,
                     Err(e) => {
                         eprintln!("{e}");

@@ -105,10 +105,11 @@ from two things already on the command line:
 The secret's presence is what makes trusting the identity header safe. See
 [Manage &amp; curate](/docs/guides/manage/) and [Deploy](/docs/guides/deploy/).
 
-A loopback bind is not the same as a loopback caller. A tunnel such as `tailscale serve` or `ssh -L`
-arrives on `127.0.0.1` having come from somewhere else, so indice also requires the address the
+A loopback bind is not the same as a loopback caller. An HTTP proxy such as `tailscale serve`
+arrives on `127.0.0.1` having come from somewhere else, so indice also requires the `Host` the
 client asked for to be a loopback name. Sharing an archive that way is the server shape, not this
-one.
+one. A raw TCP forward like `ssh -L` is not caught, because it relays bytes unchanged and the
+request genuinely says `localhost`; opening one already requires a shell on the machine.
 
 `--site-url` is only needed behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`
 (nginx's and Apache's default); Caddy and a direct bind are detected automatically.

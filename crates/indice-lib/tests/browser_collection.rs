@@ -23,10 +23,9 @@ use thirtyfour::prelude::*;
 
 /// A router rendering the **anonymous** view, which is what these tests check.
 ///
-/// `Access::proxy` with credentials nobody sends: `resolve_caller` finds no
-/// identity header, so every request is an anonymous visitor, exactly as one
-/// arriving at a server. `Access::local` would make each request the operator
-/// and put workroom chrome on every page.
+/// `Access::proxy` with credentials nobody sends: every request is an anonymous
+/// visitor, exactly as one arriving at a server. `Access::local` would make each
+/// request the operator and put workroom chrome on every page.
 fn public_router(home: &std::path::Path) -> axum::Router {
     indice_lib::server::router(
         home,

@@ -415,7 +415,7 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
         "and must not still be a link: {authed}"
     );
 
-    // Plain read-only server (no forward-auth): neither affordance.
+    // Nobody signed in and no login to offer: neither affordance.
     let plain = views::layout("t", false, None, false, None, html! {}).into_string();
     assert!(!plain.contains("/manage/login") && !plain.contains("signed in as"));
 }

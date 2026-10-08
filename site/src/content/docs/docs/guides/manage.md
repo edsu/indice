@@ -32,7 +32,9 @@ Every one of these routes is always mounted. Whether you may use them is an auth
 
 Because it trusts everything, indice **refuses to start** on a non-loopback address with no auth proxy configured, rather than putting an unauthenticated write surface on the network.
 
-A loopback bind is not the same as a loopback caller, though. `tailscale serve`, `ssh -L` and an editor's port forwarding all arrive on `127.0.0.1` having come from elsewhere, which would hand your admin rights to everyone who can use the tunnel. indice also requires the address the client asked for to be a loopback name, so a tunnelled request is refused whatever it is. To share an archive, run it as a server.
+A loopback bind is not the same as a loopback caller, though. An HTTP proxy such as `tailscale serve` arrives on `127.0.0.1` having come from elsewhere, which would hand your admin rights to everyone on the tailnet. indice also requires the `Host` the client asked for to be a loopback name, so those requests are refused, reads included. To share an archive, run it as a server.
+
+This does not reach a raw TCP forward. `ssh -L` relays bytes unchanged, so the request genuinely says `Host: localhost` and indice cannot tell it apart from a local browser. Anyone who can open that tunnel already has a shell on the machine, so it is a smaller exposure than a tailnet, but it is not one the guard covers.
 
 ## On a server (forward-auth)
 
