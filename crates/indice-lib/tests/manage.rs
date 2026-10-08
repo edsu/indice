@@ -1134,70 +1134,64 @@ async fn anonymous_is_refused_from_every_management_route() {
     server.abort();
 }
 
-/// A tunnelled request is refused in local mode, even with no `Origin`.
+/// A workstation serves whoever reaches the port, including through a tunnel.
 ///
-/// Local access trusts whoever reaches the port. An HTTP proxy such as
-/// `tailscale serve` breaks that premise: it dials the local port itself, so the
-/// peer address proves nothing and every tailnet peer was the operator. A raw
-/// TCP forward (`ssh -L`) relays bytes unchanged and is not caught; the guard's
-/// own comment explains why port matching is not worth it.
+/// This pins a decision rather than a defence, which is why it asserts 200 on a
+/// request that indice briefly refused. The workstation shape promises
+/// nothing about who reaches the port: a second shell on the same machine, a
+/// tunnel, `tailscale serve`, all of them get the operator's rights. Sharing an
+/// archive is the server shape.
 ///
-/// Three cases, and the first version of this test missed two of them.
+/// There were two attempts at a guard here and both were bypassable. The
+/// first read the authority through `expected_authority`, which prefers
+/// `X-Forwarded-Host`, so `X-Forwarded-Host: localhost` walked through a header
+/// at a time. The second read `Host` only and held against a browser, because
+/// script cannot set `Host`, and fell to `curl -H 'Host: 127.0.0.1:8080'`
+/// through any Host-preserving proxy, which is what Go's
+/// `httputil.ReverseProxy` and therefore `tailscale serve` is. Header
+/// inspection cannot authenticate a caller, and a guard that stops the honest
+/// case while passing the dishonest one is worse than none: it reads as a
+/// boundary in the docs.
 ///
-/// It drove the refusal with `X-Forwarded-Host`, which the guard read through
-/// `expected_authority`. That header is only meaningful when a trusted proxy
-/// sets it, and local mode has none, so a caller could send
-/// `X-Forwarded-Host: localhost` and walk straight through. The test passed and
-/// the guard was decorative.
-///
-/// The `Origin`-free cases are the ones that matter. A tunnelled *browser* was
-/// already refused on writes, because the CSRF check requires a loopback
-/// authority when it sees an `Origin`. `curl` sends none, that path deliberately
-/// lets it through on the grounds that a non-browser carries no ambient
-/// credentials, and `curl -X POST .../delete` therefore reached
-/// `remove_dir_all`.
+/// So if this test ever goes red, the fix is not to re-add the guard. It is to
+/// change the threat model in DESIGN first, and then to add something a caller
+/// must hold rather than something a caller can say.
 #[tokio::test]
-async fn a_tunnelled_request_is_refused_in_local_mode() {
+async fn a_workstation_serves_a_tunnelled_caller() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
 
-    // Reaching it directly still works.
-    let (status, _) = get(format!("{base}/")).await;
-    assert_eq!(status, 200, "a direct loopback request is fine");
+    // Arriving for a proxy's hostname reads the site.
+    let (status, _) = get_with_headers(format!("{base}/"), vec![("Host", "box.ts.net")]).await;
+    assert_eq!(status, 200, "a workstation does not inspect Host");
 
-    // Arriving for a proxy's hostname is refused, reads included.
-    let (status, body) = get_with_headers(format!("{base}/"), vec![("Host", "box.ts.net")]).await;
-    assert_eq!(status, 403, "a tunnelled read must be refused");
-    assert!(
-        body.contains("loopback"),
-        "the refusal should say why, got: {body}"
-    );
-
-    // A write with no Origin at all.
+    // And writes to it, which is the part worth being explicit about.
     let tunnelled = post_headers(
         format!("{base}/api/collections"),
         vec![("Host", "box.ts.net")],
         "name=Tunnelled",
     )
     .await;
-    assert_eq!(
-        tunnelled, 403,
-        "a tunnelled write with no Origin must be refused"
+    // 200, not 303: the agent follows the post-redirect-get.
+    assert_eq!(tunnelled, 200, "a workstation write is not gated on Host");
+    assert!(
+        tmp.path().join("collections").join("tunnelled").exists(),
+        "the collection should have been created"
     );
 
-    // `X-Forwarded-Host` must not launder it. Only a trusted proxy should set
-    // that header, and local mode has none.
-    let spoofed = post_headers(
+    // What does still hold is the DNS-rebinding case, because that is CSRF and
+    // CSRF is a browser problem. `evil.example` resolving to 127.0.0.1 makes the
+    // browser send a self-consistent Host and Origin pair; comparing the two
+    // would accept it, and requiring a loopback Origin is what does not.
+    let rebound = post_headers(
         format!("{base}/api/collections"),
-        vec![("Host", "box.ts.net"), ("X-Forwarded-Host", "localhost")],
-        "name=Spoofed",
+        vec![("Host", "evil.example"), ("Origin", "http://evil.example")],
+        "name=Rebound",
     )
     .await;
-    assert_eq!(spoofed, 403, "X-Forwarded-Host must not launder a tunnel");
-
-    // Nothing was written by any of them.
+    assert_eq!(rebound, 403, "a rebound browser must still be refused");
     assert!(
-        !tmp.path().join("collections").exists(),
+        !tmp.path().join("collections").join("rebound").exists(),
         "a refused write must not reach the archive"
     );
 

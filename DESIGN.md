@@ -93,7 +93,7 @@ it still resolves.
     - **Edit-in-place UI.** There is no separate management area: for a caller who may write, the ordinary pages become an editable *workroom* (a warm clay "red-tape" accent flip marks write mode — chosen to read as an "attention: you can change things" cue while staying clear of the semantic error red). The homepage collection list gains **+ New collection** and per-card **Edit**; each collection page gains **Edit collection** and **+ Add crawls**. Only the two multi-step accessions have dedicated pages — the finding-aid form (`GET /manage/collections/new`, `GET /manage/edit/{id}`) and the add-crawls desk (`GET /manage/add?collection=…`, with source tabs: upload, path-URL, and the Browsertrix and Archive-It browse-and-import wizards). One design system, two accent modes (reading-room blue / workroom clay); buttons use one outline treatment whose color follows the mode; no separate stylesheet.
     - **Authorization.** Authentication answers *who*; a separate, small model answers *what they may do*. Three **ordered** roles — `Reader` (anonymous, or authenticated but not on the roster), `Curator`, `Admin` — so every check is one comparison and each role contains the one below it. Communicated as one line: **curators add and can undo their own additions; only admins remove a collection.** Curators accession and describe (create collections, add/upload crawls, edit finding aids, run imports, annotate), and may undo their own work: delete a crawl **they** accessioned, and edit/delete their own notes. Admins additionally delete any crawl, delete a collection, and moderate anyone's notes. Custody is recorded on the object — `Wacz.added_by`, `Collection.created_by`/`updated_by`, all additive so existing manifests and finding aids load unchanged — and stores the `SubjectId`, never a display name, since those pages are public; names resolve through `users.yaml` at render time. Crawl custody is recorded by the ingest itself (`Ingest::actor`), so each crawl is attributed as it is written and a part-way failure attributes exactly what committed; `record::upsert` prefers any custody already on the entry, which both preserves it across a reindex and means re-indexing someone else's crawl cannot transfer it. An unattributed crawl is nobody's, so only an admin may remove it. Ownership deliberately governs *leaves* and not *containers*: "delete what you created" breaks the moment someone else adds crawls to your collection, and a rule needing that exception is no longer explainable. Roles come from an optional committable `<home>/users.yaml` (id, display name, role, prior-address aliases); **absent file ⇒ every authenticated user is an admin**, i.e. exactly the pre-roles behavior, so upgrading changes nothing. Moderation is tracked as a capability *separate* from the role rather than derived from it, precisely because those come apart here: deriving it would let the permissive default quietly grant every signed-in user power over other people's notes, which nobody had before. An empty-but-present roster means "nobody" and is honored. Enforcement is by axum extractor: `Curator`/`Admin` are also *witness types* whose field is private to `server::auth`, so one cannot be fabricated — a handler declares its privilege in its own signature, and the privileged helpers take a `&Curator`/`&Admin` they can't be called without, making a forgotten gate a compile error rather than a silent exposure. A third type, `Evidence` (`Loopback`/`Proxy`/`Cookie`), makes "the display cookie renders chrome but never authorizes a write" a compiler-checked rule instead of a comment.
     - **Auth.** [`Access`](crates/indice-lib/src/server/mod.rs), one of two:
-      - **Local** (`Access::local`, a workstation): every caller is trusted, so the operator is the admin and there is no login; `users.yaml` is not consulted. The constructor refuses a non-loopback address, and `serve_on_listener` re-checks against the real socket, because only the bound listener knows what it actually got. A loopback *bind* is not a loopback *caller*, though: an HTTP proxy such as `tailscale serve` arrives on 127.0.0.1 from elsewhere, so the CSRF layer also requires the `Host` the client asked for to be a loopback name, reads included, reading `Host` directly because `X-Forwarded-Host` is attacker-controlled when no proxy exists. Without that, every tailnet peer was the operator. A raw TCP forward (`ssh -L`) relays bytes unchanged and is not distinguishable; opening one already needs a shell on the host. Nor is the check a user boundary: `Host` is forgeable by anything that is not a browser, and every account and process on the machine can reach the port, so local access is a claim about the machine rather than about a person. Whether that is the right promise, and whether a printed startup token should replace it, is the first thing the threat model has to settle.
+      - **Local** (`Access::local`, a workstation): every caller is trusted, so the operator is the admin and there is no login; `users.yaml` is not consulted. The constructor refuses a non-loopback address, and `serve_on_listener` re-checks against the real socket, because only the bound listener knows what it actually got. A loopback bind is where the promise stops: it keeps indice off the network, and it says nothing about who reaches the port. Another account on the machine, a second shell, `ssh -L`, `tailscale serve`, all of them get the operator's rights, so this is a claim about the machine and not about a person. Two versions of a guard that refused a request whose `Host` was not a loopback name were written and both were bypassable; *Threat Model* records why the second one went. The CSRF layer still requires a loopback `Origin` here, which is a browser-only rule aimed at DNS rebinding rather than at tunnels.
       - **Forward-auth** (`--auth-proxy-header <HEADER> --auth-proxy-secret <SECRET>`): for running as a service. indice sits behind an authenticating reverse proxy that performs the real login (SSO/OIDC/SAML) and injects the authenticated user in `<HEADER>` (e.g. `X-Forwarded-Email`). Management routes are wrapped in middleware that allows a request only if it carries a non-empty identity in that header **and** the shared `SECRET` in `X-Indice-Auth-Secret` (a static header the proxy adds — *not* the IdP). Requiring the secret is what makes trusting the identity header safe: a client that forges the identity header, or a request that skipped the proxy, lacks the secret and gets 403. indice stores no passwords and speaks to no IdP: the proxy owns *login*, and `users.yaml` owns *privilege*. (Before roles, "who is an admin" was delegated entirely upstream — anyone the proxy authenticated — which is still the default when no roster exists.) The signed-in user is shown in the workroom strip on every management page. The public read-only site is *not* gated (its read handlers only render the workroom controls to an authenticated admin). Deploy note: bind indice to loopback and have the proxy reach it there, and ensure the proxy strips any client-supplied copy of the identity header.
       - **Why indice authenticates nobody, and what that costs.** Login is delegated so that one
         mechanism covers every identity system an operator might already run. A campus has
@@ -137,6 +137,234 @@ it still resolves.
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
 | `GET /replay/viewer` | Viewer shell (reads `?source=&url=&ts=&name=&collection=` params) |
 | `GET /replay/*` | Embedded ReplayWebPage static assets (JS, CSS, WASM, sw.js) |
+
+---
+
+## Threat Model
+
+Every security judgement indice has made rests on a premise about who is on the
+other end, and until this section existed nothing in the repo recorded which
+premise was in force. That omission has a measurable cost. An arbitrary local
+filesystem path in `POST /api/archives` is a *feature* for a staff member with a
+NAS mount and a server-side file read for a stranger. An error message carrying
+a path is *helpful* when the reader is the operator. "No `users.yaml` means every
+authenticated user is an admin" is the documented default, argued for in the code
+as upgrade safety. None of those are defects on a laptop, all of them are defects
+on the open web, and a review cannot tell which it is looking at without being
+told.
+
+So this section names the premises. Each guarantee below is stated with the test
+that pins it, which is what makes an unpinned guarantee visible as a gap rather
+than as prose.
+
+**What this covers:** who may reach indice and what they may do. The two
+deployment shapes, the principals in each, the write surface, and the
+forward-auth contract.
+
+**What it leaves out, deliberately:** the Browsertrix and Archive-It credentials
+and what a curator can make the server do with them; the audit log's contents as
+a privacy artefact; the index's own integrity against a writer. Each is a real
+trust question and each wants its own treatment. Folding them in here produces a
+document nobody rereads, which is the failure mode this section exists to avoid.
+
+### The two shapes
+
+|  | **Workstation** | **Server** |
+|---|---|---|
+| bind | loopback, enforced by `Access::local` | external, proxy in front |
+| requires | nothing | an identity provider and a roster |
+| who may read | whoever reaches the port | anyone |
+| who may write | whoever reaches the port | roster-listed users |
+| `users.yaml` | not consulted | authoritative |
+| login | none | the proxy's |
+
+There is no third shape. A non-loopback bind with no `--auth-proxy-header`
+refuses to start, and a read-only public instance is a roster with nobody in it
+rather than a mode.
+
+### Principals
+
+**On a workstation** there is one principal: whoever reaches the port. That is
+the whole model, and it is broader than it sounds. It includes every other
+account and every other process on the machine, anyone at the far end of an
+`ssh -L`, and every peer of a tailnet when `tailscale serve` is pointed at the
+port. A second shell can `curl -X POST .../api/collections/x/delete` and the
+collection is gone.
+
+indice does not try to narrow that. Two versions of a guard that refused a
+request whose `Host` was not a loopback name were written and both were
+bypassable: the first
+read the authority through `X-Forwarded-Host`, which nothing has the standing to
+set when there is no proxy, and the second read `Host` only, which holds against
+a browser because script cannot set that header and falls to
+`curl -H 'Host: 127.0.0.1:8080'` through any Host-preserving proxy, which is what
+Go's `httputil.ReverseProxy` and therefore `tailscale serve` is. Header
+inspection cannot authenticate a caller. A guard that refuses the honest tunnel
+and admits the dishonest one is worse than none, because it reads as a boundary
+in the documentation, so it was removed and
+`manage.rs::a_workstation_serves_a_tunnelled_caller` now pins its absence.
+
+The promise a workstation makes is therefore: **a loopback bind keeps indice off
+the network, and makes no claim about any person.** It is the right tool when the
+machine is yours. Share the archive and you want the server shape, which is the
+sentence the refusal used to try to say and could not enforce.
+
+**On a server** there are six:
+
+| Principal | Holds | May |
+|---|---|---|
+| anonymous reader | nothing | read everything the site serves |
+| authenticated stranger | an IdP session | the same; the roster leaves them a `Reader` |
+| curator | a roster entry | accession, describe, annotate, undo their own work |
+| admin | a roster entry | all of that, plus delete any crawl or collection, plus moderate notes |
+| the proxy | the shared secret | assert who the caller is |
+| the operator | the filesystem | everything, by editing `users.yaml` or the archive directly |
+
+The operator is listed because they are outside the model, not inside it.
+Anything that can write `<home>` can grant itself any role, so the roster is a
+control over users of the web interface and not over users of the host.
+
+Four things vary independently within the Server shape, and none of them is a new
+shape: whether the roster is present, whether reads are gated at the proxy as
+well as writes, whether the proxy forwards identity on every path or only on some,
+and whether the curators are colleagues under an acceptable-use policy or
+approved strangers. That last one is the only one that changes which risks
+matter, and it is the one indice cannot detect.
+
+### Guarantees, and the tests that pin them
+
+**Authentication is the proxy's, and indice checks the proxy's work.**
+
+- A forwarded identity is trusted only when the shared secret arrives with it, so
+  a client that forges the identity header, or a request that bypassed the proxy,
+  gets 403. `manage.rs::forward_auth_gates_management_routes`
+- The local operator identity cannot be claimed by a remote caller.
+  `identity.rs::the_local_operator_is_not_claimable_by_a_remote_user`
+- `Access::local` refuses a public bind at construction, and `serve_on_listener`
+  re-checks against the real socket. `server/tests.rs::local_access_refuses_a_public_bind`
+
+**Authorization is indice's, and it is checked by type.** `Curator` and `Admin`
+are witness types whose field is private to `server::auth`, so a handler that
+mutates cannot be written without one and a forgotten gate is a compile error.
+
+- Every management route demands the privilege it should.
+  `authz.rs::every_management_route_demands_the_right_privilege`
+- An anonymous caller gets 403 from all of them, which matters now that the
+  routes are always mounted. `manage.rs::anonymous_is_refused_from_every_management_route`
+- A display cookie renders chrome and authorizes nothing.
+  `authz.rs::a_display_cookie_alone_cannot_write`
+- A curator deletes their own crawls and not a peer's.
+  `authz.rs::a_curator_deletes_their_own_crawl_but_not_a_peers`,
+  `identity.rs::a_curator_deaccessions_only_their_own_crawls`
+- Notes are author-gated, and only a rostered admin moderates anyone's.
+  `authz.rs::notes_are_author_gated_but_admins_moderate`,
+  `authz.rs::without_a_roster_notes_stay_author_only`
+- An empty roster means nobody, and a malformed one is an error rather than a
+  shrug. `identity.rs::an_empty_roster_is_not_the_same_as_no_roster`,
+  `identity.rs::a_malformed_roster_is_an_error_not_a_shrug`
+
+**The browser is not a trusted intermediary.**
+
+- A cross-site POST is refused on every management write, on a workstation too.
+  `manage.rs::cross_site_post_is_rejected_on_every_management_write`,
+  `manage.rs::local_manage_mode_is_csrf_protected_too`,
+  `manage.rs::sec_fetch_site_cross_site_is_rejected_without_origin`
+- DNS rebinding against the loopback workroom is refused, which is the one thing
+  the loopback-authority check still does.
+  `server/tests.rs::local_mode_refuses_a_rebound_non_loopback_authority`
+- The CSRF layer is outermost, so a cross-site request is refused before
+  forward-auth looks at credentials and the caller learns nothing about whether
+  a forged identity would have been accepted.
+  `manage.rs::csrf_guard_runs_before_forward_auth`
+- `/files/{id}` is readable cross-origin and never with credentials.
+  `authz.rs::files_allows_anonymous_cross_origin_reads_only`
+
+**Curator-supplied content does not become executable or escape its directory.**
+
+- Note HTML is sanitized. `manage.rs::annotation_note_html_cannot_carry_executable_markup`,
+  `markdown.rs::raw_html_is_escaped_not_passed_through`
+- A hostile timestamp cannot escape the events directory.
+  `events.rs::a_hostile_timestamp_cannot_escape_the_events_directory`
+- The public annotation API never discloses a login address.
+  `manage.rs::public_annotation_api_never_exposes_a_login_address`
+
+**Is a curator-supplied WACZ trusted input?** On a workstation, yes: you chose the
+file. On a server, no, and indice does not yet act on that. Zip entries are read
+by name or index and never extracted to a path taken from the archive, so
+zip-slip is structurally impossible. But `datapackage.json`, `pages/pages.jsonl`
+and the CDX are each read with `read_to_end` and no size cap (`wacz.rs:276,396`),
+so a small WACZ whose `pages.jsonl` inflates to many gigabytes is a decompression
+bomb that takes the indexer's memory with it (`rustyweb-wacz-read-caps-q39p`).
+That is acceptable where curators are colleagues and is not where they are
+approved strangers, which is the first place the answer to this question changes
+the code. The second is replay, below.
+
+### Assumptions
+
+`u9y6.N` below is `rustyweb-open-web-hardening-u9y6.N`.
+
+| Assumption | What breaks if false | Tracked as |
+|---|---|---|
+| The proxy strips a client-supplied copy of the identity header | A forged identity still needs the secret, so nothing breaks; this is belt and braces | the shipped `Caddyfile` does both |
+| The shared secret stays secret | Anyone who has it is every user at once | operator |
+| The operator meant the roster default | With no `users.yaml` on a server, everyone the IdP admits is an admin | `u9y6.2` |
+| Writers are not hostile to the host | Add-by-location takes an arbitrary URL or filesystem path, so a writer reads server-side files and reaches internal addresses | `u9y6.4` |
+| Writers are not hostile to the disk | No cap on upload size or total archive size | `u9y6.3` |
+| Readers are not hostile to availability | No limit on body size, request time, or concurrency, inbound; one anonymous request can cost arbitrary work | `u9y6.1` |
+| Error text is read by the operator | Responses carry server internals, including paths | `u9y6.5` |
+| A browser will apply sensible defaults | No CSP, no `X-Content-Type-Options`, no referrer policy, and replay needs an exception from whatever lands | `u9y6.6` |
+| The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
+| Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
+| Curators supply well-formed WACZs | Uncapped reads make a decompression bomb an out-of-memory | `rustyweb-wacz-read-caps-q39p` |
+| Archived captures do not script their host | Replay is same-origin with the write API, so a captured page can drive a signed-in curator's browser into any write they may make | `rustyweb-replay-origin-isolation-5h67` |
+
+A future premise change, a PaaS deployment, a multi-tenant host, or the
+federation work, gets checked against this table rather than re-derived.
+
+### Not defended
+
+Saying so here is what stops these being re-litigated.
+
+- **indice authenticates nobody.** Credential stuffing, password policy, MFA and
+  session lifetime belong to the proxy. The gain is that one header contract
+  covers Shibboleth, OIDC, and whatever an operator already runs; the cost is
+  that indice cannot tell a compromised account from its owner.
+- **Replay runs archived third-party JavaScript same-origin.** The wabac service
+  worker serves archived responses from indice's own origin and `viewer.html`
+  mounts `<replay-web-page>` in an unsandboxed iframe, which is how
+  ReplayWeb.page works and not a defect in indice. Writing this section turned up
+  the consequence nobody had drawn, so it is listed under *Assumptions* above as
+  well: archived script shares an origin with the write API, so the CSRF layer
+  does not see it. A `fetch('/api/collections/x/delete', {method:'POST'})` from a
+  captured page is same-origin by construction, carries the reader's proxy
+  session, and matches on `Origin`. The exposure is a curator or admin replaying
+  a hostile capture, and on a workstation every caller is an admin. Separating
+  the replay origin is the fix the web platform offers, and it is a real change:
+  a second hostname, or a sandboxed frame that wabac can still reach.
+- **`/files/{id}` sends `access-control-allow-origin: *` on purpose,** so any
+  page can replay a public archive. It never sends credentials with it.
+- **The host.** Anything with write access to `<home>` owns the instance.
+- **Availability under a determined attacker,** until `u9y6.1` lands.
+- **Authenticity of the archived capture.** indice records a SHA-256 per WACZ and
+  verifies it on demand, which detects a changed file. It says nothing about
+  whether the capture was honest when it was made. WACZ signing is a tracked
+  follow-up.
+
+### Why this section exists
+
+Before the hardening epic the tracker held five auth and security items, all P3,
+and three of them were already done and left open. CodeQL had zero open alerts
+and 43 dismissed ones, every dismissal correct: 36 were `rust/path-injection` on
+paths that `fsio::ensure_within` does guard. None of them were on `server/manage.rs`
+or the `index_location` flow, so the scanner never traced an add-by-location
+request to a sink and never raised the finding that mattered. Clean tooling, a
+clean tracker, and eight real gaps, because nobody had written down which threat
+model was in force.
+
+The same shape appeared once more. `rustyweb-stream-fetch-timeouts-v3su` found
+that the HTTP agent had no timeouts *outbound*, from a stalled progress bar, and
+nobody asked whether the inbound side had the same gap. It does. A threat model
+is what turns one symptom into that question.
 
 ---
 

@@ -66,61 +66,18 @@ pub(super) async fn forward_auth(
 /// sends it, and because the write routes take `Form`/`Multipart` (simple content
 /// types) there is no CORS preflight to stop it. The attacker can't *read* the
 /// reply, but by then the collection is already deleted.
+///
+/// What this cannot reach is a write issued by a replayed page. ReplayWeb.page
+/// serves archived responses from indice's own origin, so archived script sends
+/// a genuinely same-origin request and `Origin` matches. The guard is answering
+/// the question it was asked. Fixing it means separating the replay origin;
+/// tracked as `rustyweb-replay-origin-isolation-5h67` and written up under
+/// *Threat Model* in `DESIGN.md`.
 pub(super) async fn same_origin_guard(
     policy: &CsrfPolicy,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    // Local access trusts whoever reaches the port, and "bound to loopback" is
-    // not the same claim as "reached over loopback". An HTTP proxy such as
-    // `tailscale serve` dials the local port itself, so the peer address proves
-    // nothing and every tailnet peer was the operator, able to delete a
-    // collection.
-    //
-    // What distinguishes them is the authority the client asked for: an HTTP
-    // proxy forwards the name the client used, so a tailnet request arrives for
-    // `box.ts.net` while a direct one says `localhost`.
-    //
-    // This does NOT catch a raw TCP forward. `ssh -L 9000:localhost:8080` copies
-    // bytes verbatim, so the request genuinely says `Host: localhost:9000` and is
-    // indistinguishable from a local browser. Matching the port against our own
-    // would catch the common case and miss `-L 8080:localhost:8080`, which is
-    // worse than not claiming it. Anyone who can open that tunnel already has a
-    // shell on the machine and could run indice themselves, so the exposure is
-    // smaller than the tailnet one; it is still worth knowing the guard does not
-    // reach it.
-    //
-    // Checked here rather than in `same_site_request` because that only gates
-    // state-changing methods, and only when an `Origin` is present. A tunnelled
-    // browser was already refused on writes by that path; `curl -X POST` with no
-    // `Origin` was not, and that is the hole. Reads are refused too: local
-    // access means local.
-    if policy.require_loopback {
-        // `client_authority`, not `expected_authority`: the latter prefers
-        // `X-Forwarded-Host`, which only a trusted proxy should ever set. In
-        // local mode there is no proxy by definition, so that header is
-        // attacker-controlled and `X-Forwarded-Host: localhost` would wave the
-        // check through. The first version of this guard used it and was
-        // bypassable with one header.
-        match client_authority(req.headers(), req.uri()) {
-            Some(authority) if is_loopback_authority(authority) => {}
-            other => {
-                let asked_for = other.unwrap_or("nothing");
-                return (
-                    StatusCode::FORBIDDEN,
-                    format!(
-                        "refused: this indice trusts every caller, so it answers only on \
-                         a loopback address, and this request asked for {asked_for}. \
-                         Reaching it through a proxy would hand that trust to everyone \
-                         who can use the proxy. To share an archive, run it as a server \
-                         behind an authenticating proxy: \
-                         https://indice.page/docs/guides/deploy/"
-                    ),
-                )
-                    .into_response();
-            }
-        }
-    }
     if same_site_request(req.method(), req.headers(), req.uri(), policy) {
         return next.run(req).await;
     }
@@ -219,14 +176,23 @@ pub(super) fn same_site_request(
 pub(super) struct CsrfPolicy {
     /// The operator-pinned public authority (`--site-url`), when set.
     pub site_authority: Option<String>,
-    /// Whether to additionally require the request's authority to be a loopback
-    /// name. True exactly in local mode, independent of `--site-url`: letting
-    /// that clear it turned a stray `INDICE_SITE_URL` in a shared `.env` into a
-    /// silent kill switch for the whole requirement.
+    /// Whether a matching `Origin` must additionally be a loopback name. True
+    /// exactly in local mode, independent of `--site-url`: letting that clear it
+    /// turned a stray `INDICE_SITE_URL` in a shared `.env` into a silent kill
+    /// switch.
     ///
-    /// Browsers only. `Host` is forgeable by anything that is not a browser, so
-    /// this refuses a tailnet peer who opens the page and does nothing at all to
-    /// one who uses `curl`. See [`client_authority`].
+    /// This is the DNS-rebinding half of the CSRF guard and nothing more. An
+    /// attacker who points `evil.example` at 127.0.0.1 gets the browser to send
+    /// a self-consistent `Host` and `Origin` pair, which the equality check
+    /// above would accept; a loopback-only workroom has no legitimate reason to
+    /// see any other name in an `Origin`, so the pair is bogus by definition.
+    ///
+    /// It is not an access control, and indice does not try to make one out of
+    /// `Host`. Two versions of this guard refused a request whose authority was
+    /// not a loopback name, meaning to stop a tunnelled caller from inheriting
+    /// the operator's rights; both were bypassable with a header, because the
+    /// workstation shape promises nothing against a caller who reaches the port.
+    /// See the threat model in `DESIGN.md`.
     pub require_loopback: bool,
 }
 
@@ -246,31 +212,6 @@ fn is_loopback_authority(authority: &str) -> bool {
     }
     host.parse::<std::net::IpAddr>()
         .is_ok_and(|ip| ip.is_loopback())
-}
-
-/// The authority the client asked for, trusting nothing but `Host`.
-///
-/// Deliberately not [`expected_authority`], which prefers `X-Forwarded-Host`
-/// because behind a proxy that is the browser-facing name. Local mode has no
-/// proxy, so nothing has the standing to set that header.
-///
-/// **This authenticates nobody.** `Host` is as forgeable as any other header to
-/// a client that is not a browser: `curl -H 'Host: 127.0.0.1:8080'` through a
-/// Host-preserving proxy (which is what Go's `httputil.ReverseProxy`, and so
-/// `tailscale serve`, does by default) walks straight past the caller's check.
-/// What it does buy is the browser case, where script cannot set `Host`, so a
-/// tailnet peer who merely opens the page in a browser is refused. Treat it as
-/// raising the bar, never as a boundary. See [`CsrfPolicy::require_loopback`].
-///
-/// `None` when there is no `Host` and no absolute-form URI; the caller treats
-/// that as a refusal rather than a pass.
-fn client_authority<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str> {
-    headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .or_else(|| uri.authority().map(|a| a.as_str()))
 }
 
 /// The authority (`host[:port]`) a browser would have used to reach us.
