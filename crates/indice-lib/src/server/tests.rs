@@ -491,3 +491,30 @@ fn toggling_a_filter_round_trips() {
         "coral reef"
     );
 }
+
+/// `Access::local` refuses a public bind.
+///
+/// This invariant is what separates the two deployment shapes, and until now
+/// nothing checked it. It also used to live only in `serve_on_listener`, so a
+/// caller building a router directly walked straight past it; making it a
+/// constructor means the type carries the rule.
+#[test]
+fn local_access_refuses_a_public_bind() {
+    use crate::server::Access;
+
+    for ok in ["127.0.0.1:8080", "127.0.0.53:80", "[::1]:8080"] {
+        assert!(
+            Access::local(ok.parse().unwrap()).is_ok(),
+            "{ok} is loopback and should be allowed"
+        );
+    }
+    for bad in ["0.0.0.0:8080", "192.168.1.10:8080", "[::]:8080"] {
+        let err = Access::local(bad.parse().unwrap())
+            .expect_err("a public bind must not get local trust");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("auth-proxy-header"),
+            "the refusal should name the way out, got: {msg}"
+        );
+    }
+}

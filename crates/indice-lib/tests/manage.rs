@@ -6,6 +6,14 @@
 
 use std::path::Path;
 
+/// Local trust, as a workstation has it. The helper binds `127.0.0.1:0`, so the
+/// address handed to `Access::local` matches what the listener will get.
+fn local_access() -> indice_lib::server::ServerConfig {
+    indice_lib::server::ServerConfig::new(
+        indice_lib::server::Access::local("127.0.0.1:0".parse().unwrap()).unwrap(),
+    )
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -38,7 +46,7 @@ async fn get(url: String) -> (u16, String) {
 /// Start a server on an ephemeral localhost port; returns `(base_url, handle)`.
 async fn serve(
     home: std::path::PathBuf,
-    manage: indice_lib::server::ManageConfig,
+    config: indice_lib::server::ServerConfig,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -47,7 +55,7 @@ async fn serve(
             listener,
             &home,
             None,
-            manage,
+            config,
             indice_lib::server::Providers::default(),
         )
         .await
@@ -60,7 +68,7 @@ async fn serve(
 async fn manage_add_archive_indexes_and_reloads_search() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home.clone(), local_access()).await;
 
     // Precondition: empty index, so search finds nothing.
     let (status, body) = get(format!("{base}/api/search?q=example")).await;
@@ -124,7 +132,7 @@ async fn manage_add_archive_indexes_and_reloads_search() {
 async fn manage_upload_archive_indexes_and_reloads_search() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home.clone(), local_access()).await;
 
     // Hand-build a multipart/form-data body: the `collection` text field + the
     // `.wacz` bytes as the `file` field.
@@ -185,11 +193,7 @@ async fn manage_upload_archive_indexes_and_reloads_search() {
 #[tokio::test]
 async fn manage_create_collection_via_form_then_it_appears() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::local(),
-    )
-    .await;
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
 
     // Submit the create-collection form (application/x-www-form-urlencoded).
     let post_url = format!("{base}/api/collections");
@@ -227,11 +231,14 @@ async fn manage_create_collection_via_form_then_it_appears() {
     assert!(home.contains("Demo Collection"), "homepage lists it");
     server.abort();
 
-    // The edit affordance is gated: a read-only server on the same home does not
-    // render it on the collection page.
+    // The edit affordance is gated: an anonymous visitor to the same home does
+    // not get it on the collection page.
     let (ro_base, ro_server) = serve(
         tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            "x-forwarded-email",
+            "secret-the-test-never-sends",
+        )),
     )
     .await;
     let (status, ro_page) = get(format!("{ro_base}/collection/demo-collection")).await;
@@ -251,11 +258,7 @@ async fn manage_create_collection_via_form_then_it_appears() {
 async fn manage_page_gated_on_management_mode() {
     // Present under --manage.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::local(),
-    )
-    .await;
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
     // The accession desk renders under --manage.
     let (status, body) = get(format!("{base}/manage/add")).await;
     assert_eq!(status, 200);
@@ -282,15 +285,19 @@ async fn manage_page_gated_on_management_mode() {
     assert!(home.contains("Add your first archive"), "empty-state CTA");
     server.abort();
 
-    // Absent in the default read-only server.
+    // Refused for an anonymous visitor. The route is mounted — who may use it is
+    // an authorization question — so this is a 403, not a 404.
     let tmp2 = tempfile::TempDir::new().unwrap();
     let (base2, server2) = serve(
         tmp2.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            "x-forwarded-email",
+            "secret-the-test-never-sends",
+        )),
     )
     .await;
     let (status2, _) = get(format!("{base2}/manage/add")).await;
-    assert_eq!(status2, 404, "no management routes in read-only mode");
+    assert_eq!(status2, 403, "management routes refuse an anonymous caller");
     let (_, home2) = get(format!("{base2}/")).await;
     assert!(
         home2.contains("indice index"),
@@ -323,7 +330,10 @@ async fn get_with_headers(
 #[tokio::test]
 async fn forward_auth_gates_management_routes() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
     let manage = format!("{base}/manage/add");
 
@@ -388,82 +398,12 @@ async fn forward_auth_gates_management_routes() {
     server.abort();
 }
 
-/// Logout is mounted only under `--manage`, and that is a deliberate removal
-/// worth pinning: it used to be mounted unconditionally.
-///
-/// There is nothing for it to do on a read-only server — `resolve_caller`
-/// returns `None` when management is off, so no session exists and no control
-/// offers it. The risk is a later refactor hoisting it back out of the
-/// management block to "simplify", which would restore the old public surface
-/// with the suite green.
-#[tokio::test]
-async fn read_only_server_has_no_logout_route() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
-    )
-    .await;
-
-    let url = format!("{base}/logout");
-    let origin = base.clone();
-    let status = tokio::task::spawn_blocking(move || {
-        agent()
-            .post(&url)
-            .header("Origin", &origin)
-            .send("")
-            .unwrap()
-            .status()
-            .as_u16()
-    })
-    .await
-    .unwrap();
-    assert_eq!(status, 404, "logout must be absent in read-only mode");
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn read_only_server_has_no_add_archive_route() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
-    )
-    .await;
-
-    // The write route is not mounted in the default (read-only) server.
-    let post_url = format!("{base}/api/archives");
-    let body = serde_json::json!({ "path": "x", "collection": "y" }).to_string();
-    let status = tokio::task::spawn_blocking(move || {
-        agent()
-            .post(&post_url)
-            .header("content-type", "application/json")
-            .send(body)
-            .unwrap()
-            .status()
-            .as_u16()
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        status, 404,
-        "management route must be absent in read-only mode"
-    );
-
-    server.abort();
-}
-
 #[tokio::test]
 async fn browsertrix_import_reports_unconfigured_without_creds() {
     // Management on, but the test server injects no Browsertrix provider (no
     // creds) — the browse/import endpoints should say so clearly, not 500.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::local(),
-    )
-    .await;
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
 
     let (status, body) = get(format!("{base}/api/browsertrix/orgs")).await;
     assert_eq!(status, 503, "unconfigured Browsertrix is a 503");
@@ -480,11 +420,7 @@ async fn archiveit_import_reports_unconfigured_without_creds() {
     // Management on, but no Archive-It provider injected (no creds) — the
     // browse/import endpoints should say so clearly, not 500.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::local(),
-    )
-    .await;
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
 
     let (status, body) = get(format!("{base}/api/archiveit/collections")).await;
     assert_eq!(status, 503, "unconfigured Archive-It is a 503");
@@ -497,108 +433,10 @@ async fn archiveit_import_reports_unconfigured_without_creds() {
 }
 
 #[tokio::test]
-async fn archiveit_routes_absent_in_read_only_mode() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
-    )
-    .await;
-    let (status, _) = get(format!("{base}/api/archiveit/collections")).await;
-    assert_eq!(status, 404, "no Archive-It routes without --manage");
-    server.abort();
-}
-
-#[tokio::test]
-async fn browsertrix_routes_absent_in_read_only_mode() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
-    )
-    .await;
-    let (status, _) = get(format!("{base}/api/browsertrix/orgs")).await;
-    assert_eq!(status, 404, "no Browsertrix routes without --manage");
-    server.abort();
-}
-
-#[tokio::test]
-async fn read_only_server_has_no_collection_or_upload_routes() {
-    // Every write route lives in one `if manage.enabled` block, so the read-only
-    // server must expose none of them. `read_only_server_has_no_add_archive_route`
-    // covers POST /api/archives; this covers the rest (collections, upload, and
-    // the management pages) so moving one out of the gate can't slip through.
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::off(),
-    )
-    .await;
-
-    // GET management pages are absent.
-    for path in [
-        "/manage/add",
-        "/manage/collections/new",
-        "/manage/edit/anything",
-    ] {
-        let (status, _) = get(format!("{base}{path}")).await;
-        assert_eq!(status, 404, "GET {path} must be absent in read-only mode");
-    }
-
-    // POST /api/collections (create/edit a finding aid) is absent.
-    let coll_url = format!("{base}/api/collections");
-    let status = tokio::task::spawn_blocking(move || {
-        agent()
-            .post(&coll_url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .send("name=x")
-            .unwrap()
-            .status()
-            .as_u16()
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        status, 404,
-        "POST /api/collections must be absent in read-only mode"
-    );
-
-    // POST /api/archives/upload is absent.
-    let upload_url = format!("{base}/api/archives/upload");
-    let status = tokio::task::spawn_blocking(move || {
-        agent()
-            .post(&upload_url)
-            .send("x")
-            .unwrap()
-            .status()
-            .as_u16()
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        status, 404,
-        "POST /api/archives/upload must be absent in read-only mode"
-    );
-
-    // POST delete endpoints are absent.
-    for path in ["/api/crawls/x/delete", "/api/collections/x/delete"] {
-        let url = format!("{base}{path}");
-        let status = tokio::task::spawn_blocking(move || {
-            agent().post(&url).send("").unwrap().status().as_u16()
-        })
-        .await
-        .unwrap();
-        assert_eq!(status, 404, "POST {path} must be absent in read-only mode");
-    }
-
-    server.abort();
-}
-
-#[tokio::test]
 async fn manage_delete_crawl_removes_it_from_index_and_disk() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home.clone(), local_access()).await;
 
     // Add a crawl (POST + drain its SSE to completion).
     let post_url = format!("{base}/api/archives");
@@ -685,7 +523,7 @@ async fn annotation_note_html_cannot_carry_executable_markup() {
     })
     .await
     .unwrap();
-    let (base, server) = serve(home, indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home, local_access()).await;
 
     let hostile = concat!(
         "<script>alert('xss')</script>\n\n",
@@ -843,7 +681,7 @@ async fn post_form_with_headers(
 async fn local_manage_mode_is_csrf_protected_too() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home.clone(), local_access()).await;
 
     // A same-origin POST still works: create a collection the normal way.
     let (status, _) = post_form_with_headers(
@@ -881,7 +719,7 @@ async fn local_manage_mode_is_csrf_protected_too() {
 async fn cross_site_post_is_rejected_on_every_management_write() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home.clone(), local_access()).await;
 
     for (path, form) in [
         ("/api/collections", "name=Sneaky"),
@@ -915,11 +753,7 @@ async fn cross_site_post_is_rejected_on_every_management_write() {
 #[tokio::test]
 async fn sec_fetch_site_cross_site_is_rejected_without_origin() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let (base, server) = serve(
-        tmp.path().to_path_buf(),
-        indice_lib::server::ManageConfig::local(),
-    )
-    .await;
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
 
     let (status, _) = post_form_with_headers(
         format!("{base}/api/collections"),
@@ -944,7 +778,10 @@ async fn sec_fetch_site_cross_site_is_rejected_without_origin() {
 #[tokio::test]
 async fn csrf_guard_runs_before_forward_auth() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     // Fully valid proxy credentials, but a foreign Origin: still refused, and
@@ -976,7 +813,10 @@ async fn csrf_guard_runs_before_forward_auth() {
 async fn public_annotation_api_never_exposes_a_login_address() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ManageConfig::forward_auth("x-forwarded-email", "s3cret");
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
     let (base, server) = serve(home.clone(), cfg).await;
 
     // A collection to hang the note on (annotations require a known collection).
@@ -1065,7 +905,7 @@ async fn a_finding_aid_save_cannot_erase_a_concurrent_ingest() {
     for round in 0..3 {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();
-        let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+        let (base, server) = serve(home.clone(), local_access()).await;
 
         // The collection the crawl goes into has to exist first, so the save
         // below is an *edit* rather than a create.
@@ -1157,7 +997,7 @@ async fn a_write_returns_503_while_the_index_is_locked() {
         .id
         .clone();
 
-    let (base, server) = serve(home.clone(), indice_lib::server::ManageConfig::local()).await;
+    let (base, server) = serve(home.clone(), local_access()).await;
 
     // Hold the lock for longer than the handler is willing to wait.
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -1214,5 +1054,128 @@ async fn a_write_returns_503_while_the_index_is_locked() {
 
     release_tx.send(()).unwrap();
     holder.join().unwrap();
+    server.abort();
+}
+
+/// Every management route refuses an anonymous caller.
+///
+/// This replaces five tests that asserted those routes were *absent* without
+/// `--manage`. There is no longer a mode in which they are absent: the write
+/// surface is always mounted and who may use it is an authorization question,
+/// answered by the `Curator`/`Admin` extractors and `users.yaml`.
+///
+/// 403 rather than 404 is the point. A 404 for an authorization failure is
+/// obscurity, and it meant the same request answered differently depending on a
+/// startup flag rather than on who was asking. The risk this guards is the
+/// inverse of the old one: not a route escaping its gate, but a route whose
+/// extractor someone drops while refactoring, which would turn a 403 into a
+/// silent 200.
+#[tokio::test]
+async fn anonymous_is_refused_from_every_management_route() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(
+        tmp.path().to_path_buf(),
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            "x-forwarded-email",
+            "secret-the-test-never-sends",
+        )),
+    )
+    .await;
+
+    for path in [
+        "/manage/add",
+        "/manage/collections/new",
+        "/manage/edit/anything",
+        "/api/archiveit/collections",
+        "/api/archiveit/crawls",
+        "/api/browsertrix/orgs",
+        "/api/browsertrix/collections",
+        "/api/browsertrix/items",
+        "/api/archives/1/events",
+    ] {
+        let (status, _) = get(format!("{base}{path}")).await;
+        assert_eq!(status, 403, "GET {path} must refuse an anonymous caller");
+    }
+
+    for path in [
+        "/api/archives",
+        "/api/archives/upload",
+        "/api/collections",
+        "/api/crawls/anything/delete",
+        "/api/collections/anything/delete",
+        "/api/archiveit/import",
+        "/api/browsertrix/import",
+        "/api/annotations",
+    ] {
+        let url = format!("{base}{path}");
+        let origin = base.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            agent()
+                .post(&url)
+                .header("Origin", &origin)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .send("")
+                .unwrap()
+                .status()
+                .as_u16()
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 403, "POST {path} must refuse an anonymous caller");
+    }
+
+    server.abort();
+}
+
+/// A tunnelled request is refused in local mode, even with no `Origin`.
+///
+/// Local access trusts whoever reaches the port. `tailscale serve` and `ssh -L`
+/// break that premise: they proxy from elsewhere and arrive on 127.0.0.1, so the
+/// peer address proves nothing and every tunnel user was the operator.
+///
+/// The `Origin`-free cases are the ones that matter. A tunnelled *browser* was
+/// already refused on writes, because the CSRF check requires a loopback
+/// authority when it sees an `Origin`. `curl` sends none, the check deliberately
+/// lets those through on the grounds that a non-browser carries no ambient
+/// credentials, and `curl -X POST .../delete` therefore reached `remove_dir_all`.
+/// A test that only sent a browser-shaped request would have passed against the
+/// unfixed code.
+#[tokio::test]
+async fn a_tunnelled_request_is_refused_in_local_mode() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+
+    // Reaching it directly still works.
+    let (status, _) = get(format!("{base}/")).await;
+    assert_eq!(status, 200, "a direct loopback request is fine");
+
+    // Arriving for a tunnel's hostname is refused, reads included.
+    let (status, body) =
+        get_with_headers(format!("{base}/"), vec![("X-Forwarded-Host", "box.ts.net")]).await;
+    assert_eq!(status, 403, "a tunnelled read must be refused");
+    assert!(
+        body.contains("loopback"),
+        "the refusal should say why, got: {body}"
+    );
+
+    // The hole: a write with no Origin at all.
+    let url = format!("{base}/api/collections");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&url)
+            .header("X-Forwarded-Host", "box.ts.net")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .send("name=Tunnelled")
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        status, 403,
+        "a tunnelled write with no Origin must be refused"
+    );
+
     server.abort();
 }

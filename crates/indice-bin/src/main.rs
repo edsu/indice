@@ -123,17 +123,10 @@ enum Commands {
         #[arg(long, default_value = ".")]
         home: PathBuf,
 
-        /// Enable management mode: mount the opt-in write endpoints (add archives,
-        /// create/edit collections from the UI). Off by default — the public
-        /// server is read-only. Without an auth proxy (below) this trusts every
-        /// request, so it must bind to a loopback address.
-        #[arg(long)]
-        manage: bool,
-
-        /// Run management mode behind a trusted authenticating reverse proxy: read
-        /// the authenticated user from this request header (e.g.
-        /// `X-Forwarded-Email`). Requires `--auth-proxy-secret`. Lets `--manage`
-        /// bind to a non-loopback address for a service deployment.
+        /// Run behind a trusted authenticating reverse proxy: read the
+        /// authenticated user from this request header (e.g. `X-Forwarded-Email`).
+        /// Requires `--auth-proxy-secret`. Without it indice trusts every caller,
+        /// which is only allowed on a loopback bind.
         #[arg(long, value_name = "HEADER")]
         auth_proxy_header: Option<String>,
 
@@ -145,10 +138,11 @@ enum Commands {
         auth_proxy_secret: Option<String>,
 
         /// This site's public URL (e.g. `https://archive.example.org`), used by the
-        /// cross-site (CSRF) check on management writes. Only needed behind a proxy
-        /// that rewrites the Host header without setting X-Forwarded-Host (nginx's
-        /// default); Caddy and a direct bind are detected automatically. May also be
-        /// given via the INDICE_SITE_URL environment variable.
+        /// cross-site (CSRF) check on writes. Only needed behind a proxy that
+        /// rewrites the Host header without setting X-Forwarded-Host, which is
+        /// nginx's and Apache's default; Caddy and a direct bind are detected
+        /// automatically. May also be given via the INDICE_SITE_URL environment
+        /// variable.
         #[arg(long, value_name = "URL")]
         site_url: Option<String>,
     },
@@ -1055,17 +1049,16 @@ async fn main() -> Result<()> {
         Commands::Serve {
             bind,
             home,
-            manage,
             auth_proxy_header,
             auth_proxy_secret,
             site_url,
         } => {
-            // Build the management config from the flags. Forward-auth is on when
-            // an identity header is named; it then requires a shared secret (flag
-            // or INDICE_AUTH_PROXY_SECRET). `--manage` off ignores the auth flags.
-            let manage = if !manage {
-                indice_lib::server::ManageConfig::off()
-            } else if let Some(header) = auth_proxy_header {
+            // Who is trusted follows from two things already on the command
+            // line: whether a proxy is named, and what we are bound to. There
+            // used to be a `--manage` flag crossed with those, which made four
+            // states for three meanings and left a read-only server as a shape
+            // nobody wanted.
+            let access = if let Some(header) = auth_proxy_header {
                 let secret = auth_proxy_secret
                     .or_else(|| std::env::var("INDICE_AUTH_PROXY_SECRET").ok())
                     .filter(|s| !s.is_empty());
@@ -1077,58 +1070,70 @@ async fn main() -> Result<()> {
                     );
                     std::process::exit(2);
                 };
-                let mut mc = indice_lib::server::ManageConfig::forward_auth(header, secret);
-                // Optional: where /logout sends the browser after clearing indice's
-                // display cookie. Set to the SSO proxy's sign-out URL (e.g.
-                // `/oauth2/sign_out?rd=/`) for a real single-click logout.
-                mc.logout_redirect = std::env::var("INDICE_LOGOUT_REDIRECT")
-                    .ok()
-                    .filter(|s| !s.is_empty());
-                // Validated at startup, because the handler cannot. `Redirect::to`
-                // panics on anything that is not a valid header value — a stray
-                // newline out of a heredoc or a .env file is enough — and there is
-                // no catch-panic layer, so the first curator to click Log out gets
-                // a dropped connection and the operator gets a backtrace naming
-                // neither the setting nor the cause. Fail here instead, where the
-                // other configuration errors already exit(2).
-                if let Some(dest) = &mc.logout_redirect {
-                    // The same rule `HeaderValue` applies: visible ASCII, plus
-                    // space and tab. Checked here rather than by constructing a
-                    // `HeaderValue`, because axum is only a dev-dependency of
-                    // this crate and one predicate is cheaper than making it a
-                    // real one.
-                    let usable = dest
-                        .bytes()
-                        .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b));
-                    if !usable {
-                        eprintln!(
-                            "error: INDICE_LOGOUT_REDIRECT is not a usable redirect target: {dest:?}\n\
-                             It must be a single line of printable ASCII, e.g. /oauth2/sign_out?rd=/"
-                        );
+                indice_lib::server::Access::proxy(header, secret)
+            } else {
+                // No proxy named, so every caller is the operator. `Access::local`
+                // refuses anything but a loopback address. Resolve the bind string
+                // first, since it may be a name: `serve_on_listener` re-checks
+                // against the real socket, but failing here names the flag.
+                use std::net::ToSocketAddrs;
+                let addr = bind.to_socket_addrs().ok().and_then(|mut a| a.next());
+                let Some(addr) = addr else {
+                    eprintln!("--bind is not an address this machine can resolve: {bind}");
+                    std::process::exit(2);
+                };
+                match indice_lib::server::Access::local(addr) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("{e}");
                         std::process::exit(2);
                     }
                 }
-                mc
-            } else {
-                indice_lib::server::ManageConfig::local()
             };
+
+            let mut config = indice_lib::server::ServerConfig::new(access);
+
+            // Where /logout sends the browser after clearing indice's display
+            // cookie. Point it at the login service's sign-out URL (e.g.
+            // `/oauth2/sign_out?rd=/`) so one click ends both sessions.
+            config.logout_redirect = std::env::var("INDICE_LOGOUT_REDIRECT")
+                .ok()
+                .filter(|s| !s.is_empty());
+            // Validated at startup, because the handler cannot. `Redirect::to`
+            // panics on anything that is not a valid header value — a stray
+            // newline out of a heredoc or a .env file is enough — and there is
+            // no catch-panic layer, so the first curator to click Log out gets
+            // a dropped connection and the operator gets a backtrace naming
+            // neither the setting nor the cause. Fail here instead, where the
+            // other configuration errors already exit(2).
+            if let Some(dest) = &config.logout_redirect {
+                // The same rule `HeaderValue` applies: visible ASCII, plus space
+                // and tab. Checked here rather than by constructing a
+                // `HeaderValue`, because axum is only a dev-dependency of this
+                // crate and one predicate is cheaper than making it a real one.
+                let usable = dest
+                    .bytes()
+                    .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b));
+                if !usable {
+                    eprintln!(
+                        "error: INDICE_LOGOUT_REDIRECT is not a usable redirect target: {dest:?}\n\
+                         It must be a single line of printable ASCII, e.g. /oauth2/sign_out?rd=/"
+                    );
+                    std::process::exit(2);
+                }
+            }
 
             // Optional CSRF escape hatch: pin the authority the cross-site check
             // compares Origin against, for proxies that rewrite Host without
             // setting X-Forwarded-Host. We keep only host[:port] — `Url::port()`
-            // elides the scheme's default port, exactly as a browser's Origin does,
-            // so the two are directly comparable.
-            let mut manage = manage;
+            // elides the scheme's default port, exactly as a browser's Origin
+            // does, so the two are directly comparable.
             let site_url = site_url.or_else(|| {
                 std::env::var("INDICE_SITE_URL")
                     .ok()
                     .filter(|s| !s.is_empty())
             });
-            // Only consulted by the management CSRF guard, so a read-only
-            // server ignores it entirely — and must not refuse to start over a
-            // typo in a setting it never reads. (One env file is commonly
-            // shared by a public and a management container.)
-            if let Some(raw) = site_url.filter(|_| manage.enabled) {
+            if let Some(raw) = site_url {
                 let authority = url::Url::parse(&raw).ok().and_then(|u| {
                     let host = u.host_str()?.to_string();
                     Some(match u.port() {
@@ -1143,7 +1148,7 @@ async fn main() -> Result<()> {
                     );
                     std::process::exit(2);
                 };
-                manage.site_authority = Some(authority);
+                config.site_authority = Some(authority);
             }
 
             let ctrl_c = async {
@@ -1186,7 +1191,7 @@ async fn main() -> Result<()> {
             };
 
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), manage, providers) => {
+                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), config, providers) => {
                     result?;
                 }
                 _ = ctrl_c => {}

@@ -7,6 +7,23 @@ use axum::http::{Request, StatusCode};
 use std::path::Path;
 use tower::ServiceExt; // for `oneshot`
 
+/// A router rendering the **anonymous** view, which is what these tests check.
+///
+/// `Access::proxy` with credentials nobody sends: `resolve_caller` finds no
+/// identity header, so every request is an anonymous visitor, exactly as one
+/// arriving at a server. `Access::local` would make each request the operator
+/// and put workroom chrome on every page.
+fn public_router(home: &std::path::Path) -> axum::Router {
+    indice_lib::server::router(
+        home,
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            "X-Forwarded-Email",
+            "test-secret-not-sent",
+        )),
+    )
+    .unwrap()
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -66,7 +83,7 @@ async fn replay_json_lists_every_member_in_wabac_shape() {
         "both fixtures should be in the collection"
     );
 
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -97,7 +114,7 @@ async fn replay_json_lists_every_member_in_wabac_shape() {
 #[tokio::test]
 async fn collection_replay_button_opens_on_a_default_landing_page() {
     let (tmp, id) = home_with_collection();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let (status, html) = get_text(app, &format!("/collection/{id}")).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -121,7 +138,7 @@ async fn collection_replay_button_opens_on_a_default_landing_page() {
 #[tokio::test]
 async fn replay_json_404s_for_unknown_collection() {
     let (tmp, _id) = home_with_collection();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let (status, _json) = get_json(app, "/collection/does-not-exist/replay.json").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -129,7 +146,7 @@ async fn replay_json_404s_for_unknown_collection() {
 #[tokio::test]
 async fn replay_json_metadata_has_no_pages_query_url() {
     let (tmp, id) = home_with_collection();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
     // The manifest intentionally omits pagesQueryUrl: wabac replays natively,
@@ -149,7 +166,7 @@ async fn pages_endpoint_lists_pages_in_wabac_shape() {
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let member_ids: Vec<String> = manifest.members_of(&id).map(|w| w.id.clone()).collect();
 
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let (status, json) = get_json(app, &format!("/collection/{id}/pages?pageSize=100")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(json["total"].as_u64().unwrap() > 0, "collection has pages");
@@ -196,7 +213,7 @@ async fn replay_json_uses_browsertrix_hash_for_streamed_members() {
     });
     std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
 
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let (status, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
     assert_eq!(status, StatusCode::OK);
     let r = json["resources"]
@@ -223,7 +240,7 @@ async fn pages_endpoint_resolves_exact_url_to_its_member() {
         .id
         .clone();
 
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let target = "https://github.com/DocNow/hydrator/pull/78/files";
     let (status, json) = get_json(app, &format!("/collection/{id}/pages?url={target}")).await;
     assert_eq!(status, StatusCode::OK);

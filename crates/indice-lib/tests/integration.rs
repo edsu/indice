@@ -5,6 +5,23 @@ use axum::http::{Request, StatusCode};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+/// A router rendering the **anonymous** view, which is what these tests check.
+///
+/// `Access::proxy` with credentials nobody sends: `resolve_caller` finds no
+/// identity header, so every request is an anonymous visitor, exactly as one
+/// arriving at a server. `Access::local` would make each request the operator
+/// and put workroom chrome on every page.
+fn public_config() -> indice_lib::server::ServerConfig {
+    indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "X-Forwarded-Email",
+        "test-secret-not-sent",
+    ))
+}
+
+fn public_router(home: &std::path::Path) -> axum::Router {
+    indice_lib::server::router(home, public_config()).unwrap()
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -167,7 +184,7 @@ fn optimize_errors_clearly_when_there_is_no_index() {
 #[tokio::test]
 async fn search_api_returns_results() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/api/search?q=example")
         .body(Body::empty())
         .unwrap();
@@ -187,7 +204,7 @@ async fn search_api_returns_results() {
 #[tokio::test]
 async fn search_api_result_includes_crawl_fields() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/api/search?q=example")
         .body(Body::empty())
         .unwrap();
@@ -209,7 +226,7 @@ async fn search_api_result_includes_crawl_fields() {
 #[tokio::test]
 async fn search_api_no_results() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/api/search?q=zzz_nonexistent_zzz")
         .body(Body::empty())
         .unwrap();
@@ -231,7 +248,7 @@ async fn files_route_serves_registered_wacz() {
     let tmp = make_index(&["simple.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = &manifest.waczs[0].id;
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let req = Request::get(format!("/files/{id}"))
         .body(Body::empty())
@@ -245,7 +262,7 @@ async fn files_route_range_request() {
     let tmp = make_index(&["simple.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = &manifest.waczs[0].id;
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let req = Request::get(format!("/files/{id}"))
         .header("range", "bytes=0-99")
@@ -264,7 +281,7 @@ async fn files_route_range_request() {
 #[tokio::test]
 async fn files_route_unknown_id_404() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/files/deadbeef").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -284,7 +301,7 @@ async fn served_wacz_is_byte_identical_to_disk() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let req = Request::get(format!("/files/{id}"))
         .body(Body::empty())
@@ -311,7 +328,7 @@ async fn served_range_matches_the_file_slice() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     // Request an interior slice and verify the exact bytes, not just the length.
     let req = Request::get(format!("/files/{id}"))
@@ -342,7 +359,7 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     // Pull the whole WACZ through the HTTP endpoint the browser would use...
     let req = Request::get(format!("/files/{id}"))
@@ -369,7 +386,7 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
 #[tokio::test]
 async fn viewer_wires_up_replay_web_page() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
@@ -397,7 +414,7 @@ async fn viewer_wires_up_replay_web_page() {
 #[tokio::test]
 async fn replay_viewer_served() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -406,7 +423,7 @@ async fn replay_viewer_served() {
 #[tokio::test]
 async fn replay_asset_has_etag_and_no_cache() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -424,7 +441,7 @@ async fn replay_asset_has_etag_and_no_cache() {
 #[tokio::test]
 async fn replay_asset_returns_304_when_etag_matches() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     // First request to learn the ETag.
     let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
@@ -451,7 +468,7 @@ async fn replay_asset_returns_304_when_etag_matches() {
 #[tokio::test]
 async fn replay_root_redirects() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/replay/").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     // /replay/ now redirects to homepage
@@ -467,7 +484,7 @@ async fn replay_root_redirects() {
 #[tokio::test]
 async fn homepage_shows_collection_name() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -490,7 +507,7 @@ async fn homepage_card_links_to_collection_page() {
     let tmp = make_index(&["simple.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let cid = manifest.collections[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let resp = app
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
         .await
@@ -508,7 +525,7 @@ async fn crawl_page_shows_metadata_and_pages() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -552,7 +569,7 @@ async fn crawl_page_shows_browsertrix_provenance() {
     .unwrap();
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -586,7 +603,7 @@ async fn crawl_page_shows_multi_wacz_provenance() {
     m.waczs[0].nested_waczs = Some(3);
     m.save().unwrap();
     let id = m.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -641,7 +658,8 @@ async fn browsertrix_replay_redirects_to_a_freshly_resolved_url() {
     let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> = std::sync::Arc::new(
         FakeResolver("https://files.example/a.wacz?sig=fresh".into()),
     );
-    let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver)).unwrap();
+    let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver), public_config())
+        .unwrap();
 
     let resp = app
         .oneshot(
@@ -679,7 +697,8 @@ async fn public_browsertrix_replay_redirects_via_resolver() {
     let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> = std::sync::Arc::new(
         FakeResolver("https://files.example/pub.wacz?sig=fresh".into()),
     );
-    let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver)).unwrap();
+    let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver), public_config())
+        .unwrap();
 
     let resp = app
         .oneshot(
@@ -700,7 +719,7 @@ async fn public_browsertrix_replay_redirects_via_resolver() {
 async fn browsertrix_crawl_page_flags_remote_hosting() {
     let tmp = make_index(&["a.wacz"]);
     let id = make_browsertrix_source(&tmp);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -724,7 +743,7 @@ async fn browsertrix_replay_without_credentials_is_unavailable() {
     let tmp = make_index(&["a.wacz"]);
     let id = make_browsertrix_source(&tmp);
     // Default router has no resolver (no credentials).
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -743,7 +762,7 @@ async fn collection_page_lists_members() {
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let coll_id = manifest.collections[0].id.clone();
     let wacz_id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -780,7 +799,7 @@ async fn collection_page_flags_missing_minimum_fields() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let coll_id = manifest.collections[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let resp = app
         .oneshot(
             Request::get(format!("/collection/{coll_id}"))
@@ -818,7 +837,7 @@ async fn collection_page_nudge_lists_only_still_missing_minimum() {
         None,
     )
     .unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let resp = app
         .oneshot(
             Request::get("/collection/test")
@@ -844,7 +863,7 @@ async fn collection_page_shows_scoped_facets() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let coll_id = manifest.collections[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -877,7 +896,7 @@ async fn crawl_page_shows_scoped_facets() {
     let tmp = make_index(&["a.wacz"]);
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
 
     let resp = app
         .oneshot(
@@ -904,7 +923,7 @@ async fn crawl_page_shows_scoped_facets() {
 #[tokio::test]
 async fn collection_page_unknown_id_404() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let resp = app
         .oneshot(
             Request::get("/collection/deadbeef")
@@ -919,7 +938,7 @@ async fn collection_page_unknown_id_404() {
 #[tokio::test]
 async fn thumb_route_unknown_id_404() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let resp = app
         .oneshot(Request::get("/thumb/deadbeef").body(Body::empty()).unwrap())
         .await
@@ -940,7 +959,7 @@ async fn collection_thumbnail_is_set_served_and_preferred() {
     // Committed under the collection dir (git-trackable).
     assert!(tmp.path().join("collections/test/thumbnail.jpg").is_file());
 
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     // Served at /collection-thumb/<slug>.
     let resp = app
         .clone()
@@ -975,7 +994,7 @@ async fn collection_thumbnail_is_set_served_and_preferred() {
 #[tokio::test]
 async fn collection_thumb_rejects_traversal_ids() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     for bad in ["..", "a%2Fb", "a.b"] {
         let resp = app
             .clone()
@@ -999,7 +1018,7 @@ async fn collection_card_shows_placeholder_without_image() {
     // simple.wacz deflates its WARCs (scan path), so no thumbnail is generated —
     // the card should render the image area as a CSS placeholder, not an <img>.
     let tmp = make_index(&["simple.wacz"]);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let resp = app
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
         .await
@@ -1043,7 +1062,7 @@ async fn home_directory_is_portable() {
     let home_b = base.path().join("home-b");
     std::fs::rename(&home_a, &home_b).unwrap();
 
-    let app = indice_lib::server::router(&home_b).unwrap();
+    let app = public_router(&home_b);
     let resp = app
         .oneshot(
             Request::get(format!("/files/{id}"))
@@ -1064,7 +1083,7 @@ async fn can_index_while_server_holds_the_index() {
     // A running server opens the index read-only (no write lock), so indexing
     // must be able to proceed concurrently.
     let tmp = make_index(&["simple.wacz"]);
-    let _app = indice_lib::server::router(tmp.path()).unwrap(); // held, like a live server
+    let _app = public_router(tmp.path()); // held, like a live server
 
     // This previously failed with a Tantivy LockBusy error.
     index_into(tmp.path(), "pdf-doc.wacz");
@@ -1080,7 +1099,7 @@ async fn can_index_while_server_holds_the_index() {
 #[tokio::test]
 async fn homepage_empty_collections() {
     let tmp = TempDir::new().unwrap();
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/").body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1149,7 +1168,7 @@ async fn index_from_http_url_and_link_directly() {
     }
 
     // The crawl page links wabac directly at the remote URL, not through /files/{id}.
-    let app2 = indice_lib::server::router(tmp.path()).unwrap();
+    let app2 = public_router(tmp.path());
     let resp = app2
         .oneshot(
             Request::get(format!("/crawl/{}", col.id))
@@ -1501,7 +1520,7 @@ async fn get_reader_retries_a_transient_status() {
 #[tokio::test]
 async fn collection_page_header_search_is_scoped() {
     let tmp = make_index(&["simple.wacz"]); // indexed into collection "test"
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/collection/test")
         .body(Body::empty())
         .unwrap();
@@ -1524,7 +1543,7 @@ async fn collection_page_header_search_is_scoped() {
 #[tokio::test]
 async fn search_scope_param_folds_into_query() {
     let tmp = make_index(&["simple.wacz"]);
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let req = Request::get("/search?scope=collection:test&q=example")
         .body(Body::empty())
         .unwrap();

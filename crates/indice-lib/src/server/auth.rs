@@ -71,6 +71,43 @@ pub(super) async fn same_origin_guard(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // Local access trusts whoever reaches the port, and "bound to loopback" is
+    // not the same claim as "reached over loopback". `tailscale serve`, `ssh -L`
+    // and an editor's port forwarding all proxy from somewhere else and arrive
+    // on 127.0.0.1, so the peer address proves nothing: tailscaled dials the
+    // local port itself. Every tailnet peer was therefore the operator, able to
+    // delete a collection.
+    //
+    // The authority the *client* used does distinguish them. A browser or curl
+    // reaching the port directly sends `localhost` or `127.0.0.1`; anything
+    // arriving through a tunnel carries the tunnel's hostname.
+    //
+    // Checked here rather than in `same_site_request` because that only gates
+    // state-changing methods, and only when an `Origin` is present. A tunnelled
+    // browser was already refused on writes by that path; `curl -X POST` with no
+    // `Origin` was not, and that is the hole. Reads are refused too: local
+    // access means local.
+    if policy.require_loopback {
+        if let Some(authority) = expected_authority(req.headers(), req.uri(), None) {
+            if !is_loopback_authority(authority) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "refused: this indice trusts every caller, so it answers only on \
+                         a loopback address, and this request arrived for {authority}. \
+                         Reaching it through a tunnel would hand that trust to everyone \
+                         who can use the tunnel. To share an archive, run it as a server \
+                         behind an authenticating proxy: \
+                         https://indice.page/docs/guides/deploy/"
+                    ),
+                )
+                    .into_response();
+            }
+        }
+        // An authority we cannot determine (no `Host`, no URI authority) is
+        // allowed through: that is an HTTP/1.0 client or a health checker, not a
+        // browser carrying someone else's trust.
+    }
     if same_site_request(req.method(), req.headers(), req.uri(), policy) {
         return next.run(req).await;
     }
@@ -272,15 +309,12 @@ impl Evidence {
 
 /// Resolve who is making this request, and how we know.
 ///
-/// The single place identity and role are decided. `None` means anonymous —
-/// either management is off, or nothing vouched for this request.
+/// The single place identity and role are decided. `None` means anonymous:
+/// nothing vouched for this request.
 pub(super) fn resolve_caller(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Option<(Principal, Evidence)> {
-    if !state.management {
-        return None;
-    }
     let Some(fa) = &state.forward_auth else {
         // Local mode: loopback-only (enforced at startup), so the operator is
         // the admin and the roster has no authentication to filter.

@@ -38,7 +38,7 @@ fn home_with_roster() -> tempfile::TempDir {
 
 async fn serve(
     home: std::path::PathBuf,
-    manage: indice_lib::server::ManageConfig,
+    config: indice_lib::server::ServerConfig,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -47,7 +47,7 @@ async fn serve(
             listener,
             &home,
             None,
-            manage,
+            config,
             indice_lib::server::Providers::default(),
         )
         .await
@@ -214,7 +214,10 @@ fn routes() -> Vec<Route> {
 #[tokio::test]
 async fn every_management_route_demands_the_right_privilege() {
     let tmp = home_with_roster();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     for Route {
@@ -265,7 +268,10 @@ async fn every_management_route_demands_the_right_privilege() {
 async fn a_curator_cannot_delete_a_collection_out_from_under_its_notes() {
     let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(home.clone(), cfg).await;
 
     // An admin accessions a collection and adds a crawl to it.
@@ -331,7 +337,10 @@ async fn a_curator_cannot_delete_a_collection_out_from_under_its_notes() {
 #[tokio::test]
 async fn notes_are_author_gated_but_admins_moderate() {
     let tmp = home_with_roster();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     request(
@@ -395,7 +404,10 @@ async fn notes_are_author_gated_but_admins_moderate() {
 #[tokio::test]
 async fn without_a_roster_every_authenticated_user_is_an_admin() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     for Route {
@@ -416,7 +428,10 @@ async fn without_a_roster_every_authenticated_user_is_an_admin() {
 #[tokio::test]
 async fn a_display_cookie_alone_cannot_write() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     // Log in through the proxy once to be issued the cookie.
@@ -466,7 +481,10 @@ async fn a_display_cookie_alone_cannot_write() {
 #[tokio::test]
 async fn a_curator_is_not_shown_a_delete_button() {
     let tmp = home_with_roster();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     request(
@@ -520,7 +538,10 @@ async fn a_curator_is_not_shown_a_delete_button() {
 #[tokio::test]
 async fn without_a_roster_notes_stay_author_only() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     request(
@@ -576,7 +597,10 @@ async fn without_a_roster_notes_stay_author_only() {
 #[tokio::test]
 async fn workroom_forms_are_not_shown_to_a_reader() {
     let tmp = home_with_roster();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     for path in ["/manage/add", "/manage/collections/new"] {
@@ -609,7 +633,10 @@ async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
     )
     .unwrap();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(home.clone(), cfg).await;
 
     // Curator "one" accessions a crawl.
@@ -680,7 +707,10 @@ async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
 async fn mutations_are_recorded_with_who_did_them() {
     let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(home.clone(), cfg).await;
 
     // A curator accessions, an admin deaccessions.
@@ -747,7 +777,10 @@ async fn a_failing_audit_log_does_not_fail_the_operation() {
     // append both fail for every event.
     std::fs::write(indice_lib::events::events_dir(&home), b"not a directory").unwrap();
 
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(home.clone(), cfg).await;
 
     let status = request(
@@ -773,7 +806,10 @@ async fn a_failing_audit_log_does_not_fail_the_operation() {
 #[tokio::test]
 async fn logout_refuses_a_get() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     let status = request("GET", format!("{base}/logout"), None, None).await;
@@ -789,7 +825,10 @@ async fn logout_refuses_a_get() {
 #[tokio::test]
 async fn logout_refuses_a_cross_site_post() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     let url = format!("{base}/logout");
@@ -816,7 +855,10 @@ async fn logout_refuses_a_cross_site_post() {
 #[tokio::test]
 async fn logout_clears_the_cookie_for_a_same_origin_post() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ManageConfig::forward_auth(USER_HEADER, SECRET);
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
     let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
 
     let url = format!("{base}/logout");
@@ -889,7 +931,14 @@ async fn files_allows_anonymous_cross_origin_reads_only() {
         .id
         .clone();
 
-    let (base, server) = serve(home, indice_lib::server::ManageConfig::off()).await;
+    let (base, server) = serve(
+        home,
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            "x-forwarded-email",
+            "secret-the-test-never-sends",
+        )),
+    )
+    .await;
     let url = format!("{base}/files/{id}");
 
     // Both branches. `serve_file` builds the 206 (range) and 200 (whole file)
