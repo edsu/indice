@@ -32,14 +32,12 @@ Every one of these routes is always mounted. Whether you may use them is an auth
 
 Because it trusts everything, indice **refuses to start** on a non-loopback address with no auth proxy configured, rather than putting an unauthenticated write surface on the network.
 
-A loopback bind is not the same as a loopback caller, though. An HTTP proxy such as `tailscale serve` arrives on `127.0.0.1` having come from elsewhere, which would hand your admin rights to everyone on the tailnet. indice also requires the `Host` the client asked for to be a loopback name, so those requests are refused, reads included. To share an archive, run it as a server.
-
-This does not reach a raw TCP forward. `ssh -L` relays bytes unchanged, so the request genuinely says `Host: localhost` and indice cannot tell it apart from a local browser. Anyone who can open that tunnel already has a shell on the machine, so it is a smaller exposure than a tailnet, but it is not one the guard covers.
-
 :::caution[A loopback port is not a user boundary]
-The check reads the `Host` header, and only a browser is prevented from setting that freely. A tunnel plus `curl -H 'Host: localhost:8080'` walks past it, as does any other process or account on the same machine: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection, because local access means exactly what it says.
+"Whoever reaches the port" is literal. Another account on the machine reaches it: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection. So does anyone at the far end of an `ssh -L`, and so does every peer of your tailnet the moment you point `tailscale serve` at it.
 
-So run it as a server if the machine is shared, or if anything you do not control can reach that port. Treat the loopback check as raising the bar for a stray browser tab, not as a wall.
+indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: two versions of a check on the `Host` header were written and both were bypassable, because any client that is not a browser sets `Host` to whatever it likes. A check that refuses the honest tunnel and waves the dishonest one through is worse than none, since it reads like a wall.
+
+A loopback bind keeps indice off the network. That is the whole promise. Run it as a server if the machine is shared, or if anything you do not control can reach that port.
 :::
 
 ## On a server (forward-auth)
@@ -107,6 +105,12 @@ If your proxy gates only the management routes, browsers will not send its crede
 ## Cross-site protection
 
 Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies on a workstation too: a loopback bind is not a boundary a browser respects. While indice is running, any page you visit can reach `127.0.0.1`.
+
+:::caution[One place this does not reach: replay]
+A replayed page runs its own archived JavaScript, and ReplayWeb.page serves it from indice's own origin. A write that script makes is genuinely same-origin, so the `Origin` check matches and lets it through. A hostile capture can therefore drive a signed-in curator's browser into any write that curator is allowed to make, and on a workstation that is everything.
+
+Nothing in the chain is misbehaving; the capture is third-party code and replay's job is to run it. Until indice serves replay from a separate origin (tracked as `rustyweb-replay-origin-isolation-5h67`), weigh that when you accession a WACZ from a source you do not control.
+:::
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
 
