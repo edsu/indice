@@ -184,8 +184,8 @@ rather than a mode.
 
 ### Principals
 
-**On a workstation** there is one principal: whoever reaches the port. That is
-the whole model, and it is broader than it sounds. It includes every other
+**On a workstation** there are two principals. The first is whoever reaches the
+port, and it is broader than it sounds. It includes every other
 account and every other process on the machine, anyone at the far end of an
 `ssh -L`, and every peer of a tailnet when `tailscale serve` is pointed at the
 port. A second shell can `curl -X POST .../api/collections/x/delete` and the
@@ -208,6 +208,21 @@ The promise a workstation makes is therefore: **a loopback bind keeps indice off
 the network, and makes no claim about any person.** It is the right tool when the
 machine is yours. Share the archive and you want the server shape, which is the
 sentence the refusal used to try to say and could not enforce.
+
+The second principal is **a capture you indexed**, and it is easy to miss because
+it is not a person and it never reaches the port. Archived JavaScript replays
+same-origin (see *Not defended*), so a hostile WACZ runs inside indice rather
+than against it. Its writes add little, since the first principal already has
+those. Its *reads* are new: no remote page can read `/api/search`,
+`/api/annotations` or any HTML page, because indice sets no CORS header on them,
+and `/files/{id}` is the only `*`. Archived script reads all of it and can send
+what it finds anywhere.
+
+For a laptop of public-web captures that is close to theoretical. It stops being
+theoretical when some of the captures are not public: a Browsertrix browser
+profile records an authenticated session, and an intranet or embargoed crawl
+holds material the capture's author never meant to publish. One hostile WACZ in
+the same instance reads those.
 
 **On a server** there are six:
 
