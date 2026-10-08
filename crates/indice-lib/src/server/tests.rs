@@ -513,8 +513,8 @@ fn local_access_refuses_a_public_bind() {
             .expect_err("a public bind must not get local trust");
         let msg = format!("{err}");
         assert!(
-            msg.contains("auth-proxy-header"),
-            "the refusal should name the way out, got: {msg}"
+            msg.contains(bad),
+            "the refusal should name the offending address, got: {msg}"
         );
     }
 }

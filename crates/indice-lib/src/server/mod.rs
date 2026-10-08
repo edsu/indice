@@ -75,11 +75,13 @@ impl Access {
     /// an unauthenticated write surface on the network.
     pub fn local(bind: std::net::SocketAddr) -> Result<Self> {
         if !bind.ip().is_loopback() {
+            // The fact, not the remedy. AGENTS.md keeps this crate free of
+            // user-facing concerns, and an embedder with no CLI should not be
+            // told about flags their program does not have; `indice-bin` adds
+            // those when it prints this.
             anyhow::bail!(
-                "refusing to start: a server needs an authenticating proxy, but indice is \
-                 bound to {bind} with none configured. Pass --auth-proxy-header (and a \
-                 secret) to run as a server, or bind 127.0.0.1 to work locally. See \
-                 https://indice.page/docs/guides/deploy/"
+                "local access trusts every caller, so it is only available on a loopback \
+                 address, and this one is {bind}"
             );
         }
         Ok(Access(AccessKind::Local))
@@ -103,8 +105,9 @@ impl Access {
         }
     }
 
-    /// Whether this is the workstation shape.
-    pub(super) fn is_local(&self) -> bool {
+    /// Whether this is the workstation shape. Public because the binary needs
+    /// it to decide whether `--site-url` applies.
+    pub fn is_local(&self) -> bool {
         matches!(self.0, AccessKind::Local)
     }
 
@@ -296,24 +299,23 @@ fn build_router(
     // permissions file stops startup rather than silently granting whatever the
     // default is.
     let users = crate::identity::Users::load(home)?;
+    let access_is_local = config.access.is_local();
     tracing::info!("access: {}", config.access.summary());
     // Only worth saying when it is consulted. Local access never looks at the
     // roster, and printing "every authenticated user is an admin" to someone
     // running on their laptop invites them to go fix a file that changes
     // nothing.
-    if config.access.is_local() {
-        // Local access never consults the roster, and a malformed one still
-        // aborts startup, so someone can write a users.yaml, demote themselves
-        // in it, have a typo stop the server, fix the typo, and still be an
-        // admin. Say so rather than letting them find out by experiment.
-        if crate::identity::Users::path(home).exists() {
-            tracing::warn!(
-                "users.yaml is present but not consulted: this indice trusts every caller \
-                 on its loopback port, so roles apply only behind an authenticating proxy"
-            );
-        }
-    } else {
+    if !access_is_local {
         tracing::info!("roles: {}", users.summary());
+    } else if crate::identity::Users::path(home).exists() {
+        // Local access never consults the roster, yet a malformed one still
+        // aborts startup above, so someone can write a users.yaml, demote
+        // themselves in it, have a typo stop the server, fix the typo, and
+        // still be an admin. Say so rather than letting them find out.
+        tracing::warn!(
+            "users.yaml is present but not consulted: this indice trusts every caller \
+             on its loopback port, so roles apply only behind an authenticating proxy"
+        );
     }
     let state = Arc::new(AppState {
         search: RwLock::new(Arc::new(search)),
@@ -331,9 +333,17 @@ fn build_router(
         archiveit: providers.archiveit,
     });
 
-    // Both feed the CSRF policy applied over the whole server at the end.
-    let access_is_local = config.access.is_local();
-    let site_authority = config.site_authority.clone();
+    // `--site-url` exists to fix the Origin comparison behind a proxy that
+    // rewrites `Host`, which local mode cannot be behind. Honouring it there
+    // pins the expected authority to a public name, so every workroom write
+    // 403s with a message advising the very setting that caused it. Dropped
+    // rather than respected, so one env file shared between a server and a
+    // laptop stays harmless.
+    let site_authority = if access_is_local {
+        None
+    } else {
+        config.site_authority.clone()
+    };
 
     let mut app = Router::new()
         .route("/", get(homepage))

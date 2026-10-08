@@ -61,7 +61,7 @@ pub(super) async fn forward_auth(
 ///
 /// This is layered on the management routes unconditionally — including in local
 /// (loopback) mode, which is the mode that needs it most. A loopback bind is not
-/// a boundary a browser respects: while `serve --manage` is running, any page the
+/// a boundary a browser respects: while indice is running, any page the
 /// operator visits can POST a form to `http://127.0.0.1:8080/...`. The browser
 /// sends it, and because the write routes take `Form`/`Multipart` (simple content
 /// types) there is no CORS preflight to stop it. The attacker can't *read* the
@@ -220,8 +220,13 @@ pub(super) struct CsrfPolicy {
     /// The operator-pinned public authority (`--site-url`), when set.
     pub site_authority: Option<String>,
     /// Whether to additionally require the request's authority to be a loopback
-    /// name. True exactly in local (loopback-trust) mode with no `--site-url`,
-    /// where `Host` comes straight from the browser and so can be rebound.
+    /// name. True exactly in local mode, independent of `--site-url`: letting
+    /// that clear it turned a stray `INDICE_SITE_URL` in a shared `.env` into a
+    /// silent kill switch for the whole requirement.
+    ///
+    /// Browsers only. `Host` is forgeable by anything that is not a browser, so
+    /// this refuses a tailnet peer who opens the page and does nothing at all to
+    /// one who uses `curl`. See [`client_authority`].
     pub require_loopback: bool,
 }
 
@@ -243,25 +248,22 @@ fn is_loopback_authority(authority: &str) -> bool {
         .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// The authority (`host[:port]`) a browser would have used to reach us.
-///
-/// `--site-url` wins when set, then `X-Forwarded-Host` (which Caddy sets and both
-/// shipped Caddyfiles rely on), then `Host`, then the URI's authority (HTTP/2,
-/// where the authority is a pseudo-header rather than `Host`). Trusting
-/// `X-Forwarded-Host` is safe *for this purpose*: a CSRF attacker drives a
-/// browser, and script cannot set `Host`, `Origin`, `Sec-*`, or `X-Forwarded-*`.
 /// The authority the client asked for, trusting nothing but `Host`.
 ///
 /// Deliberately not [`expected_authority`], which prefers `X-Forwarded-Host`
 /// because behind a proxy that is the browser-facing name. Local mode has no
-/// proxy, so nothing has the standing to set that header and a client can send
-/// whatever it likes. `Host` is the only field a raw HTTP client cannot forge
-/// *without* also changing what it claims to be addressing.
+/// proxy, so nothing has the standing to set that header.
 ///
-/// `None` when there is no `Host` and no absolute-form URI, which the caller
-/// treats as a refusal rather than a pass: an HTTP/1.0 request with no `Host`
-/// is a non-browser, and a non-browser arriving through a tunnel is exactly the
-/// case this guards.
+/// **This authenticates nobody.** `Host` is as forgeable as any other header to
+/// a client that is not a browser: `curl -H 'Host: 127.0.0.1:8080'` through a
+/// Host-preserving proxy (which is what Go's `httputil.ReverseProxy`, and so
+/// `tailscale serve`, does by default) walks straight past the caller's check.
+/// What it does buy is the browser case, where script cannot set `Host`, so a
+/// tailnet peer who merely opens the page in a browser is refused. Treat it as
+/// raising the bar, never as a boundary. See [`CsrfPolicy::require_loopback`].
+///
+/// `None` when there is no `Host` and no absolute-form URI; the caller treats
+/// that as a refusal rather than a pass.
 fn client_authority<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str> {
     headers
         .get(axum::http::header::HOST)
@@ -271,6 +273,13 @@ fn client_authority<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str>
         .or_else(|| uri.authority().map(|a| a.as_str()))
 }
 
+/// The authority (`host[:port]`) a browser would have used to reach us.
+///
+/// `--site-url` wins when set, then `X-Forwarded-Host` (which Caddy sets and the
+/// shipped Caddyfile relies on), then `Host`, then the URI's authority (HTTP/2,
+/// where the authority is a pseudo-header rather than `Host`). Trusting
+/// `X-Forwarded-Host` is safe *for this purpose*: a CSRF attacker drives a
+/// browser, and script cannot set `Host`, `Origin`, `Sec-*`, or `X-Forwarded-*`.
 fn expected_authority<'a>(
     headers: &'a HeaderMap,
     uri: &'a Uri,
@@ -325,7 +334,7 @@ fn check_forward_auth(fa: &ForwardAuth, headers: &HeaderMap) -> Option<String> {
 /// true, but invisible, and silently lost the moment a route moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Evidence {
-    /// Loopback `--manage` with no proxy: the machine's operator.
+    /// Loopback with no proxy: the machine's operator.
     Loopback,
     /// The trusted proxy injected its identity header *and* the shared secret
     /// on this very request.

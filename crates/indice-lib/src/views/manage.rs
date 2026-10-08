@@ -1,4 +1,4 @@
-//! Management UI (`serve --manage`): the finding-aid form and the accession
+//! Management UI: the finding-aid form and the accession
 //! desk. The desk's behaviour lives in `static/assets/manage.js`.
 
 use maud::{html, Markup};

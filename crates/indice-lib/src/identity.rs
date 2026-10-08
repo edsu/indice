@@ -100,7 +100,7 @@ impl SubjectId {
         }))
     }
 
-    /// The single trusted operator of a loopback `--manage` instance, which has
+    /// The single trusted operator of a loopback instance, which has
     /// no authentication and therefore no distinct identities.
     pub fn local() -> Self {
         SubjectId(format!("{USER_URN}local"))
@@ -133,7 +133,7 @@ impl SubjectId {
     /// Parse an identity forwarded by a *proxy*, which must never be able to
     /// name the loopback operator.
     ///
-    /// [`SubjectId::local`] is the author key every loopback `--manage` session
+    /// [`SubjectId::local`] is the author key every loopback session
     /// writes, and [`SubjectId::matches`] deliberately treats the bare string
     /// `"local"` as that same identity so those notes stay editable. The flip
     /// side is that a remote user whose proxy identity happened to be `local`
@@ -243,7 +243,7 @@ impl Principal {
         self
     }
 
-    /// The single trusted operator of a loopback `--manage` instance. Always an
+    /// The single trusted operator of a loopback instance. Always an
     /// admin: there is no authentication to filter, and the startup guard
     /// already refuses to run local mode anywhere but loopback. (Moderation is
     /// moot there — every note carries the same author key, so `owns` already

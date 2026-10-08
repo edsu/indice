@@ -20,6 +20,11 @@ EXPOSE 8080
 
 # Inside the container `indice health` probes the local server; a distroless
 # image has no curl, so the binary checks itself.
+#
+# The port is hard-coded, and with no CMD nothing in the image guarantees it any
+# more. Override `--bind` to another port and the container runs correctly while
+# reporting itself unhealthy for ever, which in compose blocks anything waiting
+# on `service_healthy`. Override HEALTHCHECK alongside it, or keep 8080.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/indice", "health", "--url", "http://127.0.0.1:8080/health"]
 

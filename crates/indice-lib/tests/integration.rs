@@ -1578,7 +1578,7 @@ async fn search_scope_param_folds_into_query() {
 /// ingest started, erasing the entry too.
 ///
 /// Both halves, silently, with no error on either side. The two threads here
-/// stand in for `indice reindex` against a serving `serve --manage`; they get
+/// stand in for `indice reindex` against a running server; they get
 /// separate open file descriptions, so they contend on the flock for real.
 #[test]
 fn a_rebuild_and_an_ingest_do_not_destroy_each_other() {

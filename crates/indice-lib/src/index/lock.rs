@@ -24,7 +24,7 @@
 //!
 //! Both halves are gone, silently, with no error on either side. There is no
 //! server rebuild endpoint, so this is `indice reindex` against a serving
-//! `serve --manage` — a workflow [`server`](crate::server) documents as
+//! a running server — a workflow [`server`](crate::server) documents as
 //! supported, which is why the lock has to be visible across processes rather
 //! than being a mutex inside one.
 //!

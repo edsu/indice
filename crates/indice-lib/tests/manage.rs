@@ -213,7 +213,7 @@ async fn manage_create_collection_via_form_then_it_appears() {
     assert!(page.contains("Demo Collection"), "collection page shows it");
     assert!(
         page.contains("Edit collection"),
-        "collection page has the edit affordance under --manage"
+        "collection page has the edit affordance for the operator"
     );
 
     // It's persisted in the manifest with the finding-aid fields...
@@ -256,10 +256,10 @@ async fn manage_create_collection_via_form_then_it_appears() {
 
 #[tokio::test]
 async fn manage_page_gated_on_management_mode() {
-    // Present under --manage.
+    // Present for the operator.
     let tmp = tempfile::TempDir::new().unwrap();
     let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
-    // The accession desk renders under --manage.
+    // The accession desk renders for the operator.
     let (status, body) = get(format!("{base}/manage/add")).await;
     assert_eq!(status, 200);
     assert!(body.contains("Add crawls"), "accession desk renders");
@@ -673,7 +673,7 @@ async fn post_form_with_headers(
     .unwrap()
 }
 
-/// The heart of the CSRF fix: a *local* `--manage` instance has no auth proxy
+/// The heart of the CSRF fix: a *local* instance has no auth proxy
 /// and therefore no forward-auth middleware, so before the same-origin guard the
 /// write routes ran completely unprotected. A loopback bind is not a boundary a
 /// browser honors — any page the operator visited could POST a form here.
@@ -1060,7 +1060,7 @@ async fn a_write_returns_503_while_the_index_is_locked() {
 /// Every management route refuses an anonymous caller.
 ///
 /// This replaces five tests that asserted those routes were *absent* without
-/// `--manage`. There is no longer a mode in which they are absent: the write
+/// read-only mode. There is no longer a mode in which they are absent: the write
 /// surface is always mounted and who may use it is an authorization question,
 /// answered by the `Curator`/`Admin` extractors and `users.yaml`.
 ///

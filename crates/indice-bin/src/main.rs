@@ -134,7 +134,12 @@ enum Commands {
         /// header (set it as a static header in your proxy config). Its presence is
         /// what makes trusting the identity header safe. May also be given via the
         /// INDICE_AUTH_PROXY_SECRET environment variable.
-        #[arg(long, value_name = "SECRET")]
+        ///
+        /// `requires`, because on its own it does nothing: without a header to
+        /// name, indice falls back to trusting every caller, and an operator who
+        /// dropped the header flag in an edit would read "access: local" as
+        /// confirmation that authentication was on.
+        #[arg(long, value_name = "SECRET", requires = "auth_proxy_header")]
         auth_proxy_secret: Option<String>,
 
         /// This site's public URL (e.g. `https://archive.example.org`), used by the
@@ -1116,12 +1121,18 @@ async fn main() -> Result<()> {
                 match indice_lib::server::Access::local(public.unwrap_or(first)) {
                     Ok(a) => a,
                     Err(e) => {
-                        eprintln!("{e}");
+                        eprintln!(
+                            "refusing to start: {e}.\n\
+                             Pass --auth-proxy-header (and a secret) to run as a server, or \
+                             bind 127.0.0.1 to work locally.\n\
+                             See https://indice.page/docs/guides/deploy/"
+                        );
                         std::process::exit(2);
                     }
                 }
             };
 
+            let access_is_local = access.is_local();
             let mut config = indice_lib::server::ServerConfig::new(access);
 
             // Where /logout sends the browser after clearing indice's display
@@ -1164,7 +1175,12 @@ async fn main() -> Result<()> {
                     .ok()
                     .filter(|s| !s.is_empty())
             });
-            if let Some(raw) = site_url {
+            // Skipped entirely in local mode: the setting has no effect there
+            // (build_router drops it), and refusing to start over a typo in a
+            // value this shape never reads is the behaviour the old
+            // `filter(|_| manage.enabled)` guard existed to prevent. One env
+            // file is commonly shared between a server and a laptop.
+            if let Some(raw) = site_url.filter(|_| !access_is_local) {
                 let authority = url::Url::parse(&raw).ok().and_then(|u| {
                     let host = u.host_str()?.to_string();
                     Some(match u.port() {
