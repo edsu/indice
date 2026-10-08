@@ -10,6 +10,10 @@ indice runs in one of two shapes, and the only question that separates them is w
 
 No read-only server shape exists. A server you cannot write to sends you back to the command line the first time you want to fix a finding aid, and a server with an empty `users.yaml` already reads as read-only to every visitor.
 
+:::note[Read this before a public instance]
+indice is alpha, and what it does and does not defend is written down rather than implied: see [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) for what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so it is worth ten minutes before you put one on the open web.
+:::
+
 ## Container image
 
 A multi-arch image (`linux/amd64` + `linux/arm64`) is published to the GitHub Container Registry on every release. It carries no default arguments, because serving on a public interface needs an authenticating proxy and indice refuses to start without one, so there is no sensible command to guess. `docker run` with no arguments prints the help.
