@@ -36,6 +36,12 @@ A loopback bind is not the same as a loopback caller, though. An HTTP proxy such
 
 This does not reach a raw TCP forward. `ssh -L` relays bytes unchanged, so the request genuinely says `Host: localhost` and indice cannot tell it apart from a local browser. Anyone who can open that tunnel already has a shell on the machine, so it is a smaller exposure than a tailnet, but it is not one the guard covers.
 
+:::caution[A loopback port is not a user boundary]
+The check reads the `Host` header, and only a browser is prevented from setting that freely. A tunnel plus `curl -H 'Host: localhost:8080'` walks past it, as does any other process or account on the same machine: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection, because local access means exactly what it says.
+
+So run it as a server if the machine is shared, or if anything you do not control can reach that port. Treat the loopback check as raising the bar for a stray browser tab, not as a wall.
+:::
+
 ## On a server (forward-auth)
 
 To offer management to real users over the network, run indice behind a reverse proxy that authenticates the request and sets two headers: the caller's identity, and a shared secret. Caddy and nginx both do this, with a login service such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) or [Authelia](https://www.authelia.com/) alongside them, which is what the [shipped stack](/docs/guides/deploy/) wires up.
