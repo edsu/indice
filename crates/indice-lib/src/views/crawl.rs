@@ -136,7 +136,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
     )
 }
 
-// ── Management UI (serve --manage) ───────────────────────────────────────────
+// ── Management UI ───────────────────────────────────────────
 //
 // Edit-in-place: the collections list is the homepage, and collections are
 // edited from their own pages. Only the two multi-step accessions live on

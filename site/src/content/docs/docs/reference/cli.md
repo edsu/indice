@@ -88,19 +88,31 @@ indice serve [OPTIONS]
 | Option | Does |
 |---|---|
 | `-b`, `--bind <ADDR>` | Address to listen on (default `127.0.0.1:8080`) |
-| `--manage` | Enable [management mode](/docs/guides/manage/): mount the opt-in write endpoints and workroom UI |
 | `--auth-proxy-header <HEADER>` | Read the authenticated user from this header (e.g. `X-Forwarded-Email`) behind a trusted proxy. Requires `--auth-proxy-secret` |
 | `--auth-proxy-secret <SECRET>` | Shared secret the proxy must send in `X-Indice-Auth-Secret`. Also `INDICE_AUTH_PROXY_SECRET` |
 | `--site-url <URL>` | This site's public URL, for the cross-site (CSRF) check on writes. Also `INDICE_SITE_URL` |
 
-The public server is **read-only** by default. `--manage` adds the browser write surface; without an
-auth proxy it trusts every request, so it must bind to a loopback address. The `--auth-proxy-*` pair
-is what lets `--manage` bind to a non-loopback address for a real deployment. The secret's presence
-is what makes trusting the identity header safe. See [Manage &amp; curate](/docs/guides/manage/) and
-[Deploy](/docs/guides/deploy/).
+There is no flag for the write surface. Every route is always mounted, and who may use it follows
+from two things already on the command line:
+
+- **No `--auth-proxy-header`** means every caller is the operator, which indice allows only on a
+  loopback bind. Pass a public address without a proxy and it refuses to start rather than putting
+  an unauthenticated write surface on the network.
+- **With `--auth-proxy-header`** indice reads the identity your proxy forwards and checks it against
+  `users.yaml`. Anyone not listed is a reader. This works on any bind, loopback included, which is
+  the usual service arrangement: the proxy sits on the same host.
+
+The secret's presence is what makes trusting the identity header safe. See
+[Manage &amp; curate](/docs/guides/manage/) and [Deploy](/docs/guides/deploy/).
+
+A loopback bind is not the same as a loopback caller. An HTTP proxy such as `tailscale serve`
+arrives on `127.0.0.1` having come from somewhere else, so indice also requires the `Host` the
+client asked for to be a loopback name. Sharing an archive that way is the server shape, not this
+one. A raw TCP forward like `ssh -L` is not caught, because it relays bytes unchanged and the
+request genuinely says `localhost`; opening one already requires a shell on the machine.
 
 `--site-url` is only needed behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`
-(nginx's default); Caddy and a direct bind are detected automatically.
+(nginx's and Apache's default); Caddy and a direct bind are detected automatically.
 
 On startup `serve` warns if the index is fragmented, meaning many segments, e.g. built by an older
 version or left by a killed run. It points you at `optimize`.

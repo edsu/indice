@@ -12,10 +12,15 @@ No read-only server shape exists. A server you cannot write to sends you back to
 
 ## Container image
 
-A multi-arch image (`linux/amd64` + `linux/arm64`) is published to the GitHub Container Registry on every release:
+A multi-arch image (`linux/amd64` + `linux/arm64`) is published to the GitHub Container Registry on every release. It carries no default arguments, because serving on a public interface needs an authenticating proxy and indice refuses to start without one, so there is no sensible command to guess. `docker run` with no arguments prints the help.
+
+The stack below supplies the real command. To run the container yourself, behind a proxy you already have:
 
 ```sh
-docker run -p 8080:8080 -v indice-data:/data ghcr.io/edsu/indice:latest
+docker run -p 127.0.0.1:8080:8080 -v indice-data:/data \
+  -e INDICE_AUTH_PROXY_SECRET=a-long-random-string \
+  ghcr.io/edsu/indice:latest \
+  serve --bind 0.0.0.0:8080 --home /data --auth-proxy-header X-Forwarded-Email
 ```
 
 `/data` is indice's home, holding `archive/`, `collections/`, and `index/`. Mount a volume so it survives restarts.

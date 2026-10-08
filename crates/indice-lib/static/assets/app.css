@@ -2,7 +2,7 @@
  *
  * One design system, two accent modes. Everything is neutral + one --accent:
  *   reading room  → blue          (public, read-only)
- *   workroom      → clay/red-tape (serve --manage; body gets .mode-manage)
+ *   workroom      → clay/red-tape (a caller who may write; body gets .mode-manage)
  * The archive's own materials drive the palette (kraft/manila neutrals); the
  * finding-aid vernacular drives the type (small-caps eyebrow labels). No
  * webfonts — indice ships self-contained and runs offline. */

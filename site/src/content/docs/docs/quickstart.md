@@ -23,7 +23,7 @@ Open <http://127.0.0.1:8080> and you should see the new collection, and be able 
 Here we downloaded a small sample WACZ. But indice can work with much larger ones that can be stored locally or in the cloud. For more about the different ways of creating WACZ files see [Making a WACZ](/docs/guides/wacz/#making-a-wacz).
 :::
 
-Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve --manage` adds an in-browser interface for adding and curating crawls. To learn more see [Manage &amp; curate](/docs/guides/manage/).
+Point `indice index` at your own `.wacz` files the same way (local paths or `http(s)://` URLs); `indice serve` also gives you an in-browser interface for adding and curating crawls. To learn more see [Manage &amp; curate](/docs/guides/manage/).
 
 ## The home directory
 

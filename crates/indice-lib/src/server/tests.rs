@@ -415,7 +415,7 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
         "and must not still be a link: {authed}"
     );
 
-    // Plain read-only server (no forward-auth): neither affordance.
+    // Nobody signed in and no login to offer: neither affordance.
     let plain = views::layout("t", false, None, false, None, html! {}).into_string();
     assert!(!plain.contains("/manage/login") && !plain.contains("signed in as"));
 }
@@ -490,4 +490,31 @@ fn toggling_a_filter_round_trips() {
         query_without_filter(&added, "collection", "coralreef-gov"),
         "coral reef"
     );
+}
+
+/// `Access::local` refuses a public bind.
+///
+/// This invariant is what separates the two deployment shapes, and until now
+/// nothing checked it. It also used to live only in `serve_on_listener`, so a
+/// caller building a router directly walked straight past it; making it a
+/// constructor means the type carries the rule.
+#[test]
+fn local_access_refuses_a_public_bind() {
+    use crate::server::Access;
+
+    for ok in ["127.0.0.1:8080", "127.0.0.53:80", "[::1]:8080"] {
+        assert!(
+            Access::local(ok.parse().unwrap()).is_ok(),
+            "{ok} is loopback and should be allowed"
+        );
+    }
+    for bad in ["0.0.0.0:8080", "192.168.1.10:8080", "[::]:8080"] {
+        let err = Access::local(bad.parse().unwrap())
+            .expect_err("a public bind must not get local trust");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains(bad),
+            "the refusal should name the offending address, got: {msg}"
+        );
+    }
 }

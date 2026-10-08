@@ -42,35 +42,124 @@ mod tests;
 
 pub use util::human_size;
 
-/// How `serve --manage` authenticates the write surface.
+/// Who is trusted, which is the only question that separates indice's two
+/// deployment shapes.
 ///
-/// - **Local** (`forward_auth: None`): every request is trusted. Only valid on a
-///   loopback bind (enforced at startup) — the local operator is the admin, no
-///   login. This is the laptop / single-user case.
-/// - **Forward-auth** (`forward_auth: Some`): indice sits behind an authenticating
-///   reverse proxy that performs the real login (SSO/OIDC/SAML) and injects the
+/// - [`Access::local`] — a **workstation**. Whoever reaches the port is the
+///   operator and may do everything, and the roster is not consulted. Only valid
+///   on a loopback bind, which is why the constructor demands the address: there
+///   is no way to ask for local trust on a public one.
+/// - [`Access::proxy`] — a **server**. indice sits behind something that performs
+///   the login (OIDC, SAML, whatever the institution runs) and injects the
 ///   authenticated user in a header. indice trusts that header **only** when the
-///   request also carries the shared secret in `X-Indice-Auth-Secret` (which the
-///   proxy adds), so a client that forges the identity header — or a request that
-///   never went through the proxy — is rejected. This is the institutional
-///   "install as a service" case; indice stores no passwords and speaks to no IdP.
-#[derive(Clone, Default)]
-pub struct ManageConfig {
-    /// Whether the management routes are mounted at all (`--manage`).
-    pub enabled: bool,
-    pub forward_auth: Option<ForwardAuth>,
+///   request also carries the shared secret in `X-Indice-Auth-Secret`, so a
+///   forged identity, or a request that never went through the proxy, is
+///   refused. indice stores no passwords and speaks to no identity provider.
+///
+/// A private field rather than public variants, following [`crate::identity::SubjectId`]
+/// and [`crate::collections::CollectionId`]: the loopback rule is then a property
+/// of the type rather than a check someone can forget to call. Nothing outside
+/// this module can conjure `Local` for an address that does not deserve it.
+#[derive(Clone)]
+pub struct Access(AccessKind);
+
+#[derive(Clone)]
+enum AccessKind {
+    Local,
+    Proxy(ForwardAuth),
+}
+
+impl Access {
+    /// Local trust, for a workstation. Errors on a non-loopback address: local
+    /// mode trusts every caller, so offering it on a public interface would be
+    /// an unauthenticated write surface on the network.
+    pub fn local(bind: std::net::SocketAddr) -> Result<Self> {
+        if !bind.ip().is_loopback() {
+            // The fact, not the remedy. AGENTS.md keeps this crate free of
+            // user-facing concerns, and an embedder with no CLI should not be
+            // told about flags their program does not have; `indice-bin` adds
+            // those when it prints this.
+            anyhow::bail!(
+                "local access trusts every caller, so it is only available on a loopback \
+                 address, and this one is {bind}"
+            );
+        }
+        Ok(Access(AccessKind::Local))
+    }
+
+    /// Behind a trusted authenticating proxy. Valid on any bind, including
+    /// loopback: the usual service deployment puts the proxy on the same host
+    /// and has it reach indice over the loopback interface.
+    pub fn proxy(user_header: impl Into<String>, secret: impl Into<String>) -> Self {
+        Access(AccessKind::Proxy(ForwardAuth {
+            user_header: user_header.into(),
+            secret: secret.into(),
+        }))
+    }
+
+    /// The forward-auth settings, or `None` in local mode.
+    pub(super) fn forward_auth(&self) -> Option<&ForwardAuth> {
+        match &self.0 {
+            AccessKind::Local => None,
+            AccessKind::Proxy(fa) => Some(fa),
+        }
+    }
+
+    /// Whether this is the workstation shape. Public because the binary needs
+    /// it to decide whether `--site-url` applies.
+    pub fn is_local(&self) -> bool {
+        matches!(self.0, AccessKind::Local)
+    }
+
+    /// A one-line summary for the startup log.
+    fn summary(&self) -> &'static str {
+        match self.0 {
+            AccessKind::Local => "local: every caller on this port is the operator",
+            AccessKind::Proxy(_) => "forward-auth: identity comes from the trusted proxy",
+        }
+    }
+}
+
+impl std::fmt::Debug for Access {
+    /// Hand-written rather than derived, because [`ForwardAuth`] holds the
+    /// shared secret and this type reaches error messages and test output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            AccessKind::Local => f.write_str("Access::Local"),
+            AccessKind::Proxy(fa) => {
+                write!(f, "Access::Proxy({}, <secret>)", fa.user_header)
+            }
+        }
+    }
+}
+
+/// Server configuration beyond the home directory and the bind address.
+#[derive(Clone)]
+pub struct ServerConfig {
+    /// Who is trusted. See [`Access`].
+    pub access: Access,
     /// Where `/logout` sends the browser after clearing indice's display cookie.
-    /// `None` → `/` (the basic-auth stopgap). Behind an SSO proxy, set this to the
-    /// proxy's sign-out URL (e.g. `/oauth2/sign_out?rd=/`) so a single click ends
-    /// both indice's display session and the proxy's login session.
+    /// `None` → `/`. Behind a login service, set this to its sign-out URL (e.g.
+    /// `/oauth2/sign_out?rd=/`) so one click ends both sessions.
     pub logout_redirect: Option<String>,
     /// This site's public authority (`host[:port]`), for the cross-site (CSRF)
-    /// check on management writes. `None` — the normal case — means "infer it from
-    /// `X-Forwarded-Host`/`Host`", which is correct for both shipped Caddyfiles and
-    /// for a direct loopback bind. Set it (`--site-url`) only behind a proxy that
-    /// rewrites `Host` *without* setting `X-Forwarded-Host`, e.g. nginx's default
-    /// `proxy_set_header Host $proxy_host`.
+    /// check on writes. `None` — the normal case — means "infer it from
+    /// `X-Forwarded-Host`/`Host`", which is correct for the shipped `Caddyfile`
+    /// and for a direct loopback bind. Set it (`--site-url`) only behind a proxy
+    /// that rewrites `Host` *without* setting `X-Forwarded-Host`, which is
+    /// nginx's and Apache's default.
     pub site_authority: Option<String>,
+}
+
+impl ServerConfig {
+    /// The given access, with everything else defaulted.
+    pub fn new(access: Access) -> Self {
+        Self {
+            access,
+            logout_redirect: None,
+            site_authority: None,
+        }
+    }
 }
 
 /// Forward-auth settings: which header carries the authenticated user, and the
@@ -84,31 +173,6 @@ pub struct ForwardAuth {
     /// config (not the IdP); its presence is what makes trusting the identity
     /// header safe.
     pub secret: String,
-}
-
-impl ManageConfig {
-    /// Management disabled — the default read-only server.
-    pub fn off() -> Self {
-        Self::default()
-    }
-    /// Management on, local mode (trust every request; requires a loopback bind).
-    pub fn local() -> Self {
-        Self {
-            enabled: true,
-            ..Self::default()
-        }
-    }
-    /// Management on, gated behind a trusted auth proxy.
-    pub fn forward_auth(user_header: impl Into<String>, secret: impl Into<String>) -> Self {
-        Self {
-            enabled: true,
-            forward_auth: Some(ForwardAuth {
-                user_header: user_header.into(),
-                secret: secret.into(),
-            }),
-            ..Self::default()
-        }
-    }
 }
 
 struct AppState {
@@ -130,17 +194,13 @@ struct AppState {
     signed_cache: std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
     /// Serializes management writes: [`crate::index::index_location`] takes
     /// Tantivy's exclusive write lock, so two concurrent adds would contend. One
-    /// in-flight add at a time is plenty for the single-user desktop case this
-    /// mode targets.
+    /// in-flight add at a time is plenty for a workstation, and for the handful
+    /// of curators a server has.
     write_lock: std::sync::Mutex<()>,
     /// Progress channels for in-flight add-archive jobs, drained once by the SSE
     /// endpoint. Keyed by an incrementing job id ([`AppState::job_counter`]).
     jobs: std::sync::Mutex<HashMap<u64, mpsc::UnboundedReceiver<ProgressEvent>>>,
     job_counter: AtomicU64,
-    /// Whether management mode is on. The write *routes* are gated at mount time
-    /// (below), but the read handlers also read this to decide whether to render
-    /// management affordances (the `/manage` link, the empty-state CTA).
-    management: bool,
     /// Who may do what, from `<home>/users.yaml`. Read once at startup: a
     /// roster change takes effect on restart, which keeps request handling free
     /// of file I/O. Absent file = every authenticated user is an admin.
@@ -181,29 +241,42 @@ impl AppState {
     }
 }
 
-pub fn router(home: &Path) -> Result<Router> {
-    build_router(home, None, ManageConfig::off(), Providers::default())
+/// Build a router without binding a socket, for tests and for anything
+/// embedding indice's HTTP surface.
+///
+/// Takes the same [`ServerConfig`] as [`serve_with_resolver`], so a caller has
+/// to say who is trusted. Note that [`Access::local`]'s loopback check is
+/// re-run against the real socket in [`serve_on_listener`], which this path
+/// skips: there is no socket to check. That is fine for a test harness and
+/// worth knowing before serving the result over a public listener.
+pub fn router(home: &Path, config: ServerConfig) -> Result<Router> {
+    build_router(home, None, config, Providers::default())
 }
 
-/// Like [`router`], but with a [`crate::index::SourceResolver`] so the server can
-/// replay Browsertrix sources (re-resolving fresh presigned URLs on demand).
+/// Like [`router`], but with a [`crate::index::SourceResolver`] so the server
+/// can replay Browsertrix sources (re-resolving fresh presigned URLs on demand).
 pub fn router_with_resolver(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
+    config: ServerConfig,
 ) -> Result<Router> {
-    build_router(home, resolver, ManageConfig::off(), Providers::default())
+    build_router(home, resolver, config, Providers::default())
 }
 
-/// Build the app router. `manage` gates the opt-in write routes: when disabled
-/// (the default for `serve`) only the read-only site is mounted, so the public
-/// deployment can never mutate the archive; when enabled (`serve --manage`) the
-/// management endpoints are added on top, and — in forward-auth mode — wrapped in
-/// the [`forward_auth`] middleware so every management request must carry the
-/// trusted proxy's identity header and shared secret.
+/// Build the app router. Every route is mounted, including the write surface:
+/// who may use it is an authorization question, answered by the typed
+/// `Curator`/`Admin` extractors and `users.yaml`, not by which routes exist.
+///
+/// It used to be both. `--manage` decided whether the write routes were mounted
+/// at all, crossed with local-or-forward-auth deciding who was trusted, which
+/// made four states for three meanings and left "read-only server" as a shape
+/// nobody wanted: a server you cannot write to sends you back to the command
+/// line the first time you need to fix a finding aid. Collapsing it leaves one
+/// question, which [`Access`] answers.
 fn build_router(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    manage: ManageConfig,
+    config: ServerConfig,
     providers: Providers,
 ) -> Result<Router> {
     let index_dir = crate::index::index_dir(home);
@@ -221,13 +294,28 @@ fn build_router(
             tracing::warn!("{}", crate::index::fragmentation_warning(n));
         }
     }
-    // Authentication comes from the CLI and the proxy (`ManageConfig`);
-    // authorization comes from the home directory. Loading it here means a
-    // malformed permissions file stops startup rather than silently granting
-    // whatever the default is.
+    // Authentication comes from the CLI and the proxy ([`Access`]); authorization
+    // comes from the home directory. Loading it here means a malformed
+    // permissions file stops startup rather than silently granting whatever the
+    // default is.
     let users = crate::identity::Users::load(home)?;
-    if manage.enabled {
-        tracing::info!("management: {}", users.summary());
+    let access_is_local = config.access.is_local();
+    tracing::info!("access: {}", config.access.summary());
+    // Only worth saying when it is consulted. Local access never looks at the
+    // roster, and printing "every authenticated user is an admin" to someone
+    // running on their laptop invites them to go fix a file that changes
+    // nothing.
+    if !access_is_local {
+        tracing::info!("roles: {}", users.summary());
+    } else if crate::identity::Users::path(home).exists() {
+        // Local access never consults the roster, yet a malformed one still
+        // aborts startup above, so someone can write a users.yaml, demote
+        // themselves in it, have a typo stop the server, fix the typo, and
+        // still be an admin. Say so rather than letting them find out.
+        tracing::warn!(
+            "users.yaml is present but not consulted: this indice trusts every caller \
+             on its loopback port, so roles apply only behind an authenticating proxy"
+        );
     }
     let state = Arc::new(AppState {
         search: RwLock::new(Arc::new(search)),
@@ -238,18 +326,24 @@ fn build_router(
         write_lock: std::sync::Mutex::new(()),
         jobs: std::sync::Mutex::new(HashMap::new()),
         job_counter: AtomicU64::new(0),
-        management: manage.enabled,
         users,
-        forward_auth: manage.forward_auth.clone(),
-        logout_redirect: manage.logout_redirect.clone(),
+        forward_auth: config.access.forward_auth().cloned(),
+        logout_redirect: config.logout_redirect.clone(),
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
     });
 
-    // Captured before the management block, which consumes parts of `manage`.
-    // Both feed the CSRF policy applied over the whole server at the end.
-    let forward_auth_off = manage.forward_auth.is_none();
-    let site_authority = manage.site_authority.clone();
+    // `--site-url` exists to fix the Origin comparison behind a proxy that
+    // rewrites `Host`, which local mode cannot be behind. Honouring it there
+    // pins the expected authority to a public name, so every workroom write
+    // 403s with a message advising the very setting that caused it. Dropped
+    // rather than respected, so one env file shared between a server and a
+    // laptop stays harmless.
+    let site_authority = if access_is_local {
+        None
+    } else {
+        config.site_authority.clone()
+    };
 
     let mut app = Router::new()
         .route("/", get(homepage))
@@ -271,76 +365,75 @@ fn build_router(
         .route("/replay/", get(replay_index))
         .route("/replay/{*path}", get(replay_handler));
 
-    // Opt-in write surface: mounted only under `serve --manage`. The browser
-    // management UI plus its write endpoints — add a crawl (`index_location`,
-    // streaming progress over SSE), upload a WACZ, and create/edit a collection
-    // finding aid (`set_collection`). None of this exists in the default
-    // read-only server.
-    if manage.enabled {
-        let mut manage_routes = Router::new()
-            .route("/manage/collections/new", get(new_collection_form))
-            .route("/manage/edit/{id}", get(edit_collection_form))
-            .route("/manage/add", get(accession_desk_page))
-            // A login entry point: being gated, visiting it forces the proxy's
-            // login, then bounces back to where the user came from.
-            .route("/manage/login", get(manage_login))
-            .route("/api/archives", post(add_archive))
-            // File upload can be large (a whole WACZ), so lift axum's 2 MB default
-            // body limit on this route only.
-            .route(
-                "/api/archives/upload",
-                post(upload_archive).layer(DefaultBodyLimit::disable()),
-            )
-            .route("/api/archives/{id}/events", get(add_archive_events))
-            .route("/api/collections", post(create_collection))
-            // Delete a crawl or a collection (removes files + updates the index).
-            .route("/api/crawls/{id}/delete", post(delete_crawl_handler))
-            .route(
-                "/api/collections/{id}/delete",
-                post(delete_collection_handler),
-            )
-            // Browsertrix import: browse (orgs → collections → items) using the
-            // binary-supplied credentials, then import selected items as a job.
-            .route("/api/browsertrix/orgs", get(bx_orgs))
-            .route("/api/browsertrix/collections", get(bx_collections))
-            .route("/api/browsertrix/items", get(bx_items))
-            .route("/api/browsertrix/import", post(bx_import))
-            // Archive-It import: browse (collections → crawls) using the
-            // binary-supplied credentials, then import selected crawls as a job.
-            .route("/api/archiveit/collections", get(ait_collections))
-            .route("/api/archiveit/crawls", get(ait_crawls))
-            .route("/api/archiveit/import", post(ait_import))
-            // Page annotations: create/edit/delete, gated like the rest. The
-            // public GET /api/annotations lives in the read block above.
-            .route("/api/annotations", post(create_annotation))
-            .route("/api/annotations/{id}", post(update_annotation))
-            .route("/api/annotations/{id}/delete", post(delete_annotation));
+    // The write surface: the browser management UI plus its endpoints — add a
+    // crawl (`index_location`, streaming progress over SSE), upload a WACZ, and
+    // create or edit a collection finding aid (`set_collection`).
+    //
+    // Always mounted. Who may use it is decided by the `Curator`/`Admin`
+    // extractors, which are unforgeable witness types, so an anonymous caller
+    // gets 403 rather than 404. A 404 for an authorization failure is obscurity,
+    // and it used to mean the same request answered differently depending on a
+    // flag rather than on who was asking.
+    let mut manage_routes = Router::new()
+        .route("/manage/collections/new", get(new_collection_form))
+        .route("/manage/edit/{id}", get(edit_collection_form))
+        .route("/manage/add", get(accession_desk_page))
+        // A login entry point: being gated, visiting it forces the proxy's
+        // login, then bounces back to where the user came from.
+        .route("/manage/login", get(manage_login))
+        .route("/api/archives", post(add_archive))
+        // File upload can be large (a whole WACZ), so lift axum's 2 MB default
+        // body limit on this route only.
+        .route(
+            "/api/archives/upload",
+            post(upload_archive).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/archives/{id}/events", get(add_archive_events))
+        .route("/api/collections", post(create_collection))
+        // Delete a crawl or a collection (removes files + updates the index).
+        .route("/api/crawls/{id}/delete", post(delete_crawl_handler))
+        .route(
+            "/api/collections/{id}/delete",
+            post(delete_collection_handler),
+        )
+        // Browsertrix import: browse (orgs → collections → items) using the
+        // binary-supplied credentials, then import selected items as a job.
+        .route("/api/browsertrix/orgs", get(bx_orgs))
+        .route("/api/browsertrix/collections", get(bx_collections))
+        .route("/api/browsertrix/items", get(bx_items))
+        .route("/api/browsertrix/import", post(bx_import))
+        // Archive-It import: browse (collections → crawls) using the
+        // binary-supplied credentials, then import selected crawls as a job.
+        .route("/api/archiveit/collections", get(ait_collections))
+        .route("/api/archiveit/crawls", get(ait_crawls))
+        .route("/api/archiveit/import", post(ait_import))
+        // Page annotations: create/edit/delete, gated like the rest. The
+        // public GET /api/annotations lives in the read block above.
+        .route("/api/annotations", post(create_annotation))
+        .route("/api/annotations/{id}", post(update_annotation))
+        .route("/api/annotations/{id}/delete", post(delete_annotation));
 
-        // Forward-auth: reject any management request that doesn't carry the
-        // trusted proxy's shared secret + a non-empty identity header. Layered
-        // outermost so it runs before a body is read (e.g. a large upload).
-        if let Some(fa) = manage.forward_auth.clone() {
-            let guard = Arc::new(fa);
-            manage_routes = manage_routes.layer(axum::middleware::from_fn(
-                move |req: axum::extract::Request, next: axum::middleware::Next| {
-                    let guard = guard.clone();
-                    async move { forward_auth(&guard, req, next).await }
-                },
-            ));
-        }
-
-        app = app.merge(manage_routes);
-
-        // Outside `manage_routes` on purpose: logout must NOT be
-        // forward-auth-gated, because that middleware re-sets the display
-        // cookie on its way out and would sign you straight back in. The
-        // server-wide CSRF guard still covers it, which is what makes being a
-        // POST sufficient — see `auth::logout`.
-        //
-        // Only under `--manage`: `resolve_caller` returns `None` when
-        // management is off, so there is no signed-in state to end.
-        app = app.route("/logout", post(logout));
+    // Forward-auth: reject any management request that doesn't carry the
+    // trusted proxy's shared secret + a non-empty identity header. Layered
+    // outermost so it runs before a body is read (e.g. a large upload).
+    if let Some(fa) = config.access.forward_auth().cloned() {
+        let guard = Arc::new(fa);
+        manage_routes = manage_routes.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let guard = guard.clone();
+                async move { forward_auth(&guard, req, next).await }
+            },
+        ));
     }
+
+    app = app.merge(manage_routes);
+
+    // Outside `manage_routes` on purpose: logout must NOT be
+    // forward-auth-gated, because that middleware re-sets the display
+    // cookie on its way out and would sign you straight back in. The
+    // server-wide CSRF guard still covers it, which is what makes being a
+    // POST sufficient — see `auth::logout`.
+    app = app.route("/logout", post(logout));
 
     // CSRF: refuse any state-changing request that some *other* site's page
     // initiated. Applied once, over the WHOLE server, rather than onto the
@@ -353,17 +446,24 @@ fn build_router(
     // the default is protected and a route has to be *safe* to opt out, which
     // it does by being a GET.
     //
-    // Cheap to apply this broadly: the guard returns immediately for safe
-    // methods (GET/HEAD/OPTIONS/TRACE), which is every public route, so a
-    // read-only server pays one `match` per request and changes no behaviour.
+    // Cheap to apply broadly: for safe methods (GET/HEAD/OPTIONS/TRACE) the
+    // cross-site half returns immediately, so a read request pays one `match`
+    // and, on a server, nothing else.
     //
     // In local mode `Host` is whatever the browser sends, so matching it
     // against `Origin` can be satisfied by DNS rebinding; local mode is
-    // loopback-only anyway, so also require a loopback authority there. Behind
+    // loopback-only anyway, so also require a loopback authority there, on
+    // every request rather than only the state-changing ones. Behind
     // a proxy (or with an explicit --site-url) the authority comes from a
     // trusted source and needs no such check.
     let csrf = Arc::new(CsrfPolicy {
-        require_loopback: forward_auth_off && site_authority.is_none(),
+        // Not `&& site_authority.is_none()`. `--site-url` exists to fix Origin
+        // comparison behind a proxy that rewrites `Host`, a situation local mode
+        // cannot be in, and letting it clear this turned a stray INDICE_SITE_URL
+        // in a shared .env into a silent kill switch for the whole loopback
+        // requirement. The two settings are now independent: the loopback check
+        // reads `Host` directly and ignores `site_authority` entirely.
+        require_loopback: access_is_local,
         site_authority,
     });
 
@@ -422,57 +522,53 @@ fn build_router(
     Ok(app)
 }
 
-pub async fn serve(bind: &str, home: &Path) -> Result<()> {
-    serve_with_resolver(bind, home, None, ManageConfig::off(), Providers::default()).await
-}
-
-/// Like [`serve`], but with a [`crate::index::SourceResolver`] so Browsertrix
-/// sources can be replayed (fresh presigned URLs resolved on demand). `manage`
-/// configures the opt-in write routes (see [`build_router`]); `providers`
+/// Bind and serve. `config` says who is trusted (see [`Access`]); `providers`
 /// supplies authenticated import clients (Browsertrix, Archive-It) for the UI.
+///
+/// There used to be a `serve(bind, home)` above this that hard-coded "management
+/// off". It had no callers, and the mode it selected no longer exists.
 pub async fn serve_with_resolver(
     bind: &str,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    manage: ManageConfig,
+    config: ServerConfig,
     providers: Providers,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on {bind}");
-    serve_on_listener(listener, home, resolver, manage, providers).await
+    serve_on_listener(listener, home, resolver, config, providers).await
 }
 
 /// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
 /// read back the OS-assigned port via [`TcpListener::local_addr`], and only then
-/// serve — which is exactly what the desktop app shell needs so it can point the
-/// window at `http://127.0.0.1:<port>` before the server starts accepting.
+/// serve, which is what you want when something has to know the port before the
+/// server starts accepting. The test suite uses it for exactly that; it was
+/// originally added for a desktop shell that no longer exists.
 ///
 /// [`TcpListener::local_addr`]: tokio::net::TcpListener::local_addr
 pub async fn serve_on_listener(
     listener: tokio::net::TcpListener,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    manage: ManageConfig,
+    config: ServerConfig,
     providers: Providers,
 ) -> Result<()> {
-    // Safety guard: local management mode (no auth proxy) trusts every request, so
-    // it must not be reachable beyond this machine. Refuse to start if it's bound
-    // to a non-loopback address without forward-auth configured — otherwise it
-    // would expose an unauthenticated write surface. To run as a service, put an
-    // authenticating proxy in front and configure forward-auth.
-    if manage.enabled && manage.forward_auth.is_none() {
+    // [`Access::local`] already refuses a non-loopback address, but it is given
+    // the address the *caller* intends to bind rather than the one the listener
+    // actually got. Re-check against the real socket, which is the only thing
+    // that knows: a caller passing 127.0.0.1 and handing over a listener bound
+    // to 0.0.0.0 would otherwise slip through.
+    if config.access.is_local() {
         let addr = listener.local_addr()?;
         if !addr.ip().is_loopback() {
             anyhow::bail!(
-                "refusing to start: management mode (--manage) without an auth proxy \
-                 trusts every request, so it must bind to a loopback address \
-                 (127.0.0.1 / ::1), but it is bound to {addr}. To run as a service, \
-                 front it with an authenticating reverse proxy and set \
-                 --auth-proxy-header / --auth-proxy-secret."
+                "refusing to start: local access trusts every caller, so it must be \
+                 bound to a loopback address (127.0.0.1 / ::1), but this listener is \
+                 bound to {addr}. Configure an authenticating proxy to run as a server."
             );
         }
     }
-    let app = build_router(home, resolver, manage, providers)?;
+    let app = build_router(home, resolver, config, providers)?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

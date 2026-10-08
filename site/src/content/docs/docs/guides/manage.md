@@ -1,17 +1,19 @@
 ---
 title: Manage & curate
-description: Turn the read-only reading room into an editable workroom with serve --manage, locally or behind an authenticating proxy.
+description: Curate an archive in the browser, on a workstation or behind an authenticating proxy, with users.yaml deciding who may change what.
 ---
 
-By default `indice serve` is **read-only**: it never writes, so you curate from the command line (`index`, `collection set`, `import browsertrix`). However, passing `--manage` turns the ordinary site into an editable **workroom**: the same pages gain curation controls (a warm clay "red-tape" accent marks write mode), so you can add archives and curate collections in place, no command line needed:
+The ordinary site doubles as an editable **workroom**. For anyone allowed to change the archive, the same pages gain curation controls, marked by a warm clay "red-tape" accent, so you can add archives and curate collections in place without the command line:
 
 ```bash
-indice serve --manage        # http://127.0.0.1:8080
+indice serve        # http://127.0.0.1:8080
 ```
+
+On a workstation that is the whole setup. Whoever reaches the port is the operator, so there is no login and no roster. On a server it is `users.yaml` that decides, and a visitor who is not listed sees the reading room.
 
 ![The indice homepage in management mode: a clay "MANAGE" chip in the app bar, a clay accent throughout, and a "+ New collection" button above the collection cards](../../../../assets/docs/workroom-home.png)
 
-With `--manage` on:
+What the controls are:
 
 - **The homepage.** Its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance shows "add your first archive."
 - **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
@@ -22,20 +24,32 @@ With `--manage` on:
 
 ![The Add crawls accession desk: a collection selector and source tabs (Upload, Path / URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
 
-The default `serve` (without `--manage`) mounts none of this, so a public, read-only deployment can never mutate the archive.
+Every one of these routes is always mounted. Whether you may use them is an authorization question, answered below, so an anonymous visitor gets a `403` rather than a page that does not exist.
 
-## Local use
+## On a workstation
 
-`indice serve --manage` bound to `127.0.0.1` (the default) trusts every request: you're the only one who can reach it, so you're the admin and there's no login. Because it trusts everything, indice **refuses to start** if `--manage` is bound to a non-loopback address without an auth proxy configured (below), since that would expose an unauthenticated write surface to the network.
+`indice serve` bound to `127.0.0.1`, which is the default, trusts every caller: you are the only one who can reach it, so you are the admin and there is no login. `users.yaml` is not consulted at all here, which surprises people who write one and expect it to apply.
 
-## Running as a service (forward-auth)
+Because it trusts everything, indice **refuses to start** on a non-loopback address with no auth proxy configured, rather than putting an unauthenticated write surface on the network.
+
+A loopback bind is not the same as a loopback caller, though. An HTTP proxy such as `tailscale serve` arrives on `127.0.0.1` having come from elsewhere, which would hand your admin rights to everyone on the tailnet. indice also requires the `Host` the client asked for to be a loopback name, so those requests are refused, reads included. To share an archive, run it as a server.
+
+This does not reach a raw TCP forward. `ssh -L` relays bytes unchanged, so the request genuinely says `Host: localhost` and indice cannot tell it apart from a local browser. Anyone who can open that tunnel already has a shell on the machine, so it is a smaller exposure than a tailnet, but it is not one the guard covers.
+
+:::caution[A loopback port is not a user boundary]
+The check reads the `Host` header, and only a browser is prevented from setting that freely. A tunnel plus `curl -H 'Host: localhost:8080'` walks past it, as does any other process or account on the same machine: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection, because local access means exactly what it says.
+
+So run it as a server if the machine is shared, or if anything you do not control can reach that port. Treat the loopback check as raising the bar for a stray browser tab, not as a wall.
+:::
+
+## On a server (forward-auth)
 
 To offer management to real users over the network, run indice behind a reverse proxy that authenticates the request and sets two headers: the caller's identity, and a shared secret. Caddy and nginx both do this, with a login service such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) or [Authelia](https://www.authelia.com/) alongside them, which is what the [shipped stack](/docs/guides/deploy/) wires up.
 
 Anything that can set both headers qualifies. Note the second one rules out some otherwise-plausible options: `tailscale serve` forwards its own identity headers but gives you no way to add a static secret, so it needs a real proxy behind it rather than replacing one.
 
 ```bash
-indice serve --manage \
+indice serve \
   --bind 127.0.0.1:8080 \
   --auth-proxy-header X-Forwarded-Email \
   --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET"   # or set that env var
@@ -44,7 +58,7 @@ indice serve --manage \
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
 - **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
-Every management request must carry both the identity header and the secret; anything else is rejected. The public read-only site (search, browse, replay) is **not** gated; only the management routes are.
+Every write must carry both the identity header and the secret; anything else is rejected. Reading is not gated, so search, browse and replay stay open to anyone.
 
 ## Who can do what
 
@@ -92,14 +106,14 @@ If your proxy gates only the management routes, browsers will not send its crede
 
 ## Cross-site protection
 
-Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies to local `--manage` too: a loopback bind is not a boundary a browser respects. While the workroom is running, any page you visit can reach `127.0.0.1`.
+Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies on a workstation too: a loopback bind is not a boundary a browser respects. While indice is running, any page you visit can reach `127.0.0.1`.
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
 
 This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and the shipped `Caddyfile` relies on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host`, which is nginx's default (`proxy_set_header Host $proxy_host`). Then tell indice its public address:
 
 ```bash
-indice serve --manage --site-url https://archive.example.org   # or INDICE_SITE_URL
+indice serve --site-url https://archive.example.org   # or INDICE_SITE_URL
 ```
 
 If you get a `403` mentioning a cross-site request when using the workroom normally, that's the symptom: the message names both the `Origin` it saw and the site address it compared against.

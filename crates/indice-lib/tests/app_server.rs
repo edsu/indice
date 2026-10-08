@@ -1,5 +1,5 @@
-//! Integration test for [`indice_lib::server::serve_on_listener`] — the seam the
-//! desktop app shell (`crates/indice-app`) is built on. Unlike the `router`
+//! Integration test for [`indice_lib::server::serve_on_listener`], the seam for
+//! anything embedding indice that has to know the port first. Unlike the `router`
 //! oneshot tests, this exercises the full real-socket path: bind `127.0.0.1:0`,
 //! read the OS-assigned port back *before* serving (exactly what the app does to
 //! point its window at the right port), then serve over TCP with client-address
@@ -35,7 +35,10 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
             listener,
             &home,
             None,
-            indice_lib::server::ManageConfig::off(),
+            indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+                "x-forwarded-email",
+                "secret-the-test-never-sends",
+            )),
             indice_lib::server::Providers::default(),
         )
         .await

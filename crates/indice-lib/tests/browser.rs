@@ -25,6 +25,22 @@ use std::time::{Duration, Instant};
 
 use thirtyfour::prelude::*;
 
+/// A router rendering the **anonymous** view, which is what these tests check.
+///
+/// `Access::proxy` with credentials nobody sends: every request is an anonymous
+/// visitor, exactly as one arriving at a server. `Access::local` would make each
+/// request the operator and put workroom chrome on every page.
+fn public_router(home: &std::path::Path) -> axum::Router {
+    indice_lib::server::router(
+        home,
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            "X-Forwarded-Email",
+            "test-secret-not-sent",
+        )),
+    )
+    .unwrap()
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -45,7 +61,7 @@ async fn browser_renders_archived_page() {
 
     // 2. Serve it on an ephemeral port (localhost is a secure context, so the
     //    service worker is allowed to register).
-    let app = indice_lib::server::router(tmp.path()).unwrap();
+    let app = public_router(tmp.path());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
