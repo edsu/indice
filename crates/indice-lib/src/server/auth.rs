@@ -16,17 +16,35 @@ use super::*;
 const AUTH_SECRET_HEADER: &str = "x-indice-auth-secret";
 
 /// Cookie indice sets to remember a signed-in identity for **display** on the
-/// ungated public pages — the browser won't send the proxy's Basic-auth
-/// credentials to `/`, so the workroom chrome would otherwise never appear there.
-/// HMAC-signed with the forward-auth secret (see [`sign_session`]); it drives
-/// *rendering only* — every write is still re-checked against the proxy headers.
+/// ungated public pages. HMAC-signed with the forward-auth secret (see
+/// [`sign_session`]); it drives *rendering only*, and every write is re-checked
+/// against the proxy headers.
+///
+/// **Who still needs this**, because the answer changed and the old one is why
+/// deleting the whole subsystem looked reasonable for a while. It is not for the
+/// shipped stack: that Caddyfile asks oauth2-proxy on every request and forwards
+/// the identity whether or not the path is privileged, so `Evidence::Proxy`
+/// already covers `/`. Nor is it for a Shibboleth SP configured as the deploy
+/// guide describes, where a lazy session on `<Location />` does the same thing.
+///
+/// It is for a proxy that gates **only** the management routes, which is what an
+/// operator gets when a central IT department runs the SP and offers protected
+/// or not-protected per path. There the browser sends the proxy's credentials to
+/// `/manage/*` and nothing to `/`, so indice cannot know who is reading the
+/// ordinary pages. Since the workroom *is* the ordinary pages, that operator
+/// without this cookie cannot curate at all, rather than merely losing chrome.
 const SESSION_COOKIE: &str = "indice_session";
 
 /// How long a signed display cookie is honored (the expiry baked into its
 /// signature; refreshed on every gated request). The cookie itself is a *session*
-/// cookie — no `Max-Age` — so it's dropped when the browser closes, matching the
-/// lifetime of the browser's cached Basic-auth credentials and avoiding a stale
-/// cookie that outlives them.
+/// cookie — no `Max-Age` — so the browser drops it on close.
+///
+/// The signature expiry is the second bound, and it exists because indice cannot
+/// see the proxy's session lifetime. Without it, a browser left open would keep
+/// rendering workroom chrome for someone whose SSO session ended hours ago. They
+/// could not write anything, since writes check the proxy headers, so the cost of
+/// being wrong is a disabled-looking button rather than an exposure. Twelve hours
+/// is a working day, chosen for that and nothing more.
 const SESSION_TTL_SECS: u64 = 12 * 60 * 60;
 
 /// Forward-auth middleware for the management routes: allow the request through
@@ -682,8 +700,8 @@ fn session_cookie_user(fa: &ForwardAuth, headers: &HeaderMap) -> Option<String> 
 }
 
 /// `GET /manage/login` — a login entry point for forward-auth deployments. It is
-/// mounted under the gated management routes, so merely reaching it forces the
-/// front proxy's login (a Basic-auth prompt, or an SSO redirect). Once
+/// mounted under the gated management routes, so merely reaching it trips the
+/// front proxy's login. Once
 /// authenticated it bounces the browser back to the page it came from (the
 /// `Referer`, if it's a local path) so that page re-renders with its management
 /// chrome. In local-trust mode there is no login, so it just redirects home.
