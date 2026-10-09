@@ -201,10 +201,11 @@ struct AppState {
     /// endpoint. Keyed by an incrementing job id ([`AppState::job_counter`]).
     jobs: std::sync::Mutex<HashMap<u64, mpsc::UnboundedReceiver<ProgressEvent>>>,
     job_counter: AtomicU64,
-    /// Who may do what, from `<home>/users.yaml`. Read once at startup: a
-    /// roster change takes effect on restart, which keeps request handling free
-    /// of file I/O. Absent file = every authenticated user is an admin.
-    users: crate::identity::Users,
+    /// Who may do what, from `<home>/users.yaml`, re-read when the file
+    /// changes so approving a colleague does not mean restarting the service.
+    /// See [`crate::identity::Roster`] for why a reload can only ever replace a
+    /// good roster with another good one.
+    users: crate::identity::Roster,
     /// Forward-auth settings, when management runs behind an auth proxy. Handlers
     /// read the `user_header` to show who's signed in; the route middleware does
     /// the actual enforcement.
@@ -298,15 +299,43 @@ fn build_router(
     // comes from the home directory. Loading it here means a malformed
     // permissions file stops startup rather than silently granting whatever the
     // default is.
-    let users = crate::identity::Users::load(home)?;
+    let users = crate::identity::Roster::load(home)?;
     let access_is_local = config.access.is_local();
     tracing::info!("access: {}", config.access.summary());
+    // A server with no roster hands admin to the first stranger its identity
+    // provider admits, and `remove_dir_all` with it. That default is correct on
+    // a workstation and indefensible on a network, and nothing distinguished
+    // the two until now: the only signal was one `tracing::info` line that
+    // scrolls past at startup.
+    //
+    // Refusing matches the precedent next door, where a non-loopback bind with
+    // no auth proxy also refuses, and it fails in the direction you can
+    // recover from. There is deliberately no flag to opt out. "Everyone my IdP
+    // admits is an admin" is not a configuration worth keeping reachable on a
+    // server, and the people who mean it can write the handful of lines below;
+    // an opt-out would mostly be found by someone wanting the error to go away.
+    if !access_is_local && !users.current().is_configured() {
+        let path = crate::identity::Users::path(home);
+        anyhow::bail!(
+            "refusing to start: this indice is reachable over the network and has no \
+             roster at {}, so everyone your identity provider admits would be an admin \
+             and could delete the archive.\n\n\
+             Create it, listing the people who may change things:\n\n\
+             users:\n  \
+               - id: you@example.org\n    \
+                 role: admin\n\n\
+             Anyone not listed can still read. An empty `users: []` means nobody may \
+             write, which is how you run a public read-only archive. \
+             See https://indice.page/docs/guides/manage/",
+            path.display()
+        );
+    }
     // Only worth saying when it is consulted. Local access never looks at the
     // roster, and printing "every authenticated user is an admin" to someone
     // running on their laptop invites them to go fix a file that changes
     // nothing.
     if !access_is_local {
-        tracing::info!("roles: {}", users.summary());
+        tracing::info!("roles: {}", users.current().summary());
     } else if crate::identity::Users::path(home).exists() {
         // Local access never consults the roster, yet a malformed one still
         // aborts startup above, so someone can write a users.yaml, demote

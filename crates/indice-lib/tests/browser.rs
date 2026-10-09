@@ -31,6 +31,14 @@ use thirtyfour::prelude::*;
 /// visitor, exactly as one arriving at a server. `Access::local` would make each
 /// request the operator and put workroom chrome on every page.
 fn public_router(home: &std::path::Path) -> axum::Router {
+    // A server refuses to start without a roster, so that everyone the identity
+    // provider admits is not silently an admin. Empty is the right one here:
+    // these tests are about what an anonymous reader sees, and `users: []`
+    // means nobody may write.
+    let roster = home.join("users.yaml");
+    if !roster.exists() {
+        std::fs::write(&roster, "users: []\n").unwrap();
+    }
     indice_lib::server::router(
         home,
         indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(

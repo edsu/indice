@@ -21,6 +21,10 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
     let coll = "Socket Test";
     indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
     let id = indice_lib::collections::slugify(coll);
+    // This serves over a real socket with forward-auth, which is the server
+    // shape, and a server refuses to start without a roster. Empty is enough:
+    // the test never signs in, and "nobody may write" is a valid answer.
+    std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let member = manifest.members_of(&id).next().unwrap().id.clone();
     drop(manifest);

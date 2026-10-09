@@ -399,35 +399,59 @@ async fn notes_are_author_gated_but_admins_moderate() {
     server.abort();
 }
 
-/// No users.yaml must behave exactly as indice did before roles existed, or
-/// upgrading silently locks an operator out of their own archive.
+/// A server with no roster refuses to start.
+///
+/// This replaces a test that asserted the opposite: that with no `users.yaml`
+/// every authenticated user stays an admin, for upgrade safety. That default is
+/// right on a workstation and a loaded gun on a network, where it hands the
+/// archive to the first stranger the identity provider admits. The upgrade
+/// concern was real, though, so note what happens now instead of a silent
+/// change of regime: the server stops and says what to write. Nobody is locked
+/// out and nobody is let in.
+///
+/// The `Users`-level default is unchanged and still pinned by
+/// `identity::tests::moderation_requires_an_explicit_roster`; this is about
+/// which regimes a *server* can be in.
 #[tokio::test]
-async fn without_a_roster_every_authenticated_user_is_an_admin() {
+async fn a_server_without_a_roster_refuses_to_start() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-        USER_HEADER,
-        SECRET,
-    ));
-    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let proxy = || {
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            USER_HEADER,
+            SECRET,
+        ))
+    };
 
-    for Route {
-        method, path, body, ..
-    } in routes()
-    {
-        let status = request(method, format!("{base}{path}"), Some("anyone@x.edu"), body).await;
-        assert_ne!(
-            status, 403,
-            "{method} {path} must stay open with no users.yaml"
-        );
-    }
+    let err = indice_lib::server::router(tmp.path(), proxy()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("refusing to start") && msg.contains("users.yaml"),
+        "the refusal must name the fix, got: {msg}"
+    );
 
-    server.abort();
+    // A workstation is untouched: it never consults the roster, so requiring
+    // one would be ceremony for a file that changes nothing.
+    let local = indice_lib::server::ServerConfig::new(
+        indice_lib::server::Access::local("127.0.0.1:0".parse().unwrap()).unwrap(),
+    );
+    assert!(
+        indice_lib::server::router(tmp.path(), local).is_ok(),
+        "a workstation must still start without a roster"
+    );
+
+    // An empty roster is a real answer, not a missing one: nobody may write,
+    // which is how a public read-only archive is spelled.
+    std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
+    assert!(
+        indice_lib::server::router(tmp.path(), proxy()).is_ok(),
+        "`users: []` means nobody, and must be accepted"
+    );
 }
 
 /// The display cookie renders chrome but must never authorize a write.
 #[tokio::test]
 async fn a_display_cookie_alone_cannot_write() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         USER_HEADER,
         SECRET,
@@ -531,65 +555,12 @@ async fn a_curator_is_not_shown_a_delete_button() {
     server.abort();
 }
 
-/// Upgrade safety, the part the route table can't see: with no `users.yaml`
-/// every authenticated user is an Admin, and admins moderate — so a naive
-/// `may_edit` would silently make every signed-in user able to delete everyone
-/// else's notes, which was strictly author-only before roles existed.
-#[tokio::test]
-async fn without_a_roster_notes_stay_author_only() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-        USER_HEADER,
-        SECRET,
-    ));
-    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
-
-    request(
-        "POST",
-        format!("{base}/api/collections"),
-        Some("alice@x.edu"),
-        Some(("application/x-www-form-urlencoded", "name=Notes".into())),
-    )
-    .await;
-
-    let url = format!("{base}/api/annotations");
-    let body = serde_json::json!({
-        "collection": "notes", "url": "https://example.org/",
-        "timestamp": "20260101000000", "note": "alice's note",
-    })
-    .to_string();
-    let id = tokio::task::spawn_blocking(move || {
-        let mut res = agent()
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("x-indice-auth-secret", SECRET)
-            .header(USER_HEADER, "alice@x.edu")
-            .send(body)
-            .unwrap();
-        let v: serde_json::Value =
-            serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap();
-        v["id"].as_str().unwrap().to_string()
-    })
-    .await
-    .unwrap();
-
-    let status = request(
-        "POST",
-        format!("{base}/api/annotations/{id}/delete"),
-        Some("mallory@x.edu"),
-        Some((
-            "application/json",
-            serde_json::json!({ "collection": "notes" }).to_string(),
-        )),
-    )
-    .await;
-    assert_eq!(
-        status, 403,
-        "moderation must be opt-in via a roster, not the default"
-    );
-
-    server.abort();
-}
+// `without_a_roster_notes_stay_author_only` lived here. It drove the no-roster
+// default over HTTP to check that moderation is not derived from it, and a
+// server can no longer be in that state. The property it protected still
+// matters for the `Users` default and is pinned where that default now lives:
+// `identity::tests::moderation_requires_an_explicit_roster` asserts the same
+// three things (role is Admin, `can_moderate` is false, `may_edit` is own-only).
 
 /// A Reader must not be handed the workroom forms either. Every control on
 /// them 403s, so rendering them is the same bug as showing a delete button to
@@ -805,7 +776,7 @@ async fn a_failing_audit_log_does_not_fail_the_operation() {
 /// used to be able to.
 #[tokio::test]
 async fn logout_refuses_a_get() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         USER_HEADER,
         SECRET,
@@ -824,7 +795,7 @@ async fn logout_refuses_a_get() {
 /// of making it a POST at all.
 #[tokio::test]
 async fn logout_refuses_a_cross_site_post() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         USER_HEADER,
         SECRET,
@@ -854,7 +825,7 @@ async fn logout_refuses_a_cross_site_post() {
 /// straight back in. This request carries no proxy credentials at all.
 #[tokio::test]
 async fn logout_clears_the_cookie_for_a_same_origin_post() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         USER_HEADER,
         SECRET,
@@ -918,7 +889,7 @@ async fn logout_clears_the_cookie_for_a_same_origin_post() {
 /// it quietly later.
 #[tokio::test]
 async fn files_allows_anonymous_cross_origin_reads_only() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
     let archive = home.join("archive");
     std::fs::create_dir_all(&archive).unwrap();

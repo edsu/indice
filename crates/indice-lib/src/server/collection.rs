@@ -55,6 +55,7 @@ pub(super) async fn collection_page(
     if let Some(subject) = &c.created_by {
         let name = state
             .users
+            .current()
             .resolve(subject.clone())
             .display_name()
             .to_string();

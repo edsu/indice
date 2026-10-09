@@ -31,6 +31,16 @@
 #       A long random string, shared between Caddy and indice. indice trusts a
 #       forwarded identity only on requests that carry this secret.
 #
+# ── And one file ──
+#
+# <home>/users.yaml, which here means /data/users.yaml inside the volume. indice
+# REFUSES TO START as a server without it: with no roster, everyone your issuer
+# authenticates is an admin, which is the right default on a laptop and hands a
+# stranger the delete button here. `users: []` is a valid answer meaning nobody
+# may write, which is how you run a public read-only archive. The deployment
+# guide has the two commands to put it in the volume before the first start.
+# Editing it later takes effect without a restart.
+#
 # ── Who gets in, and who can write ──
 #
 # Anyone your issuer authenticates may sign in, and signing in on its own grants

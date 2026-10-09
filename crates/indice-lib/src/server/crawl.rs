@@ -164,6 +164,7 @@ pub(super) async fn crawl_page(
     if let Some(subject) = &c.added_by {
         let name = state
             .users
+            .current()
             .resolve(subject.clone())
             .display_name()
             .to_string();

@@ -14,6 +14,23 @@ fn local_access() -> indice_lib::server::ServerConfig {
     )
 }
 
+/// A home carrying a roster, for the tests that run as a server.
+///
+/// A server refuses to start without one, so that everybody the identity
+/// provider admits is not silently an admin. `alice@x.edu` is listed as admin
+/// because that is who these tests sign in as, and she was an admin under the
+/// old permissive default too, which keeps every assertion about what she may
+/// do unchanged.
+fn home_with_roster() -> tempfile::TempDir {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("users.yaml"),
+        "users:\n  - id: alice@x.edu\n    role: admin\n",
+    )
+    .unwrap();
+    tmp
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -232,7 +249,9 @@ async fn manage_create_collection_via_form_then_it_appears() {
     server.abort();
 
     // The edit affordance is gated: an anonymous visitor to the same home does
-    // not get it on the collection page.
+    // not get it on the collection page. Serving that home as a server needs a
+    // roster; empty is right, since this half is about the anonymous view.
+    std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
     let (ro_base, ro_server) = serve(
         tmp.path().to_path_buf(),
         indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
@@ -288,6 +307,7 @@ async fn manage_page_gated_on_management_mode() {
     // Refused for an anonymous visitor. The route is mounted — who may use it is
     // an authorization question — so this is a 403, not a 404.
     let tmp2 = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp2.path().join("users.yaml"), "users: []\n").unwrap();
     let (base2, server2) = serve(
         tmp2.path().to_path_buf(),
         indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
@@ -329,7 +349,7 @@ async fn get_with_headers(
 
 #[tokio::test]
 async fn forward_auth_gates_management_routes() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         "x-forwarded-email",
         "s3cret",
@@ -777,7 +797,7 @@ async fn sec_fetch_site_cross_site_is_rejected_without_origin() {
 /// their forged identity would have been accepted.
 #[tokio::test]
 async fn csrf_guard_runs_before_forward_auth() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         "x-forwarded-email",
         "s3cret",
@@ -811,7 +831,7 @@ async fn csrf_guard_runs_before_forward_auth() {
 /// public surface *anonymously* and assert the address never appears.
 #[tokio::test]
 async fn public_annotation_api_never_exposes_a_login_address() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         "x-forwarded-email",
@@ -1077,7 +1097,7 @@ async fn a_write_returns_503_while_the_index_is_locked() {
 /// and refuses a stranger, with no mode in which that answer changes.
 #[tokio::test]
 async fn anonymous_is_refused_from_every_management_route() {
-    let tmp = tempfile::TempDir::new().unwrap();
+    let tmp = home_with_roster();
     let (base, server) = serve(
         tmp.path().to_path_buf(),
         indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(

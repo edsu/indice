@@ -18,7 +18,19 @@ fn public_config() -> indice_lib::server::ServerConfig {
     ))
 }
 
+/// Every caller of this wants a running public site, so it supplies the roster
+/// a server now refuses to start without. Empty is the right one: these tests
+/// are about what an anonymous reader sees, and `users: []` means nobody may
+/// write.
+fn public_roster(home: &std::path::Path) {
+    let path = home.join("users.yaml");
+    if !path.exists() {
+        std::fs::write(&path, "users: []\n").unwrap();
+    }
+}
+
 fn public_router(home: &std::path::Path) -> axum::Router {
+    public_roster(home);
     indice_lib::server::router(home, public_config()).unwrap()
 }
 
@@ -658,6 +670,7 @@ async fn browsertrix_replay_redirects_to_a_freshly_resolved_url() {
     let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> = std::sync::Arc::new(
         FakeResolver("https://files.example/a.wacz?sig=fresh".into()),
     );
+    public_roster(tmp.path());
     let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver), public_config())
         .unwrap();
 
@@ -697,6 +710,7 @@ async fn public_browsertrix_replay_redirects_via_resolver() {
     let resolver: std::sync::Arc<dyn indice_lib::index::SourceResolver> = std::sync::Arc::new(
         FakeResolver("https://files.example/pub.wacz?sig=fresh".into()),
     );
+    public_roster(tmp.path());
     let app = indice_lib::server::router_with_resolver(tmp.path(), Some(resolver), public_config())
         .unwrap();
 

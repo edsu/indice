@@ -330,7 +330,7 @@ pub(super) fn resolve_caller(
     };
     // `parse_remote`: a proxy identity must never resolve to the local operator.
     let id = SubjectId::parse_remote(&raw)?;
-    Some((state.users.resolve(id), evidence))
+    Some((state.users.current().resolve(id), evidence))
 }
 
 /// Whether this request may use management affordances, plus the signed-in user.
