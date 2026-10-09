@@ -1,8 +1,9 @@
 //! Who wrote something: a stable identity, kept distinct from a display name.
 //!
-//! indice authenticates nobody. A front proxy performs the login (SSO, OIDC,
-//! HTTP Basic) and forwards whatever it considers the user's identity in a
-//! header — an email under oauth2-proxy, a bare username under Basic auth. That
+//! indice authenticates nobody. A front proxy performs the login (SAML, OIDC, or
+//! whatever an institution already runs) and forwards whatever it considers the
+//! user's identity in a header: an email under oauth2-proxy, `eduPersonPrincipalName`
+//! or `mail` under a Shibboleth SP. That
 //! raw string used to be written straight into an annotation as *both* the
 //! private edit key and the public display name, which conflated two values
 //! with opposite requirements:

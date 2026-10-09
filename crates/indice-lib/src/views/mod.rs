@@ -84,8 +84,8 @@ pub fn layout(
                     } @else if can_login {
                         // Forward-auth is configured but this request is anonymous:
                         // offer a login. /manage/login is gated, so following it
-                        // trips the proxy's login (a Basic-auth prompt, or an SSO
-                        // redirect) and bounces back to the current page.
+                        // trips the proxy's login and bounces back to the
+                        // current page.
                         a.login href="/manage/login" { "Log in" }
                     }
                 }
