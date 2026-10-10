@@ -76,7 +76,7 @@ indice records who added each crawl, so a curator can undo their own mis-upload 
 
 ### Setting roles
 
-Roles live in an optional `<home>/users.yaml`:
+Roles live in `<home>/users.yaml`. A server requires it; a workstation ignores it.
 
 ```yaml
 users:
@@ -87,12 +87,19 @@ users:
     aliases: [j.tanaka@old.example.org]   # prior addresses, so they keep their notes
 ```
 
-- **No `users.yaml`** means every user your proxy authenticates is an **admin**. This is the default, and it's exactly how indice behaved before roles existed, so adding the file is opt-in. One deliberate exception: notes stay **author-only** here. Moderating someone else's work is something you opt into by naming admins in a roster, not something the permissive default hands out.
-- **With a `users.yaml`** means listed people get their role; anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) therefore means "nobody administers", which is honored rather than treated as "no file".
+Listed people get their role. Anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) means nobody may write, which is honored as an answer rather than read as a missing file, and is how you run a public read-only archive.
 
-Take care not to lock yourself out: if you add the file, put your own identity in it. indice logs which regime it's in at startup.
+Put your own identity in it, or you will have locked yourself out of your own archive. indice logs which roles it loaded at startup.
 
-The file is read at startup, so a change takes effect on restart. It's plain YAML meant to be committed alongside your finding aids.
+**Changes take effect without a restart.** indice checks whether the file has moved and re-reads it when it has, so approving a colleague is one line in a file you can commit and diff, not an ops task.
+
+:::caution[A server will not start without it]
+With no `users.yaml` at all, every user your proxy authenticates is an **admin**. That is how indice behaved before roles existed, and it is right on a workstation, where you are the only caller. On a server it means the first stranger your identity provider admits can delete the archive, so indice refuses to start and tells you what to write. There is no flag to skip it.
+
+A reload can only ever replace a good roster with another good one. If the file becomes malformed mid-edit, or is deleted, indice keeps the roster already in force and logs the error, because falling back to "no file" would promote everyone signed in.
+
+One thing the roster does *not* hand out even when it is absent: moderation. Notes stay **author-only** under the permissive default, because being able to delete other people's work is something you opt into by naming admins, not something a missing file grants.
+:::
 
 :::caution[Identities aren't passwords]
 `users.yaml` grants privilege to an identity your proxy has already verified. It is not a credential store: indice never sees or checks a password. Anyone who can make your proxy emit `alice@example.org` is Alice, as far as indice is concerned.

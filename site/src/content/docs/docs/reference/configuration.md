@@ -41,6 +41,8 @@ users:
 | `role` | `admin`, `curator`, or `reader`. Defaults to `curator`. |
 | `aliases` | Prior identities, so someone keeps notes written under an old address. |
 
-**Omitting the file entirely means every authenticated user is an admin**, which is the behavior before roles existed. See [Who can do what](/docs/guides/manage/#who-can-do-what) for what each role may do, and the lock-yourself-out warning.
+**Omitting the file entirely means every authenticated user is an admin**, which is the behavior before roles existed. A **server refuses to start** in that state, since it would hand the archive to anyone its identity provider admits; a workstation ignores the file either way. `users: []` is a real answer meaning nobody may write. See [Who can do what](/docs/guides/manage/#who-can-do-what) for what each role may do, and the lock-yourself-out warning.
 
-A malformed `users.yaml` stops startup rather than being ignored: silently skipping a typo in a permissions file is how you end up granting access you didn't intend.
+Changes take effect without a restart. indice checks whether the file has moved and re-reads it when it has, so approving someone is an edit.
+
+A malformed `users.yaml` is never ignored: silently skipping a typo in a permissions file is how you end up granting access you didn't intend. At startup it stops the server. On a reload it keeps the roster already in force and logs the error, which is the same rule applied to a running process: falling back to "no file" would promote everyone who is signed in. Deleting the file while indice is running does the same, so `rm users.yaml` is not a way to grant yourself admin.

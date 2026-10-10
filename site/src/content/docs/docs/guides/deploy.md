@@ -66,7 +66,17 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    # OIDC_EMAIL_DOMAINS=example.edu    # who may sign in at all; defaults to anyone
    # OAUTH2_PROXY_COOKIE_SECURE=false  # only to run the stack on plain-HTTP localhost
    ```
-3. Write a [`users.yaml`](/docs/reference/configuration/#usersyaml) in indice's home saying who may do what.
+3. Write a [`users.yaml`](/docs/reference/configuration/#usersyaml) saying who may do what. **A server will not start without one**, for the reason in the next section. It lives at `/data/users.yaml` inside the container, which is the named volume, so put it there before the first start:
+   ```sh
+   cat > users.yaml <<'YAML'
+   users:
+     - id: you@example.org
+       role: admin
+   YAML
+   docker compose create indice                       # make the container without running it
+   docker compose cp users.yaml indice:/data/users.yaml
+   ```
+   Editing it later needs no restart: indice notices the file has changed and re-reads it on the next request, so approving a colleague is `docker compose cp` again.
 4. `SITE_ADDRESS=your-domain docker compose up -d`.
 
 Clicking **Log in** sends you to your issuer. After you authenticate you come back signed in, with the workroom chrome if `users.yaml` lists you as a curator or an admin. You may land on the homepage rather than the page you left, because the final hop carries the issuer's address as its referrer and indice will not redirect to an off-site one.
@@ -87,6 +97,20 @@ Two questions, and two places to answer them.
 **`users.yaml` decides who may write.** List someone as a `curator` and they can accession and describe; list them as an `admin` and they can also deaccession. Everyone else, signed in or not, is a reader. See [Who can do what](/docs/guides/manage/#who-can-do-what).
 
 We split them so you approve a colleague by editing one line in a file you can commit and diff, instead of reconfiguring your identity provider.
+
+:::caution[A server refuses to start without a roster]
+With no `users.yaml` at all, indice falls back to treating every authenticated user as an admin. That is the right default on a workstation, where there is one of you. On a server it hands the archive, and the delete button, to the first stranger your identity provider admits, so indice stops instead and tells you what to write.
+
+If you want a **public read-only archive**, that is a roster with nobody in it:
+
+```yaml
+users: []
+```
+
+Anyone may read, nobody may write. An empty roster is an answer; a missing one is a question.
+
+There is no flag to skip this. "Everyone my provider admits is an admin" is not a setting worth keeping within reach on a networked instance, and an opt-out would mostly get used by whoever wanted the error to go away.
+:::
 
 ## Using a different identity provider
 

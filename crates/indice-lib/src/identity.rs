@@ -463,6 +463,120 @@ impl Users {
     }
 }
 
+/// A [`Users`] roster that re-reads `<home>/users.yaml` when it changes on disk.
+///
+/// Approving a colleague is meant to be a line in a file you can commit and
+/// diff. Reading that file once at startup turned it into an ops task instead:
+/// edit, then restart the service. So resolution stats the file and re-reads it
+/// when the stamp moves.
+///
+/// **A reload can only ever replace a good roster with another good roster.**
+/// Two ways it could otherwise go wrong, and both would widen access rather
+/// than narrow it, because an absent or unreadable roster means "every
+/// authenticated user is an admin":
+///
+/// - a **malformed** file (a typo mid-edit, a half-written save) must not fall
+///   back to the permissive default;
+/// - a **deleted** file must not either, which would make `rm users.yaml` a
+///   privilege escalation on a running server.
+///
+/// In both cases the last good roster stays in force and the error is logged.
+/// The stamp still advances, so one bad edit logs once rather than on every
+/// request, and fixing the file is picked up on the next one.
+pub struct Roster {
+    home: std::path::PathBuf,
+    current: std::sync::RwLock<Loaded>,
+}
+
+struct Loaded {
+    users: std::sync::Arc<Users>,
+    /// `None` when the file is absent. Size rides along with the timestamp
+    /// because some filesystems only keep mtime to the second, and two edits
+    /// inside one second is exactly what fixing a typo looks like.
+    stamp: Option<(std::time::SystemTime, u64)>,
+}
+
+impl Roster {
+    /// Read the roster once. An unreadable or malformed file is an error here,
+    /// which aborts startup: there is no last-good roster to fall back to yet,
+    /// and starting with the permissive default is the outcome this type exists
+    /// to prevent.
+    pub fn load(home: &std::path::Path) -> anyhow::Result<Self> {
+        let users = Users::load(home)?;
+        Ok(Self {
+            home: home.to_path_buf(),
+            current: std::sync::RwLock::new(Loaded {
+                users: std::sync::Arc::new(users),
+                stamp: Self::stamp(&Users::path(home)),
+            }),
+        })
+    }
+
+    /// Wrap an already-built roster, for tests and callers with no home on disk.
+    /// Never reloads, because there is no file to watch.
+    pub fn fixed(users: Users) -> Self {
+        Self {
+            home: std::path::PathBuf::new(),
+            current: std::sync::RwLock::new(Loaded {
+                users: std::sync::Arc::new(users),
+                stamp: None,
+            }),
+        }
+    }
+
+    /// The roster to answer this request with, re-reading first if the file
+    /// moved. One `stat` per call; a watcher would be a dependency for no gain.
+    pub fn current(&self) -> std::sync::Arc<Users> {
+        if self.home.as_os_str().is_empty() {
+            return self.current.read().unwrap().users.clone();
+        }
+        let path = Users::path(&self.home);
+        let stamp = Self::stamp(&path);
+        {
+            let held = self.current.read().unwrap();
+            if held.stamp == stamp {
+                return held.users.clone();
+            }
+        }
+        let mut held = self.current.write().unwrap();
+        // Another thread may have reloaded while we waited for the lock.
+        if held.stamp == stamp {
+            return held.users.clone();
+        }
+        // Advance the stamp whichever way this goes, so a file we refuse is
+        // refused once rather than on every request until someone touches it.
+        held.stamp = stamp;
+        match Users::load(&self.home) {
+            Ok(fresh) if fresh.is_configured() || !held.users.is_configured() => {
+                tracing::info!("users.yaml reloaded: {}", fresh.summary());
+                held.users = std::sync::Arc::new(fresh);
+            }
+            Ok(_) => {
+                // Loaded fine and came back unconfigured, which means the file
+                // is gone. Honouring it would promote every signed-in visitor.
+                tracing::error!(
+                    "{} has disappeared; keeping the roster already in force, \
+                     because no roster means every authenticated user is an admin",
+                    path.display()
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{} could not be read ({e:#}); keeping the roster already in force",
+                    path.display()
+                );
+            }
+        }
+        held.users.clone()
+    }
+
+    /// `(modified, len)`, or `None` when the file is absent or unreadable.
+    fn stamp(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,6 +634,146 @@ mod tests {
 
         // Every note a loopback instance ever wrote used the key "local".
         assert!(SubjectId::local().matches(Some("local")));
+    }
+
+    /// Rewrite the roster between assertions.
+    ///
+    /// Every call below changes the file's *length* as well as its contents,
+    /// which matters: the reload stamp is `(mtime, len)`, so these tests detect
+    /// the change through the size half and do not depend on how finely the
+    /// filesystem records mtime. That is the same reason the stamp carries size
+    /// in the first place, since two edits inside one second is exactly what
+    /// fixing a typo looks like.
+    fn rewrite(path: &std::path::Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn a_roster_edit_takes_effect_without_a_restart() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = Users::path(tmp.path());
+        rewrite(&path, "users:\n  - id: boss@x.edu\n    role: admin\n");
+        let roster = Roster::load(tmp.path()).unwrap();
+
+        let alice = SubjectId::parse("alice@x.edu").unwrap();
+        assert_eq!(
+            roster.current().resolve(alice.clone()).role(),
+            Role::Reader,
+            "not on the roster yet"
+        );
+
+        // Approving someone is meant to be one line in a file, not a restart.
+        rewrite(
+            &path,
+            "users:\n  - id: boss@x.edu\n    role: admin\n  - id: alice@x.edu\n    role: curator\n",
+        );
+        assert_eq!(
+            roster.current().resolve(alice.clone()).role(),
+            Role::Curator,
+            "the edit should be picked up on the next request"
+        );
+
+        // And revoking works the same way, which is the direction that matters
+        // when somebody leaves.
+        rewrite(&path, "users:\n  - id: boss@x.edu\n    role: admin\n");
+        assert_eq!(roster.current().resolve(alice).role(), Role::Reader);
+    }
+
+    #[test]
+    fn a_malformed_roster_keeps_the_last_good_one() {
+        // The most important test here. An unreadable roster must not fall back
+        // to "no roster", because that means every authenticated user is an
+        // admin: a typo mid-edit would promote everyone the proxy admits.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = Users::path(tmp.path());
+        rewrite(&path, "users:\n  - id: alice@x.edu\n    role: curator\n");
+        let roster = Roster::load(tmp.path()).unwrap();
+        let alice = SubjectId::parse("alice@x.edu").unwrap();
+        let mallory = SubjectId::parse("mallory@x.edu").unwrap();
+        assert_eq!(
+            roster.current().resolve(alice.clone()).role(),
+            Role::Curator
+        );
+
+        rewrite(
+            &path,
+            "users:\n  - id: alice@x.edu\n    role: curator\n  - id: [",
+        );
+        assert_eq!(
+            roster.current().resolve(mallory.clone()).role(),
+            Role::Reader,
+            "a broken roster must NOT promote a stranger to admin"
+        );
+        assert_eq!(
+            roster.current().resolve(alice.clone()).role(),
+            Role::Curator,
+            "the last good roster stays in force"
+        );
+
+        // An unknown role, which parses as YAML but not as a roster.
+        rewrite(&path, "users:\n  - id: alice@x.edu\n    role: wizard\n");
+        assert_eq!(
+            roster.current().resolve(mallory.clone()).role(),
+            Role::Reader
+        );
+
+        // Fixing it is picked up without a restart.
+        rewrite(&path, "users:\n  - id: mallory@x.edu\n    role: admin\n");
+        assert_eq!(roster.current().resolve(mallory).role(), Role::Admin);
+        assert_eq!(
+            roster.current().resolve(alice).role(),
+            Role::Reader,
+            "and the repaired file fully replaces the old one"
+        );
+    }
+
+    #[test]
+    fn a_deleted_roster_does_not_promote_anybody() {
+        // `rm users.yaml` would otherwise be a privilege escalation on a running
+        // server: Users::load reports an absent file as the permissive default.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = Users::path(tmp.path());
+        rewrite(&path, "users:\n  - id: alice@x.edu\n    role: curator\n");
+        let roster = Roster::load(tmp.path()).unwrap();
+        assert!(roster.current().is_configured());
+
+        std::fs::remove_file(&path).unwrap();
+        let after = roster.current();
+        assert!(after.is_configured(), "the last good roster stays in force");
+        assert_eq!(
+            after
+                .resolve(SubjectId::parse("mallory@x.edu").unwrap())
+                .role(),
+            Role::Reader,
+            "deleting the roster must not make strangers admins"
+        );
+
+        // Putting a file back still works.
+        rewrite(&path, "users:\n  - id: mallory@x.edu\n    role: admin\n");
+        assert_eq!(
+            roster
+                .current()
+                .resolve(SubjectId::parse("mallory@x.edu").unwrap())
+                .role(),
+            Role::Admin
+        );
+    }
+
+    #[test]
+    fn an_absent_roster_is_still_the_permissive_default_on_a_workstation() {
+        // The server path refuses to start in this state (see
+        // `authz::a_server_without_a_roster_refuses_to_start`), but the default
+        // itself is unchanged, and a workstation reaches it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let roster = Roster::load(tmp.path()).unwrap();
+        assert!(!roster.current().is_configured());
+        assert_eq!(
+            roster
+                .current()
+                .resolve(SubjectId::parse("anyone@x.edu").unwrap())
+                .role(),
+            Role::Admin
+        );
     }
 
     /// Write a `users.yaml` into a temp home and load it.
