@@ -6,14 +6,31 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
+use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::mpsc;
 use tower_http::compression::CompressionLayer;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::search::SearchIndex;
+
+/// How long a request that should be quick is allowed to take.
+///
+/// Every route under this bound answers from memory, the index, or an embedded
+/// asset. Thirty seconds is far longer than any of them has a right to need, so
+/// hitting it means something has gone wrong rather than that a visitor asked
+/// for too much, and the 503 is the honest answer to "is this server healthy".
+/// Picking a tighter number would start refusing legitimate work on a cold
+/// index or a loaded machine, for no gain: this is a backstop, not a budget.
+///
+/// It only became a real bound once index reads moved to the blocking pool —
+/// see [`AppState::read_index`]. A timeout is a future racing a timer, and
+/// neither is polled while the runtime's workers sit inside Tantivy, so before
+/// that change this layer would have been most inert exactly when it mattered.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 mod api;
 mod assets;
@@ -232,6 +249,41 @@ pub struct Providers {
 }
 
 impl AppState {
+    /// Run a read against the search index on a blocking thread.
+    ///
+    /// Tantivy is synchronous and CPU-bound, and every handler here used to
+    /// call it inline. On tokio's multi-threaded runtime that occupies a worker
+    /// for the whole query, and there is one worker per core by default, so a
+    /// handful of concurrent expensive queries starves the executor. Everything
+    /// else stops with it: `/health` stops answering, so an orchestrator starts
+    /// failing the container over for reasons it cannot see.
+    ///
+    /// It also defeats the obvious mitigation. A request timeout only produces
+    /// a response when its future is polled, and a starved runtime polls
+    /// nothing, so the layer meant to cut these requests off is inert exactly
+    /// when it is needed. Moving the work to the blocking pool is what makes a
+    /// timeout mean anything, which is why it comes first.
+    ///
+    /// The `Arc` is cloned rather than the read guard held across the call.
+    /// Holding it would make [`AppState::reload_searcher`]'s write lock wait on
+    /// every in-flight query, so a busy server could stall an ingest's swap.
+    ///
+    /// A panic inside `f` is re-raised on the handler task, which is what
+    /// calling Tantivy inline did too: this changes where the work runs, not
+    /// what a bug in it does.
+    pub(super) async fn read_index<T, F>(&self, f: F) -> T
+    where
+        F: FnOnce(&SearchIndex) -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        let index = Arc::clone(&self.search.read().unwrap());
+        match tokio::task::spawn_blocking(move || f(&index)).await {
+            Ok(value) => value,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => std::panic::panic_any(e.to_string()),
+        }
+    }
+
     /// Re-open the read-only search index and swap it in, so documents committed
     /// by a management-mode ingest become visible to search without a restart.
     /// Called from the blocking add-archive task after `index_location` commits.
@@ -374,6 +426,8 @@ fn build_router(
         config.site_authority.clone()
     };
 
+    // Everything here answers from memory, the index, or an embedded asset, so
+    // it has a time bound. `/files/{id}` does not and is merged in below.
     let mut app = Router::new()
         .route("/", get(homepage))
         .route("/health", get(health))
@@ -385,14 +439,27 @@ fn build_router(
         .route("/crawl/{id}", get(crawl_page))
         .route("/thumb/{id}", get(thumb_handler))
         .route("/collection-thumb/{id}", get(collection_thumb_handler))
-        .route("/files/{id}", get(serve_file))
         .route("/replay/viewer", get(replay_viewer))
         .route("/api/search", get(search_api))
         // Public read of page annotations (display is public; writes are gated below).
         .route("/api/annotations", get(list_annotations))
         .route("/assets/{*path}", get(asset_handler))
         .route("/replay/", get(replay_index))
-        .route("/replay/{*path}", get(replay_handler));
+        .route("/replay/{*path}", get(replay_handler))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            REQUEST_TIMEOUT,
+        ));
+
+    // Streaming a WACZ has no sensible time bound: it is whole gigabytes, and a
+    // reader on a slow link is doing nothing wrong. Replay also issues many
+    // ranged reads per page, so this is the busiest route indice serves.
+    //
+    // Which leaves it the one anonymous route a timeout does not cover. That is
+    // a concurrency problem rather than a duration one — many open streams, not
+    // one slow request — and the answer to it is a connection limit, which is
+    // the next piece of this ticket rather than something to fake with a clock.
+    let streaming = Router::new().route("/files/{id}", get(serve_file));
 
     // The write surface: the browser management UI plus its endpoints — add a
     // crawl (`index_location`, streaming progress over SSE), upload a WACZ, and
@@ -403,7 +470,7 @@ fn build_router(
     // gets 403 rather than 404. A 404 for an authorization failure is obscurity,
     // and it used to mean the same request answered differently depending on a
     // flag rather than on who was asking.
-    let mut manage_routes = Router::new()
+    let manage_routes = Router::new()
         .route("/manage/collections/new", get(new_collection_form))
         .route("/manage/edit/{id}", get(edit_collection_form))
         .route("/manage/add", get(accession_desk_page))
@@ -411,13 +478,6 @@ fn build_router(
         // login, then bounces back to where the user came from.
         .route("/manage/login", get(manage_login))
         .route("/api/archives", post(add_archive))
-        // File upload can be large (a whole WACZ), so lift axum's 2 MB default
-        // body limit on this route only.
-        .route(
-            "/api/archives/upload",
-            post(upload_archive).layer(DefaultBodyLimit::disable()),
-        )
-        .route("/api/archives/{id}/events", get(add_archive_events))
         .route("/api/collections", post(create_collection))
         // Delete a crawl or a collection (removes files + updates the index).
         .route("/api/crawls/{id}/delete", post(delete_crawl_handler))
@@ -427,20 +487,47 @@ fn build_router(
         )
         // Browsertrix import: browse (orgs → collections → items) using the
         // binary-supplied credentials, then import selected items as a job.
-        .route("/api/browsertrix/orgs", get(bx_orgs))
-        .route("/api/browsertrix/collections", get(bx_collections))
-        .route("/api/browsertrix/items", get(bx_items))
         .route("/api/browsertrix/import", post(bx_import))
-        // Archive-It import: browse (collections → crawls) using the
-        // binary-supplied credentials, then import selected crawls as a job.
-        .route("/api/archiveit/collections", get(ait_collections))
-        .route("/api/archiveit/crawls", get(ait_crawls))
+        // Archive-It import: the same shape.
         .route("/api/archiveit/import", post(ait_import))
         // Page annotations: create/edit/delete, gated like the rest. The
         // public GET /api/annotations lives in the read block above.
         .route("/api/annotations", post(create_annotation))
         .route("/api/annotations/{id}", post(update_annotation))
-        .route("/api/annotations/{id}/delete", post(delete_annotation));
+        .route("/api/annotations/{id}/delete", post(delete_annotation))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            REQUEST_TIMEOUT,
+        ));
+
+    // Management routes with no time bound, for three different reasons.
+    //
+    // The upload streams a whole WACZ in, so it is as long as the client's link
+    // is slow. The SSE stream is long-lived by design: it reports an ingest that
+    // may run for hours, and timing it out would blank the progress bar on a job
+    // that is still running perfectly well. The browse endpoints call out to
+    // Browsertrix and Archive-It, where the request is only as quick as someone
+    // else's service — a bound there belongs on the outbound client, which has
+    // none either (`rustyweb-stream-fetch-timeouts-v3su`), rather than on a
+    // curator's page.
+    //
+    // All of these require a curator, so none is reachable by the anonymous
+    // caller this ticket is about.
+    let manage_streaming = Router::new()
+        // File upload can be large (a whole WACZ), so lift axum's 2 MB default
+        // body limit on this route only.
+        .route(
+            "/api/archives/upload",
+            post(upload_archive).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/archives/{id}/events", get(add_archive_events))
+        .route("/api/browsertrix/orgs", get(bx_orgs))
+        .route("/api/browsertrix/collections", get(bx_collections))
+        .route("/api/browsertrix/items", get(bx_items))
+        .route("/api/archiveit/collections", get(ait_collections))
+        .route("/api/archiveit/crawls", get(ait_crawls));
+
+    let mut manage_routes = manage_routes.merge(manage_streaming);
 
     // Forward-auth: reject any management request that doesn't carry the
     // trusted proxy's shared secret + a non-empty identity header. Layered
@@ -455,7 +542,7 @@ fn build_router(
         ));
     }
 
-    app = app.merge(manage_routes);
+    app = app.merge(streaming).merge(manage_routes);
 
     // Outside `manage_routes` on purpose: logout must NOT be
     // forward-auth-gated, because that middleware re-sets the display

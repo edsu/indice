@@ -17,7 +17,7 @@ Full-text search as JSON, using the same engine behind the [search page](/docs/g
 
 | Param | Required | Description |
 |-------|----------|-------------|
-| `q` | yes | The query. Supports the full [search syntax](/docs/guides/searching/), including field filters like `site:example.com`, `year:2021`, `type:pdf`, `lang:en`, and `collection:<slug>`, so facets are expressed inside `q`. |
+| `q` | yes | The query. Supports the full [search syntax](/docs/guides/searching/), including field filters like `site:example.com`, `year:2021`, `type:pdf`, `lang:en`, and `collection:<slug>`, so facets are expressed inside `q`. Capped at **2048 bytes**; a longer one gets `400` naming the limit. |
 | `limit` | no | Max results to return. Default `20`, capped at `200`. |
 
 ```sh
@@ -83,6 +83,12 @@ Creating, editing, and deleting notes are management-gated write endpoints (`POS
 ## `GET /health`
 
 A liveness check: returns `200 OK` with the body `ok`. Useful for container/orchestrator health probes.
+
+## Timeouts
+
+Routes that should answer quickly carry a 30-second budget and return `503` if they exceed it. That is a backstop rather than a service level: in practice these answer in milliseconds, and a 503 here means something is wrong on the server, not that you asked for too much.
+
+Four kinds of request are deliberately outside it, because they have no sensible time bound: `GET /files/{id}` streams whole archives, the SSE progress stream follows a job that may run for hours, uploads are as slow as the link, and the Browsertrix and Archive-It browse endpoints wait on someone else's service.
 
 ## Machine-readable replay endpoints
 

@@ -26,12 +26,14 @@ pub(super) async fn search_api(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
+    if let Some(refusal) = query_too_long(&params.q) {
+        return refusal;
+    }
     let limit = params.limit.unwrap_or(20).min(200);
+    let q = params.q;
     match state
-        .search
-        .read()
-        .unwrap()
-        .search_faceted(&params.q, limit, 0)
+        .read_index(move |s| s.search_faceted(&q, limit, 0))
+        .await
     {
         Ok(response) => {
             let body = serde_json::json!({

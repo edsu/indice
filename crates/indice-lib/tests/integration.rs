@@ -213,6 +213,55 @@ async fn search_api_returns_results() {
     );
 }
 
+/// An over-length query is refused on every surface that parses one.
+///
+/// `q` reaches Tantivy's parser straight from an anonymous URL, and each term
+/// in it costs a dictionary lookup, so an unbounded `q` lets a stranger buy
+/// work by the kilobyte. Before this there was a limit, but it was hyper's cap
+/// on the request line: an accident of the HTTP stack rather than a decision,
+/// and nothing anyone had chosen or could change.
+///
+/// Asserted on all three entry points together, because the cheap mistake here
+/// is to bound one of them and leave another open.
+#[tokio::test]
+async fn an_over_length_query_is_refused_everywhere_it_is_parsed() {
+    let tmp = make_index(&["simple.wacz"]);
+    // Just over the 2 KiB limit, which is itself far past anything typed.
+    let huge = "a".repeat(2049);
+
+    for path in [
+        format!("/api/search?q={huge}"),
+        format!("/search?q={huge}"),
+        format!("/collection/simple/pages?search={huge}"),
+    ] {
+        let app = public_router(tmp.path());
+        let req = Request::get(&path).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{} should refuse an over-length query",
+            path.split('?').next().unwrap()
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("2048"),
+            "the refusal should name the limit, got: {text}"
+        );
+    }
+
+    // And a query right up to the limit still works, so the bound is a bound
+    // and not an off-by-one that refuses real queries.
+    let ok = "a".repeat(2048);
+    let app = public_router(tmp.path());
+    let req = Request::get(format!("/api/search?q={ok}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "2048 bytes is allowed");
+}
+
 #[tokio::test]
 async fn search_api_result_includes_crawl_fields() {
     let tmp = make_index(&["simple.wacz"]);
