@@ -31,6 +31,49 @@ fn home_with_roster() -> tempfile::TempDir {
     tmp
 }
 
+/// Upload a fixture WACZ and return the job JSON.
+///
+/// These tests want a crawl in the index and do not care how it got there.
+/// They used to POST the fixture's path to `/api/archives`; a path on the
+/// server's own disk is no longer accepted over HTTP in either shape (see
+/// `a_crawl_is_added_by_url_or_upload_never_by_a_server_side_path`), so they
+/// upload the bytes instead, which is the route a curator actually has.
+async fn upload_fixture(base: &str, wacz: &str, collection: &str) -> serde_json::Value {
+    let bytes = std::fs::read(fixture(wacz)).unwrap();
+    let boundary = "----indiceManageUpload";
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"collection\"\r\n\r\n{collection}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{wacz}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let url = format!("{base}/api/archives/upload");
+    tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header(
+                "content-type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(&body[..])
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 202, "upload should be accepted");
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap()
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -93,21 +136,8 @@ async fn manage_add_archive_indexes_and_reloads_search() {
     let before: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(before["total"], 0, "index should start empty");
 
-    // POST an add-archive job for a local fixture WACZ (the native-dialog path case).
-    let post_url = format!("{base}/api/archives");
-    let path = fixture("simple.wacz").to_string_lossy().to_string();
-    let body = serde_json::json!({ "path": path, "collection": "test" }).to_string();
-    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
-        let mut res = agent()
-            .post(&post_url)
-            .header("content-type", "application/json")
-            .send(body)
-            .unwrap();
-        assert_eq!(res.status().as_u16(), 202, "add-archive should be accepted");
-        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
-    })
-    .await
-    .unwrap();
+    // Accession a fixture WACZ.
+    let job = upload_fixture(&base, "simple.wacz", "test").await;
     let job_id = job["job"].as_u64().expect("response carries a job id");
 
     // Stream the job's SSE progress to completion — the stream closes when the job
@@ -458,20 +488,8 @@ async fn manage_delete_crawl_removes_it_from_index_and_disk() {
     let home = tmp.path().to_path_buf();
     let (base, server) = serve(home.clone(), local_access()).await;
 
-    // Add a crawl (POST + drain its SSE to completion).
-    let post_url = format!("{base}/api/archives");
-    let path = fixture("simple.wacz").to_string_lossy().to_string();
-    let body = serde_json::json!({ "path": path, "collection": "test" }).to_string();
-    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
-        let mut res = agent()
-            .post(&post_url)
-            .header("content-type", "application/json")
-            .send(body)
-            .unwrap();
-        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
-    })
-    .await
-    .unwrap();
+    // Add a crawl (upload + drain its SSE to completion).
+    let job = upload_fixture(&base, "simple.wacz", "test").await;
     let job_id = job["job"].as_u64().unwrap();
     let (_, events) = get(format!("{base}/api/archives/{job_id}/events")).await;
     assert!(
@@ -939,20 +957,7 @@ async fn a_finding_aid_save_cannot_erase_a_concurrent_ingest() {
 
         // Start an ingest of the largest fixture, so the job is still running
         // when the edit lands.
-        let path = fixture("a.wacz").to_string_lossy().to_string();
-        let add = format!("{base}/api/archives");
-        let body = serde_json::json!({ "path": path, "collection": "Contended" }).to_string();
-        let job: serde_json::Value = tokio::task::spawn_blocking(move || {
-            let mut res = agent()
-                .post(&add)
-                .header("content-type", "application/json")
-                .send(body)
-                .unwrap();
-            assert_eq!(res.status().as_u16(), 202);
-            serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
-        })
-        .await
-        .unwrap();
+        let job = upload_fixture(&base, "a.wacz", "Contended").await;
         let job_id = job["job"].as_u64().unwrap();
 
         // ...and edit the finding aid while it runs.
@@ -1236,21 +1241,24 @@ async fn post_headers(url: String, headers: Vec<(&'static str, &'static str)>, b
     .unwrap()
 }
 
-/// A server refuses to add an archive by filesystem path; a workstation does not.
+/// A crawl is added by URL or by upload, never by a path on the server's disk.
 ///
-/// `path` on `POST /api/archives` goes to `Source::parse`, where an `http(s)`
+/// `path` on `POST /api/archives` went to `Source::parse`, where an `http(s)`
 /// prefix makes it a URL and *anything else is a path on the server's disk*.
-/// That is the feature on a workstation: point indice at a WACZ on a NAS mount
-/// and it files it in without a copy. Behind an auth proxy the curator and the
-/// operator have come apart, and an approved stranger could ask the server to
-/// read any `.wacz` it can reach and file it into a collection they can then
-/// read back.
+/// Over HTTP that is a bad trade in either shape. On a server an approved
+/// stranger could make the machine read any `.wacz` it can reach — another
+/// tenant's archive, a backup staged on the same volume — and file it into a
+/// collection they can read back. On a workstation it was safe and unused: the
+/// file is already on the disk, and `indice index` is a shorter route to it
+/// than a web form.
 ///
-/// The capability is not removed, only its remote trigger. The operator keeps
-/// `indice index /path/to.wacz`, and a curator keeps the upload endpoint, which
-/// carries the bytes instead of naming someone else's file.
+/// An earlier version of this test asserted the path was refused on a server
+/// and accepted on a workstation, behind a flag to opt back in. That bought a
+/// capability nobody wanted at the price of a setting whose right value
+/// differed by deployment shape. The command line keeps the capability, which
+/// is where a mounted archive volume gets accessioned from anyway.
 #[tokio::test]
-async fn a_server_refuses_to_add_an_archive_by_server_side_path() {
+async fn a_crawl_is_added_by_url_or_upload_never_by_a_server_side_path() {
     let tmp = home_with_roster();
     let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         "x-forwarded-email",
@@ -1295,6 +1303,10 @@ async fn a_server_refuses_to_add_an_archive_by_server_side_path() {
     }))
     .await;
     assert_eq!(status, 400, "a server-side path must be refused");
+    assert!(
+        body.contains("indice index"),
+        "and should point at the command line, which still takes one: {body}"
+    );
     assert!(
         body.contains("URL") && body.contains("upload"),
         "the refusal should say what to do instead, got: {body}"

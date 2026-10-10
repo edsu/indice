@@ -119,34 +119,34 @@ impl crate::index::IndexProgress for ChannelProgress {
     }
 }
 
-/// Refuse a location that names a file on the server, when the caller reached
-/// us over the network.
+/// Adding by reference means a URL. A path on the server's disk is refused.
 ///
-/// `path` is handed to `Source::parse`, where an `http(s)` prefix makes it a URL
-/// and **anything else is a filesystem path**. On a workstation that is the
-/// feature: point indice at a WACZ on a NAS mount and it files it into the
-/// archive without a copy. Behind an auth proxy it is something else, because
-/// the curator and the operator have come apart. An approved stranger could ask
-/// the server to read any `.wacz` it can reach — another tenant's archive, a
-/// backup staged on the same volume — and file it into a collection where they
-/// can then read it back.
+/// `location` goes to `Source::parse`, where an `http(s)` prefix makes it a URL
+/// and **anything else is a filesystem path**. Over HTTP that is a bad trade
+/// whichever shape indice is in. On a server the curator and the operator have
+/// come apart, so an approved stranger could ask the server to read any `.wacz`
+/// it can reach — another tenant's archive, a backup staged on the same volume
+/// — and file it into a collection where they can read it back. On a
+/// workstation it is safe and nobody used it: the file is already on the disk,
+/// and the command line is a shorter route to it than a web form.
 ///
-/// The capability is not removed, only the remote trigger for it. The operator
-/// keeps `indice index /path/to.wacz` on the command line, where they are
-/// standing at the machine, and a curator keeps the upload endpoint, which
+/// An earlier version of this refused a path only behind an auth proxy, with a
+/// flag to opt back in. That bought one capability nobody wanted at the price
+/// of a setting whose correct value differed by deployment shape, which is the
+/// kind of thing this codebase has been removing all year.
+///
+/// The capability itself is not gone, only its HTTP surface. `indice index
+/// /path/to.wacz` is unchanged, which is where a mounted archive volume is
+/// accessioned from anyway, and a curator keeps the upload endpoint, which
 /// carries the bytes rather than naming someone else's file.
-fn refuse_server_side_path(state: &Arc<AppState>, location: &str) -> Option<Response> {
-    if state.allow_server_side_locations {
-        return None;
-    }
-    state.forward_auth.as_ref()?;
+fn require_url_location(location: &str) -> Option<Response> {
     let is_url = location.starts_with("http://") || location.starts_with("https://");
     (!is_url).then(|| {
         (
             StatusCode::BAD_REQUEST,
-            "this indice runs behind an authenticating proxy, so it adds archives by URL \
-             rather than by a path on the server's own disk. Give an http(s) URL, or \
-             upload the file.",
+            "add an archive by an http(s) URL, or upload the file. A path on the \
+             server's own disk is not accepted here; use `indice index` on the \
+             machine itself for that.",
         )
             .into_response()
     })
@@ -215,7 +215,7 @@ fn start_index_job(
     // rather than the operator, so a URL may only point at a public address.
     // A workstation keeps the unrestricted policy: there, the two are the same
     // person, and fetching from a NAS on the LAN is the ordinary case.
-    let fetch = if state.forward_auth.is_some() && !state.allow_server_side_locations {
+    let fetch = if state.forward_auth.is_some() && !state.allow_internal_fetch {
         crate::http_range::FetchPolicy::PublicOnly
     } else {
         crate::http_range::FetchPolicy::Unrestricted
@@ -321,7 +321,7 @@ pub(super) async fn add_archive(
         &crate::collections::slugify(&req.collection),
         Some(serde_json::json!({ "collection_name": req.collection })),
     );
-    if let Some(refusal) = refuse_server_side_path(&state, &req.path) {
+    if let Some(refusal) = require_url_location(&req.path) {
         return refusal;
     }
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);

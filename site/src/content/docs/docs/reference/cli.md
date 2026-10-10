@@ -91,7 +91,7 @@ indice serve [OPTIONS]
 | `--auth-proxy-header <HEADER>` | Read the authenticated user from this header (e.g. `X-Forwarded-Email`) behind a trusted proxy. Requires `--auth-proxy-secret` |
 | `--auth-proxy-secret <SECRET>` | Shared secret the proxy must send in `X-Indice-Auth-Secret`. Also `INDICE_AUTH_PROXY_SECRET` |
 | `--site-url <URL>` | This site's public URL, for the cross-site (CSRF) check on writes. Also `INDICE_SITE_URL` |
-| `--allow-server-side-locations` | Let curators add archives by a path on this server's disk, and by a URL resolving to this machine or network. Refused by default behind an auth proxy; no effect on a workstation |
+| `--allow-internal-fetch` | Let curators add archives by a URL resolving to this machine or network. Refused by default behind an auth proxy; no effect on a workstation |
 
 There is no flag for the write surface. Every route is always mounted, and who may use it follows
 from two things already on the command line:

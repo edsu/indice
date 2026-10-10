@@ -22,14 +22,14 @@ What the controls are:
 
 ![The Edit collection finding-aid form: name (fixed), description, creator, dates, curator, rights, comma-separated subjects, and a Markdown narrative field, with a Save changes button](../../../../assets/docs/edit-collection.png)
 
-![The Add crawls accession desk: a collection selector and source tabs (Upload, Path / URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
+![The Add crawls accession desk: a collection selector and source tabs (Upload, URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
 
-:::caution[On a server, "Path / URL" means URL]
-Adding by **a path on the server's own disk** is refused once indice runs behind an auth proxy, and a **URL must resolve to a public address**. On a workstation neither is restricted.
+:::note[Adding by reference means a URL]
+The accession desk takes an `http(s)://` URL, not a path on the server's disk. That was accepted once and is not any more, in either shape.
 
-The capability is not gone, only its remote trigger. A path reads any `.wacz` the server can see, which on a shared host may be someone else's; a URL makes the server fetch an address a curator chose, which inside an institution reaches far more than it would on a rented VM, cloud metadata included. On a workstation you *are* the operator, so pointing indice at a WACZ on a NAS mount is the ordinary case and stays that way. The operator also keeps `indice index /path/to.wacz` on the command line, and curators keep the upload tab, which carries the bytes rather than naming a file.
+On a server it hands an approved stranger the ability to make the machine read any `.wacz` it can reach and file it into a collection they can read back. On a workstation it was safe and nobody used it, since the file is already on the disk and `indice index /path/to.wacz` is a shorter route than a web form. That command is unchanged, and it is still how a mounted archive volume gets accessioned.
 
-If your archive genuinely lives on a mounted volume, or you fetch from an internal host such as your own Browsertrix, start indice with `--allow-server-side-locations`. Your own Browsertrix and Archive-It credentials are unaffected either way: those hosts come from the environment, never from a request, so they were never the thing being guarded.
+A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. Your Browsertrix and Archive-It credentials are unaffected: those hosts come from the environment, never from a request, so they were never what this guards.
 :::
 
 Every one of these routes is always mounted. Whether you may use them is an authorization question, answered below, so an anonymous visitor gets a `403` rather than a page that does not exist.
