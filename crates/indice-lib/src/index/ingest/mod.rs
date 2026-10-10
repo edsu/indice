@@ -45,7 +45,16 @@ mod tests;
 /// fixity — asks this handle instead of re-deciding remote-vs-local for itself.
 pub(super) enum WaczAccess {
     /// Read over HTTP range requests, without downloading the whole file.
-    Stream { url: String },
+    ///
+    /// Carries the policy the URL was admitted under, rather than leaving each
+    /// later fetch to decide for itself. Every read of a streamed WACZ goes
+    /// through here — the datapackage, fixity, the page pass, a nested WACZ —
+    /// so attaching the policy to the handle is what stops one of them being
+    /// forgotten later.
+    Stream {
+        url: String,
+        fetch: crate::http_range::FetchPolicy,
+    },
     /// Read from a local file: one the curator supplied, one `--download`
     /// fetched into the archive, or a temp copy of a WACZ that couldn't be
     /// streamed. `_tmp` owns that temp file, so it lives exactly as long as the
@@ -66,8 +75,8 @@ impl WaczAccess {
     /// The WACZ's `datapackage.json` metadata (default when it can't be parsed).
     fn read_datapackage(&self) -> Result<crate::wacz::WaczMetadata> {
         Ok(match self {
-            WaczAccess::Stream { url } => {
-                crate::wacz::read_datapackage_from(crate::http_range::open_remote(url)?)
+            WaczAccess::Stream { url, fetch } => {
+                crate::wacz::read_datapackage_from(crate::http_range::open_remote(url, *fetch)?)
                     .unwrap_or_default()
             }
             WaczAccess::Local { path, .. } => read_datapackage(path).unwrap_or_default(),
@@ -82,9 +91,9 @@ impl WaczAccess {
     /// large WACZ, so it gets its own "checksumming" phase and timing.
     fn fixity(&self, progress: &dyn IndexProgress) -> Result<(String, u64)> {
         match self {
-            WaczAccess::Stream { url } => Ok((
+            WaczAccess::Stream { url, fetch } => Ok((
                 String::new(),
-                crate::http_range::open_remote(url)?.total_len(),
+                crate::http_range::open_remote(url, *fetch)?.total_len(),
             )),
             WaczAccess::Local { path, .. } => {
                 progress.phase("checksumming");
@@ -159,6 +168,10 @@ pub struct Ingest<'a> {
     /// rule above because the absence is real information — an unattributed
     /// crawl is one only an admin may delete.
     actor: Option<&'a SubjectId>,
+    /// Where a curator-supplied URL may point, for the SSRF case described on
+    /// [`crate::http_range::FetchPolicy`]. `Default` is `Unrestricted`, which
+    /// keeps the CLI and the workstation unchanged.
+    fetch: crate::http_range::FetchPolicy,
 }
 
 impl<'a> Ingest<'a> {
@@ -175,6 +188,7 @@ impl<'a> Ingest<'a> {
             resolver: None,
             progress: crate::index::no_progress(),
             actor: None,
+            fetch: crate::http_range::FetchPolicy::Unrestricted,
         }
     }
 
@@ -186,6 +200,17 @@ impl<'a> Ingest<'a> {
     }
     /// Fetch a remote WACZ into the archive instead of streaming it in place.
     #[must_use]
+    /// Where a curator-supplied URL may point. See [`crate::http_range::FetchPolicy`].
+    ///
+    /// Defaults to `Unrestricted`, so the CLI and a workstation behave exactly
+    /// as before: the person typing the location is the person running the
+    /// machine, and pointing it at a host on the LAN is an ordinary thing to
+    /// want. The server sets `PublicOnly` when it runs behind an auth proxy.
+    pub fn fetch_policy(mut self, policy: crate::http_range::FetchPolicy) -> Self {
+        self.fetch = policy;
+        self
+    }
+
     pub fn download(mut self, yes: bool) -> Self {
         self.download = yes;
         self

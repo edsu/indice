@@ -1557,7 +1557,11 @@ async fn get_reader_retries_a_transient_status() {
     // get_reader is blocking (ureq); run it off the async runtime.
     let body = tokio::task::spawn_blocking(move || {
         use std::io::Read;
-        let mut r = indice_lib::http_range::get_reader(&url).unwrap();
+        let mut r = indice_lib::http_range::get_reader(
+            &url,
+            indice_lib::http_range::FetchPolicy::Unrestricted,
+        )
+        .unwrap();
         let mut s = String::new();
         r.read_to_string(&mut s).unwrap();
         s
@@ -1944,4 +1948,58 @@ fn a_description_saved_during_an_ingest_is_not_erased() {
         "and both crawls are registered: {:?}",
         manifest.waczs.iter().map(|w| &w.name).collect::<Vec<_>>()
     );
+}
+
+/// Under `PublicOnly`, a fetch that lands on this machine is refused.
+///
+/// This is the server-side request forgery guard. `POST /api/archives` takes a
+/// location out of the request body, so behind an auth proxy the address being
+/// fetched was chosen by a curator who may be an approved stranger rather than
+/// the operator. Without this they can make the server knock on any door it can
+/// reach: other services on the host, the rest of the internal network, and the
+/// cloud metadata endpoint that sits on 169.254.169.254 at most providers.
+///
+/// The refusal happens in the resolver rather than before the request, which is
+/// what closes the DNS rebinding window: a name that answers publicly when it
+/// is checked and privately when it is connected to would walk past any
+/// check-then-fetch arrangement, because the second lookup decides where the
+/// socket goes. Here there is only one lookup.
+///
+/// The test reaches 127.0.0.1 directly, which is the same address family the
+/// metadata and internal-service cases use and the only one a test can rely on
+/// being there. The neighbouring test fetches the *same* server under
+/// `Unrestricted` and succeeds, so this pins the policy rather than a broken
+/// fixture.
+#[tokio::test]
+async fn public_only_refuses_a_fetch_that_lands_on_this_machine() {
+    use indice_lib::http_range::FetchPolicy;
+
+    let app = axum::Router::new().route("/f", axum::routing::get(|| async { "hello world" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let url = format!("http://{addr}/f");
+    let (blocked, allowed) = tokio::task::spawn_blocking(move || {
+        let blocked = indice_lib::http_range::get_reader(&url, FetchPolicy::PublicOnly)
+            .err()
+            .map(|e| format!("{e:#}"));
+        // Same URL, same server, policy off: proves the refusal is the policy.
+        let allowed = indice_lib::http_range::get_reader(&url, FetchPolicy::Unrestricted).is_ok();
+        (blocked, allowed)
+    })
+    .await
+    .unwrap();
+    server.abort();
+
+    let msg = blocked.expect("a loopback fetch must be refused under PublicOnly");
+    assert!(
+        msg.contains("127.0.0.1") && msg.contains("refusing to fetch"),
+        "the refusal should name the address it refused, got: {msg}"
+    );
+    assert!(allowed, "the same fetch must still work unrestricted");
 }

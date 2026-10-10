@@ -24,6 +24,14 @@ What the controls are:
 
 ![The Add crawls accession desk: a collection selector and source tabs (Upload, Path / URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
 
+:::caution[On a server, "Path / URL" means URL]
+Adding by **a path on the server's own disk** is refused once indice runs behind an auth proxy, and a **URL must resolve to a public address**. On a workstation neither is restricted.
+
+The capability is not gone, only its remote trigger. A path reads any `.wacz` the server can see, which on a shared host may be someone else's; a URL makes the server fetch an address a curator chose, which inside an institution reaches far more than it would on a rented VM, cloud metadata included. On a workstation you *are* the operator, so pointing indice at a WACZ on a NAS mount is the ordinary case and stays that way. The operator also keeps `indice index /path/to.wacz` on the command line, and curators keep the upload tab, which carries the bytes rather than naming a file.
+
+If your archive genuinely lives on a mounted volume, or you fetch from an internal host such as your own Browsertrix, start indice with `--allow-server-side-locations`. Your own Browsertrix and Archive-It credentials are unaffected either way: those hosts come from the environment, never from a request, so they were never the thing being guarded.
+:::
+
 Every one of these routes is always mounted. Whether you may use them is an authorization question, answered below, so an anonymous visitor gets a `403` rather than a page that does not exist.
 
 ## On a workstation

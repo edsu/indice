@@ -36,6 +36,19 @@ fn home_with_roster() -> tempfile::TempDir {
     tmp
 }
 
+/// A proxy config that still permits a server-side path, for the custody tests.
+///
+/// Those accession a fixture from disk, which a networked instance refuses by
+/// default (`a_server_refuses_to_add_an_archive_by_server_side_path`). They are
+/// about who owns a crawl and who may delete it, not about where its bytes came
+/// from, and they need two distinct signed-in curators, which only the proxy
+/// shape provides. So they take the opt-out an institution with a mounted
+/// archive volume would take.
+fn proxy_with_server_side_paths() -> indice_lib::server::ServerConfig {
+    indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(USER_HEADER, SECRET))
+        .allow_server_side_locations(true)
+}
+
 async fn serve(
     home: std::path::PathBuf,
     config: indice_lib::server::ServerConfig,
@@ -268,10 +281,7 @@ async fn every_management_route_demands_the_right_privilege() {
 async fn a_curator_cannot_delete_a_collection_out_from_under_its_notes() {
     let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-        USER_HEADER,
-        SECRET,
-    ));
+    let cfg = proxy_with_server_side_paths();
     let (base, server) = serve(home.clone(), cfg).await;
 
     // An admin accessions a collection and adds a crawl to it.
@@ -604,10 +614,7 @@ async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
     )
     .unwrap();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-        USER_HEADER,
-        SECRET,
-    ));
+    let cfg = proxy_with_server_side_paths();
     let (base, server) = serve(home.clone(), cfg).await;
 
     // Curator "one" accessions a crawl.
@@ -678,10 +685,7 @@ async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
 async fn mutations_are_recorded_with_who_did_them() {
     let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
-    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-        USER_HEADER,
-        SECRET,
-    ));
+    let cfg = proxy_with_server_side_paths();
     let (base, server) = serve(home.clone(), cfg).await;
 
     // A curator accessions, an admin deaccessions.

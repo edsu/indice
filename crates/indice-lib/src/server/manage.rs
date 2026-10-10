@@ -119,6 +119,39 @@ impl crate::index::IndexProgress for ChannelProgress {
     }
 }
 
+/// Refuse a location that names a file on the server, when the caller reached
+/// us over the network.
+///
+/// `path` is handed to `Source::parse`, where an `http(s)` prefix makes it a URL
+/// and **anything else is a filesystem path**. On a workstation that is the
+/// feature: point indice at a WACZ on a NAS mount and it files it into the
+/// archive without a copy. Behind an auth proxy it is something else, because
+/// the curator and the operator have come apart. An approved stranger could ask
+/// the server to read any `.wacz` it can reach — another tenant's archive, a
+/// backup staged on the same volume — and file it into a collection where they
+/// can then read it back.
+///
+/// The capability is not removed, only the remote trigger for it. The operator
+/// keeps `indice index /path/to.wacz` on the command line, where they are
+/// standing at the machine, and a curator keeps the upload endpoint, which
+/// carries the bytes rather than naming someone else's file.
+fn refuse_server_side_path(state: &Arc<AppState>, location: &str) -> Option<Response> {
+    if state.allow_server_side_locations {
+        return None;
+    }
+    state.forward_auth.as_ref()?;
+    let is_url = location.starts_with("http://") || location.starts_with("https://");
+    (!is_url).then(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "this indice runs behind an authenticating proxy, so it adds archives by URL \
+             rather than by a path on the server's own disk. Give an http(s) URL, or \
+             upload the file.",
+        )
+            .into_response()
+    })
+}
+
 /// Body of `POST /api/archives` — add a crawl by reference. Browser byte-upload
 /// uses [`upload_archive`] (`/api/archives/upload`) instead.
 #[derive(Deserialize)]
@@ -178,6 +211,15 @@ fn start_index_job(
     name: Option<String>,
     keepalive: Option<tempfile::TempDir>,
 ) -> u64 {
+    // On a server the person naming the location may be an approved stranger
+    // rather than the operator, so a URL may only point at a public address.
+    // A workstation keeps the unrestricted policy: there, the two are the same
+    // person, and fetching from a NAS on the LAN is the ordinary case.
+    let fetch = if state.forward_auth.is_some() && !state.allow_server_side_locations {
+        crate::http_range::FetchPolicy::PublicOnly
+    } else {
+        crate::http_range::FetchPolicy::Unrestricted
+    };
     let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
@@ -227,6 +269,7 @@ fn start_index_job(
             crate::index::Ingest::new(&job_state.home)
                 .name(name.as_deref())
                 .actor(Some(&actor))
+                .fetch_policy(fetch)
                 .progress(&progress)
                 .index_location(&location, &collection)
         };
@@ -278,6 +321,9 @@ pub(super) async fn add_archive(
         &crate::collections::slugify(&req.collection),
         Some(serde_json::json!({ "collection_name": req.collection })),
     );
+    if let Some(refusal) = refuse_server_side_path(&state, &req.path) {
+        return refusal;
+    }
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }

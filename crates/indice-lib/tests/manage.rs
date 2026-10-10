@@ -1235,3 +1235,80 @@ async fn post_headers(url: String, headers: Vec<(&'static str, &'static str)>, b
     .await
     .unwrap()
 }
+
+/// A server refuses to add an archive by filesystem path; a workstation does not.
+///
+/// `path` on `POST /api/archives` goes to `Source::parse`, where an `http(s)`
+/// prefix makes it a URL and *anything else is a path on the server's disk*.
+/// That is the feature on a workstation: point indice at a WACZ on a NAS mount
+/// and it files it in without a copy. Behind an auth proxy the curator and the
+/// operator have come apart, and an approved stranger could ask the server to
+/// read any `.wacz` it can reach and file it into a collection they can then
+/// read back.
+///
+/// The capability is not removed, only its remote trigger. The operator keeps
+/// `indice index /path/to.wacz`, and a curator keeps the upload endpoint, which
+/// carries the bytes instead of naming someone else's file.
+#[tokio::test]
+async fn a_server_refuses_to_add_an_archive_by_server_side_path() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let signed_in = || {
+        vec![
+            ("x-indice-auth-secret", "s3cret".to_string()),
+            ("x-forwarded-email", "alice@x.edu".to_string()),
+            ("content-type", "application/json".to_string()),
+        ]
+    };
+    let add = |body: serde_json::Value| {
+        let url = format!("{base}/api/archives");
+        let headers = signed_in();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut req = ureq::Agent::config_builder()
+                    .http_status_as_error(false)
+                    .build()
+                    .new_agent()
+                    .post(&url);
+                for (k, v) in headers {
+                    req = req.header(k, &v);
+                }
+                let mut res = req.send(body.to_string()).unwrap();
+                (
+                    res.status().as_u16(),
+                    res.body_mut().read_to_string().unwrap(),
+                )
+            })
+            .await
+            .unwrap()
+        }
+    };
+
+    let (status, body) = add(serde_json::json!({
+        "path": "/etc/secrets/other-tenant.wacz",
+        "collection": "Sneaky",
+    }))
+    .await;
+    assert_eq!(status, 400, "a server-side path must be refused");
+    assert!(
+        body.contains("URL") && body.contains("upload"),
+        "the refusal should say what to do instead, got: {body}"
+    );
+
+    // A URL is still accepted here: this guard is about *where the bytes live*,
+    // not about whether adding by reference is allowed at all. 202 means the
+    // job was queued; whether that URL resolves is the fetch policy's business.
+    let (status, _) = add(serde_json::json!({
+        "path": "https://example.org/a.wacz",
+        "collection": "Fine",
+    }))
+    .await;
+    assert_eq!(status, 202, "a URL is still accepted");
+
+    server.abort();
+}

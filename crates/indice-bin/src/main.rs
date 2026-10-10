@@ -150,6 +150,19 @@ enum Commands {
         /// variable.
         #[arg(long, value_name = "URL")]
         site_url: Option<String>,
+
+        /// Let curators add archives by a path on this server's disk, and by a
+        /// URL that resolves to this machine or this network.
+        ///
+        /// Both are refused by default once an auth proxy is configured,
+        /// because the person naming the location is then not necessarily the
+        /// person who runs the machine: a path reads any `.wacz` the server can
+        /// see, and a URL makes it knock on doors inside your network. Turn
+        /// this on if your archive lives on a mounted volume, or if you fetch
+        /// from an internal host such as your own Browsertrix. It has no effect
+        /// on a workstation, which never restricted either.
+        #[arg(long)]
+        allow_server_side_locations: bool,
     },
     /// Rebuild the search index from collections.json (re-fetches remote sources).
     Reindex {
@@ -1057,6 +1070,7 @@ async fn main() -> Result<()> {
             auth_proxy_header,
             auth_proxy_secret,
             site_url,
+            allow_server_side_locations,
         } => {
             // Who is trusted follows from two things already on the command
             // line: whether a proxy is named, and what we are bound to. There
@@ -1133,7 +1147,8 @@ async fn main() -> Result<()> {
             };
 
             let access_is_local = access.is_local();
-            let mut config = indice_lib::server::ServerConfig::new(access);
+            let mut config = indice_lib::server::ServerConfig::new(access)
+                .allow_server_side_locations(allow_server_side_locations);
 
             // Where /logout sends the browser after clearing indice's display
             // cookie. Point it at the login service's sign-out URL (e.g.

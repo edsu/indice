@@ -166,6 +166,21 @@ pub struct ServerConfig {
     /// that rewrites `Host` *without* setting `X-Forwarded-Host`, which is
     /// nginx's and Apache's default.
     pub site_authority: Option<String>,
+    /// Let a networked instance add archives by a path on the server's own
+    /// disk, and fetch URLs that resolve to this machine or this network.
+    ///
+    /// Off by default, because behind an auth proxy the curator naming the
+    /// location may be an approved stranger rather than the operator: see
+    /// [`crate::http_range::FetchPolicy`] and `refuse_server_side_path`.
+    ///
+    /// There is an opt-out here and deliberately none for the roster, which is
+    /// worth explaining because the two look alike. A missing roster has no
+    /// legitimate use on a server; it is only ever a mistake, so a flag to
+    /// permit it would be a flag to stay wrong. A mounted archive volume and an
+    /// internal Browsertrix are ordinary institutional infrastructure, and an
+    /// operator who turns this on is enabling something they actually have,
+    /// having been told what it costs.
+    pub allow_server_side_locations: bool,
 }
 
 impl ServerConfig {
@@ -175,7 +190,15 @@ impl ServerConfig {
             access,
             logout_redirect: None,
             site_authority: None,
+            allow_server_side_locations: false,
         }
+    }
+
+    /// Permit server-side paths and internal addresses. See the field.
+    #[must_use]
+    pub fn allow_server_side_locations(mut self, yes: bool) -> Self {
+        self.allow_server_side_locations = yes;
+        self
     }
 }
 
@@ -227,6 +250,9 @@ struct AppState {
     /// read the `user_header` to show who's signed in; the route middleware does
     /// the actual enforcement.
     forward_auth: Option<ForwardAuth>,
+    /// Whether a networked instance may be pointed at its own disk and its own
+    /// network. See [`ServerConfig::allow_server_side_locations`].
+    allow_server_side_locations: bool,
     /// Where `/logout` redirects after clearing the display cookie (`None` → `/`).
     /// Set to the SSO proxy's sign-out URL for a real single-click logout.
     logout_redirect: Option<String>,
@@ -409,6 +435,7 @@ fn build_router(
         job_counter: AtomicU64::new(0),
         users,
         forward_auth: config.access.forward_auth().cloned(),
+        allow_server_side_locations: config.allow_server_side_locations,
         logout_redirect: config.logout_redirect.clone(),
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
