@@ -124,7 +124,7 @@ pub fn accession_desk(
 
             div.sources role="tablist" {
                 button.src-tab type="button" role="tab" aria-selected="true" data-src="upload" { "Upload" }
-                button.src-tab type="button" role="tab" aria-selected="false" data-src="url" { "Path / URL" }
+                button.src-tab type="button" role="tab" aria-selected="false" data-src="url" { "URL" }
                 button.src-tab type="button" role="tab" aria-selected="false" data-src="bx" { "Browsertrix" }
                 button.src-tab type="button" role="tab" aria-selected="false" data-src="ait" { "Archive-It" }
             }
@@ -136,9 +136,9 @@ pub fn accession_desk(
             }
             div.src-panel #src-url {
                 label {
-                    span { "Location " span.hint { "· a local path or an http(s):// URL" } }
+                    span { "Location " span.hint { "· an http(s):// URL" } }
                     input type="text" name="location"
-                        placeholder="/path/to/crawl.wacz or https://example.org/crawl.wacz";
+                        placeholder="https://example.org/crawl.wacz";
                 }
             }
             div.src-panel #src-bx {

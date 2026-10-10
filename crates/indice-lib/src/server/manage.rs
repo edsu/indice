@@ -1,4 +1,4 @@
-//! Management write surface: adding archives (upload / path / URL) with SSE
+//! Management write surface: adding archives (upload / URL) with SSE
 //! progress, the finding-aid form, the accession desk, and deletes.
 
 use std::path::{Path, PathBuf};
@@ -119,12 +119,56 @@ impl crate::index::IndexProgress for ChannelProgress {
     }
 }
 
+/// Adding by reference means a URL. A path on the server's disk is refused.
+///
+/// `location` goes to `Source::parse`, where an `http(s)` prefix makes it a URL
+/// and **anything else is a filesystem path**. Over HTTP that is a bad trade
+/// whichever shape indice is in. On a server the curator and the operator have
+/// come apart, so an approved stranger could ask the server to read any `.wacz`
+/// it can reach — another tenant's archive, a backup staged on the same volume
+/// — and file it into a collection where they can read it back. On a
+/// workstation it is safe and nobody used it: the file is already on the disk,
+/// and the command line is a shorter route to it than a web form.
+///
+/// An earlier version of this refused a path only behind an auth proxy, with a
+/// flag to opt back in. That bought one capability nobody wanted at the price
+/// of a setting whose correct value differed by deployment shape, which is the
+/// kind of thing this codebase has been removing all year.
+///
+/// The capability itself is not gone, only its HTTP surface. `indice index
+/// /path/to.wacz` is unchanged, which is where a mounted archive volume is
+/// accessioned from anyway, and a curator keeps the upload endpoint, which
+/// carries the bytes rather than naming someone else's file.
+fn require_url_location(location: &str) -> Option<Response> {
+    // Asked of `Source::parse` rather than re-testing the scheme here. That
+    // function owns the rule "an http(s) prefix is a URL, anything else is a
+    // path", and a second copy of it would have to be kept in step: teach it an
+    // `s3://` arm later and a hand-rolled prefix check here silently stops
+    // matching what it guards.
+    let is_url = matches!(
+        crate::collections::Source::parse(location),
+        crate::collections::Source::Url(_)
+    );
+    (!is_url).then(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "add an archive by an http(s) URL, or upload the file. A path on the \
+             server's own disk is not accepted here; use `indice index` on the \
+             machine itself for that.",
+        )
+            .into_response()
+    })
+}
+
 /// Body of `POST /api/archives` — add a crawl by reference. Browser byte-upload
 /// uses [`upload_archive`] (`/api/archives/upload`) instead.
 #[derive(Deserialize)]
 pub(super) struct AddArchiveRequest {
-    /// Local filesystem path to a `.wacz` (or an `http(s)://` URL — both are
-    /// accepted by `index_location`).
+    /// An `http(s)://` URL to a `.wacz`.
+    ///
+    /// Named `path` because `index_location` accepts either a URL or a local
+    /// filesystem path, and the CLI still passes the latter. Over HTTP only a
+    /// URL is accepted: see [`require_url_location`].
     path: String,
     /// Collection this crawl belongs to; created if it doesn't exist yet.
     collection: String,
@@ -178,6 +222,15 @@ fn start_index_job(
     name: Option<String>,
     keepalive: Option<tempfile::TempDir>,
 ) -> u64 {
+    // On a server the person naming the location may be an approved stranger
+    // rather than the operator, so a URL may only point at a public address.
+    // A workstation keeps the unrestricted policy: there, the two are the same
+    // person, and fetching from a NAS on the LAN is the ordinary case.
+    let fetch = if state.forward_auth.is_some() && !state.allow_internal_fetch {
+        crate::http_range::FetchPolicy::PublicOnly
+    } else {
+        crate::http_range::FetchPolicy::Unrestricted
+    };
     let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
     state.jobs.lock().unwrap().insert(id, rx);
@@ -227,6 +280,7 @@ fn start_index_job(
             crate::index::Ingest::new(&job_state.home)
                 .name(name.as_deref())
                 .actor(Some(&actor))
+                .fetch_policy(fetch)
                 .progress(&progress)
                 .index_location(&location, &collection)
         };
@@ -257,7 +311,7 @@ fn start_index_job(
     id
 }
 
-/// `POST /api/archives` — add a crawl by local path or `http(s)://` URL. Starts
+/// `POST /api/archives` — add a crawl by `http(s)://` URL. Starts
 /// an ingest job and returns its id (202 Accepted).
 pub(super) async fn add_archive(
     State(state): State<Arc<AppState>>,
@@ -267,6 +321,12 @@ pub(super) async fn add_archive(
     // Mirror the CLI's "every crawl belongs to a collection" guard.
     if req.collection.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    // Before the audit record, not after: a refused probe is not an accession,
+    // and twenty of them logged as ordinary adds against a collection that
+    // stays empty is worse than no log at all.
+    if let Some(refusal) = require_url_location(&req.path) {
+        return refusal;
     }
     audit_detail(
         &state,

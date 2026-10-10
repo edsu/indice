@@ -36,6 +36,55 @@ fn home_with_roster() -> tempfile::TempDir {
     tmp
 }
 
+/// Accession the `simple.wacz` fixture as `who`, through the upload endpoint.
+///
+/// These tests need a crawl whose custody is recorded against a particular
+/// curator; how it got there is incidental to what they check. They used to
+/// POST the fixture's path to `/api/archives`, and a path on the server's own
+/// disk is no longer accepted over HTTP (see
+/// `manage::a_crawl_is_added_by_url_or_upload_never_by_a_server_side_path`), so
+/// they upload the bytes, which is what a curator does now.
+///
+/// Returns the status; the job id is the caller's accession count, since each
+/// test gets a fresh server and the counter starts at zero.
+async fn accession_fixture(base: &str, who: &'static str, collection: &'static str) -> u16 {
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let boundary = "----indiceAuthzUpload";
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"collection\"\r\n\r\n{collection}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"simple.wacz\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&wacz);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let url = format!("{base}/api/archives/upload");
+    tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&url)
+            .header("x-indice-auth-secret", SECRET)
+            .header(USER_HEADER, who)
+            .header(
+                "content-type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(&body[..])
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap()
+}
+
 async fn serve(
     home: std::path::PathBuf,
     config: indice_lib::server::ServerConfig,
@@ -283,17 +332,7 @@ async fn a_curator_cannot_delete_a_collection_out_from_under_its_notes() {
     )
     .await;
     assert_eq!(status, 303);
-    let path = fixture("simple.wacz").to_string_lossy().to_string();
-    let status = request(
-        "POST",
-        format!("{base}/api/archives"),
-        Some("boss@x.edu"),
-        Some((
-            "application/json",
-            serde_json::json!({ "path": path, "collection": "shared" }).to_string(),
-        )),
-    )
-    .await;
+    let status = accession_fixture(&base, "boss@x.edu", "shared").await;
     assert_eq!(status, 202);
 
     // A curator may annotate it...
@@ -611,17 +650,7 @@ async fn a_curator_deletes_their_own_crawl_but_not_a_peers() {
     let (base, server) = serve(home.clone(), cfg).await;
 
     // Curator "one" accessions a crawl.
-    let path = fixture("simple.wacz").to_string_lossy().to_string();
-    let status = request(
-        "POST",
-        format!("{base}/api/archives"),
-        Some("one@x.edu"),
-        Some((
-            "application/json",
-            serde_json::json!({ "path": path, "collection": "custody" }).to_string(),
-        )),
-    )
-    .await;
+    let status = accession_fixture(&base, "one@x.edu", "custody").await;
     assert_eq!(status, 202);
 
     // Wait for the job to finish (draining its SSE stream blocks until done).

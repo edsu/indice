@@ -35,11 +35,15 @@ pub(super) fn open(
     collection_slug: &str,
 ) -> Result<(Source, WaczAccess)> {
     let (home, download, resolver, progress) = (cx.home, cx.download, cx.resolver, cx.progress);
+    // Where a curator-supplied URL is allowed to point. A Browsertrix source is
+    // judged separately below: that host is operator configuration, never
+    // request input, so it keeps the unrestricted policy even on a server.
+    let fetch = cx.fetch;
     let effective_source: Source = match source {
         Source::Url(u) if download => {
             info!(url = %u, "downloading remote WACZ into archive");
             progress.phase("downloading");
-            Source::File(download_into_archive(u, home, collection_slug)?)
+            Source::File(download_into_archive(u, home, collection_slug, fetch)?)
         }
         _ => source.clone(),
     };
@@ -51,17 +55,29 @@ pub(super) fn open(
             _tmp: None,
         },
         Source::Url(u) => {
-            if remote_warcs_streamable(u).unwrap_or(false) {
-                WaczAccess::Stream { url: u.clone() }
-            } else {
-                info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
-                progress.phase("downloading");
-                let tmp = download_to_temp(u).with_context(|| format!("downloading {u}"))?;
-                let path = tmp.path().to_path_buf();
-                // The temp file must outlive the read, so the handle rides along.
-                WaczAccess::Local {
-                    path,
-                    _tmp: Some(tmp),
+            // Probed once, and a refusal stops here rather than falling
+            // through. `unwrap_or(false)` treated every error the same, so a
+            // refused address logged "can't be streamed (no range support or
+            // compressed WARCs)", told the curator we were downloading, and
+            // then refused the same address again: a misleading log for the
+            // operator and a second free probe for whoever chose it.
+            match remote_warcs_streamable(u, fetch) {
+                Ok(true) => WaczAccess::Stream {
+                    url: u.clone(),
+                    fetch,
+                },
+                Err(e) if crate::http_range::is_policy_refusal(&e) => return Err(e),
+                Ok(false) | Err(_) => {
+                    info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
+                    progress.phase("downloading");
+                    let tmp =
+                        download_to_temp(u, fetch).with_context(|| format!("downloading {u}"))?;
+                    let path = tmp.path().to_path_buf();
+                    // The temp file must outlive the read, so the handle rides along.
+                    WaczAccess::Local {
+                        path,
+                        _tmp: Some(tmp),
+                    }
                 }
             }
         }
@@ -77,13 +93,30 @@ pub(super) fn open(
             let url = resolver
                 .resolve(bt)
                 .with_context(|| format!("resolving {}", bt.location()))?;
-            if !remote_warcs_streamable(&url).unwrap_or(false) {
+            // Unrestricted only where the host really is operator
+            // configuration. `Source::Browsertrix` is built by the importer
+            // from `client.host()`, which comes from BROWSERTRIX_HOST and never
+            // from a request, so restricting it would break an institution
+            // whose Browsertrix is internal while protecting nothing.
+            //
+            // `Source::BrowsertrixPublic` is NOT that: its host is parsed out
+            // of the location string (`browsertrix-public|<host>|…`), so a
+            // caller who could name one would be choosing the address. Nothing
+            // reaches it over HTTP today — `require_url_location` rejects the
+            // prefix and `start_index_job` configures no resolver — but a
+            // blanket exemption covering both variants would quietly become a
+            // hole if either of those changed, so it keeps the caller's policy.
+            let fetch = match bt {
+                Source::Browsertrix { .. } => crate::http_range::FetchPolicy::Unrestricted,
+                _ => fetch,
+            };
+            if !remote_warcs_streamable(&url, fetch).unwrap_or(false) {
                 anyhow::bail!(
                     "this Browsertrix WACZ can't be stream-indexed (compressed WARCs or \
                      no range support); import it in download mode instead"
                 );
             }
-            WaczAccess::Stream { url }
+            WaczAccess::Stream { url, fetch }
         }
     };
 
@@ -236,11 +269,14 @@ fn place_local_wacz(
 }
 
 /// Download a remote WACZ to a temp file for indexing.
-fn download_to_temp(url: &str) -> Result<tempfile::NamedTempFile> {
+fn download_to_temp(
+    url: &str,
+    policy: crate::http_range::FetchPolicy,
+) -> Result<tempfile::NamedTempFile> {
     use std::io::{copy, Write};
 
     let mut tmp = tempfile::Builder::new().suffix(".wacz").tempfile()?;
-    let mut reader = crate::http_range::get_reader(url)?;
+    let mut reader = crate::http_range::get_reader(url, policy)?;
     copy(&mut reader, &mut tmp).with_context(|| format!("writing {url} to temp file"))?;
     tmp.flush()?;
     Ok(tmp)
@@ -252,7 +288,12 @@ fn download_to_temp(url: &str) -> Result<tempfile::NamedTempFile> {
 /// URL's last path segment. Downloads to a temp file first, then files it with
 /// [`pick_archive_dest`] so a different WACZ that happens to share the name isn't
 /// clobbered (and a re-download of identical bytes is reused). Used by `--download`.
-fn download_into_archive(url: &str, home: &Path, collection_slug: &str) -> Result<PathBuf> {
+fn download_into_archive(
+    url: &str,
+    home: &Path,
+    collection_slug: &str,
+    policy: crate::http_range::FetchPolicy,
+) -> Result<PathBuf> {
     use std::io::{copy, Write};
 
     let stem = url
@@ -279,7 +320,7 @@ fn download_into_archive(url: &str, home: &Path, collection_slug: &str) -> Resul
         .suffix(".wacz")
         .tempfile_in(&dir)
         .with_context(|| format!("temp file in {}", dir.display()))?;
-    copy(&mut crate::http_range::get_reader(url)?, &mut tmp)
+    copy(&mut crate::http_range::get_reader(url, policy)?, &mut tmp)
         .with_context(|| format!("writing {url} to a temp file"))?;
     tmp.flush()?;
 
@@ -299,8 +340,8 @@ fn download_into_archive(url: &str, home: &Path, collection_slug: &str) -> Resul
 
 /// Whether a remote WACZ can be stream-indexed: reachable, range-capable, and
 /// its WARC entries Stored (uncompressed). Reads only the ZIP central directory.
-fn remote_warcs_streamable(url: &str) -> Result<bool> {
-    let reader = crate::http_range::open_remote(url)?;
+fn remote_warcs_streamable(url: &str, policy: crate::http_range::FetchPolicy) -> Result<bool> {
+    let reader = crate::http_range::open_remote(url, policy)?;
     let mut zip = zip::ZipArchive::new(reader)
         .with_context(|| format!("reading remote ZIP central directory of {url}"))?;
     crate::wacz::warcs_stored(&mut zip)

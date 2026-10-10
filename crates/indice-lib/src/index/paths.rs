@@ -25,8 +25,13 @@ pub fn download_wacz(url: &str, dest: &Path) -> Result<u64> {
     ));
     let tmp = PathBuf::from(tmp);
 
+    // Unrestricted on purpose. The only caller is a Browsertrix import, whose
+    // presigned URL comes from a host the operator configured in the
+    // environment and never from a request, so there is no curator-chosen
+    // address here to guard against. See `http_range::FetchPolicy`.
     let mut reader =
-        crate::http_range::get_reader(url).with_context(|| format!("fetching {url}"))?;
+        crate::http_range::get_reader(url, crate::http_range::FetchPolicy::Unrestricted)
+            .with_context(|| format!("fetching {url}"))?;
     let mut file =
         std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let mut buf = [0u8; 64 * 1024];

@@ -31,6 +31,49 @@ fn home_with_roster() -> tempfile::TempDir {
     tmp
 }
 
+/// Upload a fixture WACZ and return the job JSON.
+///
+/// These tests want a crawl in the index and do not care how it got there.
+/// They used to POST the fixture's path to `/api/archives`; a path on the
+/// server's own disk is no longer accepted over HTTP in either shape (see
+/// `a_crawl_is_added_by_url_or_upload_never_by_a_server_side_path`), so they
+/// upload the bytes instead, which is the route a curator actually has.
+async fn upload_fixture(base: &str, wacz: &str, collection: &str) -> serde_json::Value {
+    let bytes = std::fs::read(fixture(wacz)).unwrap();
+    let boundary = "----indiceManageUpload";
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"collection\"\r\n\r\n{collection}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{wacz}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let url = format!("{base}/api/archives/upload");
+    tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header(
+                "content-type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(&body[..])
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 202, "upload should be accepted");
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap()
+}
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -82,7 +125,7 @@ async fn serve(
 }
 
 #[tokio::test]
-async fn manage_add_archive_indexes_and_reloads_search() {
+async fn an_ingest_reloads_the_searcher_and_its_progress_is_consumed_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
     let (base, server) = serve(home.clone(), local_access()).await;
@@ -93,21 +136,8 @@ async fn manage_add_archive_indexes_and_reloads_search() {
     let before: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(before["total"], 0, "index should start empty");
 
-    // POST an add-archive job for a local fixture WACZ (the native-dialog path case).
-    let post_url = format!("{base}/api/archives");
-    let path = fixture("simple.wacz").to_string_lossy().to_string();
-    let body = serde_json::json!({ "path": path, "collection": "test" }).to_string();
-    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
-        let mut res = agent()
-            .post(&post_url)
-            .header("content-type", "application/json")
-            .send(body)
-            .unwrap();
-        assert_eq!(res.status().as_u16(), 202, "add-archive should be accepted");
-        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
-    })
-    .await
-    .unwrap();
+    // Accession a fixture WACZ.
+    let job = upload_fixture(&base, "simple.wacz", "test").await;
     let job_id = job["job"].as_u64().expect("response carries a job id");
 
     // Stream the job's SSE progress to completion — the stream closes when the job
@@ -458,20 +488,8 @@ async fn manage_delete_crawl_removes_it_from_index_and_disk() {
     let home = tmp.path().to_path_buf();
     let (base, server) = serve(home.clone(), local_access()).await;
 
-    // Add a crawl (POST + drain its SSE to completion).
-    let post_url = format!("{base}/api/archives");
-    let path = fixture("simple.wacz").to_string_lossy().to_string();
-    let body = serde_json::json!({ "path": path, "collection": "test" }).to_string();
-    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
-        let mut res = agent()
-            .post(&post_url)
-            .header("content-type", "application/json")
-            .send(body)
-            .unwrap();
-        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
-    })
-    .await
-    .unwrap();
+    // Add a crawl (upload + drain its SSE to completion).
+    let job = upload_fixture(&base, "simple.wacz", "test").await;
     let job_id = job["job"].as_u64().unwrap();
     let (_, events) = get(format!("{base}/api/archives/{job_id}/events")).await;
     assert!(
@@ -939,20 +957,7 @@ async fn a_finding_aid_save_cannot_erase_a_concurrent_ingest() {
 
         // Start an ingest of the largest fixture, so the job is still running
         // when the edit lands.
-        let path = fixture("a.wacz").to_string_lossy().to_string();
-        let add = format!("{base}/api/archives");
-        let body = serde_json::json!({ "path": path, "collection": "Contended" }).to_string();
-        let job: serde_json::Value = tokio::task::spawn_blocking(move || {
-            let mut res = agent()
-                .post(&add)
-                .header("content-type", "application/json")
-                .send(body)
-                .unwrap();
-            assert_eq!(res.status().as_u16(), 202);
-            serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
-        })
-        .await
-        .unwrap();
+        let job = upload_fixture(&base, "a.wacz", "Contended").await;
         let job_id = job["job"].as_u64().unwrap();
 
         // ...and edit the finding aid while it runs.
@@ -1234,4 +1239,202 @@ async fn post_headers(url: String, headers: Vec<(&'static str, &'static str)>, b
     })
     .await
     .unwrap()
+}
+
+/// A crawl is added by URL or by upload, never by a path on the server's disk.
+///
+/// `path` on `POST /api/archives` went to `Source::parse`, where an `http(s)`
+/// prefix makes it a URL and *anything else is a path on the server's disk*.
+/// Over HTTP that is a bad trade in either shape. On a server an approved
+/// stranger could make the machine read any `.wacz` it can reach — another
+/// tenant's archive, a backup staged on the same volume — and file it into a
+/// collection they can read back. On a workstation it was safe and unused: the
+/// file is already on the disk, and `indice index` is a shorter route to it
+/// than a web form.
+///
+/// An earlier version of this test asserted the path was refused on a server
+/// and accepted on a workstation, behind a flag to opt back in. That bought a
+/// capability nobody wanted at the price of a setting whose right value
+/// differed by deployment shape. The command line keeps the capability, which
+/// is where a mounted archive volume gets accessioned from anyway.
+#[tokio::test]
+async fn a_crawl_is_added_by_url_or_upload_never_by_a_server_side_path() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+
+    let signed_in = || {
+        vec![
+            ("x-indice-auth-secret", "s3cret".to_string()),
+            ("x-forwarded-email", "alice@x.edu".to_string()),
+            ("content-type", "application/json".to_string()),
+        ]
+    };
+    let add = |body: serde_json::Value| {
+        let url = format!("{base}/api/archives");
+        let headers = signed_in();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut req = ureq::Agent::config_builder()
+                    .http_status_as_error(false)
+                    .build()
+                    .new_agent()
+                    .post(&url);
+                for (k, v) in headers {
+                    req = req.header(k, &v);
+                }
+                let mut res = req.send(body.to_string()).unwrap();
+                (
+                    res.status().as_u16(),
+                    res.body_mut().read_to_string().unwrap(),
+                )
+            })
+            .await
+            .unwrap()
+        }
+    };
+
+    let (status, body) = add(serde_json::json!({
+        "path": "/etc/secrets/other-tenant.wacz",
+        "collection": "Sneaky",
+    }))
+    .await;
+    assert_eq!(status, 400, "a server-side path must be refused");
+    assert!(
+        body.contains("indice index"),
+        "and should point at the command line, which still takes one: {body}"
+    );
+    assert!(
+        body.contains("URL") && body.contains("upload"),
+        "the refusal should say what to do instead, got: {body}"
+    );
+
+    // That a URL *is* accepted, and what happens to it, is covered end to end
+    // by `a_url_is_fetched_only_from_a_public_address` below. Asserting a 202
+    // here would queue a real ingest of whatever host the URL names, which on
+    // an offline runner means a detached job retrying DNS for seconds after
+    // the test has already passed.
+
+    server.abort();
+}
+
+/// On a server, a URL must resolve to a public address; the opt-out restores it.
+///
+/// This is the half of the SSRF guard that the server actually wires up, and
+/// the review found it untested: `public_only_refuses_a_fetch_that_lands_on
+/// _this_machine` calls the library function with an explicit policy, so
+/// deleting `.fetch_policy(fetch)` from `start_index_job`, or inverting the
+/// condition that chooses it, left the whole suite green.
+///
+/// It doubles as the end-to-end cover for adding by URL at all — job creation,
+/// the SSE relay, the searcher reload — which nothing else exercises now that
+/// adding by path is gone.
+#[tokio::test]
+async fn a_url_is_fetched_only_from_a_public_address() {
+    // A local server standing in for "an address on the operator's network".
+    // 127.0.0.1 is the one such address a test can count on existing, and it
+    // is the same family as the cloud metadata case this guards.
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let origin = axum::Router::new().route(
+        "/simple.wacz",
+        axum::routing::get(move || {
+            let wacz = wacz.clone();
+            async move { wacz }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        axum::serve(listener, origin.into_make_service())
+            .await
+            .unwrap();
+    });
+    let wacz_url = format!("http://{origin_addr}/simple.wacz");
+
+    // Returns the job's SSE transcript, which carries the ingest's outcome.
+    async fn add_and_drain(base: &str, url: &str) -> String {
+        let post = format!("{base}/api/archives");
+        let body = serde_json::json!({ "path": url, "collection": "net" }).to_string();
+        let job: serde_json::Value = {
+            let post = post.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut res = agent()
+                    .post(&post)
+                    .header("content-type", "application/json")
+                    .header("x-indice-auth-secret", "s3cret")
+                    .header("x-forwarded-email", "alice@x.edu")
+                    .send(body)
+                    .unwrap();
+                assert_eq!(res.status().as_u16(), 202, "the job should be queued");
+                serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+            })
+            .await
+            .unwrap()
+        };
+        let events = format!(
+            "{base}/api/archives/{}/events",
+            job["job"].as_u64().unwrap()
+        );
+        tokio::task::spawn_blocking(move || {
+            let mut res = agent()
+                .get(&events)
+                .header("x-indice-auth-secret", "s3cret")
+                .header("x-forwarded-email", "alice@x.edu")
+                .call()
+                .unwrap();
+            res.body_mut().read_to_string().unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    // Default: refused, and the transcript says why rather than claiming the
+    // host does not support range requests.
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let transcript = add_and_drain(&base, &wacz_url).await;
+    assert!(
+        transcript.contains("refusing to fetch") && transcript.contains("127.0.0.1"),
+        "the refusal should reach the curator and name the address: {transcript}"
+    );
+    assert!(
+        !tmp.path().join("archive").join("net").exists(),
+        "nothing should have been accessioned"
+    );
+    server.abort();
+
+    // With the opt-out, the same URL indexes, which is what an institution
+    // serving WACZs from an internal host needs.
+    let tmp2 = home_with_roster();
+    let mut cfg2 = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    cfg2.allow_internal_fetch = true;
+    let (base2, server2) = serve(tmp2.path().to_path_buf(), cfg2).await;
+    let transcript2 = add_and_drain(&base2, &wacz_url).await;
+    assert!(
+        transcript2.contains("event: done"),
+        "with --allow-internal-fetch the ingest should finish: {transcript2}"
+    );
+    let manifest = indice_lib::collections::Manifest::open(&tmp2.path().join("index")).unwrap();
+    assert_eq!(manifest.waczs.len(), 1, "the crawl should be indexed");
+    // And the searcher was reloaded, so adding by URL is covered end to end
+    // rather than only as far as the manifest.
+    let (status, body) = get(format!("{base2}/api/search?q=example")).await;
+    assert_eq!(status, 200);
+    let found: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        found["total"].as_u64().unwrap() > 0,
+        "the reloaded searcher should find the fetched crawl: {body}"
+    );
+    server2.abort();
+    origin_task.abort();
 }
