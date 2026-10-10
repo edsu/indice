@@ -25,9 +25,9 @@ What the controls are:
 ![The Add crawls accession desk: a collection selector and source tabs (Upload, URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
 
 :::note[Adding by reference means a URL]
-The accession desk takes an `http(s)://` URL, not a path on the server's disk. That was accepted once and is not any more, in either shape.
+The accession desk takes an `http(s)://` URL, not a path on the server's disk, in either shape.
 
-On a server it hands an approved stranger the ability to make the machine read any `.wacz` it can reach and file it into a collection they can read back. On a workstation it was safe and nobody used it, since the file is already on the disk and `indice index /path/to.wacz` is a shorter route than a web form. That command is unchanged, and it is still how a mounted archive volume gets accessioned.
+A path would let a curator make the server read any `.wacz` it can reach and file it into a collection they can read back, and on a server a curator may be someone you approved rather than someone you know. On a workstation it would buy nothing: the file is already on the disk, and `indice index /path/to.wacz` is a shorter route than a web form. That command is how a mounted archive volume is accessioned.
 
 A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. You also need it if this machine reaches the internet only through an HTTP proxy: a proxy resolves the address itself, so indice cannot check where the fetch lands and declines to use one rather than let the check pass silently. Your Browsertrix and Archive-It credentials are unaffected: those hosts come from the environment, never from a request, so they were never what this guards.
 :::
@@ -43,7 +43,7 @@ Because it trusts everything, indice **refuses to start** on a non-loopback addr
 :::caution[A loopback port is not a user boundary]
 "Whoever reaches the port" is literal. Another account on the machine reaches it: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection. So does anyone at the far end of an `ssh -L`, and so does every peer of your tailnet the moment you point `tailscale serve` at it.
 
-indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: two versions of a check on the `Host` header were written and both were bypassable, because any client that is not a browser sets `Host` to whatever it likes. A check that refuses the honest tunnel and waves the dishonest one through is worse than none, since it reads like a wall.
+indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: a check on the `Host` header is bypassable, because any client that is not a browser sets `Host` to whatever it likes. A check that refuses the honest tunnel and waves the dishonest one through is worse than none, since it reads like a wall.
 
 A loopback bind keeps indice off the network. That is the whole promise. Run it as a server if the machine is shared, or if anything you do not control can reach that port.
 :::
