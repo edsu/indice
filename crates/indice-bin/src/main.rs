@@ -1145,8 +1145,8 @@ async fn main() -> Result<()> {
             };
 
             let access_is_local = access.is_local();
-            let mut config = indice_lib::server::ServerConfig::new(access)
-                .allow_internal_fetch(allow_internal_fetch);
+            let mut config = indice_lib::server::ServerConfig::new(access);
+            config.allow_internal_fetch = allow_internal_fetch;
 
             // Where /logout sends the browser after clearing indice's display
             // cookie. Point it at the login service's sign-out URL (e.g.

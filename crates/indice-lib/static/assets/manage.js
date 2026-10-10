@@ -250,7 +250,7 @@ f.addEventListener('submit', async (e) => {
       res = await fetch('/api/archives/upload', { method: 'POST', body: fd });
     } else if (src === 'url') {
       const location = f.location.value.trim();
-      if (!location) { out.textContent = 'Enter a path or an http(s):// URL.'; return; }
+      if (!location) { out.textContent = 'Enter an http(s):// URL.'; return; }
       out.textContent = 'Starting…';
       const body = { path: location, collection };
       if (name) body.name = name;

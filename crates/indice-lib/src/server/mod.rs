@@ -193,13 +193,6 @@ impl ServerConfig {
             allow_internal_fetch: false,
         }
     }
-
-    /// Permit fetching URLs that resolve to internal addresses. See the field.
-    #[must_use]
-    pub fn allow_internal_fetch(mut self, yes: bool) -> Self {
-        self.allow_internal_fetch = yes;
-        self
-    }
 }
 
 /// Forward-auth settings: which header carries the authenticated user, and the

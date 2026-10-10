@@ -55,20 +55,29 @@ pub(super) fn open(
             _tmp: None,
         },
         Source::Url(u) => {
-            if remote_warcs_streamable(u, fetch).unwrap_or(false) {
-                WaczAccess::Stream {
+            // Probed once, and a refusal stops here rather than falling
+            // through. `unwrap_or(false)` treated every error the same, so a
+            // refused address logged "can't be streamed (no range support or
+            // compressed WARCs)", told the curator we were downloading, and
+            // then refused the same address again: a misleading log for the
+            // operator and a second free probe for whoever chose it.
+            match remote_warcs_streamable(u, fetch) {
+                Ok(true) => WaczAccess::Stream {
                     url: u.clone(),
                     fetch,
-                }
-            } else {
-                info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
-                progress.phase("downloading");
-                let tmp = download_to_temp(u, fetch).with_context(|| format!("downloading {u}"))?;
-                let path = tmp.path().to_path_buf();
-                // The temp file must outlive the read, so the handle rides along.
-                WaczAccess::Local {
-                    path,
-                    _tmp: Some(tmp),
+                },
+                Err(e) if crate::http_range::is_policy_refusal(&e) => return Err(e),
+                Ok(false) | Err(_) => {
+                    info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
+                    progress.phase("downloading");
+                    let tmp =
+                        download_to_temp(u, fetch).with_context(|| format!("downloading {u}"))?;
+                    let path = tmp.path().to_path_buf();
+                    // The temp file must outlive the read, so the handle rides along.
+                    WaczAccess::Local {
+                        path,
+                        _tmp: Some(tmp),
+                    }
                 }
             }
         }
@@ -84,13 +93,23 @@ pub(super) fn open(
             let url = resolver
                 .resolve(bt)
                 .with_context(|| format!("resolving {}", bt.location()))?;
-            // The URL came from the operator's own Browsertrix, reached with
-            // the operator's own credentials at a host taken from the
-            // environment rather than from any request. Restricting it would
-            // break an institution whose Browsertrix is on the internal
-            // network, which is the common case, and would protect nothing: a
-            // curator never chose this address.
-            let fetch = crate::http_range::FetchPolicy::Unrestricted;
+            // Unrestricted only where the host really is operator
+            // configuration. `Source::Browsertrix` is built by the importer
+            // from `client.host()`, which comes from BROWSERTRIX_HOST and never
+            // from a request, so restricting it would break an institution
+            // whose Browsertrix is internal while protecting nothing.
+            //
+            // `Source::BrowsertrixPublic` is NOT that: its host is parsed out
+            // of the location string (`browsertrix-public|<host>|…`), so a
+            // caller who could name one would be choosing the address. Nothing
+            // reaches it over HTTP today — `require_url_location` rejects the
+            // prefix and `start_index_job` configures no resolver — but a
+            // blanket exemption covering both variants would quietly become a
+            // hole if either of those changed, so it keeps the caller's policy.
+            let fetch = match bt {
+                Source::Browsertrix { .. } => crate::http_range::FetchPolicy::Unrestricted,
+                _ => fetch,
+            };
             if !remote_warcs_streamable(&url, fetch).unwrap_or(false) {
                 anyhow::bail!(
                     "this Browsertrix WACZ can't be stream-indexed (compressed WARCs or \

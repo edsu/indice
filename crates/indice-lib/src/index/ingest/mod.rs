@@ -200,19 +200,20 @@ impl<'a> Ingest<'a> {
     }
     /// Fetch a remote WACZ into the archive instead of streaming it in place.
     #[must_use]
+    pub fn download(mut self, yes: bool) -> Self {
+        self.download = yes;
+        self
+    }
+
     /// Where a curator-supplied URL may point. See [`crate::http_range::FetchPolicy`].
     ///
     /// Defaults to `Unrestricted`, so the CLI and a workstation behave exactly
     /// as before: the person typing the location is the person running the
     /// machine, and pointing it at a host on the LAN is an ordinary thing to
     /// want. The server sets `PublicOnly` when it runs behind an auth proxy.
+    #[must_use]
     pub fn fetch_policy(mut self, policy: crate::http_range::FetchPolicy) -> Self {
         self.fetch = policy;
-        self
-    }
-
-    pub fn download(mut self, yes: bool) -> Self {
-        self.download = yes;
         self
     }
     /// Re-index sources already registered in the collection.

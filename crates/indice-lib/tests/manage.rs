@@ -125,7 +125,7 @@ async fn serve(
 }
 
 #[tokio::test]
-async fn manage_add_archive_indexes_and_reloads_search() {
+async fn an_ingest_reloads_the_searcher_and_its_progress_is_consumed_once() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
     let (base, server) = serve(home.clone(), local_access()).await;
@@ -1312,15 +1312,129 @@ async fn a_crawl_is_added_by_url_or_upload_never_by_a_server_side_path() {
         "the refusal should say what to do instead, got: {body}"
     );
 
-    // A URL is still accepted here: this guard is about *where the bytes live*,
-    // not about whether adding by reference is allowed at all. 202 means the
-    // job was queued; whether that URL resolves is the fetch policy's business.
-    let (status, _) = add(serde_json::json!({
-        "path": "https://example.org/a.wacz",
-        "collection": "Fine",
-    }))
-    .await;
-    assert_eq!(status, 202, "a URL is still accepted");
+    // That a URL *is* accepted, and what happens to it, is covered end to end
+    // by `a_url_is_fetched_only_from_a_public_address` below. Asserting a 202
+    // here would queue a real ingest of whatever host the URL names, which on
+    // an offline runner means a detached job retrying DNS for seconds after
+    // the test has already passed.
 
     server.abort();
+}
+
+/// On a server, a URL must resolve to a public address; the opt-out restores it.
+///
+/// This is the half of the SSRF guard that the server actually wires up, and
+/// the review found it untested: `public_only_refuses_a_fetch_that_lands_on
+/// _this_machine` calls the library function with an explicit policy, so
+/// deleting `.fetch_policy(fetch)` from `start_index_job`, or inverting the
+/// condition that chooses it, left the whole suite green.
+///
+/// It doubles as the end-to-end cover for adding by URL at all — job creation,
+/// the SSE relay, the searcher reload — which nothing else exercises now that
+/// adding by path is gone.
+#[tokio::test]
+async fn a_url_is_fetched_only_from_a_public_address() {
+    // A local server standing in for "an address on the operator's network".
+    // 127.0.0.1 is the one such address a test can count on existing, and it
+    // is the same family as the cloud metadata case this guards.
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let origin = axum::Router::new().route(
+        "/simple.wacz",
+        axum::routing::get(move || {
+            let wacz = wacz.clone();
+            async move { wacz }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        axum::serve(listener, origin.into_make_service())
+            .await
+            .unwrap();
+    });
+    let wacz_url = format!("http://{origin_addr}/simple.wacz");
+
+    // Returns the job's SSE transcript, which carries the ingest's outcome.
+    async fn add_and_drain(base: &str, url: &str) -> String {
+        let post = format!("{base}/api/archives");
+        let body = serde_json::json!({ "path": url, "collection": "net" }).to_string();
+        let job: serde_json::Value = {
+            let post = post.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut res = agent()
+                    .post(&post)
+                    .header("content-type", "application/json")
+                    .header("x-indice-auth-secret", "s3cret")
+                    .header("x-forwarded-email", "alice@x.edu")
+                    .send(body)
+                    .unwrap();
+                assert_eq!(res.status().as_u16(), 202, "the job should be queued");
+                serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+            })
+            .await
+            .unwrap()
+        };
+        let events = format!(
+            "{base}/api/archives/{}/events",
+            job["job"].as_u64().unwrap()
+        );
+        tokio::task::spawn_blocking(move || {
+            let mut res = agent()
+                .get(&events)
+                .header("x-indice-auth-secret", "s3cret")
+                .header("x-forwarded-email", "alice@x.edu")
+                .call()
+                .unwrap();
+            res.body_mut().read_to_string().unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    // Default: refused, and the transcript says why rather than claiming the
+    // host does not support range requests.
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let transcript = add_and_drain(&base, &wacz_url).await;
+    assert!(
+        transcript.contains("refusing to fetch") && transcript.contains("127.0.0.1"),
+        "the refusal should reach the curator and name the address: {transcript}"
+    );
+    assert!(
+        !tmp.path().join("archive").join("net").exists(),
+        "nothing should have been accessioned"
+    );
+    server.abort();
+
+    // With the opt-out, the same URL indexes, which is what an institution
+    // serving WACZs from an internal host needs.
+    let tmp2 = home_with_roster();
+    let mut cfg2 = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    cfg2.allow_internal_fetch = true;
+    let (base2, server2) = serve(tmp2.path().to_path_buf(), cfg2).await;
+    let transcript2 = add_and_drain(&base2, &wacz_url).await;
+    assert!(
+        transcript2.contains("event: done"),
+        "with --allow-internal-fetch the ingest should finish: {transcript2}"
+    );
+    let manifest = indice_lib::collections::Manifest::open(&tmp2.path().join("index")).unwrap();
+    assert_eq!(manifest.waczs.len(), 1, "the crawl should be indexed");
+    // And the searcher was reloaded, so adding by URL is covered end to end
+    // rather than only as far as the manifest.
+    let (status, body) = get(format!("{base2}/api/search?q=example")).await;
+    assert_eq!(status, 200);
+    let found: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        found["total"].as_u64().unwrap() > 0,
+        "the reloaded searcher should find the fetched crawl: {body}"
+    );
+    server2.abort();
+    origin_task.abort();
 }

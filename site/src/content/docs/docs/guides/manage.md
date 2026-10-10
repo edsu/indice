@@ -17,7 +17,7 @@ What the controls are:
 
 - **The homepage.** Its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance shows "add your first archive."
 - **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
-- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or point indice at a local path or an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded/local files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
+- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or give indice an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
 - **The replay viewer** gains a **Notes** panel for [annotating](/docs/guides/annotations/) a page or a selected passage. Notes are public to read but only signed-in users can write them.
 
 ![The Edit collection finding-aid form: name (fixed), description, creator, dates, curator, rights, comma-separated subjects, and a Markdown narrative field, with a Save changes button](../../../../assets/docs/edit-collection.png)
@@ -29,7 +29,7 @@ The accession desk takes an `http(s)://` URL, not a path on the server's disk. T
 
 On a server it hands an approved stranger the ability to make the machine read any `.wacz` it can reach and file it into a collection they can read back. On a workstation it was safe and nobody used it, since the file is already on the disk and `indice index /path/to.wacz` is a shorter route than a web form. That command is unchanged, and it is still how a mounted archive volume gets accessioned.
 
-A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. Your Browsertrix and Archive-It credentials are unaffected: those hosts come from the environment, never from a request, so they were never what this guards.
+A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. You also need it if this machine reaches the internet only through an HTTP proxy: a proxy resolves the address itself, so indice cannot check where the fetch lands and declines to use one rather than let the check pass silently. Your Browsertrix and Archive-It credentials are unaffected: those hosts come from the environment, never from a request, so they were never what this guards.
 :::
 
 Every one of these routes is always mounted. Whether you may use them is an authorization question, answered below, so an anonymous visitor gets a `403` rather than a page that does not exist.

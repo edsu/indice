@@ -1,4 +1,4 @@
-//! Management write surface: adding archives (upload / path / URL) with SSE
+//! Management write surface: adding archives (upload / URL) with SSE
 //! progress, the finding-aid form, the accession desk, and deletes.
 
 use std::path::{Path, PathBuf};
@@ -140,7 +140,15 @@ impl crate::index::IndexProgress for ChannelProgress {
 /// accessioned from anyway, and a curator keeps the upload endpoint, which
 /// carries the bytes rather than naming someone else's file.
 fn require_url_location(location: &str) -> Option<Response> {
-    let is_url = location.starts_with("http://") || location.starts_with("https://");
+    // Asked of `Source::parse` rather than re-testing the scheme here. That
+    // function owns the rule "an http(s) prefix is a URL, anything else is a
+    // path", and a second copy of it would have to be kept in step: teach it an
+    // `s3://` arm later and a hand-rolled prefix check here silently stops
+    // matching what it guards.
+    let is_url = matches!(
+        crate::collections::Source::parse(location),
+        crate::collections::Source::Url(_)
+    );
     (!is_url).then(|| {
         (
             StatusCode::BAD_REQUEST,
@@ -156,8 +164,11 @@ fn require_url_location(location: &str) -> Option<Response> {
 /// uses [`upload_archive`] (`/api/archives/upload`) instead.
 #[derive(Deserialize)]
 pub(super) struct AddArchiveRequest {
-    /// Local filesystem path to a `.wacz` (or an `http(s)://` URL — both are
-    /// accepted by `index_location`).
+    /// An `http(s)://` URL to a `.wacz`.
+    ///
+    /// Named `path` because `index_location` accepts either a URL or a local
+    /// filesystem path, and the CLI still passes the latter. Over HTTP only a
+    /// URL is accepted: see [`require_url_location`].
     path: String,
     /// Collection this crawl belongs to; created if it doesn't exist yet.
     collection: String,
@@ -300,7 +311,7 @@ fn start_index_job(
     id
 }
 
-/// `POST /api/archives` — add a crawl by local path or `http(s)://` URL. Starts
+/// `POST /api/archives` — add a crawl by `http(s)://` URL. Starts
 /// an ingest job and returns its id (202 Accepted).
 pub(super) async fn add_archive(
     State(state): State<Arc<AppState>>,
@@ -310,6 +321,12 @@ pub(super) async fn add_archive(
     // Mirror the CLI's "every crawl belongs to a collection" guard.
     if req.collection.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    // Before the audit record, not after: a refused probe is not an accession,
+    // and twenty of them logged as ordinary adds against a collection that
+    // stays empty is worse than no log at all.
+    if let Some(refusal) = require_url_location(&req.path) {
+        return refusal;
     }
     audit_detail(
         &state,
@@ -321,9 +338,6 @@ pub(super) async fn add_archive(
         &crate::collections::slugify(&req.collection),
         Some(serde_json::json!({ "collection_name": req.collection })),
     );
-    if let Some(refusal) = require_url_location(&req.path) {
-        return refusal;
-    }
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
