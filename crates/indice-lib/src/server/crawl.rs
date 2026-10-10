@@ -175,6 +175,11 @@ pub(super) async fn crawl_page(
     let can_login = login_available(&state, &who);
     // Match the handler's rule exactly: an admin may remove any crawl, a
     // curator only one they accessioned.
+    let scope_id = id.clone();
+    let crawl_overview = state
+        .read_index(move |s| s.facet_overview_scoped(crate::search::FacetScope::Crawl(&scope_id)))
+        .await
+        .unwrap_or_default();
     let added_by = c.added_by.as_ref().map(|s| s.as_str());
     let can_delete =
         resolve_caller(&state, &headers).is_some_and(|(p, _)| p.may_delete_crawl(added_by));
@@ -204,15 +209,7 @@ pub(super) async fn crawl_page(
             .unwrap_or(&c.date_indexed)
             .to_string(),
         present: c.is_present(&state.home),
-        facets: scoped_facet_sections(
-            &state
-                .search
-                .read()
-                .unwrap()
-                .facet_overview_scoped(crate::search::FacetScope::Crawl(&id))
-                .unwrap_or_default(),
-            &format!("crawl:{id}"),
-        ),
+        facets: scoped_facet_sections(&crawl_overview, &format!("crawl:{id}")),
         pages,
         management: manage,
         can_delete,

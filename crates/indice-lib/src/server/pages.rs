@@ -65,10 +65,8 @@ pub(super) async fn homepage(
     // Browse entry points: years (most recent first) and the busiest sites,
     // each a search link. Derived from an archive-wide facet overview.
     let overview = state
-        .search
-        .read()
-        .unwrap()
-        .facet_overview()
+        .read_index(|s| s.facet_overview())
+        .await
         .unwrap_or_default();
     let browse = views::HomeBrowse {
         years: browse_links(&overview, "year", "year", 12, true),
@@ -196,14 +194,18 @@ pub(super) async fn search_page(
         )
             .into_response();
     }
+    // Checked after the scope token is folded in, so the bound covers what
+    // actually reaches the parser rather than what the visitor typed.
+    if let Some(refusal) = query_too_long(&q) {
+        return refusal;
+    }
 
     let page = params.page.unwrap_or(1).max(1);
     let offset = (page - 1) * PAGE_SIZE;
+    let for_index = q.clone();
     let response = match state
-        .search
-        .read()
-        .unwrap()
-        .search_faceted(&q, PAGE_SIZE, offset)
+        .read_index(move |s| s.search_faceted(&for_index, PAGE_SIZE, offset))
+        .await
     {
         Ok(r) => r,
         Err(e) => return error_response(e).into_response(),

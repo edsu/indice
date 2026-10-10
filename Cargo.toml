@@ -18,7 +18,7 @@ license = "AGPL-3.0-or-later"
 # HTTP server
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.7", features = ["compression-full", "fs", "trace"] }
+tower-http = { version = "0.7", features = ["compression-full", "fs", "timeout", "trace"] }
 
 # HTML templating (compile-time, type-checked)
 maud = { version = "0.27", features = ["axum"] }

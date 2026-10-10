@@ -76,11 +76,12 @@ pub(super) async fn collection_page(
 
     // Scoped facet overview: what's *in* this collection, each value a search
     // scoped to it. Turns the page into a faceted entry point, not just a list.
+    let scope_id = id.clone();
     let overview = state
-        .search
-        .read()
-        .unwrap()
-        .facet_overview_scoped(crate::search::FacetScope::Collection(&id))
+        .read_index(move |s| {
+            s.facet_overview_scoped(crate::search::FacetScope::Collection(&scope_id))
+        })
+        .await
         .unwrap_or_default();
     let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
 
@@ -276,16 +277,25 @@ pub(super) async fn collection_pages(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(params): Query<PagesParams>,
 ) -> Response {
+    if let Some(refusal) = params.search.as_deref().and_then(query_too_long) {
+        return refusal;
+    }
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
     let offset = (page - 1) * page_size;
-    match state.search.read().unwrap().collection_pages(
-        &id,
-        params.url.as_deref(),
-        params.search.as_deref(),
-        offset,
-        page_size,
-    ) {
+    let (pages_id, url, search) = (id.clone(), params.url.clone(), params.search.clone());
+    match state
+        .read_index(move |s| {
+            s.collection_pages(
+                &pages_id,
+                url.as_deref(),
+                search.as_deref(),
+                offset,
+                page_size,
+            )
+        })
+        .await
+    {
         Ok((total, hits)) => {
             let items: Vec<serde_json::Value> = hits
                 .iter()

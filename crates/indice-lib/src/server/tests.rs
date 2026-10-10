@@ -518,3 +518,44 @@ fn local_access_refuses_a_public_bind() {
         );
     }
 }
+
+/// A request that outruns the clock answers 503, not 408.
+///
+/// tower-http's default is `408 Request Timeout`, which says the *client* was
+/// too slow to send its request. Here the opposite happened: indice took too
+/// long to answer. 503 says that, matches what saturation should return, and
+/// is what a monitor will read as "this server is unwell" rather than "that
+/// client is broken". The distinction is invisible until someone reads a
+/// dashboard, which is exactly when it matters, so pin the choice.
+///
+/// This exercises the layer in isolation with a short budget. It does not
+/// prove the router puts it on the right routes — [`REQUEST_TIMEOUT`] is 30
+/// seconds, so no test is going to wait for the real one — and that half is
+/// covered structurally instead: the timed and the streaming routes are
+/// separate `Router`s, not a list of paths to keep in step.
+#[tokio::test]
+async fn a_timed_out_request_answers_503() {
+    use tower::ServiceExt;
+
+    let slow = Router::new().route(
+        "/slow",
+        get(|| async {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            "finished"
+        }),
+    );
+    let app = slow.layer(TimeoutLayer::with_status_code(
+        StatusCode::SERVICE_UNAVAILABLE,
+        std::time::Duration::from_millis(20),
+    ));
+
+    let res = app
+        .oneshot(
+            axum::http::Request::get("/slow")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+}

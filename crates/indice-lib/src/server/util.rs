@@ -95,6 +95,42 @@ pub(super) fn collection_default_page(members: &[&Wacz]) -> Option<(String, Stri
 // so inherit its auth gate. Unlike the other write handlers, these also read
 // the author identity (via `admin_ctx`) to attribute notes and gate edits.
 
+/// The longest search query indice will accept.
+///
+/// `q` arrives from anonymous callers on `/search`, `/api/search` and a
+/// collection's page list, and goes straight to Tantivy's parser. Parsing is
+/// cheap per byte but not free per *term*, and every term is a dictionary
+/// lookup against the index, so a megabyte of `q` buys a megabyte of work for
+/// the cost of typing a URL. Until now the only thing stopping that was
+/// hyper's limit on the request line, which is an accident of the HTTP stack
+/// rather than a decision indice made.
+///
+/// 2 KiB is far more than a person types — roughly 300 words, or sixty
+/// `field:value` filters — and far less than a weapon.
+pub(super) const MAX_QUERY_LEN: usize = 2048;
+
+/// The refusal for an over-length query, or `None` to carry on.
+///
+/// Returns the response rather than an error, because an over-length query is
+/// not a failure to handle: it is a handled request whose answer is no. It also
+/// keeps clippy's `result_large_err` quiet honestly, since a `Response` really
+/// is a large thing to put in an `Err`.
+///
+/// The message names the limit, so a client can tell this apart from a query
+/// that simply matched nothing.
+pub(super) fn query_too_long(q: &str) -> Option<Response> {
+    (q.len() > MAX_QUERY_LEN).then(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "search query too long: {} bytes, limit {MAX_QUERY_LEN}",
+                q.len()
+            ),
+        )
+            .into_response()
+    })
+}
+
 pub(super) fn error_response(e: anyhow::Error) -> Response {
     tracing::error!("{e:#}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
