@@ -172,6 +172,10 @@ pub struct Ingest<'a> {
     /// [`crate::http_range::FetchPolicy`]. `Default` is `Unrestricted`, which
     /// keeps the CLI and the workstation unchanged.
     fetch: crate::http_range::FetchPolicy,
+    /// The most a URL that cannot be streamed may download to a temp file
+    /// before indexing. `None` (the default, so the CLI is unchanged) is no
+    /// limit. See [`Ingest::download_limit`].
+    download_limit: Option<u64>,
 }
 
 impl<'a> Ingest<'a> {
@@ -189,6 +193,7 @@ impl<'a> Ingest<'a> {
             progress: crate::index::no_progress(),
             actor: None,
             fetch: crate::http_range::FetchPolicy::Unrestricted,
+            download_limit: None,
         }
     }
 
@@ -214,6 +219,19 @@ impl<'a> Ingest<'a> {
     #[must_use]
     pub fn fetch_policy(mut self, policy: crate::http_range::FetchPolicy) -> Self {
         self.fetch = policy;
+        self
+    }
+
+    /// Cap the temp download a URL falls back to when it cannot be streamed.
+    ///
+    /// A URL whose host refuses range requests, or whose WARCs are compressed,
+    /// is downloaded whole to a temp file and indexed from there. That file is
+    /// as large as the response, and the response is whatever the host chose to
+    /// send, so without a limit one curator-supplied URL could fill the volume.
+    /// The server sets this to `uploads.max_mb`.
+    #[must_use]
+    pub fn download_limit(mut self, bytes: Option<u64>) -> Self {
+        self.download_limit = bytes;
         self
     }
     /// Re-index sources already registered in the collection.

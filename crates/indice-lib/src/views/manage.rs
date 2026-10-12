@@ -104,6 +104,10 @@ pub fn accession_desk(
     // How much room an accession has, as a sentence; `None` when no limit is
     // configured, so an unlimited archive shows nothing rather than "∞".
     room: Option<&str>,
+    // The limits again, as bytes and the server's own refusal, so the page can
+    // refuse a file too large *before sending it*. See `manage.js`.
+    max_upload: Option<&(u64, String)>,
+    room_left: Option<&(u64, String)>,
 ) -> Markup {
     let body = html! {
         div.crumbs {
@@ -117,7 +121,17 @@ pub fn accession_desk(
             p.hint.room { (room) }
         }
 
-        form #add-archive-form.manage-form {
+        // Carried on the form rather than checked only by the server, because a
+        // server refusing a body the browser is still sending closes the
+        // connection, and a browser may then report a network error instead of
+        // the refusal. Checking here means the common case never sends at all;
+        // the server still enforces both, for every other client and for a room
+        // that shrank after this page loaded.
+        form #add-archive-form.manage-form
+            data-max-upload=[max_upload.map(|m| m.0)]
+            data-max-upload-msg=[max_upload.map(|m| m.1.as_str())]
+            data-room=[room_left.map(|r| r.0)]
+            data-room-msg=[room_left.map(|r| r.1.as_str())] {
             label {
                 span { "Collection" }
                 input type="text" name="collection" required value=(collection_name)

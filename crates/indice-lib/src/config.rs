@@ -100,26 +100,55 @@ impl Config {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let config: Config = serde_yaml_ng::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
-        config.validate(&path)?;
-        Ok(config)
+        serde_yaml_ng::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
-    /// Reject values that parse but cannot be what anyone meant.
+    /// Check the `uploads:` section strictly, for the server to call at startup.
     ///
-    /// A limit of `0` is refused rather than read as "unlimited": somebody who
-    /// writes `max_mb: 0` is trying to forbid something, and quietly allowing
-    /// everything instead is the worst reading of it. Omit the key for no limit.
-    fn validate(&self, path: &Path) -> Result<()> {
-        for (key, value) in [
-            ("uploads.max_mb", self.uploads.max_mb),
-            ("uploads.max_total_gb", self.uploads.max_total_gb),
-        ] {
-            if value == Some(0) {
+    /// [`Config::load`] is forgiving by design, and every ingest calls it, the
+    /// command line's included. The upload limits are the one place where that
+    /// forgiveness fails open: a mistyped key is ignored and a key with no value
+    /// reads as absent, and both mean *unlimited* on a server the operator
+    /// believes is limited. So the section is checked here, where only the
+    /// server looks, rather than in `load`, where a mistake in a setting the
+    /// command line does not use would stop the command line.
+    ///
+    /// Refused: a key other than `max_mb` or `max_total_gb`, a key with no
+    /// value, and a value of `0`, which someone wrote to forbid uploads and
+    /// which reading as "no limit" would quietly invert.
+    pub fn check_upload_limits(home: &Path) -> Result<()> {
+        let path = Self::path(home);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(());
+        };
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        let Some(uploads) = doc.get("uploads") else {
+            return Ok(());
+        };
+        let Some(section) = uploads.as_mapping() else {
+            anyhow::bail!("{}: uploads: must be a mapping of limits", path.display());
+        };
+        for (key, value) in section {
+            let key = key.as_str().unwrap_or("?");
+            if !matches!(key, "max_mb" | "max_total_gb") {
                 anyhow::bail!(
-                    "{}: {key} is 0, which would refuse every upload. Omit it for no \
-                     limit, or give a size.",
+                    "{}: uploads.{key} is not a setting; the upload limits are \
+                     uploads.max_mb and uploads.max_total_gb",
+                    path.display()
+                );
+            }
+            if value.is_null() {
+                anyhow::bail!(
+                    "{}: uploads.{key} has no value, which would mean no limit. Give a \
+                     size, or remove the key.",
+                    path.display()
+                );
+            }
+            if value.as_u64() == Some(0) {
+                anyhow::bail!(
+                    "{}: uploads.{key} is 0, which would refuse every upload. Omit it for \
+                     no limit, or give a size.",
                     path.display()
                 );
             }
@@ -197,14 +226,28 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_upload_limit_is_refused_rather_than_read_as_unlimited() {
-        // Someone who writes `max_mb: 0` is trying to forbid something. Reading
-        // it as "no limit" would do the opposite of what they meant, quietly.
+    fn upload_limits_that_would_fail_open_are_refused_at_server_startup() {
+        // Each of these reads as "no limit" under the forgiving parse, which on
+        // a server the operator believes is limited is the worst way to be wrong.
         let tmp = tempfile::TempDir::new().unwrap();
-        for yaml in ["uploads:\n  max_mb: 0\n", "uploads:\n  max_total_gb: 0\n"] {
+        for (yaml, why) in [
+            ("uploads:\n  max_mb: 0\n", "is 0"),
+            ("uploads:\n  max_total_gb: 0\n", "is 0"),
+            ("uploads:\n  max_size_mb: 200\n", "not a setting"),
+            ("uploads:\n  max_mb:\n", "no value"),
+        ] {
             std::fs::write(Config::path(tmp.path()), yaml).unwrap();
-            let err = format!("{:#}", Config::load(tmp.path()).unwrap_err());
-            assert!(err.contains("is 0"), "{yaml:?} should be refused: {err}");
+            let err = format!("{:#}", Config::check_upload_limits(tmp.path()).unwrap_err());
+            assert!(
+                err.contains(why),
+                "{yaml:?} should be refused ({why}): {err}"
+            );
+            // And the forgiving load the CLI uses is not affected: a mistake in
+            // a setting the command line ignores must not stop the command line.
+            assert!(
+                Config::load(tmp.path()).is_ok(),
+                "{yaml:?} must not break Config::load"
+            );
         }
 
         std::fs::write(

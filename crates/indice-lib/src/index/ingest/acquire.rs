@@ -70,8 +70,8 @@ pub(super) fn open(
                 Ok(false) | Err(_) => {
                     info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
                     progress.phase("downloading");
-                    let tmp =
-                        download_to_temp(u, fetch).with_context(|| format!("downloading {u}"))?;
+                    let tmp = download_to_temp(u, fetch, cx.download_limit)
+                        .with_context(|| format!("downloading {u}"))?;
                     let path = tmp.path().to_path_buf();
                     // The temp file must outlive the read, so the handle rides along.
                     WaczAccess::Local {
@@ -272,12 +272,26 @@ fn place_local_wacz(
 fn download_to_temp(
     url: &str,
     policy: crate::http_range::FetchPolicy,
+    limit: Option<u64>,
 ) -> Result<tempfile::NamedTempFile> {
-    use std::io::{copy, Write};
+    use std::io::{copy, Read, Write};
 
     let mut tmp = tempfile::Builder::new().suffix(".wacz").tempfile()?;
-    let mut reader = crate::http_range::get_reader(url, policy)?;
-    copy(&mut reader, &mut tmp).with_context(|| format!("writing {url} to temp file"))?;
+    let reader = crate::http_range::get_reader(url, policy)?;
+    // Read one byte past the limit, so "exactly at the limit" and "over it" can
+    // be told apart without trusting a Content-Length the host may not send.
+    let mut bounded = reader.take(limit.map_or(u64::MAX, |l| l.saturating_add(1)));
+    let written =
+        copy(&mut bounded, &mut tmp).with_context(|| format!("writing {url} to temp file"))?;
+    if let Some(l) = limit {
+        if written > l {
+            anyhow::bail!(
+                "{url} cannot be streamed, and downloading it to index would take more than \
+                 the {} limit on a single upload (uploads.max_mb in config.yaml)",
+                crate::server::human_size(l)
+            );
+        }
+    }
     tmp.flush()?;
     Ok(tmp)
 }

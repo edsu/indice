@@ -35,7 +35,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Headroom above the per-upload cap for everything in a multipart body that is
 /// not the file: boundaries, part headers, and the collection and display-name
 /// fields, which are themselves capped at 4 KiB each.
-const UPLOAD_FRAMING_ALLOWANCE: u64 = 64 * 1024;
+pub(super) const UPLOAD_FRAMING_ALLOWANCE: u64 = 64 * 1024;
 
 mod api;
 mod assets;
@@ -382,10 +382,20 @@ fn build_router(
     // Loaded here so a malformed config.yaml stops the server at startup, as
     // the roster does, rather than at the first upload or ingest.
     let home_config = crate::config::Config::load(home)?;
+    crate::config::Config::check_upload_limits(home)?;
     let upload_limits = UploadLimits {
         per_upload: home_config.max_upload_bytes(),
         archive: home_config.max_archive_bytes(),
     };
+    // Said at startup beside `access:` and `roles:`, so an operator who meant to
+    // set a limit can see whether it took. Unset is stated, not left out: on a
+    // server open to curators it is a decision with consequences.
+    let show = |b: Option<u64>| b.map_or("no limit".to_string(), human_size);
+    tracing::info!(
+        "uploads: {} per upload, {} for the archive",
+        show(upload_limits.per_upload),
+        show(upload_limits.archive)
+    );
     let access_is_local = config.access.is_local();
     tracing::info!("access: {}", config.access.summary());
     // A server with no roster hands admin to the first stranger its identity

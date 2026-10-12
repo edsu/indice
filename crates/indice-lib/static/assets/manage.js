@@ -242,6 +242,13 @@ f.addEventListener('submit', async (e) => {
     if (src === 'upload') {
       const file = f.file.files[0];
       if (!file) { out.textContent = 'Choose a .wacz file to upload.'; return; }
+      // Refuse here what the server would refuse, so a doomed upload is never
+      // sent. The server stops reading an over-limit body and closes, and a
+      // browser still sending can report that as a network error rather than
+      // showing the reason. The server enforces both regardless.
+      const lim = f.dataset;
+      if (lim.maxUpload && file.size > Number(lim.maxUpload)) { out.textContent = lim.maxUploadMsg; return; }
+      if (lim.room && file.size > Number(lim.room)) { out.textContent = lim.roomMsg; return; }
       out.textContent = 'Uploading…';
       const fd = new FormData();
       fd.append('collection', collection);

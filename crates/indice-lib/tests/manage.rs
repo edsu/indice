@@ -1499,33 +1499,49 @@ async fn serve_with_config(
     (tmp, base, server)
 }
 
+/// Pretend the archive holds `bytes`, with a sparse file that reports that size
+/// and takes no disk. The archive limit counts what `archive/` holds, so this is
+/// exactly what it measures.
+fn fill_archive(home: &std::path::Path, bytes: u64) {
+    let dir = home.join("archive").join("filler");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::File::create(dir.join("filler.bin"))
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
+}
+
+const MIB: u64 = 1024 * 1024;
+const GIB: u64 = 1024 * MIB;
+
 /// An upload larger than `uploads.max_mb` is refused, and says which limit.
 ///
-/// Both ways a body can arrive: with a `Content-Length`, which can be refused
-/// before anything is read, and chunked with none, which can only be refused by
-/// counting as it streams.
+/// Sent chunked, with no length, so the refusal can only come from counting as
+/// it streams. A body that declares its length is refused from its headers
+/// before any of it is read, which is
+/// `a_body_that_declares_itself_too_large_is_refused_before_it_is_sent`; that
+/// test reads the reply the way a well-behaved client does. Sending a whole body
+/// with a length through ureq here would test ureq instead: it writes the body
+/// before reading anything, so a refusal that arrives early reaches it as a
+/// broken pipe. That is also why the desk checks the size itself.
 #[tokio::test]
-async fn an_upload_over_the_size_limit_is_refused_with_or_without_a_length() {
+async fn an_upload_over_the_size_limit_is_refused() {
     let (tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
-    let two_mib = vec![0u8; 2 * 1024 * 1024];
-
-    for chunked in [false, true] {
-        let (ct, body) = upload_body("Big", &two_mib);
-        let (status, text) = post_upload(&base, ct, body, chunked).await;
-        let how = if chunked {
-            "chunked"
-        } else {
-            "with a Content-Length"
-        };
-        assert_eq!(status, 413, "{how}: an over-limit upload must be refused");
-        assert!(
-            text.contains("1.0 MB") || text.contains("limit"),
-            "{how}: the refusal should name the limit, got: {text}"
-        );
-    }
+    let (ct, body) = upload_body("Big", &vec![0u8; 2 * MIB as usize]);
+    let (status, text) = post_upload(&base, ct, body, true).await;
+    assert_eq!(status, 413, "an over-limit upload must be refused");
+    // The setting's name, not just the word "limit": axum's own refusal says
+    // "length limit exceeded", and this must not be that.
     assert!(
-        !tmp.path().join("archive").exists(),
-        "nothing should have reached the archive"
+        text.contains("uploads.max_mb"),
+        "the refusal should name the setting, got: {text}"
+    );
+
+    // The desk carries the limit, so a browser refuses before sending.
+    let (_, desk) = get(format!("{base}/manage/add")).await;
+    assert!(
+        desk.contains(&format!("data-max-upload=\"{MIB}\"")),
+        "the desk should carry the per-upload limit"
     );
 
     // Under the limit still works: the bound is a bound, not a refusal of all.
@@ -1533,52 +1549,299 @@ async fn an_upload_over_the_size_limit_is_refused_with_or_without_a_length() {
     let (ct, body) = upload_body("Small", &wacz);
     let (status, _) = post_upload(&base, ct, body, false).await;
     assert_eq!(status, 202, "an upload under the limit is accepted");
+    drop(tmp);
     server.abort();
 }
 
 /// An upload that would take the archive past `uploads.max_total_gb` is refused
-/// with the numbers, as is any upload once it is full.
-///
-/// The total is read from the manifest's recorded sizes, so the test makes the
-/// archive nearly full by recording a large local crawl rather than writing a
-/// gigabyte to disk. That is the same accounting the server does.
+/// with the numbers, as is any upload once it is full, and the desk says which.
 #[tokio::test]
 async fn an_upload_that_would_overfill_the_archive_is_refused() {
     let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
-    indice_lib::index::index_path(&fixture("simple.wacz"), tmp.path(), None, "Existing").unwrap();
-    let gib = 1024 * 1024 * 1024u64;
-    let set_used = |bytes: u64| {
-        let mut m = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
-        m.waczs[0].file_size = bytes;
-        m.save().unwrap();
-    };
 
     // One MiB of room, and a two-MiB upload: refused while streaming.
-    set_used(gib - 1024 * 1024);
-    let (ct, body) = upload_body("More", &vec![0u8; 2 * 1024 * 1024]);
+    fill_archive(tmp.path(), GIB - MIB);
+    let (_, desk) = get(format!("{base}/manage/add")).await;
+    assert!(
+        desk.contains("left") && !desk.contains("is full"),
+        "the desk should show the room left"
+    );
+    assert!(
+        desk.contains(&format!("data-room=\"{MIB}\"")),
+        "and carry it, so a browser refuses a file that will not fit"
+    );
+    let (ct, body) = upload_body("More", &vec![0u8; 2 * MIB as usize]);
     let (status, text) = post_upload(&base, ct, body, true).await;
     assert_eq!(
         status, 507,
         "an upload past the archive limit must be refused"
     );
     assert!(
-        text.contains("1.0 GB") && text.contains("left"),
-        "the refusal should give the limit and the room left, got: {text}"
+        text.contains("uploads.max_total_gb") && text.contains("left"),
+        "the refusal should give the setting and the room left, got: {text}"
     );
 
     // Full: refused before any of the body is read.
-    set_used(gib);
+    fill_archive(tmp.path(), GIB);
     let (ct, body) = upload_body("More", b"tiny");
     let (status, text) = post_upload(&base, ct, body, false).await;
     assert_eq!(status, 507, "a full archive must refuse every upload");
     assert!(text.contains("holds"), "and say what it holds: {text}");
-
-    // The accession desk says so before anyone tries.
     let (_, desk) = get(format!("{base}/manage/add")).await;
     assert!(
-        desk.contains("The archive is full"),
-        "the desk should show that the archive is full"
+        desk.contains("is full") && desk.contains("Adding by URL still works"),
+        "the desk should say it is full, and what still works"
     );
+    server.abort();
+}
+
+/// With both limits set, the tighter one is the one enforced and named.
+#[tokio::test]
+async fn the_tighter_of_the_two_limits_is_the_one_reported() {
+    let config = "uploads:\n  max_mb: 1\n  max_total_gb: 1\n";
+
+    // Plenty of archive room: the per-upload cap is tighter, so 413.
+    let (_tmp, base, server) = serve_with_config(config).await;
+    let (ct, body) = upload_body("A", &vec![0u8; 2 * MIB as usize]);
+    let (status, text) = post_upload(&base, ct, body, true).await;
+    assert_eq!(status, 413, "per-upload cap is the tighter: {text}");
+    assert!(text.contains("uploads.max_mb"), "{text}");
+    server.abort();
+
+    // Half a MiB of room: the archive is tighter, so a 768 KiB upload, under
+    // the per-upload cap, is still refused, and as 507.
+    let (tmp, base, server) = serve_with_config(config).await;
+    fill_archive(tmp.path(), GIB - MIB / 2);
+    let (ct, body) = upload_body("B", &vec![0u8; 3 * MIB as usize / 4]);
+    let (status, text) = post_upload(&base, ct, body, true).await;
+    assert_eq!(status, 507, "archive room is the tighter: {text}");
+    assert!(text.contains("uploads.max_total_gb"), "{text}");
+    server.abort();
+}
+
+/// A body that declares itself too large is refused from its headers.
+///
+/// The route's body limit counts frames as they arrive and never reads
+/// `Content-Length`, so without a check on the header a client declaring 10 GB
+/// would stream up to the cap before being told. This sends the headers and then
+/// nothing: refused promptly means the header was read; a hang means the server
+/// was waiting for a body it should never have wanted.
+#[tokio::test]
+async fn a_body_that_declares_itself_too_large_is_refused_before_it_is_sent() {
+    use std::io::{Read, Write};
+    let (_tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
+    let addr = base.trim_start_matches("http://").to_string();
+    let reply = tokio::task::spawn_blocking(move || {
+        let mut sock = std::net::TcpStream::connect(&addr).unwrap();
+        sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            sock,
+            "POST /api/archives/upload HTTP/1.1\r\nHost: {addr}\r\n\
+             Content-Type: multipart/form-data; boundary=x\r\n\
+             Content-Length: 10737418240\r\n\r\n"
+        )
+        .unwrap();
+        let mut buf = [0u8; 512];
+        let n = sock
+            .read(&mut buf)
+            .expect("the server should answer, not wait");
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    })
+    .await
+    .unwrap();
+    assert!(
+        reply.starts_with("HTTP/1.1 413"),
+        "a declared 10 GB body should be refused at once, got: {reply}"
+    );
+    server.abort();
+}
+
+/// A URL that cannot be streamed is downloaded to index, and that download is
+/// bounded by `uploads.max_mb` like an upload.
+///
+/// The fallback copies the whole response to a temp file, and the response is
+/// whatever the host chooses to send, so unbounded it was a way to fill the
+/// volume with one URL even when the archive itself was full.
+#[tokio::test]
+async fn a_url_that_must_be_downloaded_is_bounded_by_the_upload_limit() {
+    // No range support, so indice has to download it rather than stream.
+    let origin = axum::Router::new().route(
+        "/big.wacz",
+        axum::routing::get(|| async { vec![0u8; 2 * MIB as usize] }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        axum::serve(listener, origin.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let (_tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
+    let url = format!("http://{origin_addr}/big.wacz");
+    let post = format!("{base}/api/archives");
+    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post)
+            .header("content-type", "application/json")
+            .send(serde_json::json!({ "path": url, "collection": "net" }).to_string())
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let (_, transcript) = get(format!(
+        "{base}/api/archives/{}/events",
+        job["job"].as_u64().unwrap()
+    ))
+    .await;
+    assert!(
+        transcript.contains("uploads.max_mb"),
+        "the download should be refused past the limit: {transcript}"
+    );
+    server.abort();
+    origin_task.abort();
+}
+
+/// Uploads arriving together cannot each spend the same room.
+///
+/// Each one passes the request-time check, because each fits on its own; that
+/// check cannot see the others. The job-time check runs under the write lock,
+/// which serialises every job that files into the archive, so the second to get
+/// there sees the first. Asserted as the property that matters — the archive
+/// never goes past its limit — whichever of the two checks catches it.
+#[tokio::test]
+async fn concurrent_uploads_never_take_the_archive_past_its_limit() {
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
+    let wacz = std::fs::read(fixture("a.wacz")).unwrap();
+    let one = wacz.len() as u64;
+    // Room for one copy and a half: either alone fits, both do not.
+    fill_archive(tmp.path(), GIB - one - one / 2);
+
+    let mut posts = Vec::new();
+    for collection in ["first", "second"] {
+        let (ct, body) = upload_body(collection, &wacz);
+        let base = base.clone();
+        posts.push(tokio::spawn(async move {
+            post_upload(&base, ct, body, false).await
+        }));
+    }
+    let mut accepted = Vec::new();
+    for p in posts {
+        let (status, text) = p.await.unwrap();
+        match status {
+            202 => accepted.push(serde_json::from_str::<serde_json::Value>(&text).unwrap()),
+            507 => {}
+            other => panic!("unexpected status {other}: {text}"),
+        }
+    }
+    let mut finished = 0;
+    for job in &accepted {
+        let (_, transcript) = get(format!(
+            "{base}/api/archives/{}/events",
+            job["job"].as_u64().unwrap()
+        ))
+        .await;
+        if transcript.contains("event: done") {
+            finished += 1;
+        }
+    }
+    assert!(finished <= 1, "at most one of the two may be filed");
+    assert!(
+        indice_lib::index::archive_bytes(tmp.path()).unwrap() <= GIB,
+        "the archive must not go past its limit"
+    );
+    server.abort();
+}
+
+/// A full archive refuses a download import before the import starts.
+///
+/// The stub providers fail if they are ever asked for a client. The refusal has
+/// to come first: without it the handler answers 202 and the job fails later,
+/// after the curator has been told the import is under way. A streamed
+/// Browsertrix import stores nothing locally, so it is not refused for space.
+#[tokio::test]
+async fn a_full_archive_refuses_a_download_import_before_it_starts() {
+    struct NeverBx;
+    impl indice_lib::browsertrix::BrowsertrixProvider for NeverBx {
+        fn client(&self) -> anyhow::Result<indice_lib::browsertrix::Client> {
+            anyhow::bail!("the provider must not be reached when the archive is full")
+        }
+    }
+    struct NeverAit;
+    impl indice_lib::archiveit::ArchiveItProvider for NeverAit {
+        fn client(&self) -> anyhow::Result<indice_lib::archiveit::Client> {
+            anyhow::bail!("the provider must not be reached when the archive is full")
+        }
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        "uploads:\n  max_total_gb: 1\n",
+    )
+    .unwrap();
+    fill_archive(tmp.path(), GIB);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let home = tmp.path().to_path_buf();
+    let server = tokio::spawn(async move {
+        indice_lib::server::serve_on_listener(
+            listener,
+            &home,
+            None,
+            local_access(),
+            indice_lib::server::Providers {
+                browsertrix: Some(std::sync::Arc::new(NeverBx)),
+                archiveit: Some(std::sync::Arc::new(NeverAit)),
+            },
+        )
+        .await
+        .unwrap();
+    });
+    let base = format!("http://127.0.0.1:{port}");
+
+    let post = |path: &'static str, body: serde_json::Value| {
+        let url = format!("{base}{path}");
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut res = agent()
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .send(body.to_string())
+                    .unwrap();
+                (
+                    res.status().as_u16(),
+                    res.body_mut().read_to_string().unwrap_or_default(),
+                )
+            })
+            .await
+            .unwrap()
+        }
+    };
+    let item = serde_json::json!([{ "id": "i", "name": "n" }]);
+
+    let (status, text) = post(
+        "/api/browsertrix/import",
+        serde_json::json!({ "org": "o", "collection": "c", "items": item, "download": true }),
+    )
+    .await;
+    assert_eq!(status, 507, "a Browsertrix download import: {text}");
+
+    let (status, text) = post(
+        "/api/archiveit/import",
+        serde_json::json!({ "collection_id": 1, "collection": "c", "crawls": [1] }),
+    )
+    .await;
+    assert_eq!(status, 507, "an Archive-It import: {text}");
+
+    let (status, _) = post(
+        "/api/browsertrix/import",
+        serde_json::json!({ "org": "o", "collection": "c", "items": item, "download": false }),
+    )
+    .await;
+    assert_ne!(status, 507, "a streamed import uses no local disk");
     server.abort();
 }
 
