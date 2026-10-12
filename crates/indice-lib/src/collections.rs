@@ -410,6 +410,25 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// Bytes of WACZ held in the archive, as the manifest records them.
+    ///
+    /// Counts local files only. A crawl indexed from a URL is streamed in place
+    /// and occupies no local disk, so including it would refuse uploads to an
+    /// archive that is mostly references to somewhere else. A Browsertrix
+    /// source is the same: re-resolved at replay, never stored.
+    ///
+    /// Read from the manifest rather than the filesystem, so it costs nothing
+    /// and needs no dependency. It undercounts by the thumbnails, the finding
+    /// aids and the index itself, which is the right thing to measure: the
+    /// limit is on what curators add, and the index is the operator's to size.
+    pub fn local_archive_bytes(&self) -> u64 {
+        self.waczs
+            .iter()
+            .filter(|w| matches!(w.source, Source::File(_)))
+            .map(|w| w.file_size)
+            .sum()
+    }
+
     pub fn open(index_dir: &Path) -> Result<Self> {
         let home = index_dir
             .parent()
@@ -1715,6 +1734,32 @@ mod tests {
             status_counts: BTreeMap::new(),
             added_by: None,
         }
+    }
+
+    #[test]
+    fn archive_usage_counts_local_files_and_nothing_streamed() {
+        // A crawl indexed from a URL is streamed in place and a Browsertrix one
+        // is re-resolved at replay; neither occupies local disk, so counting
+        // them would refuse uploads to an archive that is mostly references.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut m = Manifest::open(&tmp.path().join("index")).unwrap();
+        let mut local = wacz("a", "Local", None);
+        local.file_size = 300;
+        let mut url = wacz("b", "Streamed", None);
+        url.source = Source::Url("https://example.org/b.wacz".into());
+        url.file_size = 50_000;
+        let mut bt = wacz("c", "Browsertrix", None);
+        bt.source = Source::Browsertrix {
+            host: "h".into(),
+            org: "o".into(),
+            item: "i".into(),
+            resource: "c.wacz".into(),
+        };
+        bt.file_size = 70_000;
+        let mut local2 = wacz("d", "Local too", None);
+        local2.file_size = 200;
+        m.waczs = vec![local, url, bt, local2];
+        assert_eq!(m.local_archive_bytes(), 500);
     }
 
     #[test]

@@ -319,7 +319,7 @@ the code. The second is replay, below.
 | The shared secret stays secret | Anyone who has it is every user at once | operator |
 | ~~The operator meant the roster default~~ | Closed: a server now refuses to start without `users.yaml`, and a roster that goes malformed or missing keeps the last good one | `u9y6.2` |
 | Writers are not hostile to the host | Closed. Adding by reference over HTTP takes a URL only, in both shapes, and on a server that URL must resolve to a public address (`--allow-internal-fetch` opts back in). The CLI still takes a path. The Browsertrix and Archive-It hosts stay unrestricted on purpose: they are operator configuration read from the environment, never request input | `u9y6.4` |
-| Writers are not hostile to the disk | No cap on upload size or total archive size | `u9y6.3` |
+| Writers are not hostile to the disk | Configurable: `uploads.max_mb` and `uploads.max_total_gb` bound one upload and the archive. Unset is unlimited, so an operator taking curators they do not know must set them. Archive-wide, so one curator can still use everyone's share (`rustyweb-upload-quota-hryt`) | `u9y6.3` |
 | Readers are not hostile to availability | Partly closed. A query is capped at 2 KiB, index reads run on the blocking pool, and quick routes time out at 30s. Still missing: a concurrency limit, and per-IP rate limiting, so many cheap requests (or many open `/files` streams) are still unbounded | `u9y6.1` |
 | Error text is read by the operator | Responses carry server internals, including paths | `u9y6.5` |
 | A browser will apply sensible defaults | No CSP, no `X-Content-Type-Options`, no referrer policy, and replay needs an exception from whatever lands | `u9y6.6` |
@@ -462,7 +462,7 @@ Related idea worth capturing (tracked as `rustyweb-object-storage-home`): the **
 
 ### Operator config (`<home>/config.yaml`)
 
-indice's first optional, hand-editable home-level config — committable alongside the archive, in the same YAML as the finding aids. It is deliberately forgiving: the file is optional, every field defaults, and unknown/missing keys are ignored, so it can grow (site name, branding, CSS override, theming, …) without breaking older or newer homes. `indice config` shows the resolved settings and the file path. Today it carries index tuning:
+indice's first optional, hand-editable home-level config — committable alongside the archive, in the same YAML as the finding aids. It is deliberately forgiving: the file is optional, every field defaults, and unknown/missing keys are ignored, so it can grow (site name, branding, CSS override, theming, …) without breaking older or newer homes. `indice config` shows the resolved settings and the file path. It carries index tuning and the upload limits:
 
 ```yaml
 index:
@@ -474,7 +474,16 @@ index:
   # Tantivy indexing-buffer budget in MiB — the RAM ceiling / throughput knob for
   # building the index. Higher = faster bulk ingest, more RAM; omit for 50 MiB.
   writer_heap_mb: 256
+uploads:
+  # The largest single browser upload, in MiB, and the most the archive may
+  # hold, in GiB. Both unset = unlimited; 0 is refused rather than read as that.
+  max_mb: 2048
+  max_total_gb: 200
 ```
+
+**The upload limits** bound the browser write surface only; the CLI is the operator at the machine. `max_total_gb` is measured from the manifest (`Manifest::local_archive_bytes`, the sum of `file_size` over `Source::File` crawls) rather than the filesystem. That costs nothing, needs no `statvfs` dependency, and measures what the limit is for: what curators add. A URL or Browsertrix source occupies no local disk and is excluded. The index, thumbnails and Tantivy's merge scratch are left out too, because those are the operator's to size. The check runs before an accession starts. Running the volume to `ENOSPC` is worse than a refused upload: the manifest survives it, since it is written atomically, but a Tantivy commit that fails mid-merge does not leave a tidy state.
+
+An upload is bounded three ways. The route's `DefaultBodyLimit` follows `max_mb` plus 64 KiB for multipart framing; `http_body_util::Limited` counts streamed bytes, so it stops a chunked body as well as a declared one. `stream_field_to_file` counts the file exactly and also enforces the archive's remaining room, which can be tighter than `max_mb` and which the body limit knows nothing about. The `collection` and `name` text fields are capped at 4 KiB each whatever the config says, since `Field::text` would otherwise buffer an arbitrarily large field in memory. Over `max_mb` answers `413`; over the archive's room answers `507`, because the request is not too large in itself and a smaller file may still fit. Two accessions racing can each see the same room and between them overshoot by up to one upload, and a Browsertrix or Archive-It download import, which arrives as many files of unknown total size, is refused only once the archive is already full.
 
 ### Ingesting large corpora
 

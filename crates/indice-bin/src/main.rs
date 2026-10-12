@@ -1881,6 +1881,28 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         "index.writer_heap_mb:     {heap_set}  ->  {} MiB indexing buffer",
         cfg.writer_heap_bytes() / (1024 * 1024)
     );
+
+    // Unset is reported as "no limit" rather than left blank, because for these
+    // two that is a decision with consequences: it is what a server exposing
+    // its archive to curators it does not know should not be running with.
+    let limit = |set: Option<u64>, unit: &str, per: &str, of: &str| match set {
+        Some(n) => (n.to_string(), format!("{n} {unit} {per}")),
+        None => ("unset".to_string(), format!("no limit on {of}")),
+    };
+    let (set, resolved) = limit(
+        cfg.uploads.max_mb,
+        "MiB",
+        "per browser upload",
+        "a browser upload",
+    );
+    println!("uploads.max_mb:           {set}  ->  {resolved}");
+    let (set, resolved) = limit(
+        cfg.uploads.max_total_gb,
+        "GiB",
+        "for the whole archive",
+        "the archive",
+    );
+    println!("uploads.max_total_gb:     {set}  ->  {resolved}");
     Ok(())
 }
 

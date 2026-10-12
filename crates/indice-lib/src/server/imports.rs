@@ -275,6 +275,14 @@ pub(super) async fn bx_import(
     if req.items.is_empty() {
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
     }
+    // A download lands in `archive/`; a streamed import costs no local disk.
+    // Refused only once the archive is full, for the reason given on
+    // `ait_import`: an import's total size is not known up front.
+    if req.download {
+        if let Err(refused) = super::manage::accession_budget(&state) {
+            return refused.into_response();
+        }
+    }
     // Streaming needs the resolver (to fetch a fresh presigned URL at index time
     // and again at replay); downloading fetches each WACZ directly and doesn't.
     let resolver = state.resolver.clone();
@@ -610,6 +618,15 @@ pub(super) async fn ait_import(
     };
     if req.into.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+    }
+    // Archive-It serves WARCs, so every import builds a WACZ in `archive/`.
+    //
+    // Refused only when the archive is already full. An import's size is not
+    // known until its WARCs are listed, and it arrives as many files rather than
+    // one stream that can be counted, so one import can overshoot the limit by
+    // its own size. What this stops is a full archive taking another.
+    if let Err(refused) = super::manage::accession_budget(&state) {
+        return refused.into_response();
     }
     if req.crawls.is_empty() {
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();

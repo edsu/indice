@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
-use anyhow::Result;
 use axum::extract::{Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
@@ -354,6 +353,12 @@ pub(super) async fn upload_archive(
     curator: Curator,
     mut multipart: Multipart,
 ) -> Response {
+    // Before any of the body is read, so a full archive refuses at once rather
+    // than after a curator has waited for gigabytes to arrive.
+    let budget = match accession_budget(&state) {
+        Ok(b) => b,
+        Err(refused) => return refused.into_response(),
+    };
     let mut collection: Option<String> = None;
     let mut name: Option<String> = None;
     let mut tmpdir: Option<tempfile::TempDir> = None;
@@ -363,13 +368,17 @@ pub(super) async fn upload_archive(
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, format!("malformed upload: {e}")).into_response()
-            }
+            Err(e) => return multipart_refusal(e, budget),
         };
         match field.name() {
-            Some("collection") => collection = field.text().await.ok(),
-            Some("name") => name = field.text().await.ok(),
+            Some("collection") => match read_text_field(field, budget).await {
+                Ok(text) => collection = Some(text),
+                Err(refusal) => return refusal,
+            },
+            Some("name") => match read_text_field(field, budget).await {
+                Ok(text) => name = Some(text),
+                Err(refusal) => return refusal,
+            },
             Some("file") => {
                 // Keep just the basename of the client filename, defaulting the
                 // extension so `index_location`'s `.wacz` check passes.
@@ -384,8 +393,8 @@ pub(super) async fn upload_archive(
                     Err(e) => return error_response(anyhow::anyhow!(e)).into_response(),
                 };
                 let path = dir.path().join(&fname);
-                if let Err(e) = stream_field_to_file(field, &path).await {
-                    return error_response(e).into_response();
+                if let Err(refusal) = stream_field_to_file(field, &path, budget).await {
+                    return refusal;
                 }
                 file_path = Some(path);
                 tmpdir = Some(dir);
@@ -415,18 +424,227 @@ pub(super) async fn upload_archive(
 }
 
 /// Stream one multipart field's bytes to `path`, chunk by chunk (never buffering
-/// the whole upload in memory).
+/// the whole upload in memory), stopping once it passes `budget`.
+///
+/// Counted here as well as by the route's body limit. The body limit counts
+/// streamed bytes too, so it stops a chunked body as well as one with a
+/// declared length, and refuses the declared case before reading anything.
+/// This count does what it cannot: it enforces the archive's remaining room,
+/// which can be tighter than the per-upload cap and which the body limit knows
+/// nothing about, and it is exact for the file alone, where the body limit has
+/// to leave room for multipart framing.
 async fn stream_field_to_file(
     mut field: axum::extract::multipart::Field<'_>,
     path: &Path,
-) -> Result<()> {
+    budget: Option<Budget>,
+) -> Result<(), Response> {
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(path).await?;
-    while let Some(chunk) = field.chunk().await? {
-        file.write_all(&chunk).await?;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| error_response(e.into()))?;
+    let mut written: u64 = 0;
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => return Err(multipart_refusal(e, budget)),
+        };
+        written += chunk.len() as u64;
+        if let Some(b) = budget {
+            if written > b.bytes {
+                // The temp directory is dropped with the handler, which
+                // deletes this partial file.
+                return Err(b.refusal());
+            }
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| error_response(e.into()))?;
     }
-    file.flush().await?;
+    file.flush().await.map_err(|e| error_response(e.into()))?;
     Ok(())
+}
+
+/// The limits on what the browser write surface may add, from `config.yaml`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct UploadLimits {
+    /// The largest single upload, in bytes.
+    pub per_upload: Option<u64>,
+    /// The most the archive may hold, in bytes. See
+    /// [`crate::collections::Manifest::local_archive_bytes`].
+    pub archive: Option<u64>,
+}
+
+/// What a single accession may still add, and which limit says so.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Budget {
+    bytes: u64,
+    bound: Bound,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Bound {
+    /// The per-upload cap is the tighter one.
+    Upload(u64),
+    /// The archive's remaining room is the tighter one.
+    Archive { used: u64, cap: u64 },
+}
+
+impl Budget {
+    /// The refusal for spending past this budget, naming the limit and its
+    /// setting so the operator knows which knob, and the curator knows whether
+    /// a smaller file would fit.
+    fn refusal(self) -> Response {
+        match self.bound {
+            Bound::Upload(cap) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "this upload is larger than the {} limit on a single upload \
+                     (uploads.max_mb in config.yaml)",
+                    human_size(cap)
+                ),
+            )
+                .into_response(),
+            Bound::Archive { used, cap } => archive_full(used, cap),
+        }
+    }
+}
+
+/// The archive cannot take this: it is full, or this would overfill it.
+///
+/// 507 rather than 413, because the request is not too large in itself; it is
+/// the archive that has no room. A client can tell the two apart, and a smaller
+/// file is only worth trying for the first.
+fn archive_full(used: u64, cap: u64) -> Response {
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        format!(
+            "the archive is limited to {} and holds {}, so there is {} left \
+             (uploads.max_total_gb in config.yaml)",
+            human_size(cap),
+            human_size(used),
+            human_size(cap.saturating_sub(used)),
+        ),
+    )
+        .into_response()
+}
+
+/// How much one accession may add, or the refusal if the archive is already
+/// full. `None` means no limit applies.
+///
+/// Checked before a job starts rather than when it finishes, because running
+/// the volume out of space is a much worse failure than a refused upload: the
+/// manifest is written atomically and survives it, but a Tantivy commit that
+/// fails mid-merge does not leave a tidy state behind.
+///
+/// Two accessions racing can each see the same room and between them overshoot
+/// by up to one upload. That bound is the honest one to state; closing it would
+/// mean reserving space across jobs, which buys little for a limit whose job is
+/// to fail early rather than exactly.
+pub(super) fn accession_budget(state: &AppState) -> Result<Option<Budget>, Refused> {
+    let limits = state.upload_limits;
+    let archive = match limits.archive {
+        None => None,
+        Some(cap) => {
+            let used = crate::collections::Manifest::open(&state.index_dir)
+                .map_err(Refused::Manifest)?
+                .local_archive_bytes();
+            if used >= cap {
+                return Err(Refused::ArchiveFull { used, cap });
+            }
+            Some(Budget {
+                bytes: cap - used,
+                bound: Bound::Archive { used, cap },
+            })
+        }
+    };
+    let upload = limits.per_upload.map(|cap| Budget {
+        bytes: cap,
+        bound: Bound::Upload(cap),
+    });
+    Ok(match (upload, archive) {
+        (Some(u), Some(a)) => Some(if u.bytes <= a.bytes { u } else { a }),
+        (one, other) => one.or(other),
+    })
+}
+
+/// Why an accession was refused before it started.
+///
+/// A small type rather than a ready-made `Response`, which is a large value to
+/// carry through a `Result`. It renders itself through axum's `IntoResponse`,
+/// so a handler still just returns it.
+#[derive(Debug)]
+pub(super) enum Refused {
+    /// The archive is at or past its limit.
+    ArchiveFull { used: u64, cap: u64 },
+    /// The manifest could not be read to find out.
+    Manifest(anyhow::Error),
+}
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        match self {
+            Refused::ArchiveFull { used, cap } => archive_full(used, cap),
+            Refused::Manifest(e) => error_response(e),
+        }
+    }
+}
+
+/// The most a text field in an upload may be. A collection name and a display
+/// name are a line each; this is generous for either.
+const MAX_TEXT_FIELD: usize = 4 * 1024;
+
+/// Read a short text field, refusing one that is not short.
+///
+/// `Field::text` buffers the whole field in memory, and with the body limit
+/// lifted on this route nothing else bounds it, so a client could send a
+/// collection "name" of several gigabytes and exhaust the server's memory with
+/// one request. This holds whatever `config.yaml` says, because the size caps
+/// there are about the file and are optional.
+async fn read_text_field(
+    mut field: axum::extract::multipart::Field<'_>,
+    budget: Option<Budget>,
+) -> Result<String, Response> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                if buf.len() + chunk.len() > MAX_TEXT_FIELD {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            "a text field in this upload is longer than {MAX_TEXT_FIELD} bytes"
+                        ),
+                    )
+                        .into_response());
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(multipart_refusal(e, budget)),
+        }
+    }
+    String::from_utf8(buf)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "a text field is not valid UTF-8").into_response())
+}
+
+/// A multipart error, keeping the status axum attached to it.
+///
+/// A 413 here is the route's body limit, which axum reports as "Request payload
+/// is too large" without saying what the limit is. With a budget in hand the
+/// budget's own refusal is used instead. That is always true: the body limit is
+/// only set when there is a per-upload cap, and a body past it is past whichever
+/// limit the budget names, since the budget is the tighter of the two.
+fn multipart_refusal(
+    e: axum::extract::multipart::MultipartError,
+    budget: Option<Budget>,
+) -> Response {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        if let Some(b) = budget {
+            return b.refusal();
+        }
+    }
+    (e.status(), format!("upload refused: {}", e.body_text())).into_response()
 }
 
 /// `GET /api/archives/{id}/events` — stream one job's progress as SSE. The
@@ -535,7 +753,45 @@ pub(super) async fn accession_desk_page(
         })
         .unwrap_or_else(|| id.clone());
     let (_, who) = admin_ctx(&state, &headers);
-    views::accession_desk(&id, &name, who.as_deref()).into_response()
+    let room = room_note(&state);
+    views::accession_desk(&id, &name, who.as_deref(), room.as_deref()).into_response()
+}
+
+/// The accession desk's line about how much room there is, so a curator sees
+/// the limit before starting an upload that cannot finish. `None` when neither
+/// limit is set.
+///
+/// Best-effort: if the manifest cannot be read the line is left off, since the
+/// desk is still usable and the upload itself will report the real error.
+fn room_note(state: &AppState) -> Option<String> {
+    let limits = state.upload_limits;
+    let per_upload = limits
+        .per_upload
+        .map(|cap| format!("Uploads up to {} each.", human_size(cap)));
+    let archive = limits.archive.and_then(|cap| {
+        let used = crate::collections::Manifest::open(&state.index_dir)
+            .ok()?
+            .local_archive_bytes();
+        Some(if used >= cap {
+            format!(
+                "The archive is full: it holds {} of its {} limit, so nothing more can \
+                 be added until a crawl is removed or the limit is raised.",
+                human_size(used),
+                human_size(cap)
+            )
+        } else {
+            format!(
+                "The archive holds {} of its {} limit; {} left.",
+                human_size(used),
+                human_size(cap),
+                human_size(cap - used)
+            )
+        })
+    });
+    match (per_upload, archive) {
+        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        (one, other) => one.or(other),
+    }
 }
 
 /// Form body for create/edit collection (`application/x-www-form-urlencoded`).

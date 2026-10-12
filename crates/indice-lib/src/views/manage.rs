@@ -101,6 +101,9 @@ pub fn accession_desk(
     collection_id: &str,
     collection_name: &str,
     signed_in: Option<&str>,
+    // How much room an accession has, as a sentence; `None` when no limit is
+    // configured, so an unlimited archive shows nothing rather than "∞".
+    room: Option<&str>,
 ) -> Markup {
     let body = html! {
         div.crumbs {
@@ -110,6 +113,9 @@ pub fn accession_desk(
         }
         span.eyebrow { "Accession" }
         h1.page-title { "Add crawls" }
+        @if let Some(room) = room {
+            p.hint.room { (room) }
+        }
 
         form #add-archive-form.manage-form {
             label {

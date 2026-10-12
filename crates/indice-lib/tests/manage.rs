@@ -1438,3 +1438,163 @@ async fn a_url_is_fetched_only_from_a_public_address() {
     server2.abort();
     origin_task.abort();
 }
+
+// ── Bounding what an upload may add ────────────────────────────────────────
+
+/// A multipart upload body: the collection, then a file of `file` bytes.
+fn upload_body(collection: &str, file: &[u8]) -> (String, Vec<u8>) {
+    let boundary = "----indiceLimitTest";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"collection\"\r\n\r\n{collection}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"big.wacz\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(file);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+/// POST an upload body, either with a `Content-Length` or chunked without one.
+async fn post_upload(
+    base: &str,
+    content_type: String,
+    body: Vec<u8>,
+    chunked: bool,
+) -> (u16, String) {
+    let url = format!("{base}/api/archives/upload");
+    tokio::task::spawn_blocking(move || {
+        let req = agent().post(&url).header("content-type", &content_type);
+        let mut res = if chunked {
+            // `from_reader` gives ureq no length, so it sends the body chunked.
+            let mut reader = std::io::Cursor::new(body);
+            req.send(ureq::SendBody::from_reader(&mut reader))
+        } else {
+            req.send(&body[..])
+        }
+        .unwrap();
+        (
+            res.status().as_u16(),
+            res.body_mut().read_to_string().unwrap_or_default(),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+/// Serve a fresh workstation home with this `config.yaml`.
+async fn serve_with_config(
+    config_yaml: &str,
+) -> (tempfile::TempDir, String, tokio::task::JoinHandle<()>) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("config.yaml"), config_yaml).unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    (tmp, base, server)
+}
+
+/// An upload larger than `uploads.max_mb` is refused, and says which limit.
+///
+/// Both ways a body can arrive: with a `Content-Length`, which can be refused
+/// before anything is read, and chunked with none, which can only be refused by
+/// counting as it streams.
+#[tokio::test]
+async fn an_upload_over_the_size_limit_is_refused_with_or_without_a_length() {
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
+    let two_mib = vec![0u8; 2 * 1024 * 1024];
+
+    for chunked in [false, true] {
+        let (ct, body) = upload_body("Big", &two_mib);
+        let (status, text) = post_upload(&base, ct, body, chunked).await;
+        let how = if chunked {
+            "chunked"
+        } else {
+            "with a Content-Length"
+        };
+        assert_eq!(status, 413, "{how}: an over-limit upload must be refused");
+        assert!(
+            text.contains("1.0 MB") || text.contains("limit"),
+            "{how}: the refusal should name the limit, got: {text}"
+        );
+    }
+    assert!(
+        !tmp.path().join("archive").exists(),
+        "nothing should have reached the archive"
+    );
+
+    // Under the limit still works: the bound is a bound, not a refusal of all.
+    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+    let (ct, body) = upload_body("Small", &wacz);
+    let (status, _) = post_upload(&base, ct, body, false).await;
+    assert_eq!(status, 202, "an upload under the limit is accepted");
+    server.abort();
+}
+
+/// An upload that would take the archive past `uploads.max_total_gb` is refused
+/// with the numbers, as is any upload once it is full.
+///
+/// The total is read from the manifest's recorded sizes, so the test makes the
+/// archive nearly full by recording a large local crawl rather than writing a
+/// gigabyte to disk. That is the same accounting the server does.
+#[tokio::test]
+async fn an_upload_that_would_overfill_the_archive_is_refused() {
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
+    indice_lib::index::index_path(&fixture("simple.wacz"), tmp.path(), None, "Existing").unwrap();
+    let gib = 1024 * 1024 * 1024u64;
+    let set_used = |bytes: u64| {
+        let mut m = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+        m.waczs[0].file_size = bytes;
+        m.save().unwrap();
+    };
+
+    // One MiB of room, and a two-MiB upload: refused while streaming.
+    set_used(gib - 1024 * 1024);
+    let (ct, body) = upload_body("More", &vec![0u8; 2 * 1024 * 1024]);
+    let (status, text) = post_upload(&base, ct, body, true).await;
+    assert_eq!(
+        status, 507,
+        "an upload past the archive limit must be refused"
+    );
+    assert!(
+        text.contains("1.0 GB") && text.contains("left"),
+        "the refusal should give the limit and the room left, got: {text}"
+    );
+
+    // Full: refused before any of the body is read.
+    set_used(gib);
+    let (ct, body) = upload_body("More", b"tiny");
+    let (status, text) = post_upload(&base, ct, body, false).await;
+    assert_eq!(status, 507, "a full archive must refuse every upload");
+    assert!(text.contains("holds"), "and say what it holds: {text}");
+
+    // The accession desk says so before anyone tries.
+    let (_, desk) = get(format!("{base}/manage/add")).await;
+    assert!(
+        desk.contains("The archive is full"),
+        "the desk should show that the archive is full"
+    );
+    server.abort();
+}
+
+/// A text field in an upload is bounded whatever `config.yaml` says.
+///
+/// `Field::text` buffers the whole field, and the body limit is lifted on this
+/// route when no per-upload cap is set, so without this a client could send a
+/// collection name of several gigabytes and exhaust the server's memory.
+#[tokio::test]
+async fn an_oversized_text_field_is_refused_even_with_no_limits_set() {
+    let (tmp, base, server) = serve_with_config("").await;
+    let huge_name = "a".repeat(64 * 1024);
+    let (ct, body) = upload_body(&huge_name, b"x");
+    let (status, text) = post_upload(&base, ct, body, true).await;
+    assert_eq!(status, 413, "an oversized text field must be refused");
+    assert!(text.contains("text field"), "and say which part: {text}");
+    assert!(!tmp.path().join("archive").exists());
+    server.abort();
+}
