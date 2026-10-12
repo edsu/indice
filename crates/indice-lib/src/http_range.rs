@@ -9,6 +9,199 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+// ── Where an outbound fetch is allowed to land ──────────────────────────────
+
+/// Whether a fetch may reach addresses on this machine or this network.
+///
+/// indice fetches a WACZ from wherever it is told to, which is a feature when
+/// the operator is doing the telling and a server-side request forgery
+/// primitive when a curator is. `POST /api/archives` takes a location straight
+/// from the request body, so on a server the thing choosing the address may be
+/// an approved stranger rather than the person who runs the machine.
+///
+/// What that buys an attacker is modest but real. The response has to parse as
+/// a zip before indexing gets anywhere, so this is a blind request-proxy and
+/// port-scanner rather than a way to read data back: the useful signal is in
+/// which addresses answer and how fast. It still reaches things nothing else
+/// can, and a university network has far more behind it than a rented VM.
+/// Cloud metadata sits on 169.254.169.254 at most providers.
+///
+/// Default [`Unrestricted`](Self::Unrestricted), so the CLI, the test suite
+/// (which indexes from a local server on 127.0.0.1) and a workstation all
+/// behave exactly as before. The server opts in to [`PublicOnly`](Self::PublicOnly)
+/// when it is running behind an auth proxy, which is the deployment where the
+/// caller and the operator stop being the same person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FetchPolicy {
+    /// Anything the host can route to. The operator chose the address.
+    #[default]
+    Unrestricted,
+    /// Refuse loopback, link-local, private and other non-public addresses.
+    PublicOnly,
+}
+
+/// Whether an address belongs to this machine or this network rather than the
+/// public internet.
+///
+/// Deliberately conservative: anything not clearly out on the internet counts
+/// as internal, because the cost of refusing an odd public address is an error
+/// message and the cost of allowing an internal one is the whole point of the
+/// check.
+///
+/// The IPv4-mapped case is the one worth knowing about. `::ffff:127.0.0.1` is a
+/// perfectly ordinary way to write the loopback address in IPv6, and an
+/// `Ipv6Addr` says `false` to `is_loopback()` for it, so a check that forgot to
+/// unmap would wave through the exact address it was written to stop.
+pub fn is_internal_addr(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // Multicast, 224.0.0.0/4. 224.0.0.1 is every host on this link.
+                || v4.is_multicast()
+                // 0.0.0.0/8, "this network".
+                || o[0] == 0
+                // 100.64.0.0/10, carrier-grade NAT. Not private by RFC 1918,
+                // not routable on the public internet either.
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                // 192.0.0.0/24, IETF protocol assignments.
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                // 198.18.0.0/15, benchmarking.
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                // 240.0.0.0/4, reserved. `is_broadcast` catches only the last
+                // address of it.
+                || o[0] >= 240
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            // An IPv4 address wearing an IPv6 hat, in either spelling.
+            // `to_ipv4_mapped` handles ::ffff:a.b.c.d; the deprecated
+            // IPv4-compatible form ::a.b.c.d is not mapped and would otherwise
+            // match none of the checks below, so ::127.0.0.1 would read as a
+            // public address.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_internal_addr(IpAddr::V4(v4));
+            }
+            if seg[..6].iter().all(|&h| h == 0) && !v6.is_loopback() && !v6.is_unspecified() {
+                return is_internal_addr(IpAddr::V4(std::net::Ipv4Addr::new(
+                    v6.octets()[12],
+                    v6.octets()[13],
+                    v6.octets()[14],
+                    v6.octets()[15],
+                )));
+            }
+            // 64:ff9b::/96 and 64:ff9b:1::/48, the NAT64 prefixes: on a NAT64
+            // network 64:ff9b::a9fe:a9fe reaches 169.254.169.254.
+            if seg[0] == 0x0064 && (seg[1] == 0xff9b) {
+                let tail = v6.octets();
+                return is_internal_addr(IpAddr::V4(std::net::Ipv4Addr::new(
+                    tail[12], tail[13], tail[14], tail[15],
+                )));
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // ff00::/8, which includes the interface- and link-local
+                // all-nodes groups ff01::1 and ff02::1.
+                || v6.is_multicast()
+                // fe80::/10, link-local unicast. `is_unicast_link_local` is
+                // still unstable, so spell it out.
+                || (seg[0] & 0xffc0) == 0xfe80
+                // fc00::/7, unique local. `is_unique_local` is unstable too.
+                || (v6.octets()[0] & 0xfe) == 0xfc
+                // 2001:db8::/32, documentation.
+                || (seg[0] == 0x2001 && seg[1] == 0x0db8)
+                // 100::/64, the discard-only prefix.
+                || (seg[0] == 0x0100 && seg[1..4].iter().all(|&h| h == 0))
+        }
+    }
+}
+
+/// Whether this error is a [`FetchPolicy`] refusal rather than a failure.
+///
+/// The distinction matters to callers that would otherwise retry or fall back:
+/// a refusal is a decision about an address, so trying a second route to the
+/// same address only probes it again.
+pub fn is_policy_refusal(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<io::Error>()
+            .is_some_and(|io| io.kind() == io::ErrorKind::PermissionDenied)
+    })
+}
+
+/// The message from a [`FetchPolicy`] refusal, if that is what this error is.
+///
+/// A refusal is a decision, not a failure: retrying it changes nothing and the
+/// backoff only delays telling the operator what happened.
+fn policy_refusal(e: &ureq::Error) -> Option<io::Error> {
+    match e {
+        ureq::Error::Io(inner) if inner.kind() == io::ErrorKind::PermissionDenied => Some(
+            // Rebuilt rather than cloned (io::Error is not Clone), keeping the
+            // kind: callers further up test for PermissionDenied to tell a
+            // refusal from a host that was merely unreachable.
+            io::Error::new(io::ErrorKind::PermissionDenied, inner.to_string()),
+        ),
+        _ => None,
+    }
+}
+
+/// A ureq resolver that refuses to hand back an internal address.
+///
+/// Checking in the resolver rather than before the request is what closes the
+/// DNS rebinding window. A name that answers with a public address when indice
+/// validates it and a private one when indice connects would defeat any
+/// check-then-fetch arrangement, because the second lookup is the one that
+/// decides where the socket goes. Here there is only one lookup, and the
+/// addresses it returns are the addresses ureq connects to.
+///
+/// One caveat worth recording: ureq documents the resolver module as not
+/// following semver yet, so a patch bump can change this trait. That surfaces
+/// as a build failure rather than a silently disabled guard, which is the
+/// acceptable direction for it to break.
+#[derive(Debug, Default)]
+struct PublicOnlyResolver {
+    inner: ureq::unversioned::resolver::DefaultResolver,
+}
+
+impl ureq::unversioned::resolver::Resolver for PublicOnlyResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> std::result::Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.inner.resolve(uri, config, timeout)?;
+        // Refuse the whole name if *any* answer is internal, rather than
+        // filtering to the public ones. A hostname that resolves to both is not
+        // a hostname with a stray record; it is the shape of someone trying
+        // this on purpose, and connecting to the half that passed would be
+        // doing them a favour.
+        if let Some(bad) = addrs.iter().find(|a| is_internal_addr(a.ip())) {
+            // PermissionDenied, not a generic IO error: `with_retry` has to be
+            // able to tell a policy refusal from a connection that failed.
+            // Retrying a decision five times wastes seconds and then reports
+            // "gave up after 5 attempts", which tells the operator nothing
+            // about why. Found by the test for this guard.
+            return Err(ureq::Error::Io(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to fetch {}: it resolves to {}, which is on this machine or this \
+                 network. indice fetches curator-supplied locations only from public \
+                 addresses when it runs behind an auth proxy.",
+                    uri.host().unwrap_or("that host"),
+                    bad.ip(),
+                ),
+            )));
+        }
+        Ok(addrs)
+    }
+}
+
 /// Read-ahead window: small reads (ZIP headers, CDX lines) are amortized into
 /// one request; a read larger than this fetches exactly what's asked.
 const CHUNK: u64 = 256 * 1024;
@@ -201,12 +394,60 @@ fn retry_after<B>(resp: &ureq::http::Response<B>) -> Option<Duration> {
 /// The shared HTTP agent. `http_status_as_error(false)` returns 4xx/5xx as a
 /// normal response we can inspect (status + `Retry-After`), rather than an opaque
 /// error — needed to classify 429/503 for retry.
-fn http_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+///
+/// Under [`FetchPolicy::PublicOnly`] the agent is built with a resolver that
+/// refuses internal addresses; see [`PublicOnlyResolver`].
+fn http_agent(policy: FetchPolicy) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .build()
-        .new_agent()
+        .build();
+    match policy {
+        FetchPolicy::Unrestricted => config.new_agent(),
+        FetchPolicy::PublicOnly => {
+            // An HTTP proxy turns this guard off, so refuse to use one.
+            //
+            // ureq's default config picks a proxy up from ALL_PROXY/HTTPS_PROXY/
+            // HTTP_PROXY. When one is set, `run.rs` hands the connector
+            // `resolver.empty()` instead of calling the resolver, because the
+            // proxy resolves the target itself (`default_resolve_target()` is
+            // false for http and https proxies). The address we care about is
+            // then never looked at here, and the only one our resolver does see
+            // is the *proxy's* — so on a host with HTTP_PROXY set the check
+            // silently passes everything, and on one with a loopback proxy
+            // sidecar it refuses everything. Both found in review.
+            //
+            // Clearing it means a site that reaches the internet only through
+            // an egress proxy cannot add archives by URL. That is the right way
+            // round: the alternative is a guard that quietly does nothing on an
+            // institutional network, which is the deployment it exists for.
+            // `--allow-internal-fetch` is the way out, and it says plainly that
+            // the operator is taking responsibility for the address.
+            let config = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .proxy(None)
+                .build();
+            // Once, not once per ranged read.
+            if !PROXY_IGNORED.swap(true, std::sync::atomic::Ordering::Relaxed)
+                && ureq::Proxy::try_from_env().is_some()
+            {
+                tracing::warn!(
+                    "ignoring the proxy from the environment when fetching a \
+                     curator-supplied URL: a proxy resolves the address itself, which \
+                     would bypass the check that it is public. Pass \
+                     --allow-internal-fetch if this instance must fetch through a proxy."
+                );
+            }
+            ureq::Agent::with_parts(
+                config,
+                ureq::unversioned::transport::DefaultConnector::new(),
+                PublicOnlyResolver::default(),
+            )
+        }
+    }
 }
+
+/// So the proxy warning above is logged once rather than per ranged read.
+static PROXY_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A [`RangeFetch`] backed by HTTP range GETs via `ureq`, with transient-failure
 /// retry/backoff. `Clone` is cheap (the `ureq::Agent` is `Arc`-backed) and
@@ -223,11 +464,14 @@ impl HttpFetch {
     /// Probe the resource for its total size and confirm the server honors range
     /// requests (a `206` with `Content-Range`). Retries transient failures;
     /// errors otherwise so the caller can fall back to downloading.
-    pub fn open(url: &str) -> Result<Self> {
-        let agent = http_agent();
+    pub fn open(url: &str, policy: FetchPolicy) -> Result<Self> {
+        let agent = http_agent(policy);
         let len = with_retry(&format!("HTTP range probe of {url}"), || {
             let resp = match agent.get(url).header("Range", "bytes=0-0").call() {
                 Ok(r) => r,
+                Err(e) if policy_refusal(&e).is_some() => {
+                    return Attempt::Fatal(policy_refusal(&e).unwrap())
+                }
                 Err(_) => return Attempt::Retry(None),
             };
             let code = resp.status().as_u16();
@@ -273,6 +517,9 @@ impl RangeFetch for HttpFetch {
         with_retry(&format!("range GET of {}", self.url), || {
             let resp = match self.agent.get(&self.url).header("Range", &range).call() {
                 Ok(r) => r,
+                Err(e) if policy_refusal(&e).is_some() => {
+                    return Attempt::Fatal(policy_refusal(&e).unwrap())
+                }
                 Err(_) => return Attempt::Retry(None),
             };
             let code = resp.status().as_u16();
@@ -292,7 +539,9 @@ impl RangeFetch for HttpFetch {
             let mut v = Vec::with_capacity((end - start) as usize);
             match resp.into_body().into_reader().read_to_end(&mut v) {
                 Ok(_) => Attempt::Done(v),
-                // A mid-stream read failure is usually transient; retry the range.
+                // A mid-stream read failure is usually transient; retry the
+                // range. The policy refusal cannot reach here: it happens
+                // during name resolution, so the connection never opened.
                 Err(_) => Attempt::Retry(None),
             }
         })
@@ -372,11 +621,14 @@ impl<F: RangeFetch> RangeFetch for SubRangeFetch<F> {
 /// A retried whole-file GET returning the response body reader (for downloads).
 /// Retries the request start on transient failures; a mid-stream connection drop
 /// is not resumed.
-pub fn get_reader(url: &str) -> Result<impl Read> {
-    let agent = http_agent();
+pub fn get_reader(url: &str, policy: FetchPolicy) -> Result<impl Read> {
+    let agent = http_agent(policy);
     let resp = with_retry(&format!("HTTP GET {url}"), || {
         let resp = match agent.get(url).call() {
             Ok(r) => r,
+            Err(e) if policy_refusal(&e).is_some() => {
+                return Attempt::Fatal(policy_refusal(&e).unwrap())
+            }
             Err(_) => return Attempt::Retry(None),
         };
         let code = resp.status().as_u16();
@@ -392,8 +644,117 @@ pub fn get_reader(url: &str) -> Result<impl Read> {
 }
 
 /// Open a remote WACZ as a `Read + Seek` HTTP range stream.
-pub fn open_remote(url: &str) -> Result<RangeReader<HttpFetch>> {
-    Ok(RangeReader::new(HttpFetch::open(url)?))
+pub fn open_remote(url: &str, policy: FetchPolicy) -> Result<RangeReader<HttpFetch>> {
+    Ok(RangeReader::new(HttpFetch::open(url, policy)?))
+}
+
+#[cfg(test)]
+mod internal_addr_tests {
+    use super::is_internal_addr;
+    use std::net::IpAddr;
+
+    fn internal(s: &str) -> bool {
+        is_internal_addr(s.parse::<IpAddr>().unwrap())
+    }
+
+    #[test]
+    fn refuses_this_machine_and_this_network() {
+        for addr in [
+            "127.0.0.1",
+            "127.1.2.3",
+            "0.0.0.0",
+            "10.0.0.5",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.1",
+            // The cloud metadata endpoint, which is the whole reason the
+            // link-local range is on this list.
+            "169.254.169.254",
+            "255.255.255.255",
+            "100.64.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12:3456::1",
+        ] {
+            assert!(internal(addr), "{addr} should be refused");
+        }
+    }
+
+    #[test]
+    fn allows_the_public_internet() {
+        for addr in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "93.184.216.34",
+            // Just outside the private ranges, to check the boundaries rather
+            // than the middles.
+            "11.0.0.1",
+            "172.15.255.255",
+            "172.32.0.0",
+            "192.167.255.255",
+            "192.169.0.0",
+            "100.63.255.255",
+            "100.128.0.0",
+            "2606:4700::1111",
+            "2001:4860:4860::8888",
+        ] {
+            assert!(!internal(addr), "{addr} should be allowed");
+        }
+    }
+
+    #[test]
+    fn an_ipv4_address_cannot_hide_inside_ipv6() {
+        // The bypass worth having a test for. `::ffff:127.0.0.1` is loopback
+        // written the long way, and `Ipv6Addr::is_loopback` says false for it,
+        // so a check that forgot to unmap would wave through exactly what it
+        // was written to stop.
+        for addr in [
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:10.0.0.1",
+            "::ffff:192.168.0.1",
+            // The deprecated IPv4-compatible spelling. `to_ipv4_mapped` returns
+            // None for these, so without their own unwrapping they match
+            // nothing below and read as public.
+            "::127.0.0.1",
+            "::169.254.169.254",
+            // NAT64: on such a network this reaches 169.254.169.254.
+            "64:ff9b::a9fe:a9fe",
+        ] {
+            assert!(internal(addr), "{addr} is an internal v4 address in a hat");
+        }
+        assert!(
+            !internal("::ffff:8.8.8.8"),
+            "a mapped public address is fine"
+        );
+        assert!(
+            !internal("64:ff9b::808:808"),
+            "NAT64 of a public address is still public"
+        );
+    }
+
+    #[test]
+    fn refuses_the_ranges_a_denylist_forgets() {
+        // Every one of these was missed by the first version of this function
+        // and found in review. They are why the doc comment promises
+        // conservatism: each reaches this machine, this link, or nothing at
+        // all, and none is "clearly out on the internet".
+        for addr in [
+            "224.0.0.1",       // all hosts on this link
+            "239.255.255.250", // SSDP
+            "ff01::1",         // interface-local all nodes
+            "ff02::1",         // link-local all nodes
+            "240.0.0.1",       // reserved /4
+            "198.18.0.1",      // benchmarking /15
+            "192.0.0.1",       // IETF protocol assignments
+            "2001:db8::1",     // documentation
+            "100::1",          // discard-only
+        ] {
+            assert!(internal(addr), "{addr} should be refused");
+        }
+    }
 }
 
 #[cfg(test)]

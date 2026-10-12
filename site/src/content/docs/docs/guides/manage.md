@@ -17,12 +17,20 @@ What the controls are:
 
 - **The homepage.** Its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance shows "add your first archive."
 - **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
-- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or point indice at a local path or an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded/local files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
+- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or give indice an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
 - **The replay viewer** gains a **Notes** panel for [annotating](/docs/guides/annotations/) a page or a selected passage. Notes are public to read but only signed-in users can write them.
 
 ![The Edit collection finding-aid form: name (fixed), description, creator, dates, curator, rights, comma-separated subjects, and a Markdown narrative field, with a Save changes button](../../../../assets/docs/edit-collection.png)
 
-![The Add crawls accession desk: a collection selector and source tabs (Upload, Path / URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
+![The Add crawls accession desk: a collection selector and source tabs (Upload, URL, Browsertrix, and Archive-It) with an upload field under the Upload tab](../../../../assets/docs/add-crawls.png)
+
+:::note[Adding by reference means a URL]
+The accession desk takes an `http(s)://` URL, not a path on the server's disk, in either shape.
+
+A path would let a curator make the server read any `.wacz` it can reach and file it into a collection they can read back, and on a server a curator may be someone you approved rather than someone you know. On a workstation it would buy nothing: the file is already on the disk, and `indice index /path/to.wacz` is a shorter route than a web form. That command is how a mounted archive volume is accessioned.
+
+A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. You also need it if this machine reaches the internet only through an HTTP proxy: a proxy resolves the address itself, so indice cannot check where the fetch lands and declines to use one rather than let the check pass silently. Your Browsertrix and Archive-It credentials are unaffected: those hosts come from the environment, never from a request, so they were never what this guards.
+:::
 
 Every one of these routes is always mounted. Whether you may use them is an authorization question, answered below, so an anonymous visitor gets a `403` rather than a page that does not exist.
 
@@ -35,7 +43,7 @@ Because it trusts everything, indice **refuses to start** on a non-loopback addr
 :::caution[A loopback port is not a user boundary]
 "Whoever reaches the port" is literal. Another account on the machine reaches it: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection. So does anyone at the far end of an `ssh -L`, and so does every peer of your tailnet the moment you point `tailscale serve` at it.
 
-indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: two versions of a check on the `Host` header were written and both were bypassable, because any client that is not a browser sets `Host` to whatever it likes. A check that refuses the honest tunnel and waves the dishonest one through is worse than none, since it reads like a wall.
+indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: a check on the `Host` header is bypassable, because any client that is not a browser sets `Host` to whatever it likes. A check that refuses the honest tunnel and waves the dishonest one through is worse than none, since it reads like a wall.
 
 A loopback bind keeps indice off the network. That is the whole promise. Run it as a server if the machine is shared, or if anything you do not control can reach that port.
 :::

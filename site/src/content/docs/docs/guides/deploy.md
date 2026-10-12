@@ -85,7 +85,7 @@ Clicking **Log in** sends you to your issuer. After you authenticate you come ba
 
 `openid email`, and nothing else. indice identifies people by email address, which is what `users.yaml` lists and what it canonicalises internally, so it has no use for a profile, a photo or a group list.
 
-Earlier versions of this stack used oauth2-proxy's GitHub integration, which asks for `read:org` whether or not you restrict anyone by organization: it calls GitHub's `/user/orgs` on every login to populate groups for apps that authorize on them. indice authorizes on `users.yaml`, so it was asking visitors for something it never read. Plain OIDC makes no calls beyond the issuer's own endpoints.
+The stack uses plain OIDC rather than oauth2-proxy's GitHub integration, which asks for `read:org` whether or not you restrict anyone by organization: it calls GitHub's `/user/orgs` on every login to populate groups for apps that authorize on them. indice authorizes on `users.yaml`, so that would be asking visitors for something it never reads. Plain OIDC makes no calls beyond the issuer's own endpoints.
 
 GitHub publishes no OIDC discovery document for user login, so signing in with a GitHub account now means putting a broker in front, such as [Dex](https://dexidp.io/) with its GitHub connector, which then presents OIDC to oauth2-proxy. That costs a fourth container and buys back a minimal consent screen.
 

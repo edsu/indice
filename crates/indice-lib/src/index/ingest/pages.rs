@@ -69,10 +69,10 @@ pub(super) fn index(access: &WaczAccess, ctx: &Ctx) -> Result<CrawlStats> {
         return Ok(nested);
     }
     match access {
-        WaczAccess::Stream { url } => {
+        WaczAccess::Stream { url, fetch } => {
             info!(url = %url, "streaming remote WACZ index (no download)");
-            let fetch = crate::http_range::HttpFetch::open(url)?;
-            stream_with_thumbnail(fetch, url, ctx)
+            let stream = crate::http_range::HttpFetch::open(url, *fetch)?;
+            stream_with_thumbnail(stream, url, ctx)
         }
         WaczAccess::Local { path, .. } => {
             // CDX-guided when the WARCs are Stored (the WACZ spec's SHOULD, always
@@ -212,8 +212,8 @@ fn index_nested(access: &WaczAccess, ctx: &Ctx) -> Result<Option<CrawlStats>> {
             ctx.workers,
             ctx.progress,
         ),
-        WaczAccess::Stream { url } => index_nested_from(
-            crate::http_range::HttpFetch::open(url)?,
+        WaczAccess::Stream { url, fetch } => index_nested_from(
+            crate::http_range::HttpFetch::open(url, *fetch)?,
             &ctx.docs,
             ctx.workers,
             ctx.progress,
