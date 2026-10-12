@@ -213,13 +213,26 @@ pub(super) fn acquire_write_lock<'a>(
 /// fabricated: a caller must have obtained it from the extractor, i.e. must
 /// have passed the check. That makes "I added a handler and forgot to gate it"
 /// a compile error rather than a silent exposure.
+/// An uploaded file staged for indexing, and how many bytes it is.
+///
+/// Together because the job needs both: the directory, to keep the file alive
+/// until it has been filed and then delete it; the size, to check it against the
+/// archive's room. The size is what the upload counted as it streamed, rather
+/// than read back from the path, so the job never asks the filesystem about a
+/// location string, which for an add by URL is request input.
+pub(super) struct StagedUpload {
+    /// Read by nothing: held for its destructor, which deletes the file.
+    pub _dir: tempfile::TempDir,
+    pub bytes: u64,
+}
+
 fn start_index_job(
     curator: &Curator,
     state: &Arc<AppState>,
     location: String,
     collection: String,
     name: Option<String>,
-    keepalive: Option<tempfile::TempDir>,
+    staged: Option<StagedUpload>,
 ) -> u64 {
     // On a server the person naming the location may be an approved stranger
     // rather than the operator, so a URL may only point at a public address.
@@ -245,8 +258,10 @@ fn start_index_job(
         // An upload brings a staged file to file into the archive; adding by
         // URL does not, since a URL is streamed in place or downloaded to a
         // temp file that is removed afterwards.
-        let staged = keepalive.is_some();
-        let _keepalive = keepalive;
+        let admit_bytes = staged.as_ref().map(|s| s.bytes);
+        // Held until the job ends; dropping it deletes the uploaded temp file
+        // (after `index_location` has copied it into `archive/`).
+        let _staged = staged;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
             // The cross-process index lock is taken *before* the in-process
@@ -280,8 +295,7 @@ fn start_index_job(
             // every job that files into the archive is serialised, so the room
             // measured here is the room there is; the request-time check could
             // not know about uploads queued alongside this one.
-            if staged {
-                let size = std::fs::metadata(&location).map(|m| m.len()).unwrap_or(0);
+            if let Some(size) = admit_bytes {
                 if let Err(refused) = admit(&job_state, size) {
                     let _ = tx.send(ProgressEvent::Error {
                         message: refused.status_and_message().1,
@@ -395,7 +409,7 @@ pub(super) async fn upload_archive(
     }
     let mut collection: Option<String> = None;
     let mut name: Option<String> = None;
-    let mut tmpdir: Option<tempfile::TempDir> = None;
+    let mut staged: Option<StagedUpload> = None;
     let mut file_path: Option<PathBuf> = None;
 
     loop {
@@ -427,11 +441,12 @@ pub(super) async fn upload_archive(
                     Err(e) => return error_response(anyhow::anyhow!(e)).into_response(),
                 };
                 let path = dir.path().join(&fname);
-                if let Err(refusal) = stream_field_to_file(field, &path, budget).await {
-                    return refusal;
-                }
+                let bytes = match stream_field_to_file(field, &path, budget).await {
+                    Ok(b) => b,
+                    Err(refusal) => return refusal,
+                };
                 file_path = Some(path);
-                tmpdir = Some(dir);
+                staged = Some(StagedUpload { _dir: dir, bytes });
             }
             _ => {}
         }
@@ -453,7 +468,7 @@ pub(super) async fn upload_archive(
         &crate::collections::slugify(&collection),
         Some(serde_json::json!({ "collection_name": collection })),
     );
-    let id = start_index_job(&curator, &state, location, collection, name, tmpdir);
+    let id = start_index_job(&curator, &state, location, collection, name, staged);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
@@ -471,7 +486,7 @@ async fn stream_field_to_file(
     mut field: axum::extract::multipart::Field<'_>,
     path: &Path,
     budget: Option<Budget>,
-) -> Result<(), Response> {
+) -> Result<u64, Response> {
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::File::create(path)
         .await
@@ -496,7 +511,7 @@ async fn stream_field_to_file(
             .map_err(|e| error_response(e.into()))?;
     }
     file.flush().await.map_err(|e| error_response(e.into()))?;
-    Ok(())
+    Ok(written)
 }
 
 /// The limits on what the browser write surface may add, from `config.yaml`.
