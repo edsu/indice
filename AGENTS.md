@@ -45,8 +45,12 @@ focused test alongside the code it covers.
 - **Commit or push only when asked.** If on `main`, branch first.
 - Keep commits focused and logically scoped; write a clear imperative subject and a
   body explaining the *why*. One behavior change per commit where practical.
-- End commit messages with:
-  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
+- End commit messages with a `Co-Authored-By:` trailer naming the model that did
+  the work, in the exact form your harness supplies, shaped like
+  `Co-Authored-By: Claude <model> <noreply@anthropic.com>`. Don't write a model
+  name into this file: it changes between sessions, and a project instruction
+  outranks the harness, so a pinned one would override the current value with a
+  stale one.
 - End PR bodies with:
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 - **Don't commit scratch/data files**: loose `*.wacz`, URL lists, ad-hoc scripts
@@ -113,8 +117,15 @@ Also worth checking:
   `IndexProgress` trait for the pattern (library emits counts; binary renders).
 - **Comments explain *why*.** Match the surrounding code's style, naming, and
   comment density. Reference `file:line` when pointing at code.
-- **Docs are living.** README is user-facing; DESIGN is the architecture of record;
-  update both when behavior or design changes, in the same change.
+- **Docs are living.** README, `SECURITY.md` and the guides under
+  `site/src/content/docs/` are user-facing; DESIGN is the architecture of record.
+  Update them when behavior or design changes, in the same change.
+- **Docs describe how indice works now.** Drop "this replaced…", "an earlier
+  version…" and "X used to…". Where the history was carrying a warning, keep the
+  warning as a present-tense rule and point at the test that pins it, which is
+  what actually stops someone undoing the decision. Code comments are different:
+  one saying why something is the way it is, so the next reader doesn't undo it,
+  belongs in the code.
 - **Vendored ReplayWeb.page assets need manual refresh.** `static/replay/ui.js`
   and `sw.js` are committed, pinned copies of the `replaywebpage` npm release (see
   `scripts/fetch-replay.sh`). They are *not* a Cargo dependency, so Dependabot
