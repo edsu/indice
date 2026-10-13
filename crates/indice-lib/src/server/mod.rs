@@ -43,6 +43,7 @@ mod auth;
 mod collection;
 mod crawl;
 mod imports;
+mod limits;
 mod manage;
 mod pages;
 mod util;
@@ -254,6 +255,9 @@ struct AppState {
     /// How much the browser write surface may add to the archive, from
     /// `config.yaml`. Read once at startup; a change takes a restart.
     upload_limits: UploadLimits,
+    /// How much one client, and everyone together, may ask at once. `None` on
+    /// a workstation, which has one user and nothing to protect them from.
+    limits: Option<limits::RequestLimits>,
     /// Where `/logout` redirects after clearing the display cookie (`None` → `/`).
     /// Set to the SSO proxy's sign-out URL for a real single-click logout.
     logout_redirect: Option<String>,
@@ -455,6 +459,7 @@ fn build_router(
         forward_auth: config.access.forward_auth().cloned(),
         allow_internal_fetch: config.allow_internal_fetch,
         upload_limits,
+        limits: (!access_is_local).then(limits::RequestLimits::new),
         logout_redirect: config.logout_redirect.clone(),
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
@@ -476,7 +481,6 @@ fn build_router(
     // it has a time bound. `/files/{id}` does not and is merged in below.
     let mut app = Router::new()
         .route("/", get(homepage))
-        .route("/health", get(health))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
         .route("/collection/{id}/replay.json", get(collection_replay_json))
@@ -495,6 +499,10 @@ fn build_router(
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
             REQUEST_TIMEOUT,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            limits::limit_quick,
         ));
 
     // Streaming a WACZ has no sensible time bound: it is whole gigabytes, and a
@@ -505,7 +513,14 @@ fn build_router(
     // a concurrency problem rather than a duration one — many open streams, not
     // one slow request — and the answer to it is a connection limit, which is
     // the next piece of this ticket rather than something to fake with a clock.
-    let streaming = Router::new().route("/files/{id}", get(serve_file));
+    let streaming = Router::new().route("/files/{id}", get(serve_file)).layer(
+        axum::middleware::from_fn_with_state(state.clone(), limits::limit_streams),
+    );
+
+    // Outside every limit, on purpose: an orchestrator reads a busy server's
+    // 503 on `/health` as a dead one and restarts it, which turns load into an
+    // outage. It answers as long as the process does.
+    let health_route = Router::new().route("/health", get(health));
 
     // The write surface: the browser management UI plus its endpoints — add a
     // crawl (`index_location`, streaming progress over SSE), upload a WACZ, and
@@ -597,7 +612,10 @@ fn build_router(
         ));
     }
 
-    app = app.merge(streaming).merge(manage_routes);
+    app = app
+        .merge(streaming)
+        .merge(health_route)
+        .merge(manage_routes);
 
     // Outside `manage_routes` on purpose: logout must NOT be
     // forward-auth-gated, because that middleware re-sets the display
@@ -660,6 +678,14 @@ fn build_router(
                 })
                 .on_response(
                     |res: &Response, latency: std::time::Duration, _span: &tracing::Span| {
+                        // A limit's refusal is reported by the limit itself, once
+                        // per client per window and naming who was charged. Logging
+                        // each one here as well would put back the flood the
+                        // reporter exists to prevent. See `limits::Reporter`.
+                        if res.extensions().get::<limits::LimitRefusal>().is_some() {
+                            tracing::debug!(status = res.status().as_u16(), "refused by a limit");
+                            return;
+                        }
                         let ct = res
                             .headers()
                             .get(axum::http::header::CONTENT_TYPE)

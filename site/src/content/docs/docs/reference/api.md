@@ -90,6 +90,18 @@ Routes that should answer quickly carry a 30-second budget and return `503` if t
 
 Four kinds of request are deliberately outside it, because they have no sensible time bound: `GET /files/{id}` streams whole archives, the SSE progress stream follows a job that may run for hours, uploads are as slow as the link, and the Browsertrix and Archive-It browse endpoints wait on someone else's service.
 
+## Rate limits
+
+A server limits each client. A workstation doesn't.
+
+- **Most routes** allow a burst of 100 requests per client, then 20 a second. Past that the answer is `429` with `Retry-After`. Across all clients, at most 256 of these requests are in flight at once, and beyond that the answer is an immediate `503` with `Retry-After`.
+- **`GET /files/{id}`** isn't rate-limited, because one replay makes hundreds of ranged reads. Instead a client may hold 64 streams open at once, and 512 may be open in total. A stream stays open until its body has been read or dropped.
+- **`/health`** is never limited.
+
+A client is its IP address, and for IPv6 its /64. Behind a reverse proxy on the same machine or network, indice uses the rightmost `X-Forwarded-For` entry that isn't itself internal. The shipped Caddy stack sets that header. Curators and admins are exempt from the per-client limits, so a script that reads hard needs a roster entry.
+
+The operator sees a refusal in the server log twice: once when it starts, naming the address and the limit, and once a minute later with how many requests were refused. One line per refused request would turn a flood the limits are turning away into a flood of log lines.
+
 ## Machine-readable replay endpoints
 
 These serve ReplayWeb.page and are handy for tooling, though their primary consumer is the in-browser player:
