@@ -41,8 +41,8 @@ cleanup() {
 		echo
 		echo "KEEP=1, leaving the stack up at ${B}"
 		echo "  NOTE: phase two left a stub identity service in place. It reports every"
-		echo "        caller as signed in, and with no users.yaml that means admin. Bound"
-		echo "        to loopback, but do not mistake it for a working login."
+		echo "        caller as the roster's admin. Bound to loopback, but do not mistake"
+		echo "        it for a working login."
 		echo "  tear down: docker compose -p ${PROJECT} --env-file ${TMP}/env -f ${ROOT}/compose.yaml -f ${TMP}/port.yaml down -v"
 		return
 	fi
@@ -105,9 +105,9 @@ cat >"$TMP/port.yaml" <<EOF
 services:
   caddy:
     ports: !override
-      # Loopback only. Phase two swaps in a stub that reports everyone as signed
-      # in, and with no users.yaml everyone signed in is an admin, so a KEEP=1 run
-      # would otherwise publish an open write surface on every interface.
+      # Loopback only. Phase two swaps in a stub that reports everyone as the
+      # roster's admin, so a KEEP=1 run would otherwise publish an open write
+      # surface on every interface.
       - "127.0.0.1:${PORT}:${PORT}"
   oidc-stub:
     image: caddy:2
@@ -120,7 +120,17 @@ services:
         condition: service_started
 EOF
 
+# A server refuses to start without a roster. Phase two's stub signs everyone
+# in as this admin; phase one never signs anyone in, so the entry is inert there.
+cat >"$TMP/users.yaml" <<'EOF'
+users:
+  - id: smoketester@example.test
+    role: admin
+EOF
+
 echo "building and starting the stack on ${B} (first run compiles indice, so be patient)…"
+dc build >/dev/null 2>&1 && dc create indice >/dev/null 2>&1 &&
+	dc cp "$TMP/users.yaml" indice:/data/users.yaml >/dev/null 2>&1
 dc up -d --build >/dev/null 2>&1 || {
 	echo "FAILED to start the stack. Output:"
 	dc up -d --build 2>&1 | tail -30
