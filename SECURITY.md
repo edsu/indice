@@ -48,19 +48,13 @@ Filed, documented, and not news. The tracker is in this repo, so
 - `datapackage.json`, `pages/pages.jsonl` and the CDX are read whole with no
   size cap, so a WACZ can be a decompression bomb.
   `rustyweb-wacz-read-caps-q39p`
-- No limit on request body size, request duration, or concurrency, so one
-  anonymous request can cost arbitrary work.
-  `rustyweb-open-web-hardening-u9y6.1`
-- A server with no `users.yaml` makes every authenticated user an admin. This is
-  the documented default and the wrong one on the open web.
-  `rustyweb-open-web-hardening-u9y6.2`
 - Upload size and total archive size are limited only when `uploads.max_mb`
   and `uploads.max_total_gb` are set in `config.yaml`; both are unset by default.
   The limits apply to the whole archive, not to each curator.
   `rustyweb-upload-quota-hryt`
-- Add-by-location accepts an arbitrary URL or local path, so a writer can reach
-  internal addresses and read server-side files.
-  `rustyweb-open-web-hardening-u9y6.4`
+- A failed upload leaves its file in `archive/`. It counts against
+  `uploads.max_total_gb` but appears nowhere in the workroom, so only someone
+  with a shell can remove it. `rustyweb-failed-ingest-leaves-file-d1dw`
 - Error responses carry server internals, including filesystem paths.
   `rustyweb-open-web-hardening-u9y6.5`
 - No CSP, `X-Content-Type-Options`, or referrer policy.
@@ -85,9 +79,13 @@ is not a finding.
   institution already runs.
 - **A loopback bind promises nothing about who reaches the port.** On a
   workstation every caller is the operator: another account on the machine, an
-  `ssh -L`, a `tailscale serve`. indice tried twice to narrow this by inspecting
-  `Host` and both attempts were bypassable, because header inspection cannot
-  authenticate a caller. Sharing an archive is the server shape.
+  `ssh -L`, a `tailscale serve`. indice does not try to narrow that by
+  inspecting `Host`, because header inspection cannot authenticate a caller.
+  Sharing an archive is the server shape.
+- **A crowd from many addresses can make a server answer `503` to everyone.**
+  Each client is limited, and global caps keep the process alive, but a crowd
+  large enough to exhaust those caps degrades the site for everyone until it
+  passes. Telling that crowd from real readers is a CDN's or a WAF's job.
 - **`/files/{id}` sends `access-control-allow-origin: *` on purpose,** so any
   page can replay a public archive. It never sends credentials with it.
 - **Anything with write access to the home directory owns the instance.** The

@@ -9,6 +9,11 @@ license.workspace = true
 [dependencies]
 axum = { workspace = true }
 tokio = { workspace = true }
+# The body trait's Frame and SizeHint types, which axum re-exports the trait
+# without. Already in the tree through axum, so this compiles nothing new; it is
+# here so the request limits can hold a slot for exactly as long as a streamed
+# body lives, without losing the size hint Content-Length depends on.
+http-body = "1"
 tower-http = { workspace = true }
 maud = { workspace = true }
 pulldown-cmark = { workspace = true }
