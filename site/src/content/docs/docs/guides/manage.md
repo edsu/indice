@@ -40,6 +40,8 @@ Every one of these routes is always mounted. Whether you may use them is an auth
 
 Because it trusts everything, indice **refuses to start** on a non-loopback address with no auth proxy configured, rather than putting an unauthenticated write surface on the network.
 
+Replay runs on the next port, `127.0.0.1:8081`, because archived pages run their own JavaScript and a different port is a different origin to the browser: script on it cannot act as you. There is nothing to set up. If that port is taken, `indice serve` says so; pick another with `--replay-bind`.
+
 :::caution[A loopback port is not a user boundary]
 "Whoever reaches the port" is literal. Another account on the machine reaches it: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection. So does anyone at the far end of an `ssh -L`, and so does every peer of your tailnet the moment you point `tailscale serve` at it.
 
@@ -58,10 +60,12 @@ Anything that can set both headers qualifies. Note the second one rules out some
 indice serve \
   --bind 127.0.0.1:8080 \
   --auth-proxy-header X-Forwarded-Email \
-  --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET"   # or set that env var
+  --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET" \
+  --replay-url https://replay.archive.example.org
 ```
 
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
+- **`--replay-url`** (or `INDICE_REPLAY_URL`) is the hostname replay is served on, which your proxy sends to indice's replay listener (`127.0.0.1:8081` here). A server will not start without one; [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own) explains why, and how to choose it.
 - **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
 Every write must carry both the identity header and the secret; anything else is rejected. Reading is not gated, so search, browse and replay stay open to anyone.
@@ -143,6 +147,7 @@ If you get a `403` mentioning a cross-site request when using the workroom norma
 - Configure the proxy to **strip any client-supplied** identity header on inbound requests before setting its own, so a client can't smuggle one in. (The shared secret is your backstop if this is ever missed.)
 - Set the static `X-Indice-Auth-Secret` header in the proxy, and terminate TLS there.
 - Make sure the proxy passes through `X-Forwarded-Host` (or pass `--site-url`), so the cross-site check knows what the browser sees.
+- Give replay its own hostname, proxied to the replay listener with no login and both identity headers stripped, and pass it as `--replay-url`.
 
 One more, easy to miss: **forward the identity on every request, including the ordinary pages.** indice draws the workroom chrome on the homepage for a signed-in curator, so it needs to know who you are there too.
 

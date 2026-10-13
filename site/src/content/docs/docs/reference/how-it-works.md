@@ -9,6 +9,8 @@ indice runs [ReplayWeb.page](https://replayweb.page/) in **WACZ-direct mode**. R
 
 When you open a page for replay, the browser fetches the WACZ directly from `GET /files/{id}` using HTTP range requests, reads the CDX index embedded inside the WACZ, and serves every resource from the WARC records, all of which happens client-side. indice's job during replay is simply to serve bytes efficiently. Everything else (search, metadata, the collection homepage) is what indice is actually good at.
 
+Replay is served from **an origin of its own**: a second listener, on the next port on a workstation and on a hostname of its own on a server. The viewer page, with the banner and the notes panel, comes from indice's origin and frames the replay. Archived pages run their own JavaScript, and from the replay origin that script cannot reach indice's API as the reader or reach into the viewer around it. The replay listener serves the player and the archive bytes and nothing else: no writes, no pages, no sign-in.
+
 You can also **replay a whole collection** at once (from the homepage card or the collection page): `GET /collection/{id}/replay.json` hands wabac.js a multi-WACZ manifest listing every member crawl, so a link from one crawl to a page archived in another crawl *of the same collection* resolves on demand. That resolution is answered from the search index via `GET /collection/{id}/pages` which also feeds the viewer's page-list sidebar, so the browser never has to load every member's index. Resolution is scoped to the collection, and page sub-resources always come from the page's own crawl, preserving per-page temporal coherence.
 
 See [DESIGN.md](https://github.com/edsu/indice/blob/main/DESIGN.md) for the full architecture.

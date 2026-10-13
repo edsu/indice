@@ -6,7 +6,7 @@ description: Run indice as a server, using the container image and a Caddy + oau
 indice runs in one of two shapes, and the only question that separates them is who may use the management commands.
 
 - **Workstation.** `indice serve` on loopback. Whoever reaches the port is the operator and can do everything, with nothing to configure and no login. That is the whole story for local use; see [Install](/docs/install/) and [Try it in a minute](/docs/quickstart/).
-- **Server.** Behind a TLS-terminating proxy and an identity provider. Anyone may read the archive; the people listed in `users.yaml` may change it. This page is about that shape.
+- **Server.** Behind a TLS-terminating proxy and an identity provider, on two hostnames: one for the site and one for replay, which runs archived pages' JavaScript where it cannot act as your readers ([why](#replay-gets-a-hostname-of-its-own)). Anyone may read the archive; the people listed in `users.yaml` may change it. This page is about that shape.
 
 No read-only server shape exists. A server you cannot write to sends you back to the command line the first time you want to fix a finding aid, and a server with an empty `users.yaml` already reads as read-only to every visitor.
 
@@ -171,6 +171,18 @@ Use a **lazy session**, so the SP runs on every request without forcing anyone t
 </Location>
 ```
 
+Replay gets a virtual host of its own, with no SP at all, since replay is the same for everyone and indice's replay listener reads no identity. Start indice with `--replay-url https://replay.archive.example.org`:
+
+```apache
+<VirtualHost *:443>
+    ServerName replay.archive.example.org
+    # No Shibboleth here, and no identity headers either.
+    RequestHeader unset X-Forwarded-Email
+    RequestHeader unset X-Indice-Auth-Secret
+    ProxyPass / http://127.0.0.1:8081/
+</VirtualHost>
+```
+
 `requireSession 0` plus `Require shibboleth` is the SP's lazy-session mode: it does not send anyone to the IdP, and it fills in attributes whenever a session already exists. That gives indice what it wants, an identity on every request from someone signed in and nothing from someone who is not, so the workroom chrome appears on ordinary pages rather than only under `/manage`. Protecting the whole site with `requireSession 1` instead would force a campus login on every anonymous visitor and make the archive private, which is the subject of the last section rather than this one.
 
 Three things to get right:
@@ -218,9 +230,11 @@ The shipped `Caddyfile` is exercised by [`scripts/smoke-deploy.sh`](https://gith
 
 The server shape serves reads to anyone. If your archive holds in-copyright or embargoed material that should stay off the open web, you can gate reads at the proxy as well. indice does not mind: the identity header then arrives on read requests too, and the roster still decides who may write. Nothing changes inside indice.
 
-The shipped `Caddyfile` needs two changes first, and both are easy to miss because the site looks private once the homepage asks for a login.
+The shipped `Caddyfile` needs three changes first, and all of them are easy to miss because the site looks private once the homepage asks for a login.
 
 **Remove the `@bytes` bypass.** That block sends `/files/*`, `/thumb/*`, `/collection-thumb/*`, `/replay/*` and `/assets/*` straight to indice with no auth subrequest, because identity cannot change those responses and replay issues a lot of them. On a public archive that is a performance win. On a private one it is the hole: `/files/{id}` returns the whole WACZ and `/thumb/{id}` returns page images, so the material you are protecting is served to anyone who has an id, while the pages that merely describe it are behind a login. Delete the block and let those routes go through the catch-all.
+
+**Gate the replay host too.** It serves `/files/{id}` and the collection manifests, which are the bytes you are protecting, and the shipped replay block asks nobody who is calling. Give it the same auth subrequest as the site, refusing anyone without a session, and scope oauth2-proxy's cookie to the parent domain (`OAUTH2_PROXY_COOKIE_DOMAINS=.archive.example.org`, with `OAUTH2_PROXY_WHITELIST_DOMAINS` set to match) so that signing in on the site covers both names. Readers sign in on the site; the replay frame then loads with the cookie they already have. This needs replay on a subdomain of the site rather than a separate domain. The replay listener still reads no identity; the proxy alone decides who reaches it. The smoke test does not cover this arrangement, so test it with a WACZ id in hand: `/files/{id}` on the replay host must refuse a browser that is not signed in.
 
 **Replace the `handle_errors` fallback with a failure.** It exists so a dead login service does not take a public archive offline, which means it serves every request anonymously. On a private archive that turns an oauth2-proxy outage into an open door. Swap the body for `respond "authentication unavailable" 503`.
 

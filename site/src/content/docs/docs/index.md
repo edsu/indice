@@ -10,6 +10,7 @@ description: A reading room for web archives
 - **In-browser replay** of archived pages via Webrecorder's [ReplayWeb.page](https://replayweb.page/).
 - **A management workroom** where authenticated users can edit collection metadata and descriptions using Markdown.
 - **Page annotations** where signed-in users can attach Markdown notes to a whole page or a selected passage.
+- **Care with archived code.** Replayed pages run their own JavaScript, so indice replays them on an origin of their own, where that script cannot act as the person reading. On a server, changes need a sign-in through your identity provider and a role you grant. [Deploy](/docs/guides/deploy/) covers the setup, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) says what indice defends and what it does not.
 
 It ships as a single self-contained binary, so there is no Solr, no Elasticsearch, and no separate database server. indice is built for **small, local, and private** use (a person indexing a handful of their own WACZ files on their laptop, with nothing sent to a hosted service) and uses the same architecture to **scale up** toward institutional collections. It prioritizes local ease of use, but aims to fit both ends of that range, rather than assuming the infrastructure of a large web archive.
 

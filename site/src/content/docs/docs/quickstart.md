@@ -47,6 +47,8 @@ indice index my-archive.wacz --collection "My Web Archive"   # files it into arc
 indice serve                                                 # http://127.0.0.1:8080
 ```
 
+`serve` also listens on the next port, `127.0.0.1:8081`, for replay. Archived pages run their own JavaScript, and serving them from a different origin keeps that script away from your workroom. You never visit that port yourself; the viewer frames it.
+
 Every crawl belongs to a **collection**, so `index` requires `--collection <NAME>` (created if new). This is deliberate, to encourage curators to say what a crawl is a part of and why it is being kept. Describe a collection further (creator, dates, rights, a scope note) with [`indice collection set`](/docs/reference/cli/), which writes a git-committable finding aid at `collections/<slug>/README.md`. You can also edit in the management interface.
 
 A local WACZ can live anywhere, so `indice index path/to/foo.wacz --collection "Bar"` files it into `<home>/archive/bar/` for you (**moving** it if it's already under `archive/`, **copying** it otherwise, so your original is left intact). The source is stored relative to home, so you can move or copy the whole `<home>` directory to another disk or machine and it still works. You can point at a different "home" with `--home <DIR>` (every command takes it).
