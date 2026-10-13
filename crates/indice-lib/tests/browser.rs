@@ -88,6 +88,12 @@ async fn browser_renders_archived_page() {
     caps.add_arg("--no-sandbox").unwrap();
     caps.add_arg("--disable-gpu").unwrap();
     caps.add_arg("--disable-dev-shm-usage").unwrap();
+    // The header says CHROME_BIN selects the browser; without this it did
+    // nothing, and chromedriver picked up whatever Chrome was installed, which
+    // fails when that version is not the one chromedriver was built for.
+    if let Ok(bin) = std::env::var("CHROME_BIN") {
+        caps.set_binary(&bin).unwrap();
+    }
     let driver = WebDriver::new(&wd, caps)
         .await
         .expect("connect to WebDriver - is `chromedriver --port=9515` running?");
