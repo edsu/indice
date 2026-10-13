@@ -734,3 +734,69 @@ async fn connect() -> WebDriver {
         .await
         .expect("connect to WebDriver - is `chromedriver --port=9515` running?")
 }
+
+/// Opened on its own, as a top-level page on the replay origin, the frame
+/// refuses to replay. ReplayWeb.page's `requireSubdomainIframe` does that;
+/// this is the test that the attribute `frame.html` sets is the one it reads.
+///
+/// Framed, replay works, which every other test here shows. That says nothing
+/// about the flag, since an ignored flag would pass them too; this does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn the_replay_frame_refuses_to_replay_unframed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "test").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+
+    let driver = connect().await;
+    let result = open_frame_unframed(&driver, addr, &id).await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+}
+
+async fn open_frame_unframed(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {
+    // The replay origin, as the viewer is told it.
+    driver
+        .goto(&format!("http://{addr}/replay/viewer?source=/files/{id}"))
+        .await
+        .map_err(|e| e.to_string())?;
+    let replay = driver
+        .execute(
+            "return document.querySelector('meta[name=\"indice-replay-origin\"]').content;",
+            vec![],
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    if replay.is_empty() {
+        return Err("the viewer names no replay origin".into());
+    }
+
+    let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
+    driver
+        .goto(&format!(
+            "{replay}/replay-frame?source=/files/{id}&url={page_url}&ts=20260609213407"
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() <= deadline {
+        if deep_contains(driver, "2Tone").await? {
+            return Err("the frame replayed the archive with nothing framing it".into());
+        }
+        if deep_contains(driver, "subdomain iframe").await? {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+    Err(format!(
+        "the unframed frame neither refused nor replayed.\nDIAG: {diag}"
+    ))
+}

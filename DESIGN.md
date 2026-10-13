@@ -319,6 +319,9 @@ origin of its own, so the browser keeps a capture's script away from indice.
   `replay_origin.rs::the_replay_origin_resolves_no_identity`
 - Nothing on the app origin boots ReplayWeb.page.
   `replay_origin.rs::the_app_origin_serves_nothing_that_replays`
+- Opened on its own, the replay frame refuses to replay: ReplayWeb.page's
+  `requireSubdomainIframe` holds it to a cross-origin frame.
+  `browser.rs::the_replay_frame_refuses_to_replay_unframed`
 - A server will not start without a replay origin.
   `replay_origin.rs::a_server_without_a_replay_origin_refuses_to_start`
 
