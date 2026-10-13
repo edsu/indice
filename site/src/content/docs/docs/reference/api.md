@@ -100,6 +100,8 @@ A server limits each client. A workstation doesn't.
 
 A client is its IP address, and for IPv6 its /64. Behind a reverse proxy on the same machine or network, indice uses the rightmost `X-Forwarded-For` entry that isn't itself internal. The shipped Caddy stack sets that header. Curators and admins are exempt from the per-client limits, so a script that reads hard needs a roster entry.
 
+The operator sees a refusal in the server log twice: once when it starts, naming the address and the limit, and once a minute later with how many requests were refused. One line per refused request would turn a flood the limits are turning away into a flood of log lines.
+
 ## Machine-readable replay endpoints
 
 These serve ReplayWeb.page and are handy for tooling, though their primary consumer is the in-browser player:

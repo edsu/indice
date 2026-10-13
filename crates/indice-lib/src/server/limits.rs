@@ -77,6 +77,12 @@ const STREAM_CONCURRENCY: usize = 512;
 /// way to lock out everyone else.
 const MAX_TRACKED_CLIENTS: usize = 50_000;
 
+/// How long a refusal is summarised over before it is reported again.
+const REPORT_WINDOW: Duration = Duration::from_secs(60);
+
+/// How often the sweeper looks for windows that have ended.
+const SWEEP_EVERY: Duration = Duration::from_secs(10);
+
 /// Who is asking, for per-client limits.
 ///
 /// IPv6 is keyed by its /64. A host is normally given a whole /64, so keying by
@@ -143,6 +149,184 @@ fn parse_forwarded(entry: &str) -> Option<IpAddr> {
         .or_else(|| entry.parse::<SocketAddr>().ok().map(|s| s.ip()))
 }
 
+impl std::fmt::Display for ClientKey {
+    /// The address that was charged: an IPv4 address, or an IPv6 /64.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClientKey::V4(v) => write!(f, "{}", std::net::Ipv4Addr::from(*v)),
+            ClientKey::V6(prefix) => write!(
+                f,
+                "{}/64",
+                std::net::Ipv6Addr::from(u128::from(*prefix) << 64)
+            ),
+        }
+    }
+}
+
+/// Whose refusal is being reported: one client's, or the server's as a whole
+/// when a global cap is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Subject {
+    Client(ClientKey),
+    Server,
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subject::Client(key) => write!(f, "{key}"),
+            Subject::Server => f.write_str("the server"),
+        }
+    }
+}
+
+/// Which limit refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Reason {
+    Rate,
+    Streams,
+    Busy,
+    StreamsBusy,
+}
+
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reason::Rate => write!(
+                f,
+                "past its burst of {BURST} requests and then {RATE_PER_SECOND} a second"
+            ),
+            Reason::Streams => {
+                write!(
+                    f,
+                    "already holding {STREAMS_PER_CLIENT} open archive streams"
+                )
+            }
+            Reason::Busy => write!(
+                f,
+                "{QUICK_CONCURRENCY} requests already in flight across all clients"
+            ),
+            Reason::StreamsBusy => write!(
+                f,
+                "{STREAM_CONCURRENCY} archive streams already open across all clients"
+            ),
+        }
+    }
+}
+
+/// One subject's refusals since the first, for the summary.
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    started: Instant,
+    count: u64,
+}
+
+/// What the operator is told about refusals.
+///
+/// The request log already has a line per response, but a line per refused
+/// request is the wrong signal on every count. It names the TCP peer, which
+/// behind a proxy is the proxy, not the client the limit charged. It does not
+/// say which limit fired. And it is one line per refusal, so a flood that the
+/// limits correctly turn away still fills the log at full speed, which makes
+/// the log itself the lever. So a refusal is reported once when it starts,
+/// naming the address that was charged and the limit, and then once more when
+/// its window ends, with the count; the per-request line is dropped to `debug`.
+/// That is at most a line or two per offending client per minute however hard
+/// it is pushed.
+///
+/// It does log the addresses of clients it refuses, which is narrower than a
+/// request log that records every visitor's: an abuse signal, not a visitor
+/// record. See `rustyweb-open-web-hardening-u9y6.8` for the request log itself.
+#[derive(Default)]
+struct Reporter {
+    windows: HashMap<(Subject, Reason), Window>,
+    /// Whether a sweeper task is running. One is started by the first refusal
+    /// and stops once there is nothing left to report, so an idle server runs
+    /// no background task for this.
+    sweeping: bool,
+}
+
+/// The line to log for a refusal, if it is the first of a window.
+fn note_refusal(
+    r: &mut Reporter,
+    subject: Subject,
+    reason: Reason,
+    now: Instant,
+) -> Option<String> {
+    let key = (subject, reason);
+    if let Some(w) = r.windows.get_mut(&key) {
+        w.count += 1;
+        return None;
+    }
+    // Bounded like the buckets, for the same reason: past the cap, a new
+    // subject goes unreported rather than growing the map without end.
+    if r.windows.len() >= MAX_TRACKED_CLIENTS {
+        return None;
+    }
+    r.windows.insert(
+        key,
+        Window {
+            started: now,
+            count: 1,
+        },
+    );
+    Some(format!("refusing {subject}: {reason}"))
+}
+
+/// Remove the windows that have ended, returning a summary line for each that
+/// saw more than its first refusal.
+fn drain_ended(r: &mut Reporter, now: Instant) -> Vec<String> {
+    let mut lines = Vec::new();
+    r.windows.retain(|(subject, reason), w| {
+        if now.saturating_duration_since(w.started) < REPORT_WINDOW {
+            return true;
+        }
+        if w.count > 1 {
+            lines.push(format!(
+                "refused {subject} {} times in {}s ({reason})",
+                w.count,
+                REPORT_WINDOW.as_secs()
+            ));
+        }
+        false
+    });
+    lines
+}
+
+/// Report one refusal, starting the sweeper if none is running.
+fn report(reporter: &Arc<Mutex<Reporter>>, subject: Subject, reason: Reason) {
+    let mut r = reporter.lock().unwrap();
+    if let Some(line) = note_refusal(&mut r, subject, reason, Instant::now()) {
+        // Outside the request's span, whose `client_ip` is the TCP peer: behind
+        // a proxy that is the proxy, and printing it beside the address the
+        // limit charged is the confusion this report exists to remove.
+        tracing::warn!(parent: None, "{line}");
+    }
+    if !r.sweeping && !r.windows.is_empty() {
+        r.sweeping = true;
+        let reporter = Arc::clone(reporter);
+        // Started from inside a request, so a runtime is always there.
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(SWEEP_EVERY).await;
+                let mut r = reporter.lock().unwrap();
+                for line in drain_ended(&mut r, Instant::now()) {
+                    tracing::warn!("{line}");
+                }
+                if r.windows.is_empty() {
+                    r.sweeping = false;
+                    return;
+                }
+            }
+        });
+    }
+}
+
+/// Marks a response refused by a limit, so the request log can record it at
+/// `debug` instead of once per refusal at `warn`. See [`Reporter`].
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LimitRefusal;
+
 /// A token bucket: up to [`BURST`] requests at once, refilling at
 /// [`RATE_PER_SECOND`].
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +364,7 @@ pub(super) struct RequestLimits {
     streams: Arc<Semaphore>,
     buckets: Mutex<HashMap<ClientKey, Bucket>>,
     open_streams: Arc<Mutex<HashMap<ClientKey, usize>>>,
+    reporter: Arc<Mutex<Reporter>>,
 }
 
 impl RequestLimits {
@@ -189,6 +374,7 @@ impl RequestLimits {
             streams: Arc::new(Semaphore::new(STREAM_CONCURRENCY)),
             buckets: Mutex::new(HashMap::new()),
             open_streams: Arc::new(Mutex::new(HashMap::new())),
+            reporter: Arc::new(Mutex::new(Reporter::default())),
         }
     }
 
@@ -303,6 +489,7 @@ fn busy() -> Response {
         axum::http::header::RETRY_AFTER,
         HeaderValue::from_static("1"),
     );
+    res.extensions_mut().insert(LimitRefusal);
     res
 }
 
@@ -316,6 +503,7 @@ fn too_many(wait: Duration, what: &str) -> Response {
     if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
         res.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
     }
+    res.extensions_mut().insert(LimitRefusal);
     res
 }
 
@@ -329,10 +517,12 @@ pub(super) async fn limit_quick(
         return next.run(req).await;
     };
     let Ok(permit) = Arc::clone(&limits.quick).try_acquire_owned() else {
+        report(&limits.reporter, Subject::Server, Reason::Busy);
         return busy();
     };
     if let Some(key) = charge(&state, &req) {
         if let Err(wait) = limits.take_quick(key, Instant::now()) {
+            report(&limits.reporter, Subject::Client(key), Reason::Rate);
             return too_many(wait, "requests");
         }
     }
@@ -356,12 +546,16 @@ pub(super) async fn limit_streams(
         return next.run(req).await;
     };
     let Ok(permit) = Arc::clone(&limits.streams).try_acquire_owned() else {
+        report(&limits.reporter, Subject::Server, Reason::StreamsBusy);
         return busy();
     };
     let slot = match charge(&state, &req) {
         Some(key) => match limits.open_stream(key) {
             Some(slot) => Some(slot),
-            None => return too_many(Duration::from_secs(1), "open archive streams"),
+            None => {
+                report(&limits.reporter, Subject::Client(key), Reason::Streams);
+                return too_many(Duration::from_secs(1), "open archive streams");
+            }
         },
         None => None,
     };
@@ -459,6 +653,45 @@ mod tests {
         // One request's worth of time later, one more is allowed.
         let later = t0 + Duration::from_secs_f64(1.0 / RATE_PER_SECOND);
         assert!(limits.take_quick(key, later).is_ok());
+    }
+
+    #[test]
+    fn a_refusal_is_reported_once_then_summarised() {
+        let mut r = Reporter::default();
+        let client = Subject::Client(ClientKey::of(ip("9.9.9.9")));
+        let t0 = Instant::now();
+
+        let first = note_refusal(&mut r, client, Reason::Rate, t0).expect("the first is logged");
+        assert!(
+            first.contains("9.9.9.9") && first.contains("burst of 100"),
+            "names the client charged and the limit: {first}"
+        );
+        // The rest of the window is counted, not logged.
+        for _ in 0..198 {
+            assert!(note_refusal(&mut r, client, Reason::Rate, t0).is_none());
+        }
+        // A different limit on the same client is its own report.
+        assert!(note_refusal(&mut r, client, Reason::Streams, t0).is_some());
+
+        // Before the window ends, nothing more.
+        assert!(drain_ended(&mut r, t0 + Duration::from_secs(30)).is_empty());
+        // After, one summary with the total, and the windows are gone.
+        let lines = drain_ended(&mut r, t0 + REPORT_WINDOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("9.9.9.9") && l.contains("199 times")),
+            "the summary carries the count: {lines:?}"
+        );
+        assert!(r.windows.is_empty(), "ended windows are removed");
+        // A single refusal needs no summary; its first line said it all.
+        assert_eq!(lines.len(), 1, "the one-off Streams refusal adds nothing");
+    }
+
+    #[test]
+    fn an_ipv6_client_is_reported_as_its_64() {
+        let key = ClientKey::of(ip("2001:db8:1:2::abcd"));
+        assert_eq!(key.to_string(), "2001:db8:1:2::/64");
     }
 
     #[test]

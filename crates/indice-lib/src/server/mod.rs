@@ -678,6 +678,14 @@ fn build_router(
                 })
                 .on_response(
                     |res: &Response, latency: std::time::Duration, _span: &tracing::Span| {
+                        // A limit's refusal is reported by the limit itself, once
+                        // per client per window and naming who was charged. Logging
+                        // each one here as well would put back the flood the
+                        // reporter exists to prevent. See `limits::Reporter`.
+                        if res.extensions().get::<limits::LimitRefusal>().is_some() {
+                            tracing::debug!(status = res.status().as_u16(), "refused by a limit");
+                            return;
+                        }
                         let ct = res
                             .headers()
                             .get(axum::http::header::CONTENT_TYPE)
