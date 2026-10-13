@@ -119,6 +119,44 @@ pub fn archive_dir(home: &Path) -> PathBuf {
     home.join("archive")
 }
 
+/// Bytes on disk under `<home>/archive/`, the figure `uploads.max_total_gb`
+/// limits.
+///
+/// Measured from the directory, not from the manifest. The manifest records
+/// only what indexed successfully, and a failed ingest leaves its file behind:
+/// `place_local_wacz` files an upload into the archive before it is parsed, so
+/// a run of uploads that are not really WACZs would each leave a file here
+/// while the manifest, and a manifest-derived total, stayed at zero. Walking
+/// the directory counts what is actually using the disk, including a
+/// Browsertrix download still being written as a `.part` file, which is how
+/// concurrent downloads see each other's progress.
+///
+/// Symlinks are not followed. One pointing at a large tree elsewhere would
+/// otherwise count that tree against the archive, and one pointing at an
+/// ancestor would never finish.
+///
+/// A missing archive directory is zero, not an error: a fresh home has none.
+pub fn archive_bytes(home: &Path) -> std::io::Result<u64> {
+    fn walk(dir: &Path) -> std::io::Result<u64> {
+        let mut total = 0u64;
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            // `DirEntry::file_type` does not follow symlinks.
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                total = total.saturating_add(walk(&entry.path())?);
+            } else if kind.is_file() {
+                total = total.saturating_add(entry.metadata()?.len());
+            }
+        }
+        Ok(total)
+    }
+    match walk(&archive_dir(home)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +194,46 @@ mod tests {
         assert_eq!(year_prefix("not-a-date"), None);
         assert_eq!(year_prefix("22"), None); // too short, no panic
         assert_eq!(year_prefix(""), None);
+    }
+}
+
+#[cfg(test)]
+mod archive_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn counts_every_file_including_ones_the_manifest_never_recorded() {
+        // The bypass this measurement exists to close: a failed ingest leaves its
+        // file in archive/ with no manifest entry, so a manifest-derived total
+        // never saw it. Here nothing is in a manifest at all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            archive_bytes(tmp.path()).unwrap(),
+            0,
+            "a fresh home has none"
+        );
+
+        let slug = archive_dir(tmp.path()).join("junk");
+        std::fs::create_dir_all(slug.join("item")).unwrap();
+        std::fs::write(slug.join("x.wacz"), vec![0u8; 300]).unwrap();
+        std::fs::write(slug.join("x-2.wacz"), vec![0u8; 200]).unwrap();
+        // A download in progress, which concurrent checks need to see.
+        std::fs::write(slug.join("item").join("y.wacz.part.1.0"), vec![0u8; 50]).unwrap();
+        assert_eq!(archive_bytes(tmp.path()).unwrap(), 550);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_a_symlink_out_of_the_archive() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("big"), vec![0u8; 10_000]).unwrap();
+        let archive = archive_dir(tmp.path());
+        std::fs::create_dir_all(&archive).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, archive.join("link")).unwrap();
+        // And one back at an ancestor, which a following walk would never finish.
+        std::os::unix::fs::symlink(tmp.path(), archive.join("loop")).unwrap();
+        assert_eq!(archive_bytes(tmp.path()).unwrap(), 0);
     }
 }

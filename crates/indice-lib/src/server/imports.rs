@@ -275,6 +275,14 @@ pub(super) async fn bx_import(
     if req.items.is_empty() {
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
     }
+    // A download lands in `archive/`; a streamed import costs no local disk.
+    // This is the early check, so a full archive refuses at once; each
+    // resource is checked against its size inside the job.
+    if req.download {
+        if let Err(refused) = super::manage::accession_budget(&state) {
+            return refused.into_response();
+        }
+    }
     // Streaming needs the resolver (to fetch a fresh presigned URL at index time
     // and again at replay); downloading fetches each WACZ directly and doesn't.
     let resolver = state.resolver.clone();
@@ -333,6 +341,15 @@ pub(super) async fn bx_import(
                         } else {
                             String::new()
                         };
+                        // Per resource, just before it downloads. Downloads
+                        // run outside the write lock so they do not block other
+                        // imports, which means two can overlap, but a download
+                        // in progress is a `.part` file under archive/, so each
+                        // check here counts the others. A resource whose size
+                        // Browsertrix does not report is admitted as zero and
+                        // refused only if the archive is already full.
+                        super::manage::admit(&job_state, res.size)
+                            .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                         crate::index::IndexProgress::phase(
                             &progress,
                             &format!("downloading {filename}{size}"),
@@ -611,6 +628,12 @@ pub(super) async fn ait_import(
     if req.into.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
     }
+    // Archive-It serves WARCs, so every import builds a WACZ in `archive/`.
+    // This is the early check, so a full archive refuses at once; the import's
+    // total, known once its WARCs are listed, is checked inside the job.
+    if let Err(refused) = super::manage::accession_budget(&state) {
+        return refused.into_response();
+    }
     if req.crawls.is_empty() {
         return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
     }
@@ -693,6 +716,17 @@ pub(super) async fn ait_import(
                     &progress,
                 )?;
                 let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                // The whole import against the room left, measured under the
+                // lock. Every WARC's size is in the plans by now, and the WACZ
+                // built from them is about their sum, so one import cannot go
+                // past the limit by its own size.
+                let incoming: u64 = plans
+                    .iter()
+                    .flat_map(|p| p.files.iter())
+                    .map(|f| f.size)
+                    .sum();
+                super::manage::admit(&job_state, incoming)
+                    .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                 crate::archiveit::import_crawls(
                     &client,
                     &crate::index::Ingest::new(&job_state.home)

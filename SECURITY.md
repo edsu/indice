@@ -54,8 +54,10 @@ Filed, documented, and not news. The tracker is in this repo, so
 - A server with no `users.yaml` makes every authenticated user an admin. This is
   the documented default and the wrong one on the open web.
   `rustyweb-open-web-hardening-u9y6.2`
-- No cap on upload size or on total archive size.
-  `rustyweb-open-web-hardening-u9y6.3`
+- Upload size and total archive size are limited only when `uploads.max_mb`
+  and `uploads.max_total_gb` are set in `config.yaml`; both are unset by default.
+  The limits apply to the whole archive, not to each curator.
+  `rustyweb-upload-quota-hryt`
 - Add-by-location accepts an arbitrary URL or local path, so a writer can reach
   internal addresses and read server-side files.
   `rustyweb-open-web-hardening-u9y6.4`

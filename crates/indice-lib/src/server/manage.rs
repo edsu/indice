@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
-use anyhow::Result;
 use axum::extract::{Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
@@ -214,13 +213,26 @@ pub(super) fn acquire_write_lock<'a>(
 /// fabricated: a caller must have obtained it from the extractor, i.e. must
 /// have passed the check. That makes "I added a handler and forgot to gate it"
 /// a compile error rather than a silent exposure.
+/// An uploaded file staged for indexing, and how many bytes it is.
+///
+/// Together because the job needs both: the directory, to keep the file alive
+/// until it has been filed and then delete it; the size, to check it against the
+/// archive's room. The size is what the upload counted as it streamed, rather
+/// than read back from the path, so the job never asks the filesystem about a
+/// location string, which for an add by URL is request input.
+pub(super) struct StagedUpload {
+    /// Read by nothing: held for its destructor, which deletes the file.
+    pub _dir: tempfile::TempDir,
+    pub bytes: u64,
+}
+
 fn start_index_job(
     curator: &Curator,
     state: &Arc<AppState>,
     location: String,
     collection: String,
     name: Option<String>,
-    keepalive: Option<tempfile::TempDir>,
+    staged: Option<StagedUpload>,
 ) -> u64 {
     // On a server the person naming the location may be an approved stranger
     // rather than the operator, so a URL may only point at a public address.
@@ -243,7 +255,13 @@ fn start_index_job(
     tokio::task::spawn_blocking(move || {
         // Held until the job ends; dropping it deletes any uploaded temp file
         // (after `index_location` has copied it into `archive/`).
-        let _keepalive = keepalive;
+        // An upload brings a staged file to file into the archive; adding by
+        // URL does not, since a URL is streamed in place or downloaded to a
+        // temp file that is removed afterwards.
+        let admit_bytes = staged.as_ref().map(|s| s.bytes);
+        // Held until the job ends; dropping it deletes the uploaded temp file
+        // (after `index_location` has copied it into `archive/`).
+        let _staged = staged;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
             // The cross-process index lock is taken *before* the in-process
@@ -273,6 +291,18 @@ fn start_index_job(
             // vec, so every manifest write is a read-modify-write and has to
             // happen under the lock.
             let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+            // The check that actually holds the archive limit. Under the lock
+            // every job that files into the archive is serialised, so the room
+            // measured here is the room there is; the request-time check could
+            // not know about uploads queued alongside this one.
+            if let Some(size) = admit_bytes {
+                if let Err(refused) = admit(&job_state, size) {
+                    let _ = tx.send(ProgressEvent::Error {
+                        message: refused.status_and_message().1,
+                    });
+                    return;
+                }
+            }
             // Custody travels with the ingest, so each crawl is attributed as
             // it is recorded. A multi-WACZ add that fails part way therefore
             // attributes exactly what committed — which are precisely the
@@ -281,6 +311,7 @@ fn start_index_job(
                 .name(name.as_deref())
                 .actor(Some(&actor))
                 .fetch_policy(fetch)
+                .download_limit(job_state.upload_limits.per_upload)
                 .progress(&progress)
                 .index_location(&location, &collection)
         };
@@ -352,24 +383,50 @@ pub(super) async fn upload_archive(
     // Before `Multipart`: an extractor that reads the body must come last, and
     // this way the 403 fires before a multi-gigabyte WACZ is streamed in.
     curator: Curator,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
+    // Before any of the body is read, so a full archive refuses at once rather
+    // than after a curator has waited for gigabytes to arrive.
+    let budget = match accession_budget(&state) {
+        Ok(b) => b,
+        Err(refused) => return refused.into_response(),
+    };
+    // A body that declares itself too large is refused from its headers.
+    // Nothing else would: the route's body limit counts frames as they arrive
+    // and never consults `Content-Length`, so without this a 50 GB upload
+    // against a 2 GiB cap streams 2 GiB to disk before it is told no.
+    if let (Some(b), Some(declared)) = (
+        budget,
+        headers
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok()),
+    ) {
+        if declared > b.bytes().saturating_add(UPLOAD_FRAMING_ALLOWANCE) {
+            return b.refused().into_response();
+        }
+    }
     let mut collection: Option<String> = None;
     let mut name: Option<String> = None;
-    let mut tmpdir: Option<tempfile::TempDir> = None;
+    let mut staged: Option<StagedUpload> = None;
     let mut file_path: Option<PathBuf> = None;
 
     loop {
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, format!("malformed upload: {e}")).into_response()
-            }
+            Err(e) => return multipart_refusal(e, budget),
         };
         match field.name() {
-            Some("collection") => collection = field.text().await.ok(),
-            Some("name") => name = field.text().await.ok(),
+            Some("collection") => match read_text_field(field, budget).await {
+                Ok(text) => collection = Some(text),
+                Err(refusal) => return refusal,
+            },
+            Some("name") => match read_text_field(field, budget).await {
+                Ok(text) => name = Some(text),
+                Err(refusal) => return refusal,
+            },
             Some("file") => {
                 // Keep just the basename of the client filename, defaulting the
                 // extension so `index_location`'s `.wacz` check passes.
@@ -384,11 +441,12 @@ pub(super) async fn upload_archive(
                     Err(e) => return error_response(anyhow::anyhow!(e)).into_response(),
                 };
                 let path = dir.path().join(&fname);
-                if let Err(e) = stream_field_to_file(field, &path).await {
-                    return error_response(e).into_response();
-                }
+                let bytes = match stream_field_to_file(field, &path, budget).await {
+                    Ok(b) => b,
+                    Err(refusal) => return refusal,
+                };
                 file_path = Some(path);
-                tmpdir = Some(dir);
+                staged = Some(StagedUpload { _dir: dir, bytes });
             }
             _ => {}
         }
@@ -410,23 +468,267 @@ pub(super) async fn upload_archive(
         &crate::collections::slugify(&collection),
         Some(serde_json::json!({ "collection_name": collection })),
     );
-    let id = start_index_job(&curator, &state, location, collection, name, tmpdir);
+    let id = start_index_job(&curator, &state, location, collection, name, staged);
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
 /// Stream one multipart field's bytes to `path`, chunk by chunk (never buffering
-/// the whole upload in memory).
+/// the whole upload in memory), stopping once it passes `budget`.
+///
+/// Counted here as well as by the route's body limit, which also counts frames
+/// as they arrive and so stops a chunked body as well as a declared one. This
+/// count does what it cannot: it enforces the archive's remaining room, which
+/// can be tighter than the per-upload cap and which the body limit knows
+/// nothing about, and it is exact for the file alone, where the body limit has
+/// to leave room for multipart framing. A body that *declares* itself too large
+/// never gets this far; `upload_archive` refuses it from its headers.
 async fn stream_field_to_file(
     mut field: axum::extract::multipart::Field<'_>,
     path: &Path,
-) -> Result<()> {
+    budget: Option<Budget>,
+) -> Result<u64, Response> {
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(path).await?;
-    while let Some(chunk) = field.chunk().await? {
-        file.write_all(&chunk).await?;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| error_response(e.into()))?;
+    let mut written: u64 = 0;
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => return Err(multipart_refusal(e, budget)),
+        };
+        written += chunk.len() as u64;
+        if let Some(b) = budget {
+            if written > b.bytes() {
+                // The temp directory is dropped with the handler, which
+                // deletes this partial file.
+                return Err(b.refused().into_response());
+            }
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| error_response(e.into()))?;
     }
-    file.flush().await?;
-    Ok(())
+    file.flush().await.map_err(|e| error_response(e.into()))?;
+    Ok(written)
+}
+
+/// The limits on what the browser write surface may add, from `config.yaml`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct UploadLimits {
+    /// The largest single WACZ a curator may add, in bytes: an upload, or a
+    /// URL that has to be downloaded because it cannot be streamed.
+    pub per_upload: Option<u64>,
+    /// The most `<home>/archive/` may hold, in bytes. See
+    /// [`crate::index::archive_bytes`].
+    pub archive: Option<u64>,
+}
+
+/// How much one accession may still add, and which limit says so.
+///
+/// An enum rather than a byte count with a label beside it, so the number and
+/// the reason cannot disagree: the room left is derived from the limit that
+/// sets it.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Budget {
+    /// The per-upload cap is the tighter limit.
+    Upload { cap: u64 },
+    /// The archive's remaining room is the tighter limit.
+    Archive { used: u64, cap: u64 },
+}
+
+impl Budget {
+    /// Bytes this accession may add.
+    fn bytes(self) -> u64 {
+        match self {
+            Budget::Upload { cap } => cap,
+            Budget::Archive { used, cap } => cap.saturating_sub(used),
+        }
+    }
+
+    /// The refusal for spending past this budget.
+    fn refused(self) -> Refused {
+        match self {
+            Budget::Upload { cap } => Refused::TooLarge { cap },
+            Budget::Archive { used, cap } => Refused::ArchiveFull { used, cap },
+        }
+    }
+}
+
+/// Why an accession was refused.
+///
+/// A small type rather than a ready-made `Response`, which is a large value to
+/// carry through a `Result`. It renders itself through axum's `IntoResponse`,
+/// so a handler still just returns it, and every refusal names its limit and
+/// the setting behind it.
+#[derive(Debug)]
+pub(super) enum Refused {
+    /// Larger than `uploads.max_mb`.
+    TooLarge { cap: u64 },
+    /// The archive is full, or this would overfill it.
+    ArchiveFull { used: u64, cap: u64 },
+    /// The archive could not be measured.
+    Measure(std::io::Error),
+}
+
+impl Refused {
+    /// The status and the message, shared by a handler's response and a job's
+    /// progress error so both say the same thing.
+    pub(super) fn status_and_message(&self) -> (StatusCode, String) {
+        match self {
+            Refused::TooLarge { cap } => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "this is larger than the {} limit on a single upload \
+                     (uploads.max_mb in config.yaml)",
+                    human_size(*cap)
+                ),
+            ),
+            // 507 rather than 413: the request is not too large in itself, the
+            // archive has no room for it, and a smaller file may still fit.
+            Refused::ArchiveFull { used, cap } => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                format!(
+                    "the archive is limited to {} and holds {}, so there is {} left \
+                     (uploads.max_total_gb in config.yaml)",
+                    human_size(*cap),
+                    human_size(*used),
+                    human_size(cap.saturating_sub(*used)),
+                ),
+            ),
+            Refused::Measure(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not measure the archive: {e}"),
+            ),
+        }
+    }
+}
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        if let Refused::Measure(_) = &self {
+            tracing::error!("{}", self.status_and_message().1);
+        }
+        self.status_and_message().into_response()
+    }
+}
+
+/// How full the archive is against its limit: `(used, cap)`, or `None` when no
+/// archive limit is set. The one place this is measured, for the request-time
+/// check, the job-time check and the accession desk alike.
+pub(super) fn archive_usage(state: &AppState) -> Result<Option<(u64, u64)>, Refused> {
+    let Some(cap) = state.upload_limits.archive else {
+        return Ok(None);
+    };
+    let used = crate::index::archive_bytes(&state.home).map_err(Refused::Measure)?;
+    Ok(Some((used, cap)))
+}
+
+/// How much one accession may add, or the refusal if the archive is already
+/// full. `None` means no limit applies.
+///
+/// This is the cheap check, made when the request arrives so a full archive
+/// refuses before a curator waits for gigabytes to arrive. It is not the one
+/// that holds the limit: any number of uploads arriving together each see the
+/// same room. [`admit`] is, made inside the job once it is serialised.
+pub(super) fn accession_budget(state: &AppState) -> Result<Option<Budget>, Refused> {
+    let archive = match archive_usage(state)? {
+        None => None,
+        Some((used, cap)) if used >= cap => return Err(Refused::ArchiveFull { used, cap }),
+        Some((used, cap)) => Some(Budget::Archive { used, cap }),
+    };
+    let upload = state
+        .upload_limits
+        .per_upload
+        .map(|cap| Budget::Upload { cap });
+    Ok(match (upload, archive) {
+        (Some(u), Some(a)) => Some(if u.bytes() <= a.bytes() { u } else { a }),
+        (one, other) => one.or(other),
+    })
+}
+
+/// Whether `size` more bytes may enter the archive now.
+///
+/// Called by a job after it holds the write lock, which serialises every job
+/// that files into the archive, so the room it measures is the room there is:
+/// uploads that each passed [`accession_budget`] while queued behind a long
+/// import cannot all spend the same space. The size is known by then, so this
+/// is exact rather than a forecast.
+pub(super) fn admit(state: &AppState, size: u64) -> Result<(), Refused> {
+    match archive_usage(state)? {
+        Some((used, cap)) if used.saturating_add(size) > cap => {
+            Err(Refused::ArchiveFull { used, cap })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The most a text field in an upload may be. A collection name and a display
+/// name are a line each; this is generous for either.
+const MAX_TEXT_FIELD: usize = 4 * 1024;
+
+/// Read a short text field, refusing one that is not short.
+///
+/// `Field::text` buffers the whole field in memory, and with the body limit
+/// lifted on this route nothing else bounds it, so a client could send a
+/// collection "name" of several gigabytes and exhaust the server's memory with
+/// one request. This holds whatever `config.yaml` says, because the size caps
+/// there are about the file and are optional.
+async fn read_text_field(
+    mut field: axum::extract::multipart::Field<'_>,
+    budget: Option<Budget>,
+) -> Result<String, Response> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match field.chunk().await {
+            Ok(Some(chunk)) => {
+                if buf.len() + chunk.len() > MAX_TEXT_FIELD {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            "a text field in this upload is longer than {MAX_TEXT_FIELD} bytes"
+                        ),
+                    )
+                        .into_response());
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(multipart_refusal(e, budget)),
+        }
+    }
+    String::from_utf8(buf)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "a text field is not valid UTF-8").into_response())
+}
+
+/// A multipart error as a response.
+///
+/// A 413 here is the route's body limit, which axum reports as "Request payload
+/// is too large" without saying what the limit is, so the budget's own refusal
+/// is used instead. That is always true: the body limit is only set when there
+/// is a per-upload cap, and a body past it is past whichever limit the budget
+/// names, the budget being the tighter of the two.
+///
+/// Anything else is reported as the client's problem, 400, whatever status axum
+/// attached. The common case is a curator cancelling an upload partway, which
+/// axum surfaces as a 500 because the body stream failed; reporting it as a
+/// server fault would put an `error!` in the log for ordinary behaviour.
+fn multipart_refusal(
+    e: axum::extract::multipart::MultipartError,
+    budget: Option<Budget>,
+) -> Response {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        if let Some(b) = budget {
+            return b.refused().into_response();
+        }
+        return (StatusCode::PAYLOAD_TOO_LARGE, e.body_text()).into_response();
+    }
+    (
+        StatusCode::BAD_REQUEST,
+        format!("upload refused: {}", e.body_text()),
+    )
+        .into_response()
 }
 
 /// `GET /api/archives/{id}/events` — stream one job's progress as SSE. The
@@ -535,7 +837,67 @@ pub(super) async fn accession_desk_page(
         })
         .unwrap_or_else(|| id.clone());
     let (_, who) = admin_ctx(&state, &headers);
-    views::accession_desk(&id, &name, who.as_deref()).into_response()
+    let room = room_note(&state);
+    // The same refusal text the server would send, so the page and the server
+    // say the same thing whichever one catches it.
+    let max_upload = state
+        .upload_limits
+        .per_upload
+        .map(|cap| (cap, Refused::TooLarge { cap }.status_and_message().1));
+    let room_left = archive_usage(&state).ok().flatten().map(|(used, cap)| {
+        (
+            cap.saturating_sub(used),
+            Refused::ArchiveFull { used, cap }.status_and_message().1,
+        )
+    });
+    views::accession_desk(
+        &id,
+        &name,
+        who.as_deref(),
+        room.as_deref(),
+        max_upload.as_ref(),
+        room_left.as_ref(),
+    )
+    .into_response()
+}
+
+/// The accession desk's line about how much room there is, so a curator sees
+/// the limit before starting an upload that cannot finish. `None` when neither
+/// limit is set.
+///
+/// Best-effort: if the archive cannot be measured the line is left off. The
+/// desk still works and the upload itself reports the real error.
+fn room_note(state: &AppState) -> Option<String> {
+    let per_upload = state
+        .upload_limits
+        .per_upload
+        .map(|cap| format!("Uploads up to {} each.", human_size(cap)));
+    let archive = archive_usage(state).ok().flatten().map(|(used, cap)| {
+        if used >= cap {
+            // Uploads and download imports are closed. Adding by URL and a
+            // streamed Browsertrix import store nothing locally, so they still
+            // work, and saying "nothing can be added" would send a curator away
+            // from both.
+            format!(
+                "The archive is full ({} of its {} limit), so uploads and download \
+                 imports are refused until a crawl is removed or the limit is raised. \
+                 Adding by URL still works.",
+                human_size(used),
+                human_size(cap)
+            )
+        } else {
+            format!(
+                "The archive holds {} of its {} limit; {} left.",
+                human_size(used),
+                human_size(cap),
+                human_size(cap - used)
+            )
+        }
+    });
+    match (per_upload, archive) {
+        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        (one, other) => one.or(other),
+    }
 }
 
 /// Form body for create/edit collection (`application/x-www-form-urlencoded`).

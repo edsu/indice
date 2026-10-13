@@ -6,9 +6,9 @@
 //! default, and unknown/missing keys are ignored, so it can grow (site name,
 //! branding, CSS override, theming, …) without breaking older or newer homes.
 //!
-//! Today it carries index tuning — the stored-body cap that trades snippet depth
-//! for on-disk size (the "frugality" knob). See the size/scale model in
-//! DESIGN.md.
+//! It carries index tuning — the stored-body cap that trades snippet depth for
+//! on-disk size (the "frugality" knob), see the size/scale model in DESIGN.md —
+//! and the limits on what the browser write surface may add to the archive.
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +38,8 @@ const MIN_WRITER_HEAP_BYTES: usize = 15 * 1024 * 1024;
 pub struct Config {
     /// Index-tuning knobs (footprint vs. snippet richness).
     pub index: IndexConfig,
+    /// How much a curator may add to the archive through the browser.
+    pub uploads: UploadsConfig,
     // Future sections (site name, branding, CSS override, theming, …) slot in
     // here; older/newer homes ignore keys they don't know.
 }
@@ -62,6 +64,26 @@ pub struct IndexConfig {
     pub writer_heap_mb: Option<u64>,
 }
 
+/// Limits on what the browser write surface may add to the archive.
+///
+/// Both are unset by default, which means unlimited, because there is no number
+/// that is right for everyone: a WACZ of a large site is legitimately several
+/// gigabytes, and a cap low enough to protect a small volume would refuse it.
+/// An operator exposing indice to curators they do not know should set both.
+///
+/// They apply to the HTTP surface only. `indice index` on the command line is
+/// the operator at the machine, and is not limited.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UploadsConfig {
+    /// The largest single upload, in MiB.
+    pub max_mb: Option<u64>,
+    /// The most the archive may hold, in GiB, counting the local WACZs the
+    /// manifest records. A crawl indexed from a URL is streamed in place and
+    /// costs no local disk, so it does not count.
+    pub max_total_gb: Option<u64>,
+}
+
 impl Config {
     /// The config path within `home`.
     pub fn path(home: &Path) -> PathBuf {
@@ -79,6 +101,71 @@ impl Config {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         serde_yaml_ng::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Check the `uploads:` section strictly, for the server to call at startup.
+    ///
+    /// [`Config::load`] is forgiving by design, and every ingest calls it, the
+    /// command line's included. The upload limits are the one place where that
+    /// forgiveness fails open: a mistyped key is ignored and a key with no value
+    /// reads as absent, and both mean *unlimited* on a server the operator
+    /// believes is limited. So the section is checked here, where only the
+    /// server looks, rather than in `load`, where a mistake in a setting the
+    /// command line does not use would stop the command line.
+    ///
+    /// Refused: a key other than `max_mb` or `max_total_gb`, a key with no
+    /// value, and a value of `0`, which someone wrote to forbid uploads and
+    /// which reading as "no limit" would quietly invert.
+    pub fn check_upload_limits(home: &Path) -> Result<()> {
+        let path = Self::path(home);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(());
+        };
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
+            .with_context(|| format!("parsing {}", path.display()))?;
+        let Some(uploads) = doc.get("uploads") else {
+            return Ok(());
+        };
+        let Some(section) = uploads.as_mapping() else {
+            anyhow::bail!("{}: uploads: must be a mapping of limits", path.display());
+        };
+        for (key, value) in section {
+            let key = key.as_str().unwrap_or("?");
+            if !matches!(key, "max_mb" | "max_total_gb") {
+                anyhow::bail!(
+                    "{}: uploads.{key} is not a setting; the upload limits are \
+                     uploads.max_mb and uploads.max_total_gb",
+                    path.display()
+                );
+            }
+            if value.is_null() {
+                anyhow::bail!(
+                    "{}: uploads.{key} has no value, which would mean no limit. Give a \
+                     size, or remove the key.",
+                    path.display()
+                );
+            }
+            if value.as_u64() == Some(0) {
+                anyhow::bail!(
+                    "{}: uploads.{key} is 0, which would refuse every upload. Omit it for \
+                     no limit, or give a size.",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The largest single upload in bytes, if limited.
+    pub fn max_upload_bytes(&self) -> Option<u64> {
+        self.uploads.max_mb.map(|mb| mb.saturating_mul(1024 * 1024))
+    }
+
+    /// The most the archive may hold in bytes, if limited.
+    pub fn max_archive_bytes(&self) -> Option<u64> {
+        self.uploads
+            .max_total_gb
+            .map(|gb| gb.saturating_mul(1024 * 1024 * 1024))
     }
 
     /// The stored-body cap in bytes: an explicit KiB value (`0` → unbounded),
@@ -124,6 +211,7 @@ mod tests {
                 stored_body_cap_kb: Some(4),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(frugal.stored_body_cap_bytes(), 4 * 1024);
 
@@ -132,8 +220,48 @@ mod tests {
                 stored_body_cap_kb: Some(0),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(unbounded.stored_body_cap_bytes(), usize::MAX);
+    }
+
+    #[test]
+    fn upload_limits_that_would_fail_open_are_refused_at_server_startup() {
+        // Each of these reads as "no limit" under the forgiving parse, which on
+        // a server the operator believes is limited is the worst way to be wrong.
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (yaml, why) in [
+            ("uploads:\n  max_mb: 0\n", "is 0"),
+            ("uploads:\n  max_total_gb: 0\n", "is 0"),
+            ("uploads:\n  max_size_mb: 200\n", "not a setting"),
+            ("uploads:\n  max_mb:\n", "no value"),
+        ] {
+            std::fs::write(Config::path(tmp.path()), yaml).unwrap();
+            let err = format!("{:#}", Config::check_upload_limits(tmp.path()).unwrap_err());
+            assert!(
+                err.contains(why),
+                "{yaml:?} should be refused ({why}): {err}"
+            );
+            // And the forgiving load the CLI uses is not affected: a mistake in
+            // a setting the command line ignores must not stop the command line.
+            assert!(
+                Config::load(tmp.path()).is_ok(),
+                "{yaml:?} must not break Config::load"
+            );
+        }
+
+        std::fs::write(
+            Config::path(tmp.path()),
+            "uploads:\n  max_mb: 200\n  max_total_gb: 20\n",
+        )
+        .unwrap();
+        let c = Config::load(tmp.path()).unwrap();
+        assert_eq!(c.max_upload_bytes(), Some(200 * 1024 * 1024));
+        assert_eq!(c.max_archive_bytes(), Some(20 * 1024 * 1024 * 1024));
+
+        // Absent means unlimited.
+        assert_eq!(Config::default().max_upload_bytes(), None);
+        assert_eq!(Config::default().max_archive_bytes(), None);
     }
 
     #[test]
@@ -147,6 +275,7 @@ mod tests {
                 writer_heap_mb: Some(256),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(big.writer_heap_bytes(), 256 * 1024 * 1024);
         // A too-small value is clamped up to Tantivy's minimum.
@@ -155,6 +284,7 @@ mod tests {
                 writer_heap_mb: Some(1),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(tiny.writer_heap_bytes(), MIN_WRITER_HEAP_BYTES);
     }
