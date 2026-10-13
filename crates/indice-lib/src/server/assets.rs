@@ -172,8 +172,15 @@ pub(super) async fn replay_frame(headers: HeaderMap) -> impl IntoResponse {
     serve_embedded_asset(ReplayAssets::get("frame.html"), "frame.html", &headers)
 }
 
-pub(super) async fn replay_index() -> impl IntoResponse {
-    (StatusCode::SEE_OTHER, [("location", "/")]).into_response()
+/// ReplayWeb.page's app shell, at its replay base. `<replay-web-page>` frames
+/// `/replay/?source=…`, which the service worker answers once it controls the
+/// page. On a first visit the frame can navigate before the worker has taken
+/// control, and then the request reaches us; answering with the shell lets
+/// ReplayWeb.page boot and wait for the worker. A redirect elsewhere loses the
+/// race for good: the multi-WACZ browser test then shows indice's homepage
+/// inside the replay about one run in three.
+pub(super) async fn replay_index(headers: HeaderMap) -> impl IntoResponse {
+    serve_embedded_asset(ReplayAssets::get("index.html"), "index.html", &headers)
 }
 
 pub(super) async fn replay_handler(

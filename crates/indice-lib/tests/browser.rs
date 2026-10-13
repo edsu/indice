@@ -376,6 +376,11 @@ async fn annotate_through_viewer(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    // Back to the viewer: each round below enters the frame from there.
+    driver
+        .enter_default_frame()
+        .await
+        .map_err(|e| e.to_string())?;
     let select = format!(
         "{FIND_REPLAY_DOC}
         const doc = findReplayDoc(document, 0);
@@ -397,7 +402,7 @@ async fn annotate_through_viewer(
     );
     let deadline = Instant::now() + Duration::from_secs(15);
     let selected = loop {
-        enter_replay_frame(driver).await.ok();
+        enter_replay_frame(driver).await?;
         let selected = driver
             .execute(&select, vec![])
             .await
@@ -447,9 +452,9 @@ async fn annotate_through_viewer(
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    if !hint.contains(page_url) {
+    if !hint.contains(page_url) || !hint.contains(&selected) {
         return Err(format!(
-            "the composer should name the target URL, got {hint:?}"
+            "the composer should name the target URL and quote {selected:?}, got {hint:?}"
         ));
     }
     driver

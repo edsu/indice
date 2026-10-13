@@ -144,6 +144,7 @@ chk 200 "$(code "$B/api/search?q=apod")" "public search"
 chk 200 "$(code "$B/api/annotations?collection=apod")" "public annotations API is NOT behind the login"
 chk 200 "$(code "$B/collection/apod")" "public collection page"
 chk 200 "$(code "$B/replay/viewer")" "replay viewer"
+chk 200 "$(code "$B/replay-frame")" "replay frame"
 chk 302 "$(code "$B/manage/login")" "/manage/login starts a login"
 
 echo

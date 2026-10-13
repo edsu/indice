@@ -458,12 +458,13 @@ async fn get_html(path: &str) -> String {
 #[tokio::test]
 async fn viewer_frames_the_replay() {
     let html = get_html("/replay/viewer").await;
+    // The code that builds the frame's URL, not the header comment naming it.
     assert!(
-        html.contains("/replay-frame"),
+        html.contains("'/replay-frame?'"),
         "viewer must embed the replay frame"
     );
     assert!(
-        !html.contains("/replay/ui.js"),
+        !html.contains("ui.js"),
         "viewer must not load ReplayWeb.page"
     );
 }
@@ -475,8 +476,8 @@ async fn replay_frame_wires_up_replay_web_page() {
         html.contains("replay-web-page"),
         "frame must mount the component"
     );
-    // Absolute replaybase is what makes the service worker resolve to
-    // /replay/sw.js rather than /replay/replay/sw.js - the bug we hit.
+    // The frame is outside /replay/, so only an absolute replaybase makes the
+    // service worker resolve to /replay/sw.js.
     assert!(
         html.contains("setAttribute('replaybase', '/replay/')"),
         "replaybase should be the absolute /replay/ path"
@@ -484,6 +485,18 @@ async fn replay_frame_wires_up_replay_web_page() {
     assert!(
         html.contains("/replay/agent.js"),
         "frame must load the agent that reports navigation and selections"
+    );
+}
+
+/// The agent is what tells the viewer where the reader is; without the
+/// rwp-url-change listener the banner and the notes panel stay on the first
+/// page.
+#[tokio::test]
+async fn replay_agent_reports_navigation() {
+    let js = get_html("/replay/agent.js").await;
+    assert!(
+        js.contains("rwp-url-change"),
+        "agent should report ReplayWeb.page navigation"
     );
 }
 
@@ -543,18 +556,21 @@ async fn replay_asset_returns_304_when_etag_matches() {
     assert!(body.is_empty(), "304 should have no body");
 }
 
+/// ReplayWeb.page frames its replay base before the service worker may control
+/// the page; the shell it gets then has to boot ReplayWeb.page, not send the
+/// frame somewhere else. See `replay_index` in server/assets.rs.
 #[tokio::test]
-async fn replay_root_redirects() {
+async fn replay_root_serves_the_replayweb_shell() {
     let tmp = TempDir::new().unwrap();
     let app = public_router(tmp.path());
-    let req = Request::get("/replay/").body(Body::empty()).unwrap();
+    let req = Request::get("/replay/?source=x")
+        .body(Body::empty())
+        .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    // /replay/ now redirects to homepage
-    assert!(
-        resp.status().is_redirection(),
-        "expected redirect, got {}",
-        resp.status()
-    );
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("ui.js"), "the shell must load ReplayWeb.page");
 }
 
 // ── Homepage ──────────────────────────────────────────────────────────────────

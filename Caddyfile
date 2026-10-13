@@ -42,7 +42,7 @@
 		# Treat this as a performance list. Getting it wrong costs a round-trip or
 		# a missing chrome element. Do not grow it into a list of routes that need
 		# auth; indice decides that, for the reasons in the header comment.
-		@bytes path /files/* /assets/* /replay/* /thumb/* /collection-thumb/* /health
+		@bytes path /files/* /assets/* /replay/* /replay-frame /thumb/* /collection-thumb/* /health
 		handle @bytes {
 			reverse_proxy indice:8080 {
 				header_up -X-Forwarded-Email

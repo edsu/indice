@@ -19,8 +19,9 @@
 (function () {
   "use strict";
 
-  const HL = "indice-anno";
-  const HL_ACTIVE = "indice-anno-active";
+  // The longest quote a note may carry. A longer selection is refused rather
+  // than cut, so a saved quote is always the passage the curator saw.
+  const MAX_QUOTE = 2000;
 
   /** @typedef {{exact:string, prefix?:string, suffix?:string}} Selector */
   /** @typedef {{id:string, created:string, modified?:string, author?:string,
@@ -43,16 +44,30 @@
     if (ch) ch.send(type, payload || {});
   }
 
-  /** A selector from the frame, kept only if it is the shape we expect and
-   *  trimmed to sizes a real selection has. It is still only a suggestion.
+  /** A selector from the frame, kept only if it is the shape we expect. It is
+   *  still only a suggestion. Prefix and suffix only disambiguate, so they are
+   *  cut to 64 characters; Array.from counts code points, so the cut never
+   *  splits a surrogate pair into JSON the server would reject.
    *  @returns {Selector|null} */
   function cleanSelector(sel) {
     if (!sel || typeof sel.exact !== "string" || !sel.exact.trim()) return null;
+    if (sel.exact.length > MAX_QUOTE) return null;
     /** @type {Selector} */
-    const out = { exact: sel.exact.slice(0, 2000) };
-    if (typeof sel.prefix === "string") out.prefix = sel.prefix.slice(-64);
-    if (typeof sel.suffix === "string") out.suffix = sel.suffix.slice(0, 64);
+    const out = { exact: sel.exact };
+    if (typeof sel.prefix === "string") out.prefix = Array.from(sel.prefix).slice(-64).join("");
+    if (typeof sel.suffix === "string") out.suffix = Array.from(sel.suffix).slice(0, 64).join("");
     return out;
+  }
+
+  /** A URL as the browser's parser writes it. Parsing percent-encodes control
+   *  and bidi characters in the path and punycodes the host, so a URL that
+   *  reads one way cannot be stored as another. */
+  function displayUrl(u) {
+    try {
+      return new URL(u).href;
+    } catch (e) {
+      return u;
+    }
   }
 
   /** @type {Record<string, HTMLElement>} */
@@ -166,19 +181,33 @@
 
   function openComposer(selector) {
     els.composerHost.innerHTML = "";
-    const hint = document.createElement("p");
+    // The target is fixed when the composer opens. The reader may navigate,
+    // or archived script may report a new URL, while the note is being
+    // written; either way the note goes where the hint said it would.
+    const target = { url: state.url, ts: state.ts };
+    // Say what the note will be attached to, in full. Both the URL and the
+    // quote come from the frame, which archived script can speak for, so this
+    // is where a person sees the target before saving it.
+    const hint = document.createElement("div");
     hint.className = "anno-hint";
-    // Say what the note will be attached to. Both come from the frame, which
-    // archived script can speak for, so this is where a person sees the target
-    // before saving it.
-    hint.textContent = selector
-      ? "New note on “" + truncate(selector.exact, 80) + "” at " + state.url
-      : "New note about " + state.url;
+    const where = document.createElement("p");
+    const url = document.createElement("bdi");
+    url.textContent = displayUrl(target.url);
+    where.append(selector ? "New note on this passage at " : "New note about ", url);
+    hint.append(where);
+    if (selector) {
+      const quote = document.createElement("blockquote");
+      quote.className = "anno-quote";
+      const q = document.createElement("bdi");
+      q.textContent = selector.exact;
+      quote.append(q);
+      hint.append(quote);
+    }
     const form = composer("", "Add note", async (text) => {
       const body = {
         collection: state.collection,
-        url: state.url,
-        timestamp: state.ts,
+        url: target.url,
+        timestamp: target.ts,
         note: text,
       };
       if (selector) body.selector = selector;
@@ -283,10 +312,6 @@
     toFrame("clear-selection");
   }
 
-  function truncate(s, n) {
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
-
   // ── Panel scaffolding ─────────────────────────────────────────────────────
   function buildPanel() {
     const panel = /** @type {HTMLElement} */ (document.getElementById("anno-panel"));
@@ -345,14 +370,24 @@
       if (d.type === "ready") {
         applyHighlights();
       } else if (d.type === "url" && typeof d.url === "string" && d.url) {
+        // ReplayWeb.page reports a change of title or view as well, with the
+        // same URL; only a new URL is a new page. An event without a
+        // timestamp keeps the one we have, since a note needs one.
+        if (typeof d.ts === "string" && d.ts) state.ts = d.ts;
+        if (d.url === state.url) return;
         state.url = d.url;
-        state.ts = typeof d.ts === "string" ? d.ts : "";
         state.lastSelection = null;
         /** @type {HTMLButtonElement} */ (els.selBtn).disabled = true;
         reload();
       } else if (d.type === "selection") {
         state.lastSelection = cleanSelector(d.selector);
-        /** @type {HTMLButtonElement} */ (els.selBtn).disabled = !state.lastSelection;
+        const btn = /** @type {HTMLButtonElement} */ (els.selBtn);
+        btn.disabled = !state.lastSelection;
+        const tooLong = !!d.selector && typeof d.selector.exact === "string" &&
+          d.selector.exact.length > MAX_QUOTE;
+        btn.title = tooLong
+          ? "The selection is too long to quote (at most " + MAX_QUOTE + " characters)."
+          : "";
       }
     });
   }

@@ -25,7 +25,8 @@ indice index <files>                  indice serve
        ├── WACZ metadata ──► Tantivy          ├── GET /search?q=    → search results
        └── manifest ───► collections.json     ├── GET /api/search   → search JSON
                                               ├── GET /files/{id}   → WACZ byte-range
-                                              └── GET /replay/viewer → viewer shell
+                                              ├── GET /replay/viewer → viewer shell
+                                              └── GET /replay-frame → replay frame
 ```
 
 Replay is handled entirely by the wabac.js service worker running in the browser. The service worker reads the WACZ file from `GET /files/{id}` using HTTP byte-range requests, extracts the CDX index from `indexes/index.cdx.gz` inside the ZIP, loads it into browser IndexedDB, and fetches individual WARC records by offset - all without making per-resource requests back to the indice server. indice's job during replay is purely to serve bytes efficiently.
@@ -135,7 +136,8 @@ it still resolves.
 | `GET /collection/{id}/replay.json` | wabac multi-WACZ manifest for replaying a whole collection |
 | `GET /collection/{id}/pages` | Collection page list + exact-URL→WACZ resolution (wabac `pagesQueryUrl`), from the index |
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
-| `GET /replay/viewer` | Viewer shell (reads `?source=&url=&ts=&name=&collection=` params) |
+| `GET /replay/viewer` | Viewer shell (reads `?source=&url=&ts=&name=&collection=` params): banner, notes panel, and the replay frame |
+| `GET /replay-frame` | Replay frame: mounts `<replay-web-page>` and the annotation agent. Must stay outside `/replay/` (see *Replay Viewer*) |
 | `GET /replay/*` | Embedded ReplayWebPage static assets (JS, CSS, WASM, sw.js) |
 
 ---
@@ -923,13 +925,25 @@ iframe, passing its query on. It does not load ReplayWeb.page.
 
 `GET /replay-frame` (`static/replay/frame.html`) mounts the `<replay-web-page>` component with
 the given `source`, `url` and `ts`, and loads `agent.js` beside it. Archived pages run their
-own JavaScript in this frame, so it holds nothing privileged: no API calls and no identity.
+own JavaScript in this frame, so the frame makes no API calls of its own.
 
-The frame lives at `/replay-frame`, *outside* the service worker's `/replay/` scope. A page
-inside that scope is itself controlled by the worker, and ReplayWeb.page's inner frames then
-resolve against the wrong base: the multi-WACZ browser test lands on indice's homepage, via
-the `/replay/` redirect, instead of the archived page. wacz-exhibitor hosts its embed outside
-the worker scope for the same reason.
+The frame is served from indice's own origin, the same as the viewer. That makes the split a
+structure, not a security boundary: archived script in the frame can reach the
+viewer's DOM through `window.parent`, and can call the write API with the reader's session.
+Moving the frame to its own origin is `rustyweb-replay-origin-isolation-5h67`; see
+*Threat Model*.
+
+Two placement rules keep replay working, and the multi-WACZ browser test
+(`browser_collection.rs`) fails without either:
+
+- The frame lives at `/replay-frame`, *outside* the service worker's `/replay/` scope. A
+  page inside that scope is itself controlled by the worker, and on the next load the
+  worker misses or fails ReplayWeb.page's inner frame. wacz-exhibitor hosts its embed
+  outside the worker scope for the same reason.
+- `GET /replay/` serves ReplayWeb.page's app shell (`static/replay/index.html`).
+  `<replay-web-page>` frames `/replay/?source=…`, and on a first visit that request can
+  reach the server before the worker controls the page. The shell boots ReplayWeb.page,
+  which waits for the worker; anything else stays in the frame.
 
 The two pages talk only by `postMessage`, each checking the other's origin and window. From
 the frame: `ready`, `url {url, ts}` (from ReplayWeb.page's `rwp-url-change` event, which

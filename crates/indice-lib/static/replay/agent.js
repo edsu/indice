@@ -52,6 +52,9 @@
     if (e.source !== window.parent || e.origin !== parentOrigin) return;
     const d = e.data;
     if (!d || d.indice !== "replay" || typeof d.type !== "string") return;
+    // Only a viewer with a notes panel talks to us, so that is when the
+    // document is worth looking for. A plain replay never pays for the walk.
+    watchReplayDoc();
     if (d.type === "highlight" && Array.isArray(d.notes)) {
       state.notes = d.notes.filter(
         (n) => n && typeof n.id === "string" && n.selector && typeof n.selector.exact === "string"
@@ -232,22 +235,32 @@
     return best;
   }
 
+  let watching = false;
   function watchReplayDoc() {
+    if (watching) return;
+    watching = true;
     let lastHref = "";
-    window.setInterval(() => {
+    const check = () => {
       const doc = findReplayDoc(document, 0);
       if (!doc) return;
       const href = doc.location.href;
-      if (doc !== state.doc || href !== lastHref) {
-        lastHref = href;
+      if (doc !== state.doc) {
+        // A new document needs its own listener and style. A same-document
+        // navigation (pushState, a hash) keeps both, so they are not added
+        // again, or each selection would be reported once per navigation.
         state.doc = doc;
         state.styleInjected = false;
         doc.addEventListener("selectionchange", () => {
           send("selection", { selector: currentSelection() });
         });
-        applyHighlights();
+      } else if (href === lastHref) {
+        return;
       }
-    }, 1000);
+      lastHref = href;
+      applyHighlights();
+    };
+    check();
+    window.setInterval(check, 1000);
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -256,16 +269,20 @@
     if (rp) {
       // ReplayWeb.page dispatches rwp-url-change on the element itself, and it
       // does not bubble, so the listener is on the element.
+      let lastUrl = "";
       rp.addEventListener("rwp-url-change", (e) => {
         const d = /** @type {any} */ (e).detail || {};
         if (typeof d.url !== "string" || !d.url) return;
-        // The notes the viewer sent were for the previous page.
-        state.notes = [];
-        applyHighlights();
+        // The event also fires when only the title or view changes. The
+        // notes the viewer sent are for this URL, so only a new one drops them.
+        if (d.url !== lastUrl) {
+          lastUrl = d.url;
+          state.notes = [];
+          applyHighlights();
+        }
         send("url", { url: d.url, ts: typeof d.ts === "string" ? d.ts : "" });
       });
     }
-    watchReplayDoc();
     send("ready", {});
   }
 

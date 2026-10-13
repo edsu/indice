@@ -123,19 +123,17 @@
       const currentUrl = document.getElementById('current-url');
       currentUrl.textContent = url;
 
-      // The frame's origin. The server names it when replay runs on its own
-      // origin; otherwise it is this page's. Taken from configuration and never
-      // from a message, because the check below is what everything trusting a
-      // message depends on.
-      const meta = document.querySelector('meta[name="indice-replay-origin"]');
-      const frameOrigin = (meta && meta.content) || window.location.origin;
+      // The frame's origin, which today is this page's own. It is a constant
+      // here and never taken from a message, because the check below is what
+      // everything trusting a message depends on.
+      const frameOrigin = window.location.origin;
 
       const frameParams = new URLSearchParams(params);
       frameParams.set('parent', window.location.origin);
       const frame = document.createElement('iframe');
       frame.id = 'replay-frame';
       frame.title = 'Archived page';
-      frame.allow = 'fullscreen';
+      frame.allow = 'autoplay; fullscreen';
       frame.src = frameOrigin + '/replay-frame?' + frameParams.toString();
       document.getElementById('replay-container').appendChild(frame);
 
