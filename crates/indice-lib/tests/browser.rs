@@ -25,12 +25,12 @@ use std::time::{Duration, Instant};
 
 use thirtyfour::prelude::*;
 
-/// A router rendering the **anonymous** view, which is what these tests check.
+/// The **anonymous** view, which is what these tests check.
 ///
 /// `Access::proxy` with credentials nobody sends: every request is an anonymous
 /// visitor, exactly as one arriving at a server. `Access::local` would make each
 /// request the operator and put workroom chrome on every page.
-fn public_router(home: &std::path::Path) -> axum::Router {
+fn public_config(home: &std::path::Path) -> indice_lib::server::ServerConfig {
     // A server refuses to start without a roster, so that everyone the identity
     // provider admits is not silently an admin. Empty is the right one here:
     // these tests are about what an anonymous reader sees, and `users: []`
@@ -39,14 +39,46 @@ fn public_router(home: &std::path::Path) -> axum::Router {
     if !roster.exists() {
         std::fs::write(&roster, "users: []\n").unwrap();
     }
-    indice_lib::server::router(
-        home,
-        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-            "X-Forwarded-Email",
-            "test-secret-not-sent",
-        )),
+    indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "X-Forwarded-Email",
+        "test-secret-not-sent",
+    ))
+}
+
+/// Serve `home` as indice does: the app on one ephemeral loopback port and
+/// replay on another, so replay really runs on an origin of its own. Returns
+/// the app's address.
+async fn serve(
+    home: &Path,
+    mut config: indice_lib::server::ServerConfig,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = app.local_addr().unwrap();
+    let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
+        replay.local_addr().unwrap(),
+    ));
+    let home = home.to_path_buf();
+    let handle = tokio::spawn(async move {
+        indice_lib::server::serve_on_listeners(
+            app,
+            replay,
+            &home,
+            None,
+            config,
+            indice_lib::server::Providers::default(),
+        )
+        .await
+        .unwrap();
+    });
+    (addr, handle)
+}
+
+/// The workstation shape: every caller is the operator.
+fn workstation() -> indice_lib::server::ServerConfig {
+    indice_lib::server::ServerConfig::new(
+        indice_lib::server::Access::local("127.0.0.1:0".parse().unwrap()).unwrap(),
     )
-    .unwrap()
 }
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -69,17 +101,7 @@ async fn browser_renders_archived_page() {
 
     // 2. Serve it on an ephemeral port (localhost is a secure context, so the
     //    service worker is allowed to register).
-    let app = public_router(tmp.path());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
 
     // 3. Connect to WebDriver (headless Chrome).
     let wd = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".into());
@@ -290,23 +312,7 @@ async fn a_note_is_made_and_highlighted_through_the_viewer() {
     indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "notes").unwrap();
     let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
     let id = manifest.waczs[0].id.clone();
-    let app = indice_lib::server::router(
-        tmp.path(),
-        indice_lib::server::ServerConfig::new(
-            indice_lib::server::Access::local("127.0.0.1:0".parse().unwrap()).unwrap(),
-        ),
-    )
-    .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
+    let (addr, server) = serve(tmp.path(), workstation()).await;
 
     let wd = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".into());
     let mut caps = DesiredCapabilities::chrome();
@@ -536,4 +542,195 @@ async fn annotate_through_viewer(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// The page a hostile capture serves. Its script does what an attacker who got
+/// a page crawled would: climb out of the archived document to ReplayWeb.page's
+/// own window, whose `fetch` wombat has not rewritten, and from there try to
+/// create a collection two ways. A relative URL goes to whatever origin replay
+/// runs on; an absolute one goes to the viewer's origin, which the frame's own
+/// URL names in `parent=`. It also tries to reach into the viewer's DOM. What
+/// it managed is left on `body[data-hostile]` for the test to read.
+const HOSTILE_PAGE: &str = r#"<!DOCTYPE html>
+<html><head><title>Hostile capture</title></head>
+<body><h1>Hostile capture</h1>
+<script>
+(async function () {
+  var out = { climbed: [] };
+  var host = null;
+  // Wombat makes `parent`, `top` and `location` describe the archived site,
+  // but keeps the real outer window in a global any page can read. Climb
+  // from there to ReplayWeb.page's own page.
+  var w = window.__WB_top_frame || window;
+  for (var i = 0; i < 12; i++) {
+    try {
+      out.climbed.push(w.location.pathname);
+      if (w.location.pathname === '/replay-frame') { host = w; break; }
+    } catch (e) { out.climbed.push('blocked: ' + e.name); break; }
+    var p = null;
+    try { p = w.parent; } catch (e) { break; }
+    if (!p || p === w) break;
+    w = p;
+  }
+  function post(url, name) {
+    return host.fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'name=' + name
+    }).then(function (r) { return r.status; }, function (e) { return 'error: ' + e.message; });
+  }
+  if (host) {
+    out.relative = await post('/api/collections', 'pwned-relative');
+    out.app = new URLSearchParams(host.location.search).get('parent');
+    if (out.app) out.absolute = await post(out.app + '/api/collections', 'pwned-absolute');
+    try {
+      out.viewer = host.parent.document.title;
+    } catch (e) {
+      out.viewer = 'blocked: ' + e.name;
+    }
+  }
+  document.body.setAttribute('data-hostile', JSON.stringify(out));
+})();
+</script></body></html>"#;
+
+/// A one-page WACZ of [`HOSTILE_PAGE`], built from a WARC written here, so no
+/// opaque binary is committed and the attack is readable in this file.
+fn hostile_wacz(dir: &Path) -> std::path::PathBuf {
+    let body = HOSTILE_PAGE.as_bytes();
+    let mut http = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    http.extend_from_slice(body);
+    let mut warc = format!(
+        "WARC/1.0\r\n\
+         WARC-Type: response\r\n\
+         WARC-Record-ID: <urn:uuid:6f1c2a52-3d0e-4c39-9a51-2f4b8a7c0d11>\r\n\
+         WARC-Date: 2026-01-01T00:00:00Z\r\n\
+         WARC-Target-URI: https://hostile.example/\r\n\
+         Content-Type: application/http; msgtype=response\r\n\
+         Content-Length: {}\r\n\r\n",
+        http.len()
+    )
+    .into_bytes();
+    warc.extend_from_slice(&http);
+    warc.extend_from_slice(b"\r\n\r\n");
+    let warc_path = dir.join("hostile.warc");
+    std::fs::write(&warc_path, warc).unwrap();
+    indice_lib::wacz_build::build_wacz(
+        &[warc_path],
+        &indice_lib::wacz_build::WaczBuildMeta::default(),
+        dir,
+        "hostile",
+    )
+    .unwrap()
+    .path
+}
+
+/// Archived JavaScript cannot act as the person replaying it.
+///
+/// As a workstation, where every caller is the operator, so a write that gets
+/// through needs no credentials at all: this is the shape with the least
+/// between a capture and the write API. The assertion is on the side effect,
+/// the manifest, not on anything the page reports, and the page's own report
+/// is checked first so that a script that never ran cannot pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn a_hostile_capture_cannot_write_as_the_reader() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let build = tempfile::TempDir::new().unwrap();
+    let wacz = hostile_wacz(build.path());
+    indice_lib::index::index_path(&wacz, tmp.path(), None, "hostile").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let before = manifest.collections.len();
+
+    let (addr, server) = serve(tmp.path(), workstation()).await;
+
+    let driver = connect().await;
+    let result = replay_hostile(&driver, addr, &id).await;
+    let _ = driver.quit().await;
+    server.abort();
+    let report = result.unwrap();
+
+    // The attack has to have been made for its failure to mean anything: the
+    // script reached ReplayWeb.page's own window and tried both writes.
+    let r: serde_json::Value = serde_json::from_str(&report).unwrap();
+    assert!(
+        r["relative"].is_number() || r["relative"].is_string(),
+        "the relative write was never attempted: {report}"
+    );
+    assert!(
+        r["absolute"].is_number() || r["absolute"].is_string(),
+        "the write to the app origin was never attempted: {report}"
+    );
+    assert!(
+        r["viewer"]
+            .as_str()
+            .is_some_and(|v| v.starts_with("blocked")),
+        "archived script reached into the viewer: {report}"
+    );
+
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let pwned: Vec<_> = manifest
+        .collections
+        .iter()
+        .map(|c| c.name.as_str())
+        .filter(|n| n.starts_with("pwned"))
+        .collect();
+    assert!(
+        pwned.is_empty(),
+        "archived script created {pwned:?} as the reader.\nThe page reported: {report}"
+    );
+    assert_eq!(manifest.collections.len(), before, "{report}");
+}
+
+/// Replay the hostile page and return what its script reported doing.
+async fn replay_hostile(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<String, String> {
+    let viewer = format!(
+        "http://{addr}/replay/viewer?source=/files/{id}&url=https://hostile.example/\
+         &ts=20260101000000&name=Hostile"
+    );
+    driver.goto(&viewer).await.map_err(|e| e.to_string())?;
+    enter_replay_frame(driver).await?;
+    let read = format!(
+        "{FIND_REPLAY_DOC}
+        const doc = findReplayDoc(document, 0);
+        return doc && doc.body ? doc.body.getAttribute('data-hostile') : null;"
+    );
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let report = driver
+            .execute(&read, vec![])
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(r) = report.json().as_str() {
+            // The script awaits each write before reporting, so by now the
+            // server has answered them.
+            return Ok(r.to_string());
+        }
+        if Instant::now() > deadline {
+            let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+            return Err(format!("the hostile page never ran.\nDIAG: {diag}"));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// A headless Chrome session, honouring `WEBDRIVER_URL` and `CHROME_BIN`.
+async fn connect() -> WebDriver {
+    let wd = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".into());
+    let mut caps = DesiredCapabilities::chrome();
+    if let Ok(bin) = std::env::var("CHROME_BIN") {
+        caps.set_binary(&bin).unwrap();
+    }
+    caps.add_arg("--headless=new").unwrap();
+    caps.add_arg("--no-sandbox").unwrap();
+    caps.add_arg("--disable-gpu").unwrap();
+    caps.add_arg("--disable-dev-shm-usage").unwrap();
+    WebDriver::new(&wd, caps)
+        .await
+        .expect("connect to WebDriver - is `chromedriver --port=9515` running?")
 }

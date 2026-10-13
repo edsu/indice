@@ -21,12 +21,12 @@ use std::time::{Duration, Instant};
 
 use thirtyfour::prelude::*;
 
-/// A router rendering the **anonymous** view, which is what these tests check.
+/// The **anonymous** view, which is what these tests check.
 ///
 /// `Access::proxy` with credentials nobody sends: every request is an anonymous
 /// visitor, exactly as one arriving at a server. `Access::local` would make each
 /// request the operator and put workroom chrome on every page.
-fn public_router(home: &std::path::Path) -> axum::Router {
+fn public_config(home: &std::path::Path) -> indice_lib::server::ServerConfig {
     // A server refuses to start without a roster, so that everyone the identity
     // provider admits is not silently an admin. Empty is the right one here:
     // these tests are about what an anonymous reader sees, and `users: []`
@@ -35,14 +35,39 @@ fn public_router(home: &std::path::Path) -> axum::Router {
     if !roster.exists() {
         std::fs::write(&roster, "users: []\n").unwrap();
     }
-    indice_lib::server::router(
-        home,
-        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-            "X-Forwarded-Email",
-            "test-secret-not-sent",
-        )),
-    )
-    .unwrap()
+    indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "X-Forwarded-Email",
+        "test-secret-not-sent",
+    ))
+}
+
+/// Serve `home` as indice does: the app on one ephemeral loopback port and
+/// replay on another, so replay really runs on an origin of its own. Returns
+/// the app's address.
+async fn serve(
+    home: &Path,
+    mut config: indice_lib::server::ServerConfig,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = app.local_addr().unwrap();
+    let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
+        replay.local_addr().unwrap(),
+    ));
+    let home = home.to_path_buf();
+    let handle = tokio::spawn(async move {
+        indice_lib::server::serve_on_listeners(
+            app,
+            replay,
+            &home,
+            None,
+            config,
+            indice_lib::server::Providers::default(),
+        )
+        .await
+        .unwrap();
+    });
+    (addr, handle)
 }
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -68,17 +93,7 @@ async fn browser_renders_multi_wacz_collection() {
     let id = indice_lib::collections::slugify(coll);
 
     // 2. Serve on an ephemeral port (localhost is a secure context for the SW).
-    let app = public_router(tmp.path());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
 
     // 3. Headless Chrome via WebDriver.
     let driver = connect_driver().await;
@@ -118,17 +133,7 @@ async fn browser_renders_collection_with_hashless_members() {
     std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
 
     let id = indice_lib::collections::slugify(coll);
-    let app = public_router(tmp.path());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
 
     let driver = connect_driver().await;
     let result = render_check(

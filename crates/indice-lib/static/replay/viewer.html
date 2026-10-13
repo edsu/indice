@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Filled in by the server: where replay runs. See `replay_viewer`. -->
+  <meta name="indice-replay-origin" content="{{replay_origin}}">
   <title>Replay</title>
   <!--
     The replay viewer: indice's chrome and the notes panel, around a frame that
@@ -123,10 +125,13 @@
       const currentUrl = document.getElementById('current-url');
       currentUrl.textContent = url;
 
-      // The frame's origin, which today is this page's own. It is a constant
-      // here and never taken from a message, because the check below is what
-      // everything trusting a message depends on.
-      const frameOrigin = window.location.origin;
+      // The frame's origin, from the server's configuration and never from a
+      // message, because the check below is what everything trusting a
+      // message depends on. It is a different origin from this page's, so
+      // archived script in the frame can neither reach this page nor make a
+      // request to indice that indice will take as this page's.
+      const frameOrigin =
+        document.querySelector('meta[name="indice-replay-origin"]').content;
 
       const frameParams = new URLSearchParams(params);
       frameParams.set('parent', window.location.origin);

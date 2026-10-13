@@ -187,6 +187,15 @@ pub struct ServerConfig {
     /// turns this on is enabling something they actually have, having been told
     /// what it costs.
     pub allow_internal_fetch: bool,
+    /// Where replay runs. Archived pages run their own JavaScript, so they are
+    /// replayed on an origin of their own, where that script can reach nothing
+    /// of indice's: not the write API, not the reader's session, not the
+    /// viewer's page. See [`ReplayOrigin`].
+    ///
+    /// A server must be given one ([`serve_on_listeners`] refuses to start
+    /// without it). A workstation's is the address its replay listener bound,
+    /// and this setting is ignored there.
+    pub replay_origin: Option<ReplayOrigin>,
 }
 
 impl ServerConfig {
@@ -197,7 +206,70 @@ impl ServerConfig {
             logout_redirect: None,
             site_authority: None,
             allow_internal_fetch: false,
+            replay_origin: None,
         }
+    }
+}
+
+/// The origin replay is served from, as `scheme://host[:port]`.
+///
+/// Replay runs archived third-party JavaScript. On indice's own origin that
+/// script is same-origin with the write API, so a page someone got crawled
+/// could act as whoever replays it, and no CSRF check can tell, because the
+/// request really is same-origin. On an origin of its own the browser keeps
+/// it out: its requests to indice carry a foreign `Origin` and are refused,
+/// and it cannot reach into the viewer that frames it.
+///
+/// Constructed only by [`ReplayOrigin::parse`] or from a bound listener, so
+/// one that reaches the viewer is always a bare origin: the viewer compares it
+/// against `MessageEvent.origin` byte for byte, and a trailing slash or a path
+/// would silently drop every message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayOrigin(String);
+
+impl ReplayOrigin {
+    /// Parse a replay URL such as `https://replay.example.org`. Refuses
+    /// anything but http(s), and anything with a path, query, fragment or
+    /// credentials, since an origin has none of those.
+    pub fn parse(raw: &str) -> Result<Self> {
+        let url = url::Url::parse(raw.trim())
+            .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            anyhow::bail!("{raw:?} is not an http or https URL");
+        }
+        if url.host_str().is_none() {
+            anyhow::bail!("{raw:?} has no host");
+        }
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            anyhow::bail!(
+                "{raw:?} is more than an origin; give only the scheme and host,                  e.g. https://replay.example.org"
+            );
+        }
+        Ok(Self(url.origin().ascii_serialization()))
+    }
+
+    /// The origin of a listener bound on this machine, for a workstation.
+    pub fn for_listener(addr: std::net::SocketAddr) -> Self {
+        // `SocketAddr`'s Display brackets an IPv6 address, as a URL needs.
+        Self(format!("http://{addr}"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The host, without scheme or port.
+    pub fn host(&self) -> &str {
+        let rest = self.0.split_once("://").map_or(&*self.0, |(_, r)| r);
+        if let Some(v6) = rest.strip_prefix('[') {
+            return v6.split(']').next().unwrap_or(v6);
+        }
+        rest.rsplit_once(':').map_or(rest, |(h, _)| h)
     }
 }
 
@@ -268,6 +340,9 @@ struct AppState {
     /// Builds authenticated Archive-It clients for the import UI, same boundary as
     /// `browsertrix`. `None` when no `ARCHIVEIT_*` credentials are set.
     archiveit: Option<Arc<dyn crate::archiveit::ArchiveItProvider>>,
+    /// Where the viewer frames replay. `None` only for a router built without
+    /// a replay listener, whose viewer then says replay is not configured.
+    replay_origin: Option<ReplayOrigin>,
 }
 
 /// Import providers wired in by the binary (used only by the management UI).
@@ -330,11 +405,31 @@ impl AppState {
 ///
 /// Takes the same [`ServerConfig`] as [`serve_with_resolver`], so a caller has
 /// to say who is trusted. Note that [`Access::local`]'s loopback check is
-/// re-run against the real socket in [`serve_on_listener`], which this path
+/// re-run against the real socket in [`serve_on_listeners`], which this path
 /// skips: there is no socket to check. That is fine for a test harness and
 /// worth knowing before serving the result over a public listener.
 pub fn router(home: &Path, config: ServerConfig) -> Result<Router> {
-    build_router(home, None, config, Providers::default())
+    Ok(routers(home, config)?.app)
+}
+
+/// Both of indice's routers over one shared state: the app, and replay.
+///
+/// They are served on separate listeners, and so on separate origins; see
+/// [`ReplayOrigin`] for why. Shared state means one client has one rate-limit
+/// budget across the two.
+pub struct Routers {
+    /// Everything but replay: pages, search, the viewer, the write API.
+    pub app: Router,
+    /// Replay alone: the frame, ReplayWeb.page, and the archive bytes and
+    /// manifests it reads. No write route, no page, no identity.
+    pub replay: Router,
+}
+
+/// Build both routers without binding a socket. Like [`router`], this skips
+/// the checks [`serve_on_listeners`] makes against real sockets, including
+/// that a server has a replay origin.
+pub fn routers(home: &Path, config: ServerConfig) -> Result<Routers> {
+    build_routers(home, None, config, Providers::default())
 }
 
 /// Like [`router`], but with a [`crate::index::SourceResolver`] so the server
@@ -344,10 +439,11 @@ pub fn router_with_resolver(
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     config: ServerConfig,
 ) -> Result<Router> {
-    build_router(home, resolver, config, Providers::default())
+    Ok(build_routers(home, resolver, config, Providers::default())?.app)
 }
 
-/// Build the app router. Every route is mounted, including the write surface:
+/// Build the app and replay routers over one state. Every app route is
+/// mounted, including the write surface:
 /// who may use it is an authorization question, answered by the typed
 /// `Curator`/`Admin` extractors and `users.yaml`, not by which routes exist.
 ///
@@ -357,12 +453,12 @@ pub fn router_with_resolver(
 /// nobody wanted: a server you cannot write to sends you back to the command
 /// line the first time you need to fix a finding aid. Collapsing it leaves one
 /// question, which [`Access`] answers.
-fn build_router(
+fn build_routers(
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     config: ServerConfig,
     providers: Providers,
-) -> Result<Router> {
+) -> Result<Routers> {
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
     // `indice index` (and, in management mode, an add-archive job in a separate
@@ -463,6 +559,7 @@ fn build_router(
         logout_redirect: config.logout_redirect.clone(),
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
+        replay_origin: config.replay_origin.clone(),
     });
 
     // `--site-url` exists to fix the Origin comparison behind a proxy that
@@ -490,13 +587,17 @@ fn build_router(
         .route("/thumb/{id}", get(thumb_handler))
         .route("/collection-thumb/{id}", get(collection_thumb_handler))
         .route("/replay/viewer", get(replay_viewer))
-        .route("/replay-frame", get(replay_frame))
         .route("/api/search", get(search_api))
         // Public read of page annotations (display is public; writes are gated below).
         .route("/api/annotations", get(list_annotations))
         .route("/assets/{*path}", get(asset_handler))
-        .route("/replay/", get(replay_index))
-        .route("/replay/{*path}", get(replay_handler))
+        // The viewer's own script and style, and nothing else under /replay/.
+        // ReplayWeb.page, its service worker, its app shell and the frame are
+        // served only by the replay router: anything on this origin that can
+        // boot ReplayWeb.page can be framed by a stranger's page with a
+        // `source` of their choosing, which puts archived script on indice's
+        // origin again.
+        .route("/replay/{*path}", get(viewer_asset))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
             REQUEST_TIMEOUT,
@@ -657,7 +758,43 @@ fn build_router(
         site_authority,
     });
 
-    let app = app
+    // Replay alone, on its own listener and so its own origin. Everything here
+    // is public, read-only and anonymous: the frame, ReplayWeb.page and its
+    // service worker, and the archive bytes and collection manifests it reads.
+    // No write route, no forward-auth, nothing that resolves or renders an
+    // identity. That is a property of this list rather than of a check, so it
+    // cannot be undone by a route mounted somewhere else.
+    let replay = Router::new()
+        .route("/replay-frame", get(replay_frame))
+        .route("/replay/", get(replay_index))
+        .route("/replay/{*path}", get(replay_asset))
+        .route("/collection/{id}/replay.json", get(collection_replay_json))
+        .route("/collection/{id}/pages", get(collection_pages))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            REQUEST_TIMEOUT,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            limits::limit_quick,
+        ))
+        .merge(Router::new().route("/files/{id}", get(serve_file)).layer(
+            axum::middleware::from_fn_with_state(state.clone(), limits::limit_streams),
+        ))
+        .route("/health", get(health));
+
+    Ok(Routers {
+        app: outer_layers(app, csrf.clone()).with_state(state.clone()),
+        // The CSRF guard has nothing to refuse here, since every route is a
+        // GET, but on a workstation it is also the loopback-Host check that
+        // stops DNS rebinding, and the replay listener needs that as much.
+        replay: outer_layers(replay, csrf).with_state(state),
+    })
+}
+
+/// The layers both routers share, outermost last.
+fn outer_layers(router: Router<Arc<AppState>>, csrf: Arc<CsrfPolicy>) -> Router<Arc<AppState>> {
+    router
         // Mark rendered HTML non-cacheable (it varies by auth); innermost so it
         // tags the handler's response before compression. Runs before with_state.
         .layer(axum::middleware::from_fn(html_no_cache))
@@ -715,62 +852,111 @@ fn build_router(
                 async move { same_origin_guard(&csrf, req, next).await }
             },
         ))
-        .with_state(state);
-
-    Ok(app)
 }
 
 /// Bind and serve. `config` says who is trusted (see [`Access`]); `providers`
 /// supplies authenticated import clients (Browsertrix, Archive-It) for the UI.
 ///
-/// There used to be a `serve(bind, home)` above this that hard-coded "management
-/// off". It had no callers, and the mode it selected no longer exists.
+/// Replay gets a listener of its own, at `replay_bind` or, by default, the
+/// port after the app's on the same address.
 pub async fn serve_with_resolver(
     bind: &str,
+    replay_bind: Option<&str>,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
     config: ServerConfig,
     providers: Providers,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!("listening on {bind}");
-    serve_on_listener(listener, home, resolver, config, providers).await
+    let app_addr = listener.local_addr()?;
+    let replay_listener = match replay_bind {
+        Some(addr) => tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("could not bind the replay listener to {addr}: {e}"))?,
+        None => {
+            // The next port, unless the app's was chosen by the OS, in which
+            // case so is this one.
+            let port = match app_addr.port() {
+                0 => 0,
+                p => p.checked_add(1).ok_or_else(|| {
+                    anyhow::anyhow!("the app is on port {p}, which leaves no next port for replay")
+                })?,
+            };
+            let addr = std::net::SocketAddr::new(app_addr.ip(), port);
+            tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+                anyhow::anyhow!(
+                    "replay runs on its own port, the one after the app's, and {addr} could \
+                     not be bound: {e}"
+                )
+            })?
+        }
+    };
+    tracing::info!("listening on {app_addr}");
+    serve_on_listeners(listener, replay_listener, home, resolver, config, providers).await
 }
 
-/// Serve on an already-bound listener. This lets a caller bind `127.0.0.1:0`,
-/// read back the OS-assigned port via [`TcpListener::local_addr`], and only then
-/// serve, which is what you want when something has to know the port before the
-/// server starts accepting. The test suite uses it for exactly that; it was
-/// originally added for a desktop shell that no longer exists.
+/// Serve on already-bound listeners, one for the app and one for replay. This
+/// lets a caller bind `127.0.0.1:0`, read back the OS-assigned ports via
+/// [`TcpListener::local_addr`], and only then serve, which is what the test
+/// suite does.
+///
+/// Refuses to start a server with no [`ServerConfig::replay_origin`]: without
+/// one, replay would have to run on indice's own origin, which is the hole
+/// [`ReplayOrigin`] exists to close. A workstation's replay origin is the
+/// replay listener's own address, whatever the config says.
 ///
 /// [`TcpListener::local_addr`]: tokio::net::TcpListener::local_addr
-pub async fn serve_on_listener(
+pub async fn serve_on_listeners(
     listener: tokio::net::TcpListener,
+    replay_listener: tokio::net::TcpListener,
     home: &Path,
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    config: ServerConfig,
+    mut config: ServerConfig,
     providers: Providers,
 ) -> Result<()> {
+    let replay_addr = replay_listener.local_addr()?;
     // [`Access::local`] already refuses a non-loopback address, but it is given
     // the address the *caller* intends to bind rather than the one the listener
-    // actually got. Re-check against the real socket, which is the only thing
-    // that knows: a caller passing 127.0.0.1 and handing over a listener bound
-    // to 0.0.0.0 would otherwise slip through.
+    // actually got. Re-check against the real sockets, which are the only
+    // things that know: a caller passing 127.0.0.1 and handing over a listener
+    // bound to 0.0.0.0 would otherwise slip through.
     if config.access.is_local() {
-        let addr = listener.local_addr()?;
-        if !addr.ip().is_loopback() {
-            anyhow::bail!(
-                "refusing to start: local access trusts every caller, so it must be \
-                 bound to a loopback address (127.0.0.1 / ::1), but this listener is \
-                 bound to {addr}. Configure an authenticating proxy to run as a server."
-            );
+        for addr in [listener.local_addr()?, replay_addr] {
+            if !addr.ip().is_loopback() {
+                anyhow::bail!(
+                    "refusing to start: local access trusts every caller, so it must be \
+                     bound to a loopback address (127.0.0.1 / ::1), but a listener is \
+                     bound to {addr}. Configure an authenticating proxy to run as a server."
+                );
+            }
         }
+        config.replay_origin = Some(ReplayOrigin::for_listener(replay_addr));
+    } else if config.replay_origin.is_none() {
+        // The fact, not the flag: indice-bin names `--replay-url` when it
+        // prints this, as it does for the loopback refusal.
+        anyhow::bail!(
+            "refusing to start: this indice is reachable over the network and has no \
+             replay origin. Archived pages run their own JavaScript, and on indice's \
+             own origin that script could act as whoever replays it."
+        );
     }
-    let app = build_router(home, resolver, config, providers)?;
-    axum::serve(
+    let origin = config.replay_origin.clone();
+    let Routers { app, replay } = build_routers(home, resolver, config, providers)?;
+    if let Some(origin) = origin {
+        tracing::info!("replay: {} (listening on {replay_addr})", origin.as_str());
+    }
+    let app = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    );
+    let replay = axum::serve(
+        replay_listener,
+        replay.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    );
+    // Either one stopping stops the server: half of indice is not a state
+    // worth leaving running.
+    tokio::try_join!(async { app.await.map_err(anyhow::Error::from) }, async {
+        replay.await.map_err(anyhow::Error::from)
+    },)?;
     Ok(())
 }

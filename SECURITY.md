@@ -42,9 +42,9 @@ unpinned, so it can regress without CI noticing.
 Filed, documented, and not news. The tracker is in this repo, so
 `grep <id> .beads/issues.jsonl` gets you the whole writeup.
 
-- Replay runs archived JavaScript on the same origin as the write API, so a
-  hostile capture can issue writes as whoever is viewing it.
-  `rustyweb-replay-origin-isolation-5h67`
+- Every capture a browser replays shares the replay origin, so a hostile
+  capture's script can read the others replayed in that browser.
+  See *Not defended* in the threat model.
 - `datapackage.json`, `pages/pages.jsonl` and the CDX are read whole with no
   size cap, so a WACZ can be a decompression bomb.
   `rustyweb-wacz-read-caps-q39p`

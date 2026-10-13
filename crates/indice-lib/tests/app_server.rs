@@ -1,4 +1,4 @@
-//! Integration test for [`indice_lib::server::serve_on_listener`], the seam for
+//! Integration test for [`indice_lib::server::serve_on_listeners`], the seam for
 //! anything embedding indice that has to know the port first. Unlike the `router`
 //! oneshot tests, this exercises the full real-socket path: bind `127.0.0.1:0`,
 //! read the OS-assigned port back *before* serving (exactly what the app does to
@@ -33,16 +33,23 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
+    let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "secret-the-test-never-sends",
+    ));
+    config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
+        replay.local_addr().unwrap(),
+    ));
+
     let home = tmp.path().to_path_buf();
     let server = tokio::spawn(async move {
-        indice_lib::server::serve_on_listener(
+        indice_lib::server::serve_on_listeners(
             listener,
+            replay,
             &home,
             None,
-            indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-                "x-forwarded-email",
-                "secret-the-test-never-sends",
-            )),
+            config,
             indice_lib::server::Providers::default(),
         )
         .await

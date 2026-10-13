@@ -495,7 +495,7 @@ fn toggling_a_filter_round_trips() {
 /// `Access::local` refuses a public bind.
 ///
 /// This invariant is what separates the two deployment shapes, and until now
-/// nothing checked it. It also used to live only in `serve_on_listener`, so a
+/// nothing checked it. It also used to live only in `serve_on_listeners`, so a
 /// caller building a router directly walked straight past it; making it a
 /// constructor means the type carries the rule.
 #[test]

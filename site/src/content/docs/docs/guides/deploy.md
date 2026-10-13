@@ -21,11 +21,14 @@ A multi-arch image (`linux/amd64` + `linux/arm64`) is published to the GitHub Co
 The stack below supplies the real command. To run the container yourself, behind a proxy you already have:
 
 ```sh
-docker run -p 127.0.0.1:8080:8080 -v indice-data:/data \
+docker run -p 127.0.0.1:8080:8080 -p 127.0.0.1:8081:8081 -v indice-data:/data \
   -e INDICE_AUTH_PROXY_SECRET=a-long-random-string \
+  -e INDICE_REPLAY_URL=https://replay.archive.example.org \
   ghcr.io/edsu/indice:latest \
   serve --bind 0.0.0.0:8080 --home /data --auth-proxy-header X-Forwarded-Email
 ```
+
+Port 8081 is the replay listener, which your proxy serves on the replay hostname; see [below](#replay-gets-a-hostname-of-its-own).
 
 `/data` is indice's home, holding `archive/`, `collections/`, and `index/`. Mount a volume so it survives restarts.
 
@@ -38,7 +41,7 @@ Three containers for one application deserves a word. indice authenticates nobod
 Swap it for whatever suits you. The two containers that matter are indice and something terminating TLS.
 
 ```sh
-SITE_ADDRESS=archive.example.org docker compose up -d
+SITE_ADDRESS=archive.example.org REPLAY_ADDRESS=replay.archive.example.org docker compose up -d
 ```
 
 Caddy passes byte-range requests through untouched, so ReplayWeb.page's ranged reads of large WACZs replay through the proxy. Named volumes persist indice's `/data` and Caddy's certificates. (`compose.yaml` builds the image from the repo by default; to pull the published image instead, follow the comment in the file.)
@@ -50,10 +53,25 @@ docker compose cp your.wacz indice:/data/your.wacz
 docker compose exec indice indice index --collection "Your Collection" /data/your.wacz
 ```
 
+## Replay gets a hostname of its own
+
+A server needs two hostnames: one for the site, and one for replay. indice will not start without the second.
+
+Archived pages run their own JavaScript. That is how a replayed page still works, and it means that a page someone got crawled in good faith runs its author's script in your readers' browsers. If replay ran on the site's own origin, that script would be on the same origin as the write API, and could act as whoever views it: a curator replaying a hostile capture could have a collection deleted under their name. So indice serves replay from a second listener, and the browser keeps pages on the replay hostname away from the site. A capture's script there can reach neither indice's API as the reader nor the page around it.
+
+**A subdomain is the simple choice**, say `replay.archive.example.org` beside `archive.example.org`. Point both names at the machine; the shipped `Caddyfile` gets a certificate for each and sends the replay name to indice's replay listener, with no login and no identity headers.
+
+**A separate domain is stronger still**, say `example-replay.org`. A subdomain shares its parent domain with the site, so script on it can set cookies on that parent. indice's own cookie cannot be planted that way and authorizes nothing anyway, but other services on your domain may rely on cookies of their own. If your institution runs many services under one domain, give replay a domain of its own.
+
+Either way it is configuration, not code: `REPLAY_ADDRESS` names the hostname to Caddy, and indice frames replay from `https://` that hostname (`REPLAY_URL` overrides it).
+
+A workstation needs none of this. `indice serve` on loopback runs replay on the next port, `127.0.0.1:8081` beside `127.0.0.1:8080`, which is already another origin.
+
 ## Setting it up
 
 indice speaks to no identity provider and stores no passwords. oauth2-proxy brokers the login against yours over plain OIDC, so Google, Microsoft Entra, Okta, Auth0, Keycloak, Authentik, Dex, GitLab or any issuer with a discovery document will do.
 
+1. Point two DNS names at the machine: the site's, and replay's (see above).
 1. Register a confidential client with your issuer, with redirect URI `https://your-domain/oauth2/callback`.
 2. Put the details in a `.env` file next to `compose.yaml`:
    ```sh
@@ -63,6 +81,7 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    OIDC_REDIRECT_URL=https://your-domain/oauth2/callback
    OAUTH2_PROXY_COOKIE_SECRET=      # a 32-char secret from: openssl rand -hex 16
    INDICE_AUTH_PROXY_SECRET=a-long-random-string
+   REPLAY_ADDRESS=replay.your-domain
    # OIDC_EMAIL_DOMAINS=example.edu    # who may sign in at all; defaults to anyone
    # OAUTH2_PROXY_COOKIE_SECURE=false  # only to run the stack on plain-HTTP localhost
    ```
@@ -172,12 +191,13 @@ Two requirements of whatever you put in front:
 
 ## Using a different web server
 
-Caddy is doing four separable jobs here, and none of them is Caddy-specific. Anything that can do all four works:
+Caddy is doing five separable jobs here, and none of them is Caddy-specific. Anything that can do all five works:
 
 1. **Route `/oauth2/*`** to your login service.
 2. **Ask who the caller is on every request, and continue anonymously when the answer is nobody.** This is the one people get wrong. Gating only `/manage` and the write APIs looks right and costs you the workroom chrome on ordinary pages, because indice decides whether to draw the edit controls from the forwarded identity.
 3. **Inject the identity and the shared secret together**, only on a request your proxy authenticated, replacing any copy the client sent.
 4. **Leave byte ranges alone.** No gzip on a ranged response, no buffering of large bodies, or WACZ replay breaks.
+5. **Send the replay hostname to the replay listener**, port 8081 by default (`--replay-bind`), with no login and with both identity headers stripped, and pass that hostname to indice as `--replay-url`.
 
 Add one indice-side detail: if your proxy rewrites `Host` without setting `X-Forwarded-Host`, pass `--site-url` so the cross-site check knows the address the browser used. nginx and Apache both rewrite it by default.
 

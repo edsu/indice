@@ -153,8 +153,69 @@ fn parse_byte_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
     }
 }
 
-pub(super) async fn replay_viewer(headers: HeaderMap) -> impl IntoResponse {
-    serve_embedded_asset(ReplayAssets::get("viewer.html"), "viewer.html", &headers)
+/// The placeholder in `viewer.html` that [`replay_viewer`] fills with the
+/// replay origin.
+const REPLAY_ORIGIN_SLOT: &str = "{{replay_origin}}";
+
+/// The viewer, told where replay runs. The origin goes into the page rather
+/// than coming from the frame, because the viewer checks every message against
+/// it: it has to come from configuration, which archived script cannot touch.
+pub(super) async fn replay_viewer(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(origin) = &state.replay_origin else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "replay is not configured: this server has no replay origin",
+        )
+            .into_response();
+    };
+    let Some(file) = ReplayAssets::get("viewer.html") else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let html = String::from_utf8_lossy(&file.data)
+        .replace(REPLAY_ORIGIN_SLOT, &html_escape(origin.as_str()));
+    // The ETag covers the origin too, so a restart with a different replay URL
+    // is not answered from a cached page that frames the old one.
+    let hash: [u8; 32] = {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(file.metadata.sha256_hash());
+        h.update(origin.as_str().as_bytes());
+        h.finalize().into()
+    };
+    serve_bytes(html.into_bytes(), &hash, "viewer.html", &headers)
+}
+
+/// What the app origin serves under `/replay/`: the viewer's own script and
+/// style. Listed rather than "everything embedded", because the same folder
+/// holds ReplayWeb.page, and the app origin must never serve that.
+const VIEWER_FILES: &[&str] = &["annotations.js", "annotations.css"];
+
+/// What the replay origin serves under `/replay/`: ReplayWeb.page, its service
+/// worker, and the agent that runs beside it in the frame.
+const REPLAY_FILES: &[&str] = &["ui.js", "sw.js", "agent.js"];
+
+pub(super) async fn viewer_asset(
+    axum::extract::Path(path): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    listed_asset(VIEWER_FILES, &path, &headers)
+}
+
+pub(super) async fn replay_asset(
+    axum::extract::Path(path): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    listed_asset(REPLAY_FILES, &path, &headers)
+}
+
+fn listed_asset(list: &[&str], path: &str, headers: &HeaderMap) -> Response {
+    if !list.contains(&path) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    serve_embedded_asset(ReplayAssets::get(path), path, headers)
 }
 
 /// The frame the viewer embeds: ReplayWeb.page and the agent that reaches into
@@ -181,13 +242,6 @@ pub(super) async fn replay_frame(headers: HeaderMap) -> impl IntoResponse {
 /// inside the replay about one run in three.
 pub(super) async fn replay_index(headers: HeaderMap) -> impl IntoResponse {
     serve_embedded_asset(ReplayAssets::get("index.html"), "index.html", &headers)
-}
-
-pub(super) async fn replay_handler(
-    axum::extract::Path(path): axum::extract::Path<String>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    serve_embedded_asset(ReplayAssets::get(&path), &path, &headers)
 }
 
 /// Serve a site static asset (CSS, etc.) embedded from `static/assets`.
@@ -319,35 +373,40 @@ fn serve_embedded_asset(
     req_headers: &HeaderMap,
 ) -> Response {
     match content {
-        Some(content) => {
-            let etag = etag_for(&content.metadata.sha256_hash());
-
-            let matches = req_headers
-                .get("if-none-match")
-                .and_then(|v| v.to_str().ok())
-                .map(|inm| inm == etag)
-                .unwrap_or(false);
-
-            if matches {
-                return Response::builder()
-                    .status(StatusCode::NOT_MODIFIED)
-                    .header("etag", &etag)
-                    .header("cache-control", "no-cache")
-                    .body(Body::empty())
-                    .unwrap();
-            }
-
-            let mime = mime_guess_from_path(path);
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", mime)
-                .header("etag", etag)
-                .header("cache-control", "no-cache")
-                .body(Body::from(content.data.to_vec()))
-                .unwrap()
-        }
+        Some(content) => serve_bytes(
+            content.data.to_vec(),
+            &content.metadata.sha256_hash(),
+            path,
+            req_headers,
+        ),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+/// Serve `data` with an ETag from `hash`, answering a matching
+/// `If-None-Match` with 304.
+fn serve_bytes(data: Vec<u8>, hash: &[u8], path: &str, req_headers: &HeaderMap) -> Response {
+    let etag = etag_for(hash);
+    let matches = req_headers
+        .get("if-none-match")
+        .and_then(|v| v.to_str().ok())
+        .map(|inm| inm == etag)
+        .unwrap_or(false);
+    if matches {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header("etag", &etag)
+            .header("cache-control", "no-cache")
+            .body(Body::empty())
+            .unwrap();
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", mime_guess_from_path(path))
+        .header("etag", etag)
+        .header("cache-control", "no-cache")
+        .body(Body::from(data))
+        .unwrap()
 }
 
 /// Build a quoted ETag from the first 8 bytes of a content hash.

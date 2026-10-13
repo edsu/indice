@@ -12,10 +12,13 @@ use tower::ServiceExt;
 /// arriving at a server. `Access::local` would make each request the operator
 /// and put workroom chrome on every page.
 fn public_config() -> indice_lib::server::ServerConfig {
-    indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+    let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
         "X-Forwarded-Email",
         "test-secret-not-sent",
-    ))
+    ));
+    config.replay_origin =
+        Some(indice_lib::server::ReplayOrigin::parse("https://replay.example.test").unwrap());
+    config
 }
 
 /// Every caller of this wants a running public site, so it supplies the roster
@@ -444,134 +447,8 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
     );
 }
 
-async fn get_html(path: &str) -> String {
-    let tmp = TempDir::new().unwrap();
-    let app = public_router(tmp.path());
-    let req = Request::get(path).body(Body::empty()).unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    String::from_utf8(body.to_vec()).unwrap()
-}
-
-/// The viewer holds the chrome and frames the replay; it must not run
-/// ReplayWeb.page itself, or archived script would share its page.
-#[tokio::test]
-async fn viewer_frames_the_replay() {
-    let html = get_html("/replay/viewer").await;
-    // The code that builds the frame's URL, not the header comment naming it.
-    assert!(
-        html.contains("'/replay-frame?'"),
-        "viewer must embed the replay frame"
-    );
-    assert!(
-        !html.contains("ui.js"),
-        "viewer must not load ReplayWeb.page"
-    );
-}
-
-#[tokio::test]
-async fn replay_frame_wires_up_replay_web_page() {
-    let html = get_html("/replay-frame").await;
-    assert!(
-        html.contains("replay-web-page"),
-        "frame must mount the component"
-    );
-    // The frame is outside /replay/, so only an absolute replaybase makes the
-    // service worker resolve to /replay/sw.js.
-    assert!(
-        html.contains("setAttribute('replaybase', '/replay/')"),
-        "replaybase should be the absolute /replay/ path"
-    );
-    assert!(
-        html.contains("/replay/agent.js"),
-        "frame must load the agent that reports navigation and selections"
-    );
-}
-
-/// The agent is what tells the viewer where the reader is; without the
-/// rwp-url-change listener the banner and the notes panel stay on the first
-/// page.
-#[tokio::test]
-async fn replay_agent_reports_navigation() {
-    let js = get_html("/replay/agent.js").await;
-    assert!(
-        js.contains("rwp-url-change"),
-        "agent should report ReplayWeb.page navigation"
-    );
-}
-
-// ── Static assets ─────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn replay_viewer_served() {
-    let tmp = TempDir::new().unwrap();
-    let app = public_router(tmp.path());
-    let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn replay_asset_has_etag_and_no_cache() {
-    let tmp = TempDir::new().unwrap();
-    let app = public_router(tmp.path());
-    let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(
-        resp.headers().get("etag").is_some(),
-        "asset should carry an ETag"
-    );
-    assert_eq!(
-        resp.headers().get("cache-control").unwrap(),
-        "no-cache",
-        "asset should be revalidated so new versions propagate"
-    );
-}
-
-#[tokio::test]
-async fn replay_asset_returns_304_when_etag_matches() {
-    let tmp = TempDir::new().unwrap();
-    let app = public_router(tmp.path());
-
-    // First request to learn the ETag.
-    let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    let etag = resp
-        .headers()
-        .get("etag")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-
-    // Second request with matching If-None-Match should be 304.
-    let req = Request::get("/replay/viewer")
-        .header("if-none-match", &etag)
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    assert!(body.is_empty(), "304 should have no body");
-}
-
-/// ReplayWeb.page frames its replay base before the service worker may control
-/// the page; the shell it gets then has to boot ReplayWeb.page, not send the
-/// frame somewhere else. See `replay_index` in server/assets.rs.
-#[tokio::test]
-async fn replay_root_serves_the_replayweb_shell() {
-    let tmp = TempDir::new().unwrap();
-    let app = public_router(tmp.path());
-    let req = Request::get("/replay/?source=x")
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
-    assert!(html.contains("ui.js"), "the shell must load ReplayWeb.page");
-}
+// The viewer, the frame and the static replay assets are covered, origin by
+// origin, in `replay_origin.rs`.
 
 // ── Homepage ──────────────────────────────────────────────────────────────────
 

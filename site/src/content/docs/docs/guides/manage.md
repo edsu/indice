@@ -121,10 +121,10 @@ If your proxy gates only the management routes, browsers will not send its crede
 
 Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies on a workstation too: a loopback bind is not a boundary a browser respects. While indice is running, any page you visit can reach `127.0.0.1`.
 
-:::caution[One place this does not reach: replay]
-A replayed page runs its own archived JavaScript, and ReplayWeb.page serves it from indice's own origin. A write that script makes is genuinely same-origin, so the `Origin` check matches and lets it through. A hostile capture can therefore drive a signed-in curator's browser into any write that curator is allowed to make, and on a workstation that is everything.
+:::note[Replay runs on an origin of its own]
+A replayed page runs its own archived JavaScript, which is replay's job. indice serves replay from a second listener, on its own origin, so that script is cross-site to indice like any other website's: a write it attempts is refused by this same check, and it cannot reach the page around it. On a workstation that listener is the next loopback port; a server gives it a hostname of its own (see [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own)).
 
-Nothing in the chain is misbehaving; the capture is third-party code and replay's job is to run it. Until indice serves replay from a separate origin (tracked as `rustyweb-replay-origin-isolation-5h67`), weigh that when you accession a WACZ from a source you do not control.
+What a capture's script can still do is read other captures replayed in the same browser, since they share the replay origin. Weigh that if one instance holds both captures from sources you do not control and material that is not public.
 :::
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.

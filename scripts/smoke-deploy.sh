@@ -3,7 +3,7 @@
 # Smoke-test the shipped server stack (compose.yaml + Caddyfile).
 #
 #   ./scripts/smoke-deploy.sh            # build, run the checks, tear down
-#   PORT=9100 ./scripts/smoke-deploy.sh  # if 8099 is taken
+#   PORT=9100 ./scripts/smoke-deploy.sh  # if 8099 (and 8100, for replay) is taken
 #   KEEP=1 ./scripts/smoke-deploy.sh     # leave the stack up to poke at it
 #
 # The deployment story lives in a Caddyfile and a compose file, which `cargo
@@ -27,10 +27,12 @@
 set -uo pipefail
 
 PORT="${PORT:-8099}"
+RPORT="${RPORT:-$((PORT + 1))}"
 PROJECT=indice-smoke
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 B="http://localhost:${PORT}"
+R="http://localhost:${RPORT}"
 SECRET="smoke-secret-$RANDOM$RANDOM"
 
 pass=0
@@ -72,6 +74,8 @@ code() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$@"; }
 
 cat >"$TMP/env" <<EOF
 SITE_ADDRESS=:${PORT}
+REPLAY_ADDRESS=:${RPORT}
+REPLAY_URL=${R}
 INDICE_AUTH_PROXY_SECRET=${SECRET}
 OIDC_ISSUER_URL=http://oidc-stub:5556
 OIDC_CLIENT_ID=indice-smoke
@@ -109,6 +113,7 @@ services:
       # roster's admin, so a KEEP=1 run would otherwise publish an open write
       # surface on every interface.
       - "127.0.0.1:${PORT}:${PORT}"
+      - "127.0.0.1:${RPORT}:${RPORT}"
   oidc-stub:
     image: caddy:2
     volumes:
@@ -154,8 +159,19 @@ chk 200 "$(code "$B/api/search?q=apod")" "public search"
 chk 200 "$(code "$B/api/annotations?collection=apod")" "public annotations API is NOT behind the login"
 chk 200 "$(code "$B/collection/apod")" "public collection page"
 chk 200 "$(code "$B/replay/viewer")" "replay viewer"
-chk 200 "$(code "$B/replay-frame")" "replay frame"
+chk 1 "$(curl -s --max-time 15 "$B/replay/viewer" | grep -c "content=\"${R}\"")" \
+	"the viewer frames the replay origin"
 chk 302 "$(code "$B/manage/login")" "/manage/login starts a login"
+
+echo
+echo "── replay is on its own origin ──"
+chk 200 "$(code "$R/replay-frame")" "the replay frame, on the replay host"
+chk 200 "$(code "$R/replay/sw.js")" "the service worker, on the replay host"
+chk 206 "$(code -H 'Range: bytes=10-19' "$R$WACZ")" "ranged WACZ read on the replay host"
+chk 404 "$(code "$B/replay/sw.js")" "the site does NOT serve the service worker"
+chk 404 "$(code "$B/replay/ui.js")" "the site does NOT serve ReplayWeb.page"
+chk 404 "$(code -X POST -d 'name=x' "$R/api/collections")" "the replay host has no write routes"
+chk 404 "$(code "$R/")" "the replay host serves no pages"
 
 echo
 echo "── a forged identity must not be believed ──"
@@ -224,6 +240,8 @@ home=$(curl -s --max-time 15 "$B/")
 chk 1 "$(grep -c 'signed in as' <<<"$home")" "a signed-in identity reaches the PUBLIC homepage"
 chk 200 "$(code "$B/manage/add")" "the accession desk opens for a signed-in user"
 chk 303 "$(code -H "Referer: $B/collection/apod" "$B/manage/login")" "/manage/login bounces back to where you came from"
+chk 0 "$(curl -s -D- -o /dev/null --max-time 15 "$R/replay-frame" | grep -ci '^set-cookie:')" \
+	"the replay host sets no cookie, even for a signed-in reader"
 
 echo
 if [ "$fail" -eq 0 ]; then

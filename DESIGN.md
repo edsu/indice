@@ -25,8 +25,13 @@ indice index <files>                  indice serve
        ├── WACZ metadata ──► Tantivy          ├── GET /search?q=    → search results
        └── manifest ───► collections.json     ├── GET /api/search   → search JSON
                                               ├── GET /files/{id}   → WACZ byte-range
-                                              ├── GET /replay/viewer → viewer shell
-                                              └── GET /replay-frame → replay frame
+                                              └── GET /replay/viewer → viewer shell
+                                                     │ frames
+                                                     ▼
+                                     [replay listener, its own origin]
+                                              ├── GET /replay-frame → replay frame
+                                              ├── GET /replay/*     → ReplayWeb.page
+                                              └── GET /files/{id}   → WACZ byte-range
 ```
 
 Replay is handled entirely by the wabac.js service worker running in the browser. The service worker reads the WACZ file from `GET /files/{id}` using HTTP byte-range requests, extracts the CDX index from `indexes/index.cdx.gz` inside the ZIP, loads it into browser IndexedDB, and fetches individual WARC records by offset - all without making per-resource requests back to the indice server. indice's job during replay is purely to serve bytes efficiently.
@@ -94,7 +99,7 @@ it still resolves.
     - **Edit-in-place UI.** There is no separate management area: for a caller who may write, the ordinary pages become an editable *workroom* (a warm clay "red-tape" accent flip marks write mode — chosen to read as an "attention: you can change things" cue while staying clear of the semantic error red). The homepage collection list gains **+ New collection** and per-card **Edit**; each collection page gains **Edit collection** and **+ Add crawls**. Only the two multi-step accessions have dedicated pages — the finding-aid form (`GET /manage/collections/new`, `GET /manage/edit/{id}`) and the add-crawls desk (`GET /manage/add?collection=…`, with source tabs: upload, path-URL, and the Browsertrix and Archive-It browse-and-import wizards). One design system, two accent modes (reading-room blue / workroom clay); buttons use one outline treatment whose color follows the mode; no separate stylesheet.
     - **Authorization.** Authentication answers *who*; a separate, small model answers *what they may do*. Three **ordered** roles — `Reader` (anonymous, or authenticated but not on the roster), `Curator`, `Admin` — so every check is one comparison and each role contains the one below it. Communicated as one line: **curators add and can undo their own additions; only admins remove a collection.** Curators accession and describe (create collections, add/upload crawls, edit finding aids, run imports, annotate), and may undo their own work: delete a crawl **they** accessioned, and edit/delete their own notes. Admins additionally delete any crawl, delete a collection, and moderate anyone's notes. Custody is recorded on the object — `Wacz.added_by`, `Collection.created_by`/`updated_by`, all additive so existing manifests and finding aids load unchanged — and stores the `SubjectId`, never a display name, since those pages are public; names resolve through `users.yaml` at render time. Crawl custody is recorded by the ingest itself (`Ingest::actor`), so each crawl is attributed as it is written and a part-way failure attributes exactly what committed; `record::upsert` prefers any custody already on the entry, which both preserves it across a reindex and means re-indexing someone else's crawl cannot transfer it. An unattributed crawl is nobody's, so only an admin may remove it. Ownership deliberately governs *leaves* and not *containers*: "delete what you created" breaks the moment someone else adds crawls to your collection, and a rule needing that exception is no longer explainable. Roles come from a committable `<home>/users.yaml` (id, display name, role, prior-address aliases); **absent file ⇒ every authenticated user is an admin**. That default is reachable only on a workstation: a server **refuses to start** without a roster rather than hand the delete button to the first stranger its identity provider admits, and there is deliberately no flag to opt out, since an opt-out would mostly be found by whoever wanted the error to stop. The roster is re-read when the file changes (`Roster`, a `(mtime, len)` stamp checked per resolution), so approving a colleague is an edit rather than a restart; a reload that comes back malformed, or finds the file deleted, keeps the last good roster and logs, because both failures would otherwise widen access to that same permissive default. Moderation is tracked as a capability *separate* from the role rather than derived from it, precisely because those come apart here: deriving it would let the permissive default quietly grant every signed-in user power over other people's notes. An empty-but-present roster means "nobody" and is honored. Enforcement is by axum extractor: `Curator`/`Admin` are also *witness types* whose field is private to `server::auth`, so one cannot be fabricated — a handler declares its privilege in its own signature, and the privileged helpers take a `&Curator`/`&Admin` they can't be called without, making a forgotten gate a compile error rather than a silent exposure. A third type, `Evidence` (`Loopback`/`Proxy`/`Cookie`), makes "the display cookie renders chrome but never authorizes a write" a compiler-checked rule instead of a comment.
     - **Auth.** [`Access`](crates/indice-lib/src/server/mod.rs), one of two:
-      - **Local** (`Access::local`, a workstation): every caller is trusted, so the operator is the admin and there is no login; `users.yaml` is not consulted. The constructor refuses a non-loopback address, and `serve_on_listener` re-checks against the real socket, because only the bound listener knows what it actually got. A loopback bind is where the promise stops: it keeps indice off the network, and it says nothing about who reaches the port. Another account on the machine, a second shell, `ssh -L`, `tailscale serve`, all of them get the operator's rights, so this is a claim about the machine and not about a person; *Threat Model* says why inspecting `Host` cannot narrow it. The CSRF layer requires a loopback `Origin` here, which is a browser-only rule aimed at DNS rebinding rather than at tunnels.
+      - **Local** (`Access::local`, a workstation): every caller is trusted, so the operator is the admin and there is no login; `users.yaml` is not consulted. The constructor refuses a non-loopback address, and `serve_on_listeners` re-checks against the real socket, because only the bound listener knows what it actually got. A loopback bind is where the promise stops: it keeps indice off the network, and it says nothing about who reaches the port. Another account on the machine, a second shell, `ssh -L`, `tailscale serve`, all of them get the operator's rights, so this is a claim about the machine and not about a person; *Threat Model* says why inspecting `Host` cannot narrow it. The CSRF layer requires a loopback `Origin` here, which is a browser-only rule aimed at DNS rebinding rather than at tunnels.
       - **Forward-auth** (`--auth-proxy-header <HEADER> --auth-proxy-secret <SECRET>`): for running as a service. indice sits behind an authenticating reverse proxy that performs the real login (SSO/OIDC/SAML) and injects the authenticated user in `<HEADER>` (e.g. `X-Forwarded-Email`). Management routes are wrapped in middleware that allows a request only if it carries a non-empty identity in that header **and** the shared `SECRET` in `X-Indice-Auth-Secret` (a static header the proxy adds — *not* the IdP). Requiring the secret is what makes trusting the identity header safe: a client that forges the identity header, or a request that skipped the proxy, lacks the secret and gets 403. indice stores no passwords and speaks to no IdP: the proxy owns *login*, and `users.yaml` owns *privilege*. (Before roles, "who is an admin" was delegated entirely upstream — anyone the proxy authenticated — which is still the default when no roster exists.) The signed-in user is shown in the workroom strip on every management page. The public read-only site is *not* gated (its read handlers only render the workroom controls to an authenticated admin). Deploy note: bind indice to loopback and have the proxy reach it there, and ensure the proxy strips any client-supplied copy of the identity header.
       - **Why indice authenticates nobody, and what that costs.** Login is delegated so that one
         mechanism covers every identity system an operator might already run. A campus has
@@ -110,7 +115,7 @@ it still resolves.
         still need it. That leaves two authentication paths to maintain instead of one. Revisit it
         only if the extra container turns out to cost more than the duplicate path would.
     - **Browsertrix import** (a source tab on the accession desk): browse endpoints (`GET /api/browsertrix/orgs · collections · items`) list what the configured credentials can see; `POST /api/browsertrix/import` streams the selected crawls into a collection via the shared job/SSE/reload machinery (`Source::Browsertrix` + the replay resolver). Credentials **and the target host** stay in the binary — a `BrowsertrixProvider` (the lib/bin boundary, like `SourceResolver`) builds authenticated clients from `BROWSERTRIX_*` / `BROWSERTRIX_HOST`; the host is *never* taken from the request, so a client can't redirect the server's token elsewhere. v1 streams (index-only); durable download is a follow-up.
-    - **Archive-It import** (a source tab on the accession desk): the same shape as Browsertrix. Browse endpoints (`GET /api/archiveit/collections · crawls?collection=<id>`) list what the configured credentials can see, marking crawls already imported; `POST /api/archiveit/import` downloads the selected crawls' WARCs, builds one WACZ per crawl, and indexes them via the shared job/SSE/reload machinery — reusing `archiveit::import_crawls`, the same orchestrator the CLI drives. Credentials **and host** stay in the binary behind an `ArchiveItProvider` (`ARCHIVEIT_*` / `ARCHIVEIT_HOST`), never taken from the request. Both providers are bundled into a `server::Providers` value threaded through `serve`/`build_router`, so a new import source adds a field rather than a parameter to every constructor.
+    - **Archive-It import** (a source tab on the accession desk): the same shape as Browsertrix. Browse endpoints (`GET /api/archiveit/collections · crawls?collection=<id>`) list what the configured credentials can see, marking crawls already imported; `POST /api/archiveit/import` downloads the selected crawls' WARCs, builds one WACZ per crawl, and indexes them via the shared job/SSE/reload machinery — reusing `archiveit::import_crawls`, the same orchestrator the CLI drives. Credentials **and host** stay in the binary behind an `ArchiveItProvider` (`ARCHIVEIT_*` / `ARCHIVEIT_HOST`), never taken from the request. Both providers are bundled into a `server::Providers` value threaded through `serve`/`build_routers`, so a new import source adds a field rather than a parameter to every constructor.
 - `collection set` / `collection list`: create/update a collection's finding-aid metadata / list collections and their members. `collection set` writes the structured front-matter fields (`--creator`/`--dates`/`--rights`/`--subject`, plus `--description`/`--curator`), the narrative body (`--narrative[-file]`), and an optional `--thumbnail` to a committable `collections/<slug>/README.md` (+ `thumbnail.jpg`); a curator can also just hand-edit those files (see *Collection Management*). (WACZ→collection membership is set at index/import time via `index --collection`.)
 - `crawl set`: set curator-controlled crawl properties — `--image` pins a representative thumbnail (`collections/<slug>/crawls/<id>.jpg`), `--note[-file]` writes a committable Markdown note to `collections/<slug>/crawls/<id>.md`.
 - `crawl list [<COLLECTION>]`: list crawls (id, page count, capture date, name) grouped by collection, optionally filtered to one (matched by name or slug). Reads the manifest; the ids feed `crawl set`/`crawl delete`. (`collection list` is collection-level only, so this is how you find a crawl's id from the CLI.)
@@ -137,8 +142,17 @@ it still resolves.
 | `GET /collection/{id}/pages` | Collection page list + exact-URL→WACZ resolution (wabac `pagesQueryUrl`), from the index |
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
 | `GET /replay/viewer` | Viewer shell (reads `?source=&url=&ts=&name=&collection=` params): banner, notes panel, and the replay frame |
-| `GET /replay-frame` | Replay frame: mounts `<replay-web-page>` and the annotation agent. Must stay outside `/replay/` (see *Replay Viewer*) |
-| `GET /replay/*` | Embedded ReplayWebPage static assets (JS, CSS, WASM, sw.js) |
+| `GET /replay/annotations.{js,css}` | The viewer's notes panel. Nothing else under `/replay/` is served on this origin |
+
+The replay listener, on its own origin (see *Replay Viewer*), serves only these:
+
+| Route | Handler |
+|---|---|
+| `GET /replay-frame` | Replay frame: mounts `<replay-web-page>` and the annotation agent. Must stay outside `/replay/` |
+| `GET /replay/` | ReplayWeb.page's app shell, for its inner frame |
+| `GET /replay/{ui,sw,agent}.js` | ReplayWeb.page, its service worker, and the frame's agent |
+| `GET /files/{id}`, `GET /collection/{id}/replay.json`, `GET /collection/{id}/pages` | Replay data, as on the app listener |
+| `GET /health` | Liveness, as on the app listener |
 
 ---
 
@@ -207,19 +221,19 @@ the network, and makes no claim about any person.** It is the right tool when th
 machine is yours. Share the archive and you want the server shape.
 
 The second principal is **a capture you indexed**, and it is easy to miss because
-it is not a person and it never reaches the port. Archived JavaScript replays
-same-origin (see *Not defended*), so a hostile WACZ runs inside indice rather
-than against it. Its writes add little, since the first principal already has
-those. Its *reads* are new: no remote page can read `/api/search`,
-`/api/annotations` or any HTML page, because indice sets no CORS header on them,
-and `/files/{id}` is the only `*`. Archived script reads all of it and can send
-what it finds anywhere.
+it is not a person and it never reaches the port. Archived JavaScript runs when
+you replay it, on the replay listener's origin rather than indice's, so it can
+neither write as you nor read `/api/search`, `/api/annotations` or any HTML
+page, which carry no CORS header. What it can read is what the replay origin
+holds: every capture this browser has replayed, since they share that origin's
+service worker and storage, and `/files/{id}`, which any page can read (see *Not
+defended*).
 
 For a laptop of public-web captures that is close to theoretical. It stops being
 theoretical when some of the captures are not public: a Browsertrix browser
 profile records an authenticated session, and an intranet or embargoed crawl
-holds material the capture's author never meant to publish. One hostile WACZ in
-the same instance reads those.
+holds material the capture's author never meant to publish. One hostile WACZ
+replayed in the same browser can read those.
 
 **On a server** there are six:
 
@@ -252,8 +266,10 @@ matter, and it is the one indice cannot detect.
   gets 403. `manage.rs::forward_auth_gates_management_routes`
 - The local operator identity cannot be claimed by a remote caller.
   `identity.rs::the_local_operator_is_not_claimable_by_a_remote_user`
-- `Access::local` refuses a public bind at construction, and `serve_on_listener`
-  re-checks against the real socket. `server/tests.rs::local_access_refuses_a_public_bind`
+- `Access::local` refuses a public bind at construction, and `serve_on_listeners`
+  re-checks against the real sockets, the replay listener's included.
+  `server/tests.rs::local_access_refuses_a_public_bind`,
+  `replay_origin.rs::a_workstation_refuses_a_replay_listener_off_loopback`
 
 **Authorization is indice's, and it is checked by type.** `Curator` and `Admin`
 are witness types whose field is private to `server::auth`, so a handler that
@@ -291,6 +307,21 @@ mutates cannot be written without one and a forgotten gate is a compile error.
 - `/files/{id}` is readable cross-origin and never with credentials.
   `authz.rs::files_allows_anonymous_cross_origin_reads_only`
 
+**Archived pages cannot act as the person replaying them.** Replay runs on an
+origin of its own, so the browser keeps a capture's script away from indice.
+
+- A hostile capture that escapes wombat to ReplayWeb.page's own window cannot
+  create a collection, by a relative URL or by the app's, and cannot reach the
+  viewer's page. `browser.rs::a_hostile_capture_cannot_write_as_the_reader`
+  (a browser test, run with `--ignored`)
+- The replay listener has no write route and no page, and resolves no identity.
+  `replay_origin.rs::the_replay_origin_has_no_write_or_page_routes`,
+  `replay_origin.rs::the_replay_origin_resolves_no_identity`
+- Nothing on the app origin boots ReplayWeb.page.
+  `replay_origin.rs::the_app_origin_serves_nothing_that_replays`
+- A server will not start without a replay origin.
+  `replay_origin.rs::a_server_without_a_replay_origin_refuses_to_start`
+
 **Curator-supplied content does not become executable or escape its directory.**
 
 - Note HTML is sanitized. `manage.rs::annotation_note_html_cannot_carry_executable_markup`,
@@ -309,7 +340,8 @@ so a small WACZ whose `pages.jsonl` inflates to many gigabytes is a decompressio
 bomb that takes the indexer's memory with it (`rustyweb-wacz-read-caps-q39p`).
 That is acceptable where curators are colleagues and is not where they are
 approved strangers, which is the first place the answer to this question changes
-the code. The second is replay, below.
+the code. Replay, where it would otherwise matter most, isolates every capture
+alike; see *Guarantees*.
 
 ### Assumptions
 
@@ -328,7 +360,7 @@ the code. The second is replay, below.
 | The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
 | Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
 | Curators supply well-formed WACZs | Uncapped reads make a decompression bomb an out-of-memory | `rustyweb-wacz-read-caps-q39p` |
-| Archived captures do not script their host | Replay is same-origin with the write API, so a captured page can drive a signed-in curator's browser into any write they may make | `rustyweb-replay-origin-isolation-5h67` |
+| ~~Archived captures do not script their host~~ | Closed: replay runs on an origin of its own, with no write route and no identity, and a server will not start without one. A capture's script still runs there and can forge the frame's messages to the viewer, which move the banner or pre-fill a note the reader must still save | `rustyweb-replay-origin-isolation-5h67` |
 
 A future premise change, a PaaS deployment, a multi-tenant host, or the
 federation work, gets checked against this table rather than re-derived.
@@ -341,18 +373,15 @@ Saying so here is what stops these being re-litigated.
   session lifetime belong to the proxy. The gain is that one header contract
   covers Shibboleth, OIDC, and whatever an operator already runs; the cost is
   that indice cannot tell a compromised account from its owner.
-- **Replay runs archived third-party JavaScript same-origin.** The wabac service
-  worker serves archived responses from indice's own origin and the viewer
-  embeds `<replay-web-page>` in an unsandboxed iframe, which is how
-  ReplayWeb.page works and not a defect in indice. Writing this section turned up
-  the consequence nobody had drawn, so it is listed under *Assumptions* above as
-  well: archived script shares an origin with the write API, so the CSRF layer
-  does not see it. A `fetch('/api/collections/x/delete', {method:'POST'})` from a
-  captured page is same-origin by construction, carries the reader's proxy
-  session, and matches on `Origin`. The exposure is a curator or admin replaying
-  a hostile capture, and on a workstation every caller is an admin. Separating
-  the replay origin is the fix the web platform offers, and it is a real change:
-  a second hostname, or a sandboxed frame that wabac can still reach.
+- **Archived script runs, on the replay origin.** That is replay's job, and the
+  origin is what contains it. Within that origin it is unconstrained: one
+  capture's script can read every other capture this browser has replayed,
+  since they share the replay origin's service worker and storage. On a
+  subdomain of the site, the replay origin is also *same-site* with it, so its
+  script can set cookies on the parent domain; indice's own cookie is host-only
+  and authorizes nothing, but other services on that domain may care. A
+  separate registrable domain for replay removes that, which is why the deploy
+  guide mentions it.
 - **`/files/{id}` sends `access-control-allow-origin: *` on purpose,** so any
   page can replay a public archive. It never sends credentials with it.
 - **The host.** Anything with write access to `<home>` owns the instance.
@@ -916,7 +945,7 @@ indice's finding aid plus crawl provenance already lean toward. Tracked by
 
 ## Replay Viewer
 
-Replay is two pages, one inside the other.
+Replay is two pages, one inside the other, on two origins.
 
 `GET /replay/viewer` (`static/replay/viewer.html`) is the page every replay link opens. It
 reads `source`, `url`, `ts`, and `name` from its query string, renders the banner (collection
@@ -927,11 +956,22 @@ iframe, passing its query on. It does not load ReplayWeb.page.
 the given `source`, `url` and `ts`, and loads `agent.js` beside it. Archived pages run their
 own JavaScript in this frame, so the frame makes no API calls of its own.
 
-The frame is served from indice's own origin, the same as the viewer. That makes the split a
-structure, not a security boundary: archived script in the frame can reach the
-viewer's DOM through `window.parent`, and can call the write API with the reader's session.
-Moving the frame to its own origin is `rustyweb-replay-origin-isolation-5h67`; see
-*Threat Model*.
+The frame is served by a second listener, the **replay listener**, and so from an origin of
+its own (`server::ReplayOrigin`). Archived script in it can reach neither the viewer's page
+nor indice's API as the reader: its requests to the app carry the replay origin and are
+refused, and the replay listener has no write route to send them to. On a server the
+operator gives replay a hostname (`--replay-url`) and the proxy points it at the replay
+listener (`--replay-bind`); a server will not start without one. On a workstation the
+replay listener binds the next loopback port and needs no configuration.
+
+The app listener serves the viewer and nothing that boots ReplayWeb.page: no frame, no
+service worker, no `ui.js`, no shell. If it did, a stranger's page could frame it with a
+`source` of their choosing and run archived script on indice's origin again, whatever the
+viewer does. The viewer learns the replay origin from the server, in a `<meta>` filled in
+when it is served, and checks every message against it. The frame is told its parent's
+origin in its query string, which is safe because nothing the frame receives grants
+anything. ReplayWeb.page's `requireSubdomainIframe` makes the frame refuse to replay unless
+another origin frames it.
 
 Two placement rules keep replay working, and the multi-WACZ browser test
 (`browser_collection.rs`) fails without either:
@@ -949,7 +989,7 @@ The two pages talk only by `postMessage`, each checking the other's origin and w
 the frame: `ready`, `url {url, ts}` (from ReplayWeb.page's `rwp-url-change` event, which
 drives the banner), and `selection {selector}`. From the viewer: `highlight {notes}`,
 `focus {id}`, and `clear-selection`. Everything the frame sends is untrusted, since archived
-script shares its page and can forge any of it. A message can move the banner or pre-fill
+script shares its origin and can forge any of it. A message can move the banner or pre-fill
 the note composer; saving a note takes a click in the viewer, whose composer names the page
 URL and the quoted passage.
 

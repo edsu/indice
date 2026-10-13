@@ -91,9 +91,15 @@ async fn serve(
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = config;
+    config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
+        replay.local_addr().unwrap(),
+    ));
     let handle = tokio::spawn(async move {
-        indice_lib::server::serve_on_listener(
+        indice_lib::server::serve_on_listeners(
             listener,
+            replay,
             &home,
             None,
             config,

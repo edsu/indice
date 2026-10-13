@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Replay</title>
   <!--
-    The replay frame. The viewer at /replay/viewer embeds this page and keeps
-    the chrome and the notes panel; this page holds only ReplayWeb.page and the
+    The replay frame, served only on the replay origin. The viewer at
+    /replay/viewer, on indice's own origin, embeds this page and keeps the
+    chrome and the notes panel; this page holds only ReplayWeb.page and the
     agent that reaches into the replayed document. Archived pages run their own
     JavaScript here, so nothing on this page may hold privileges: no API calls,
     no identity. See agent.js.
@@ -71,6 +72,10 @@
       // page path.
       rp.setAttribute('replaybase', '/replay/');
       rp.setAttribute('swName', 'sw.js');
+      // Refuse to replay unless framed by another origin. Replay belongs inside
+      // the viewer; opened on its own, this origin would show archived pages
+      // with no indice chrome around them to say what they are.
+      rp.setAttribute('requireSubdomainIframe', '');
       if (url) rp.setAttribute('url', url);
       if (ts)  rp.setAttribute('ts', ts);
       document.body.appendChild(rp);
