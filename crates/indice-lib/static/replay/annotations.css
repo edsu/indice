@@ -87,6 +87,17 @@
 .anno-hint {
   padding: 0.5rem 0.8rem 0;
 }
+.anno-hint p {
+  overflow-wrap: anywhere;
+}
+.anno-quote {
+  margin: 0.3rem 0 0;
+  padding-left: 0.6rem;
+  border-left: 3px solid rgba(255, 171, 0, 0.85);
+  max-height: 8rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
 
 .anno-item {
   border: 1px solid #e7e3db;

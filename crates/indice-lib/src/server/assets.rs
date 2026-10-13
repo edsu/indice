@@ -157,8 +157,30 @@ pub(super) async fn replay_viewer(headers: HeaderMap) -> impl IntoResponse {
     serve_embedded_asset(ReplayAssets::get("viewer.html"), "viewer.html", &headers)
 }
 
-pub(super) async fn replay_index() -> impl IntoResponse {
-    (StatusCode::SEE_OTHER, [("location", "/")]).into_response()
+/// The frame the viewer embeds: ReplayWeb.page and the agent that reaches into
+/// the replayed document. Archived pages run their own JavaScript here, which
+/// is why the viewer, not this page, holds the notes panel and every API call.
+///
+/// Served at `/replay-frame`, **outside** the service worker's `/replay/` scope,
+/// and that is load-bearing. At `/replay/frame` the worker controls the page
+/// hosting ReplayWeb.page as well as ReplayWeb.page's own inner frames, and on
+/// the next load it either missed or failed the inner frame's request: the
+/// multi-WACZ test in `browser_collection.rs` landed that frame on indice's
+/// homepage, or on a browser error page. Outside the scope it replays, which is
+/// also how wacz-exhibitor (Perma.cc's embedding) arranges it.
+pub(super) async fn replay_frame(headers: HeaderMap) -> impl IntoResponse {
+    serve_embedded_asset(ReplayAssets::get("frame.html"), "frame.html", &headers)
+}
+
+/// ReplayWeb.page's app shell, at its replay base. `<replay-web-page>` frames
+/// `/replay/?source=…`, which the service worker answers once it controls the
+/// page. On a first visit the frame can navigate before the worker has taken
+/// control, and then the request reaches us; answering with the shell lets
+/// ReplayWeb.page boot and wait for the worker. A redirect elsewhere loses the
+/// race for good: the multi-WACZ browser test then shows indice's homepage
+/// inside the replay about one run in three.
+pub(super) async fn replay_index(headers: HeaderMap) -> impl IntoResponse {
+    serve_embedded_asset(ReplayAssets::get("index.html"), "index.html", &headers)
 }
 
 pub(super) async fn replay_handler(

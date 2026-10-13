@@ -490,6 +490,7 @@ fn build_router(
         .route("/thumb/{id}", get(thumb_handler))
         .route("/collection-thumb/{id}", get(collection_thumb_handler))
         .route("/replay/viewer", get(replay_viewer))
+        .route("/replay-frame", get(replay_frame))
         .route("/api/search", get(search_api))
         // Public read of page annotations (display is public; writes are gated below).
         .route("/api/annotations", get(list_annotations))
