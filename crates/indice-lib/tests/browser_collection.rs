@@ -207,9 +207,21 @@ async fn render_check(
     );
     driver.goto(&viewer).await.map_err(|e| e.to_string())?;
 
+    // ReplayWeb.page lives in the viewer's replay frame; search there.
+    driver
+        .find(By::Id("replay-frame"))
+        .await
+        .map_err(|e| format!("the viewer has no replay frame: {e}"))?
+        .enter_frame()
+        .await
+        .map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() <= deadline {
         if deep_contains(driver, needle).await? {
+            driver
+                .enter_default_frame()
+                .await
+                .map_err(|e| e.to_string())?;
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;

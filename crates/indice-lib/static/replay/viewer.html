@@ -4,7 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Replay</title>
-  <script src="ui.js"></script>
+  <!--
+    The replay viewer: indice's chrome and the notes panel, around a frame that
+    holds the replay itself (/replay-frame). Every API call happens on this
+    page, never in the frame, because archived pages run their own JavaScript
+    in the frame's origin. Messages from the frame are therefore suggestions:
+    see the channel below and annotations.js.
+  -->
   <script src="annotations.js"></script>
   <link rel="stylesheet" href="annotations.css">
   <style>
@@ -61,7 +67,7 @@
 
     #stage { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
     #replay-container { flex: 1 1 auto; position: relative; min-height: 0; min-width: 0; }
-    replay-web-page { display: block; width: 100%; height: 100%; }
+    #replay-frame { display: block; width: 100%; height: 100%; border: 0; }
     #error { padding: 2rem; color: #c00; }
   </style>
 </head>
@@ -85,7 +91,6 @@
       const params = new URLSearchParams(window.location.search);
       const source = params.get('source'); // e.g. /files/a926c132
       const url    = params.get('url') || '';
-      const ts     = params.get('ts') || '';
       const name   = params.get('name') || '';
       const collection   = params.get('collection') || '';
       const collectionId = params.get('collection_id') || '';
@@ -95,21 +100,6 @@
         document.body.innerHTML =
           '<div id="error">Missing <code>source</code> parameter.</div>';
         return;
-      }
-
-      // wabac collection namespace (its IndexedDB cache key). For a multi-WACZ
-      // collection manifest (…/replay.json) the last path segment is the shared
-      // "replay.json", so fall back to the collection id to keep each collection
-      // in its own namespace. An explicit `coll` param wins; otherwise a
-      // single-WACZ source uses its last segment (the WACZ id).
-      const explicitColl = params.get('coll') || '';
-      let collId;
-      if (explicitColl) {
-        collId = explicitColl;
-      } else if (source.endsWith('/replay.json')) {
-        collId = collectionId || 'collection';
-      } else {
-        collId = source.split('/').pop();
       }
 
       // Breadcrumb: indice › <collection> › <crawl name> › <url>. The
@@ -124,41 +114,58 @@
         document.getElementById('collection-sep').style.display = 'none';
       }
       const nameEl = document.getElementById('collection-name');
-      nameEl.textContent = name || collId;
+      // Without a name, the same fallback the frame uses for wabac's collection
+      // id: a collection's manifest ends in the shared "replay.json", so show
+      // the collection id rather than that.
+      nameEl.textContent = name || params.get('coll') ||
+        (source.endsWith('/replay.json') ? (collectionId || 'collection') : source.split('/').pop());
       if (crawlId) nameEl.href = '/crawl/' + encodeURIComponent(crawlId);
-      document.getElementById('current-url').textContent = url;
+      const currentUrl = document.getElementById('current-url');
+      currentUrl.textContent = url;
 
-      // Mount the ReplayWebPage component in WACZ-direct mode: it reads the
-      // WACZ from `source` (our /files/{id} byte-range endpoint), extracts the
-      // internal CDX into IndexedDB, and serves all resources client-side.
-      const rp = document.createElement('replay-web-page');
-      rp.setAttribute('source', source);
-      rp.setAttribute('coll', collId);
-      // Chrome-free inline replay for both single-WACZ and multi-WACZ collection
-      // sources. A collection is a native multi-WACZ source: wabac loads each
-      // member's CDX and resolves URLs across them itself. (ReplayWeb.page's
-      // `embed=replay` full-app mode would add a Pages sidebar, but it loads its
-      // own app shell and doesn't deep-link to a specific url/ts the way
-      // `replayonly` does — so it can't open a chosen page. Deferred with the
-      // pagesQueryUrl scale valve; see rustyweb-scale-footprint-qw5.10.)
-      rp.setAttribute('embed', 'replayonly');
-      // Absolute base so the SW resolves to /replay/sw.js regardless of the
-      // page path. The default "./replay/" would resolve relative to
-      // /replay/viewer → /replay/replay/sw.js (404).
-      rp.setAttribute('replaybase', '/replay/');
-      rp.setAttribute('swName', 'sw.js');
-      if (url) rp.setAttribute('url', url);
-      if (ts)  rp.setAttribute('ts', ts);
-      document.getElementById('replay-container').appendChild(rp);
+      // The frame's origin. The server names it when replay runs on its own
+      // origin; otherwise it is this page's. Taken from configuration and never
+      // from a message, because the check below is what everything trusting a
+      // message depends on.
+      const meta = document.querySelector('meta[name="indice-replay-origin"]');
+      const frameOrigin = (meta && meta.content) || window.location.origin;
 
-      // Keep the banner URL in sync as the user navigates within the archive.
-      // ReplayWeb.page dispatches rwp-url-change on the <replay-web-page>
-      // element itself, and it does not bubble, so we listen on the element
-      // (not window).
-      rp.addEventListener('rwp-url-change', function (e) {
-        const newUrl = e.detail && e.detail.url;
-        if (newUrl) {
-          document.getElementById('current-url').textContent = newUrl;
+      const frameParams = new URLSearchParams(params);
+      frameParams.set('parent', window.location.origin);
+      const frame = document.createElement('iframe');
+      frame.id = 'replay-frame';
+      frame.title = 'Archived page';
+      frame.allow = 'fullscreen';
+      frame.src = frameOrigin + '/replay-frame?' + frameParams.toString();
+      document.getElementById('replay-container').appendChild(frame);
+
+      // The channel to the frame, and the one place its messages are checked.
+      // A message counts only if it comes from our own frame and from the
+      // origin we put it on; valid ones are re-dispatched as `indice-replay`
+      // events for the banner and the notes panel. Even a valid one is only a
+      // suggestion: archived script shares the frame's origin and can send
+      // anything the frame's agent can.
+      window.indiceReplay = {
+        send: function (type, payload) {
+          if (!frame.contentWindow) return;
+          frame.contentWindow.postMessage(
+            Object.assign({ indice: 'replay', type: type }, payload),
+            frameOrigin
+          );
+        },
+      };
+      window.addEventListener('message', function (e) {
+        if (e.source !== frame.contentWindow || e.origin !== frameOrigin) return;
+        const d = e.data;
+        if (!d || d.indice !== 'replay' || typeof d.type !== 'string') return;
+        window.dispatchEvent(new CustomEvent('indice-replay', { detail: d }));
+      });
+
+      // Keep the banner URL in step as the reader navigates the archive.
+      window.addEventListener('indice-replay', function (e) {
+        const d = e.detail;
+        if (d.type === 'url' && typeof d.url === 'string' && d.url) {
+          currentUrl.textContent = d.url;
         }
       });
     })();

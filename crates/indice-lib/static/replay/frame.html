@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Replay</title>
+  <!--
+    The replay frame. The viewer at /replay/viewer embeds this page and keeps
+    the chrome and the notes panel; this page holds only ReplayWeb.page and the
+    agent that reaches into the replayed document. Archived pages run their own
+    JavaScript here, so nothing on this page may hold privileges: no API calls,
+    no identity. See agent.js.
+
+    It lives at /replay-frame, outside the service worker's /replay/ scope, on
+    purpose; see `replay_frame` in server/assets.rs before moving it.
+  -->
+  <script src="/replay/ui.js"></script>
+  <script src="/replay/agent.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    replay-web-page { display: block; width: 100%; height: 100%; }
+    #error { padding: 2rem; color: #c00; font-family: sans-serif; }
+  </style>
+</head>
+<body>
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const source = params.get('source'); // e.g. /files/a926c132
+      const url    = params.get('url') || '';
+      const ts     = params.get('ts') || '';
+      const collectionId = params.get('collection_id') || '';
+
+      if (!source) {
+        document.body.innerHTML =
+          '<div id="error">Missing <code>source</code> parameter.</div>';
+        return;
+      }
+
+      // wabac collection namespace (its IndexedDB cache key). For a multi-WACZ
+      // collection manifest (…/replay.json) the last path segment is the shared
+      // "replay.json", so fall back to the collection id to keep each collection
+      // in its own namespace. An explicit `coll` param wins; otherwise a
+      // single-WACZ source uses its last segment (the WACZ id).
+      const explicitColl = params.get('coll') || '';
+      let collId;
+      if (explicitColl) {
+        collId = explicitColl;
+      } else if (source.endsWith('/replay.json')) {
+        collId = collectionId || 'collection';
+      } else {
+        collId = source.split('/').pop();
+      }
+
+      // Mount the ReplayWebPage component in WACZ-direct mode: it reads the
+      // WACZ from `source` (our /files/{id} byte-range endpoint), extracts the
+      // internal CDX into IndexedDB, and serves all resources client-side.
+      const rp = document.createElement('replay-web-page');
+      rp.setAttribute('source', source);
+      rp.setAttribute('coll', collId);
+      // Chrome-free inline replay for both single-WACZ and multi-WACZ collection
+      // sources. A collection is a native multi-WACZ source: wabac loads each
+      // member's CDX and resolves URLs across them itself. (ReplayWeb.page's
+      // `embed=replay` full-app mode would add a Pages sidebar, but it loads its
+      // own app shell and doesn't deep-link to a specific url/ts the way
+      // `replayonly` does — so it can't open a chosen page. Deferred with the
+      // pagesQueryUrl scale valve; see rustyweb-scale-footprint-qw5.10.)
+      rp.setAttribute('embed', 'replayonly');
+      // Absolute base so the SW resolves to /replay/sw.js regardless of the
+      // page path.
+      rp.setAttribute('replaybase', '/replay/');
+      rp.setAttribute('swName', 'sw.js');
+      if (url) rp.setAttribute('url', url);
+      if (ts)  rp.setAttribute('ts', ts);
+      document.body.appendChild(rp);
+    })();
+  </script>
+</body>
+</html>

@@ -157,6 +157,21 @@ pub(super) async fn replay_viewer(headers: HeaderMap) -> impl IntoResponse {
     serve_embedded_asset(ReplayAssets::get("viewer.html"), "viewer.html", &headers)
 }
 
+/// The frame the viewer embeds: ReplayWeb.page and the agent that reaches into
+/// the replayed document. Archived pages run their own JavaScript here, which
+/// is why the viewer, not this page, holds the notes panel and every API call.
+///
+/// Served at `/replay-frame`, **outside** the service worker's `/replay/` scope,
+/// and that is load-bearing. At `/replay/frame` the worker controls the page
+/// hosting ReplayWeb.page as well as ReplayWeb.page's own inner frames, and on
+/// the next load it either missed or failed the inner frame's request: the
+/// multi-WACZ test in `browser_collection.rs` landed that frame on indice's
+/// homepage, or on a browser error page. Outside the scope it replays, which is
+/// also how wacz-exhibitor (Perma.cc's embedding) arranges it.
+pub(super) async fn replay_frame(headers: HeaderMap) -> impl IntoResponse {
+    serve_embedded_asset(ReplayAssets::get("frame.html"), "frame.html", &headers)
+}
+
 pub(super) async fn replay_index() -> impl IntoResponse {
     (StatusCode::SEE_OTHER, [("location", "/")]).into_response()
 }

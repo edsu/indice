@@ -444,29 +444,46 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
     );
 }
 
-#[tokio::test]
-async fn viewer_wires_up_replay_web_page() {
+async fn get_html(path: &str) -> String {
     let tmp = TempDir::new().unwrap();
     let app = public_router(tmp.path());
-    let req = Request::get("/replay/viewer").body(Body::empty()).unwrap();
+    let req = Request::get(path).body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
+    String::from_utf8(body.to_vec()).unwrap()
+}
 
+/// The viewer holds the chrome and frames the replay; it must not run
+/// ReplayWeb.page itself, or archived script would share its page.
+#[tokio::test]
+async fn viewer_frames_the_replay() {
+    let html = get_html("/replay/viewer").await;
+    assert!(
+        html.contains("/replay-frame"),
+        "viewer must embed the replay frame"
+    );
+    assert!(
+        !html.contains("/replay/ui.js"),
+        "viewer must not load ReplayWeb.page"
+    );
+}
+
+#[tokio::test]
+async fn replay_frame_wires_up_replay_web_page() {
+    let html = get_html("/replay-frame").await;
     assert!(
         html.contains("replay-web-page"),
-        "viewer must mount the component"
+        "frame must mount the component"
     );
     // Absolute replaybase is what makes the service worker resolve to
     // /replay/sw.js rather than /replay/replay/sw.js - the bug we hit.
-    assert!(html.contains("replaybase"), "viewer must set replaybase");
     assert!(
-        html.contains("/replay/"),
+        html.contains("setAttribute('replaybase', '/replay/')"),
         "replaybase should be the absolute /replay/ path"
     );
     assert!(
-        html.contains("rwp-url-change"),
-        "viewer should track navigation for the banner"
+        html.contains("/replay/agent.js"),
+        "frame must load the agent that reports navigation and selections"
     );
 }
 
