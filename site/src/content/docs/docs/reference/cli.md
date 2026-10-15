@@ -120,7 +120,7 @@ proxy sends to the replay listener, and refuses to start without one. See
 [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own).
 
 `--site-url` is needed for the cross-site check only behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`
-(nginx's and Apache's default); Caddy and a direct bind are detected automatically. Set it anyway on a server and the replay host also says, in its `Content-Security-Policy`, that only this site may frame it.
+(nginx's and Apache's default); Caddy and a direct bind are detected automatically. Set it anyway on a server and the replay host also says, in its `Content-Security-Policy`, that only this site may frame it, and indice checks that `--replay-url` is on a different host. [What `--site-url` does](/docs/guides/security/#what---site-url-does) has all three.
 
 On startup `serve` warns if the index is fragmented, meaning many segments, e.g. built by an older
 version or left by a killed run. It points you at `optimize`.

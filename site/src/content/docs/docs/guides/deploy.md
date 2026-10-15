@@ -11,7 +11,7 @@ indice runs in one of two shapes, and the only question that separates them is w
 No read-only server shape exists. A server you cannot write to sends you back to the command line the first time you want to fix a finding aid, and a server with an empty `users.yaml` already reads as read-only to every visitor.
 
 :::note[Read this before a public instance]
-indice is alpha, and what it does and does not defend is written down rather than implied: see [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) for what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so it is worth ten minutes before you put one on the open web.
+indice is alpha, and what it does and does not defend is written down rather than implied: [Securing a server](/docs/guides/security/) is the operator's version, [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes is the full argument, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) lists what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so it is worth ten minutes before you put one on the open web.
 :::
 
 ## Container image

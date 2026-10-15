@@ -53,6 +53,7 @@ export default defineConfig({
             'docs/guides/manage',
             'docs/guides/annotations',
             'docs/guides/deploy',
+            'docs/guides/security',
             'docs/guides/scale',
           ],
         },
