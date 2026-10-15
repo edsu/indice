@@ -27,6 +27,13 @@
 # work through the proxy. Do not add `encode`: indice compresses in process, and
 # gzipping a byte-range response breaks replay.
 {$SITE_ADDRESS} {
+	# HSTS is the proxy's to set, because the proxy is what terminates TLS;
+	# indice sets the rest of its security headers itself. A year, and not
+	# `includeSubDomains`: an institution's other subdomains are not this
+	# site's to commit to HTTPS. Browsers ignore it over plain HTTP, so a :80
+	# test stack is unaffected.
+	header Strict-Transport-Security "max-age=31536000"
+
 	# `route` keeps these in the order written, rather than Caddy's standard
 	# directive order, so the reasoning below reads top to bottom.
 	route {
@@ -137,6 +144,7 @@
 # that would read them. Keep it that way. This block is the one place on the
 # site where a stranger's script runs.
 {$REPLAY_ADDRESS} {
+	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy indice:8081 {
 		header_up -X-Forwarded-Email
 		header_up -X-Indice-Auth-Secret

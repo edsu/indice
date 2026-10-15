@@ -90,8 +90,10 @@ async fn the_viewer_frames_the_configured_replay_origin() {
         "the placeholder must be filled"
     );
     // The code that builds the frame's URL, not a comment naming it.
+    let (status, js) = get(&app, "/replay/viewer.js").await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains("'/replay-frame?'"),
+        js.contains("'/replay-frame?'"),
         "viewer must embed the frame"
     );
     assert!(
@@ -133,7 +135,12 @@ async fn the_app_origin_serves_nothing_that_replays() {
 async fn the_viewer_files_are_the_apps() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, replay } = server(tmp.path());
-    for path in ["/replay/annotations.js", "/replay/annotations.css"] {
+    for path in [
+        "/replay/viewer.js",
+        "/replay/viewer.css",
+        "/replay/annotations.js",
+        "/replay/annotations.css",
+    ] {
         let (status, headers, _) = call(&app, Method::GET, path, &[]).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert_eq!(headers.get("cache-control").unwrap(), "no-cache");

@@ -142,12 +142,13 @@ enum Commands {
         #[arg(long, value_name = "SECRET", requires = "auth_proxy_header")]
         auth_proxy_secret: Option<String>,
 
-        /// This site's public URL (e.g. `https://archive.example.org`), used by the
-        /// cross-site (CSRF) check on writes. Only needed behind a proxy that
-        /// rewrites the Host header without setting X-Forwarded-Host, which is
-        /// nginx's and Apache's default; Caddy and a direct bind are detected
-        /// automatically. May also be given via the INDICE_SITE_URL environment
-        /// variable.
+        /// This site's public URL (e.g. `https://archive.example.org`). The
+        /// cross-site (CSRF) check on writes compares against it, which is
+        /// needed behind a proxy that rewrites the Host header without setting
+        /// X-Forwarded-Host (nginx's and Apache's default); Caddy and a direct
+        /// bind are detected automatically. It also lets the replay host tell
+        /// browsers that only this site may frame it. May also be given via the
+        /// INDICE_SITE_URL environment variable.
         #[arg(long, value_name = "URL")]
         site_url: Option<String>,
 

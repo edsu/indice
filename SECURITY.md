@@ -57,8 +57,6 @@ Filed, documented, and not news. The tracker is in this repo, so
   with a shell can remove it. `rustyweb-failed-ingest-leaves-file-d1dw`
 - Error responses carry server internals, including filesystem paths.
   `rustyweb-open-web-hardening-u9y6.5`
-- No CSP, `X-Content-Type-Options`, or referrer policy.
-  `rustyweb-open-web-hardening-u9y6.6`
 - No crawler or scraper policy. `rustyweb-open-web-hardening-u9y6.7`
 - Request logs record client IP and full query strings.
   `rustyweb-open-web-hardening-u9y6.8`

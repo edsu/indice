@@ -32,7 +32,10 @@ PROJECT=indice-smoke
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 B="http://localhost:${PORT}"
-R="http://localhost:${RPORT}"
+# Another host, not just another port, because cookies ignore ports and indice
+# refuses a --replay-url on the site's own host. Caddy's :PORT address answers
+# for either name.
+R="http://127.0.0.1:${RPORT}"
 SECRET="smoke-secret-$RANDOM$RANDOM"
 
 pass=0
@@ -76,6 +79,7 @@ cat >"$TMP/env" <<EOF
 SITE_ADDRESS=:${PORT}
 REPLAY_ADDRESS=:${RPORT}
 REPLAY_URL=${R}
+SITE_URL=${B}
 INDICE_AUTH_PROXY_SECRET=${SECRET}
 OIDC_ISSUER_URL=http://oidc-stub:5556
 OIDC_CLIENT_ID=indice-smoke
@@ -161,6 +165,11 @@ chk 200 "$(code "$B/collection/apod")" "public collection page"
 chk 200 "$(code "$B/replay/viewer")" "replay viewer"
 chk 1 "$(curl -s --max-time 15 "$B/replay/viewer" | grep -c "content=\"${R}\"")" \
 	"the viewer frames the replay origin"
+site_hdrs=$(curl -s -D- -o /dev/null --max-time 15 "$B/")
+chk 1 "$(grep -ci '^content-security-policy:.*frame-src '"${R}" <<<"$site_hdrs")" \
+	"the site's policy reaches the browser, framing only the replay host"
+chk 1 "$(grep -ci '^x-content-type-options: nosniff' <<<"$site_hdrs")" "nosniff on the site"
+chk 1 "$(grep -ci '^strict-transport-security:' <<<"$site_hdrs")" "HSTS on the site, set by Caddy"
 chk 302 "$(code "$B/manage/login")" "/manage/login starts a login"
 
 echo
@@ -172,6 +181,11 @@ chk 404 "$(code "$B/replay/sw.js")" "the site does NOT serve the service worker"
 chk 404 "$(code "$B/replay/ui.js")" "the site does NOT serve ReplayWeb.page"
 chk 404 "$(code -X POST -d 'name=x' "$R/api/collections")" "the replay host has no write routes"
 chk 404 "$(code "$R/")" "the replay host serves no pages"
+replay_hdrs=$(curl -s -D- -o /dev/null --max-time 15 "$R/replay-frame")
+chk 1 "$(grep -ci '^x-content-type-options: nosniff' <<<"$replay_hdrs")" "nosniff on the replay host"
+chk 1 "$(grep -ci '^strict-transport-security:' <<<"$replay_hdrs")" "HSTS on the replay host"
+chk 1 "$(grep -ci "^content-security-policy: frame-ancestors 'self' localhost:${PORT}" <<<"$replay_hdrs")" \
+	"only the site may frame the replay host (SITE_URL)"
 
 echo
 echo "── a forged identity must not be believed ──"

@@ -800,3 +800,138 @@ async fn open_frame_unframed(driver: &WebDriver, addr: SocketAddr, id: &str) -> 
         "the unframed frame neither refused nor replayed.\nDIAG: {diag}"
     ))
 }
+
+/// Every kind of page indice serves runs under its Content-Security-Policy
+/// with nothing refused: the policy and the pages agree.
+///
+/// A policy that breaks a page breaks it silently, a button that does nothing
+/// or a panel that never fills, so this collects the browser's own reports.
+/// A listener for `securitypolicyviolation` is installed through the DevTools
+/// protocol before each page's own scripts run, and read back after the page
+/// has settled. As a workstation, so the workroom pages and their scripts are
+/// all reachable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn every_page_runs_under_its_content_security_policy() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "csp").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), workstation()).await;
+
+    let driver = connect().await;
+    let result = collect_violations(&driver, addr, &id).await;
+    let _ = driver.quit().await;
+    server.abort();
+    let (violations, rendered) = result.unwrap();
+    assert!(
+        violations.is_empty(),
+        "the browser refused:\n{}",
+        violations.join("\n")
+    );
+    rendered.unwrap();
+}
+
+/// The violations each page reported, and whether the viewer, the last page,
+/// went on to replay. Kept apart so a refused page is reported as that, rather
+/// than as whatever it then failed to do.
+async fn collect_violations(
+    driver: &WebDriver,
+    addr: SocketAddr,
+    id: &str,
+) -> Result<(Vec<String>, Result<(), String>), String> {
+    driver
+        .cdp()
+        .send_raw(
+            "Page.addScriptToEvaluateOnNewDocument",
+            serde_json::json!({
+                "source": "window.__csp = []; document.addEventListener('securitypolicyviolation', \
+                    function (e) { window.__csp.push(e.effectiveDirective + ' blocked ' + \
+                    (e.blockedURI || '?') + ' at ' + (e.sourceFile || '') + ':' + e.lineNumber); });"
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
+    let pages = [
+        "/".to_string(),
+        "/search?q=2Tone".to_string(),
+        "/collection/csp".to_string(),
+        "/collection/csp/annotations".to_string(),
+        format!("/crawl/{id}"),
+        "/manage/add".to_string(),
+        "/manage/collections/new".to_string(),
+        "/manage/edit/csp".to_string(),
+        format!(
+            "/replay/viewer?source=/files/{id}&url={page_url}&ts=20260609213407\
+             &name=2Tone&collection=csp&collection_id=csp"
+        ),
+    ];
+    let mut violations = Vec::new();
+    for page in &pages {
+        driver
+            .goto(&format!("http://{addr}{page}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        // Long enough for each page's own fetches, the viewer's included.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // A violation of our own, which the policy must refuse and the
+        // listener must hear: without it, an empty list could mean a listener
+        // that never ran. An inline <script> element rather than `eval`,
+        // because script WebDriver runs is exempt from the page's policy but
+        // an element it inserts is not. Reports arrive as a task, so wait.
+        let seen = driver
+            .execute(
+                "var s = document.createElement('script'); s.textContent = 'window.__ran = 1;'; \
+                 document.head.appendChild(s); \
+                 return new Promise(function (r) { setTimeout(function () { \
+                   r({ csp: window.__csp || null, ran: !!window.__ran }); }, 200); });",
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let seen = seen.json();
+        if seen["ran"].as_bool() == Some(true) {
+            violations.push(format!(
+                "{page}: an inline script ran, so no policy is in force"
+            ));
+        }
+        let Some(reports) = seen["csp"].as_array() else {
+            violations.push(format!("{page}: the listener was never installed"));
+            continue;
+        };
+        // The probe's own report, an inline script refused by script-src, is
+        // expected once; anything else is the page and the policy disagreeing.
+        let mut probe_seen = false;
+        for v in reports.iter().map(|v| v.as_str().unwrap_or("?")) {
+            if !probe_seen && v.starts_with("script-src") && v.contains(" blocked inline ") {
+                probe_seen = true;
+            } else {
+                violations.push(format!("{page}: {v}"));
+            }
+        }
+        if !probe_seen {
+            violations.push(format!("{page}: the probe's refusal was not reported"));
+        }
+    }
+
+    // And the viewer still does its job under the policy: the frame loads
+    // from the replay origin and the archived page renders in it.
+    let rendered = async {
+        enter_replay_frame(driver).await?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !deep_contains(driver, "2Tone").await? {
+            if Instant::now() > deadline {
+                let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+                return Err(format!(
+                    "the archived page never rendered under the policy.\nDIAG: {diag}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok(())
+    }
+    .await;
+    Ok((violations, rendered))
+}

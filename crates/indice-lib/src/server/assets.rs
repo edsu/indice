@@ -191,7 +191,12 @@ pub(super) async fn replay_viewer(
 /// What the app origin serves under `/replay/`: the viewer's own script and
 /// style. Listed rather than "everything embedded", because the same folder
 /// holds ReplayWeb.page, and the app origin must never serve that.
-const VIEWER_FILES: &[&str] = &["annotations.js", "annotations.css"];
+const VIEWER_FILES: &[&str] = &[
+    "viewer.js",
+    "viewer.css",
+    "annotations.js",
+    "annotations.css",
+];
 
 /// What the replay origin serves under `/replay/`: ReplayWeb.page, its service
 /// worker, and the agent that runs beside it in the frame.
