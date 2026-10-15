@@ -336,76 +336,99 @@ fn merge_max(acc: &mut Option<String>, v: Option<String>) {
     }
 }
 
-/// Index all WARC entries inside a WACZ file into the Tantivy full-text index.
+/// Index a WACZ whose WARCs are compressed inside the zip, so a CDX offset
+/// cannot be turned into a position in the WACZ (the WACZ spec says SHOULD be
+/// stored; Browsertrix always stores them, some tools do not).
 ///
-/// Records are collected across every inner WARC (rendered `urn:text:` records
-/// often live in a separate WARC from the HTML response), merged into one
-/// document per URL, and indexed once. The body prefers Browsertrix's rendered
-/// text and falls back to scraped HTML; the title comes from the HTML.
+/// Each WARC is inflated to a temp file and a CDX is built for it by reading
+/// its records once, keeping their positions and types but not their payloads.
+/// From there it is indexed like any other WACZ, a page at a time; see
+/// [`index_pages`].
 pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
     let warc_paths: Vec<_> = iter_warc_paths(wacz_path)?
         .collect::<Result<Vec<_>>>()
         .with_context(|| format!("listing WARC entries in {}", wacz_path.display()))?;
+    let limit = docs.read_limit;
 
-    let per_warc: Vec<(Vec<RawRecord>, Option<Warcinfo>)> = warc_paths
-        .par_iter()
-        .map(|entry_name| {
-            let tmp = extract_warc_from_wacz(wacz_path, entry_name).with_context(|| {
-                format!("extracting {} from {}", entry_name, wacz_path.display())
-            })?;
-            collect_page_records(tmp.path())
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    // Flatten to all records + the first warcinfo (warcinfo leads its WARC, so
-    // the first WARC's is the crawl-level record), then merge and index.
+    let mut files = Vec::new();
+    let mut cdx = Vec::new();
     let mut warcinfo: Option<Warcinfo> = None;
-    let mut raws: Vec<RawRecord> = Vec::new();
-    for (r, wi) in per_warc {
-        if warcinfo.is_none() {
-            warcinfo = wi;
-        }
-        raws.extend(r);
-    }
-    // Fold in pages.jsonl/extraPages.jsonl extracted text (see the streaming
-    // path); some crawls store rendered text only there, not in the WARCs. Read
-    // the CDX here too for the capture-quality status tally (every capture,
-    // including bodyless 4xx/5xx that never became RawRecords).
-    let mut status_counts = BTreeMap::new();
-    if let Ok(file) = std::fs::File::open(wacz_path) {
-        if let Ok(mut zip) = zip::ZipArchive::new(file) {
-            raws.extend(
-                crate::wacz::read_page_texts(&mut zip, docs.read_limit)?
-                    .into_iter()
-                    .map(|pt| RawRecord::Text {
-                        url: pt.url,
-                        timestamp: pt.ts,
-                        text: pt.text,
-                        title: pt.title,
-                    }),
-            );
-            // The tally is a nicety, so a CDX that cannot be read is skipped;
-            // one that inflates past the limit is still a refusal.
-            match crate::wacz::cdx_records(&mut zip, docs.read_limit) {
-                Ok(cdx) => status_counts = tally_status(&cdx),
-                Err(e) if crate::wacz::is_too_large(&e) => return Err(e),
-                Err(_) => {}
+    for (i, entry_name) in warc_paths.iter().enumerate() {
+        let tmp = extract_warc_from_wacz(wacz_path, entry_name)
+            .with_context(|| format!("extracting {} from {}", entry_name, wacz_path.display()))?;
+        let name = format!("warc-{i}");
+        for record in iter_records(tmp.path(), limit)? {
+            let record = match record {
+                Ok(r) => r,
+                Err(e) if crate::wacz::is_too_large(&e) => {
+                    tracing::warn!(warc = %entry_name, "skipping a record: {e:#}");
+                    continue;
+                }
+                Err(e) => return Err(e.context(format!("reading {entry_name}"))),
+            };
+            // Captured before the page filter, since warcinfo records carry no
+            // WARC-Target-URI.
+            if warcinfo.is_none() {
+                if let Some(info) = Warcinfo::from_record(&record) {
+                    if !info.is_empty() {
+                        warcinfo = Some(info);
+                    }
+                }
+            }
+            let entry = crate::wacz::CdxjRecord {
+                url: record.target_uri,
+                timestamp: record.timestamp,
+                mime: record.content_type,
+                status: record.http_status.unwrap_or(0),
+                filename: name.clone(),
+                offset: record.offset,
+                length: record.record_length,
+            };
+            if is_page_record(&entry) {
+                cdx.push(entry);
             }
         }
+        files.push((name, tmp));
     }
-    index_merged(
-        raws,
-        warcinfo,
-        status_counts,
-        docs,
-        &wacz_path.display().to_string(),
-    )
+    let (fetch, starts) = ConcatFetch::open(&files)?;
+
+    // The status tally reads the WACZ's own CDX, which lists every capture,
+    // including the bodyless ones built above would not keep. A nicety, so an
+    // unreadable CDX is skipped; one that inflates past the limit is not.
+    let mut status_counts = BTreeMap::new();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(wacz_path)?)?;
+    match crate::wacz::cdx_records(&mut zip, limit) {
+        Ok(all) => status_counts = tally_status(&all),
+        Err(e) if crate::wacz::is_too_large(&e) => return Err(e),
+        Err(_) => {}
+    }
+
+    let label = wacz_path.display().to_string();
+    let mut stats = index_pages(
+        PageSource {
+            fetch,
+            cdx: &cdx,
+            starts: &starts,
+            open_lists: || -> Result<_> {
+                Ok(zip::ZipArchive::new(std::fs::File::open(wacz_path)?)?)
+            },
+        },
+        &Run {
+            docs,
+            label: &label,
+            concurrency: default_concurrency(false),
+            progress: crate::index::no_progress(),
+        },
+    )?;
+    stats.warcinfo = warcinfo;
+    stats.status_counts = status_counts;
+    Ok(stats)
 }
 
-/// Index a WACZ by CDX-guided/streaming extraction over a `Read + Seek` source
-/// (a local file or an HTTP range reader): read only the page-relevant records
-/// the CDX points at, rather than scanning every WARC record. Produces the same
-/// index as [`index_wacz`] (both share [`record_to_raw`] and [`index_merged`]).
+/// Index a WACZ whose WARCs are stored, over any [`RangeFetch`] (a local file
+/// or an HTTP range reader): read its CDX, then index it a page at a time,
+/// fetching only the records the CDX says can become a page. See
+/// [`index_pages`].
 pub(super) fn index_wacz_streaming<F>(
     fetch: F,
     docs: &Docs,
@@ -416,313 +439,495 @@ pub(super) fn index_wacz_streaming<F>(
 where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
 {
-    let (raws, warcinfo, status_counts) =
-        collect_page_records_via_cdx(fetch, concurrency, progress, docs.read_limit)?;
-    index_merged(raws, warcinfo, status_counts, docs, label)
-}
-
-/// Merge per-record contributions into one document per URL and index them.
-/// Shared by the scan-everything ([`index_wacz`]) and CDX-guided
-/// ([`index_wacz_streaming`]) paths.
-fn index_merged(
-    raws: Vec<RawRecord>,
-    warcinfo: Option<Warcinfo>,
-    status_counts: BTreeMap<u16, u64>,
-    docs: &Docs,
-    label: &str,
-) -> Result<CrawlStats> {
-    // The only phase that reads the tags rather than forwarding them; the
-    // others just pass `docs` along.
-    let Docs {
-        crawl_id,
-        crawl_name,
-        collection,
-        search,
-        ..
-    } = *docs;
-    let build_start = std::time::Instant::now();
-    let mut pages: HashMap<String, MergedPage> = HashMap::new();
-    {
-        for raw in raws {
-            match raw {
-                RawRecord::Html {
-                    url,
-                    timestamp,
-                    title,
-                    body,
-                    description,
-                    headings,
-                    keywords,
-                    author,
-                    media_type,
-                    lang,
-                    status,
-                    modified_year,
-                } => {
-                    let e = pages.entry(url).or_default();
-                    // The HTML capture is the authoritative timestamp for replay.
-                    e.timestamp = timestamp;
-                    if !title.is_empty() {
-                        e.title = Some(title);
-                    }
-                    if !body.is_empty() {
-                        e.html_body = Some(body);
-                    }
-                    if !description.is_empty() {
-                        e.description = Some(description);
-                    }
-                    if !headings.is_empty() {
-                        e.headings = Some(headings);
-                    }
-                    if !keywords.is_empty() {
-                        e.keywords = Some(keywords);
-                    }
-                    if !author.is_empty() {
-                        e.author = Some(author);
-                    }
-                    if !media_type.is_empty() {
-                        e.media_type = Some(media_type);
-                    }
-                    if !lang.is_empty() {
-                        e.lang = Some(lang);
-                    }
-                    if status.is_some() {
-                        e.status = status;
-                    }
-                    if modified_year.is_some() {
-                        e.modified_year = modified_year;
-                    }
-                }
-                RawRecord::Text {
-                    url,
-                    timestamp,
-                    text,
-                    title,
-                } => {
-                    let e = pages.entry(url).or_default();
-                    if e.timestamp.is_empty() {
-                        e.timestamp = timestamp;
-                    }
-                    e.rendered_text = Some(text);
-                    // Rendered text always comes from an HTML page.
-                    e.media_type.get_or_insert_with(|| "html".to_string());
-                    // A pages.jsonl title fills in only when the HTML capture
-                    // gave none - the scraped HTML <title> wins when present.
-                    if let Some(t) = title {
-                        if !t.is_empty() {
-                            e.title.get_or_insert(t);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut count = 0u64;
-    let mut earliest: Option<String> = None;
-    let mut latest: Option<String> = None;
-    {
-        use crate::search::Page;
-        let mut s = search.lock().unwrap();
-        for (url, m) in pages {
-            // Prefer the fully rendered text; fall back to scraped HTML.
-            let body = m.rendered_text.or(m.html_body).unwrap_or_default();
-            let title = m.title.unwrap_or_default();
-            let description = m.description.unwrap_or_default();
-            let headings = m.headings.unwrap_or_default();
-            let keywords = m.keywords.unwrap_or_default();
-            let author = m.author.unwrap_or_default();
-            let media_type = m.media_type.unwrap_or_default();
-            let lang = m.lang.unwrap_or_default();
-            if title.is_empty() && body.is_empty() && description.is_empty() {
-                continue;
-            }
-            s.index_page(&Page {
-                url: &url,
-                timestamp: &m.timestamp,
-                title: &title,
-                body: &body,
-                description: &description,
-                headings: &headings,
-                keywords: &keywords,
-                author: &author,
-                media_type: &media_type,
-                lang: &lang,
-                status: m.status,
-                modified_year: m.modified_year,
-                crawl_id,
-                crawl_name,
-                collection,
-            })?;
-            count += 1;
-            // Track the capture date range (14-digit timestamps sort
-            // chronologically as plain strings).
-            if !m.timestamp.is_empty() {
-                if earliest.as_deref().is_none_or(|e| m.timestamp.as_str() < e) {
-                    earliest = Some(m.timestamp.clone());
-                }
-                if latest.as_deref().is_none_or(|l| m.timestamp.as_str() > l) {
-                    latest = Some(m.timestamp.clone());
-                }
-            }
-        }
-    }
-
-    debug!(build_ms = build_start.elapsed().as_millis() as u64, wacz = %label, "built index");
-    info!(pages = count, wacz = %label, "indexed pages from WACZ");
-    Ok(CrawlStats {
-        pages: count,
-        earliest_capture: earliest,
-        latest_capture: latest,
-        warcinfo,
-        // Set by index_nested for a multi-WACZ; a single WACZ isn't nested.
-        nested_waczs: None,
-        status_counts,
-    })
-}
-
-/// Parse an extracted WARC file into raw per-record contributions (HTML
-/// responses and `urn:text:` rendered-text resources). Other record types
-/// (images, JS, CSS, redirects, other `urn:` pseudo-records) are ignored.
-fn collect_page_records(warc_path: &Path) -> Result<(Vec<RawRecord>, Option<Warcinfo>)> {
-    let records: Vec<WarcRecord> = iter_records(warc_path)
-        .with_context(|| format!("reading {}", warc_path.display()))?
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut out = Vec::new();
-    let mut warcinfo: Option<Warcinfo> = None;
-    for record in &records {
-        // Capture the crawl's warcinfo (checked before the URI gate in
-        // record_to_raw, since warcinfo records carry no WARC-Target-URI).
-        if warcinfo.is_none() {
-            if let Some(info) = Warcinfo::from_record(record) {
-                if !info.is_empty() {
-                    warcinfo = Some(info);
-                }
-            }
-        }
-        if let Some(raw) = record_to_raw(record) {
-            out.push(raw);
-        }
-    }
-
-    Ok((out, warcinfo))
-}
-
-/// Page records read from a WACZ, the crawl-level `warcinfo`, and the HTTP status
-/// tally over the CDX (the capture-quality signal).
-type PageRecords = (Vec<RawRecord>, Option<Warcinfo>, BTreeMap<u16, u64>);
-
-/// CDX-guided extraction over a `Read + Seek` WACZ: read the CDX, fetch only the
-/// page-relevant records (HTML/PDF responses and `urn:text:` rendered text) by
-/// seeking to `data_start + offset`, and transform each with [`record_to_raw`].
-/// Images/JS/JSON/pageinfo/thumbnail captures are never fetched. Streaming
-/// indexes exactly what the CDX lists (authoritative for Browsertrix WACZs).
-fn collect_page_records_via_cdx<F>(
-    fetch: F,
-    concurrency: usize,
-    progress: &dyn IndexProgress,
-    read_limit: u64,
-) -> Result<PageRecords>
-where
-    F: crate::http_range::RangeFetch + Clone + Send + Sync,
-{
     use crate::wacz;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     progress.phase("reading index");
-    let read_start = std::time::Instant::now();
-
-    // Setup (serial): read the ZIP central directory, the CDX, each WARC's
-    // data-start, and the warcinfo over a buffered range reader.
-    let mut zip = zip::ZipArchive::new(crate::http_range::RangeReader::new(fetch.clone()))
-        .context("opening WACZ ZIP")?;
-    wacz::ensure_warcs_stored(&mut zip)?;
-    let cdx = wacz::cdx_records(&mut zip, read_limit)?;
+    let limit = docs.read_limit;
+    let (cdx, starts, warcinfo) = {
+        let mut zip =
+            zip::ZipArchive::new(RangeReader::new(fetch.clone())).context("opening WACZ ZIP")?;
+        wacz::ensure_warcs_stored(&mut zip)?;
+        let cdx = wacz::cdx_records(&mut zip, limit)?;
+        let starts = wacz::warc_data_starts(&mut zip)?;
+        let warcinfo = wacz::find_warcinfo_streaming(&mut zip, limit)?;
+        (cdx, starts, warcinfo)
+    };
     let status_counts = tally_status(&cdx);
-    let starts = wacz::warc_data_starts(&mut zip)?;
-    let warcinfo = wacz::find_warcinfo_streaming(&mut zip, read_limit)?;
-    // Extracted page text from pages.jsonl/extraPages.jsonl (read once, while the
-    // ZIP is open). Some crawls store rendered text only here - not as urn:text:
-    // WARC records the CDX points at - so without this that text is unsearchable.
-    let page_texts = wacz::read_page_texts(&mut zip, read_limit)?;
-    drop(zip);
+    let mut stats = index_pages(
+        PageSource {
+            fetch: fetch.clone(),
+            cdx: &cdx,
+            starts: &starts,
+            open_lists: || -> Result<_> {
+                Ok(zip::ZipArchive::new(RangeReader::new(fetch.clone()))?)
+            },
+        },
+        &Run {
+            docs,
+            label,
+            concurrency,
+            progress,
+        },
+    )?;
+    stats.warcinfo = warcinfo;
+    stats.status_counts = status_counts;
+    Ok(stats)
+}
 
-    // Records that can become a page; skip media/pseudo-records. The count is the
-    // determinate-bar total (each is one fetch + extract).
-    let wanted: Vec<&crate::wacz::CdxjRecord> = cdx
-        .iter()
-        .filter(|c| {
-            c.length != 0
-                && (c.url.starts_with("urn:text:")
-                    || c.mime.contains("html")
-                    || c.mime.contains("pdf"))
-        })
-        .collect();
+/// Whether a CDX record can become a page: an HTML or PDF response, or a
+/// `urn:text:` record of rendered text. Media and other pseudo-records are
+/// never fetched.
+fn is_page_record(c: &crate::wacz::CdxjRecord) -> bool {
+    c.length != 0
+        && (c.url.starts_with("urn:text:") || c.mime.contains("html") || c.mime.contains("pdf"))
+}
+
+/// Index one WACZ a page at a time, from its CDX.
+///
+/// A page's search document draws on up to three sources that arrive apart:
+/// its HTML response record; a `urn:text:` record of Browsertrix's rendered
+/// text; and a line of `pages.jsonl`/`extraPages.jsonl`, with rendered text and
+/// a title. Rendered text, when there is any, wins over the body scraped from
+/// the HTML, and the page lists' last line for a page wins over a `urn:text:`
+/// record. Tantivy writes a document once, so a page's sources have to meet
+/// before it is written, and this is how they meet without holding the crawl:
+///
+/// 1. The page lists are streamed once to note which pages have text there,
+///    keeping the URL, where the page's last line is, and the first title and
+///    timestamp the lines give, but not the text.
+/// 2. The CDX's page records are grouped by page (a `urn:text:` record joins
+///    its page) and each page's records are fetched and merged together, one
+///    page per worker. A page with no page-list text is written there and then.
+///    One with page-list text keeps only its metadata, since its body would
+///    lose anyway.
+/// 3. The page lists are streamed again, and each page's last line is merged
+///    with that metadata and written.
+///
+/// So memory holds the CDX, the listed URLs, the waiting pages' metadata
+/// (capped per field, see [`cap`]), and a page per worker: never the crawl's
+/// text, which for a large crawl is gigabytes and for a hostile one is
+/// whatever it asks for.
+fn index_pages<F, L, R>(source: PageSource<'_, F, L>, run: &Run) -> Result<CrawlStats>
+where
+    F: RangeFetch + Clone + Send + Sync,
+    L: Fn() -> Result<zip::ZipArchive<R>>,
+    R: std::io::Read + std::io::Seek,
+{
+    use crate::wacz::{self, PageTextPos};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let PageSource {
+        fetch,
+        cdx,
+        starts,
+        open_lists,
+    } = source;
+    let Run {
+        docs,
+        label,
+        concurrency,
+        progress,
+    } = *run;
+    let limit = docs.read_limit;
+    let started = std::time::Instant::now();
+
+    // 1. Which pages the page lists give text for.
+    #[derive(Default)]
+    struct Listed {
+        last: PageTextPos,
+        title: Option<String>,
+        timestamp: String,
+    }
+    let mut listed: HashMap<String, Listed> = HashMap::new();
+    wacz::for_each_page_text(&mut open_lists()?, limit, |pos, page| {
+        let e = listed.entry(page.url).or_default();
+        e.last = pos;
+        if e.title.is_none() {
+            e.title = page.title.map(|t| cap(t, TITLE_CAP));
+        }
+        if e.timestamp.is_empty() {
+            e.timestamp = page.ts;
+        }
+        Ok(())
+    })?;
+
+    // 2. The CDX's page records, grouped by page in CDX order, which within a
+    //    page is capture order, so a later capture's fields win as they should.
+    let wanted: Vec<&crate::wacz::CdxjRecord> = cdx.iter().filter(|c| is_page_record(c)).collect();
     progress.set_total(wanted.len() as u64);
+    let mut slot: HashMap<&str, usize> = HashMap::new();
+    let mut groups: Vec<(&str, Vec<&crate::wacz::CdxjRecord>)> = Vec::new();
+    for c in &wanted {
+        let page = c.url.strip_prefix("urn:text:").unwrap_or(&c.url);
+        match slot.get(page) {
+            Some(&i) => groups[i].1.push(c),
+            None => {
+                slot.insert(page, groups.len());
+                groups.push((page, vec![c]));
+            }
+        }
+    }
 
-    // Fetch + extract each wanted record concurrently. The CDX gives every record
-    // an independent (offset, length), so fetches don't depend on each other:
-    // fanning out hides per-record round-trip latency (the win for remote WACZs)
-    // and parallelizes HTML/PDF text extraction (CPU) across cores.
+    let writer = PageWriter::new(docs);
+    let waiting: Mutex<HashMap<String, MergedPage>> = Mutex::new(HashMap::new());
+    // Taken by a worker whose record grows past SMALL_RECORD, and held until
+    // that page is written or set aside; see records_from_slice_gated.
+    let large = Mutex::new(());
     let done = AtomicU64::new(0);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(concurrency)
         .build()
         .context("building record-fetch thread pool")?;
-    let mut out: Vec<RawRecord> = pool.install(|| {
-        wanted
+    pool.install(|| {
+        groups
             .par_iter()
-            .flat_map_iter(|c| {
-                let base = c.filename.rsplit('/').next().unwrap_or(&c.filename);
-                let raws: Vec<RawRecord> = match starts.get(base) {
-                    Some(&start) => {
-                        let (from, len) = (start + c.offset, c.length);
-                        match fetch
-                            .fetch(from, from + len)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|bytes| wacz::records_from_slice(&bytes, from, len, read_limit))
-                        {
-                            Ok(records) => records.iter().filter_map(record_to_raw).collect(),
-                            Err(e) => {
-                                tracing::warn!(url = %c.url, "skipping unreadable CDX record: {e:#}");
-                                Vec::new()
+            .try_for_each(|(page, records)| -> Result<()> {
+                let mut merged = MergedPage::default();
+                let mut held = None;
+                // One gzip member can hold several records, each with its own CDX
+                // line at the member's offset; fetch it once.
+                let mut fetched = std::collections::HashSet::new();
+                for c in records {
+                    if fetched.insert((c.filename.as_str(), c.offset)) {
+                        let gate = Gate {
+                            lock: &large,
+                            held: &mut held,
+                        };
+                        for raw in fetch_raw_records(&fetch, starts, c, limit, gate) {
+                            if raw.url() == *page {
+                                merge_raw(&mut merged, raw);
                             }
                         }
                     }
-                    None => Vec::new(),
-                };
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                progress.set_records(n);
-                raws
+                    progress.set_records(done.fetch_add(1, Ordering::Relaxed) + 1);
+                }
+                if listed.contains_key(*page) {
+                    merged.html_body = None;
+                    merged.rendered_text = None;
+                    waiting.lock().unwrap().insert(page.to_string(), merged);
+                    Ok(())
+                } else {
+                    writer.write(page, merged)
+                }
             })
-            .collect()
-    });
+    })?;
 
-    // Fold in the pages.jsonl/extraPages.jsonl text as rendered-text records;
-    // index_merged merges them into the matching page docs by URL (most already
-    // exist from their HTML response, so this enriches rather than duplicates).
-    let page_text_count = page_texts.len();
-    out.extend(page_texts.into_iter().map(|pt| RawRecord::Text {
-        url: pt.url,
-        timestamp: pt.ts,
-        text: pt.text,
-        title: pt.title,
-    }));
+    // 3. The page lists again: each page's last line, with its waiting metadata.
+    progress.phase("building index");
+    let mut waiting = waiting.into_inner().unwrap();
+    wacz::for_each_page_text(&mut open_lists()?, limit, |pos, page| {
+        let Some(l) = listed.get(&page.url) else {
+            return Ok(());
+        };
+        if l.last != pos {
+            return Ok(());
+        }
+        let mut merged = waiting.remove(&page.url).unwrap_or_default();
+        if merged.timestamp.is_empty() {
+            merged.timestamp = l.timestamp.clone();
+        }
+        merged.rendered_text = Some(page.text);
+        // Rendered text always comes from an HTML page.
+        merged.media_type.get_or_insert_with(|| "html".to_string());
+        // A page-list title fills in only when the HTML capture gave none.
+        if let Some(t) = &l.title {
+            merged.title.get_or_insert_with(|| t.clone());
+        }
+        writer.write(&page.url, merged)
+    })?;
+    // Both passes read the same lines, so nothing should be left waiting; if
+    // something is, it is still a page, written without a body.
+    for (url, merged) in waiting {
+        writer.write(&url, merged)?;
+    }
 
     debug!(
         records = wanted.len(),
-        page_texts = page_text_count,
-        read_ms = read_start.elapsed().as_millis() as u64,
+        pages = groups.len(),
+        listed = listed.len(),
+        ms = started.elapsed().as_millis() as u64,
         concurrency,
-        "read page records via CDX"
+        "indexed pages a page at a time"
     );
-    // Records read. The merge + Tantivy indexing that follows has no per-record
-    // total, so drop the determinate bar back to a spinner - otherwise it sits at
-    // 100% with a decaying rate/ETA during the slow tail (very visible for a local
-    // file, where reads are near-instant and the tail dominates).
-    progress.phase("building index");
-    Ok((out, warcinfo, status_counts))
+    let stats = writer.finish();
+    info!(pages = stats.pages, wacz = %label, "indexed pages from WACZ");
+    Ok(stats)
+}
+
+/// What [`index_pages`] reads: the WACZ's bytes, the CDX that says where its
+/// records are, each WARC's offset in those bytes, and a way to open the zip
+/// again to stream its page lists.
+struct PageSource<'a, F, L> {
+    fetch: F,
+    cdx: &'a [crate::wacz::CdxjRecord],
+    starts: &'a HashMap<String, u64>,
+    open_lists: L,
+}
+
+/// How [`index_pages`] runs: where the documents go, what to call the WACZ in
+/// logs, how many records to fetch at once, and where to report progress.
+#[derive(Clone, Copy)]
+struct Run<'a> {
+    docs: &'a Docs<'a>,
+    label: &'a str,
+    concurrency: usize,
+    progress: &'a dyn IndexProgress,
+}
+
+/// The most of a page's HTML parsed for its text. See [`record_to_raw`].
+const HTML_TEXT_CAP: usize = 16 * 1024 * 1024;
+
+/// How far a record inflates before its worker has to take the shared lock.
+/// Nearly every page is far smaller, so records are read in parallel; one that
+/// is not waits its turn, so the workers together hold at most this much each
+/// plus one record of up to the limit, rather than the limit each.
+const SMALL_RECORD: u64 = 16 * 1024 * 1024;
+
+/// The shared lock a worker takes for a large record, and its hold on it,
+/// kept until the worker's page is written or set aside.
+struct Gate<'a, 'g> {
+    lock: &'g Mutex<()>,
+    held: &'a mut Option<std::sync::MutexGuard<'g, ()>>,
+}
+
+/// Fetch one CDX record and turn what it holds into page contributions. A
+/// record that cannot be read, including one that inflates past the limit, is
+/// skipped with a warning: one bad record should not cost the crawl.
+fn fetch_raw_records<F: RangeFetch>(
+    fetch: &F,
+    starts: &HashMap<String, u64>,
+    c: &crate::wacz::CdxjRecord,
+    limit: u64,
+    gate: Gate<'_, '_>,
+) -> Vec<RawRecord> {
+    let base = c.filename.rsplit('/').next().unwrap_or(&c.filename);
+    let Some(&start) = starts.get(base) else {
+        return Vec::new();
+    };
+    let (from, len) = (start + c.offset, c.length);
+    // The CDX says how long the record is, and the fetch allocates that much
+    // before reading, so a length past the limit is refused unfetched.
+    if len > limit {
+        tracing::warn!(url = %c.url, "skipping a CDX record longer than the limit ({len} bytes)");
+        return Vec::new();
+    }
+    match fetch
+        .fetch(from, from + len)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| {
+            crate::wacz::records_from_slice_gated(
+                &bytes,
+                from,
+                len,
+                limit,
+                SMALL_RECORD,
+                gate.lock,
+                gate.held,
+            )
+        }) {
+        Ok(records) => records.iter().filter_map(record_to_raw).collect(),
+        Err(e) => {
+            tracing::warn!(url = %c.url, "skipping unreadable CDX record: {e:#}");
+            Vec::new()
+        }
+    }
+}
+
+/// The most of each metadata field a page keeps. A page waits in memory with
+/// its metadata until its page-list text arrives, and a hostile page can carry
+/// a gigabyte of headings, so each field is capped well above anything a real
+/// page has. The body is not capped: it is the page's text, and is indexed in
+/// full.
+const TITLE_CAP: usize = 2 * 1024;
+const DESCRIPTION_CAP: usize = 8 * 1024;
+const HEADINGS_CAP: usize = 64 * 1024;
+const KEYWORDS_CAP: usize = 4 * 1024;
+const AUTHOR_CAP: usize = 1024;
+const LANG_CAP: usize = 64;
+
+/// `s`, cut to at most `max` bytes on a character boundary.
+fn cap(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
+/// Fold one record's contribution into its page. Later contributions win,
+/// field by field, except where noted: the caller feeds them in capture order.
+fn merge_raw(e: &mut MergedPage, raw: RawRecord) {
+    match raw {
+        RawRecord::Html {
+            url: _,
+            timestamp,
+            title,
+            body,
+            description,
+            headings,
+            keywords,
+            author,
+            media_type,
+            lang,
+            status,
+            modified_year,
+        } => {
+            // The HTML capture is the authoritative timestamp for replay.
+            e.timestamp = timestamp;
+            if !title.is_empty() {
+                e.title = Some(cap(title, TITLE_CAP));
+            }
+            if !body.is_empty() {
+                e.html_body = Some(body);
+            }
+            if !description.is_empty() {
+                e.description = Some(cap(description, DESCRIPTION_CAP));
+            }
+            if !headings.is_empty() {
+                e.headings = Some(cap(headings, HEADINGS_CAP));
+            }
+            if !keywords.is_empty() {
+                e.keywords = Some(cap(keywords, KEYWORDS_CAP));
+            }
+            if !author.is_empty() {
+                e.author = Some(cap(author, AUTHOR_CAP));
+            }
+            if !media_type.is_empty() {
+                e.media_type = Some(media_type);
+            }
+            if !lang.is_empty() {
+                e.lang = Some(cap(lang, LANG_CAP));
+            }
+            if status.is_some() {
+                e.status = status;
+            }
+            if modified_year.is_some() {
+                e.modified_year = modified_year;
+            }
+        }
+        RawRecord::Text {
+            url: _,
+            timestamp,
+            text,
+            title,
+        } => {
+            if e.timestamp.is_empty() {
+                e.timestamp = timestamp;
+            }
+            e.rendered_text = Some(text);
+            // Rendered text always comes from an HTML page.
+            e.media_type.get_or_insert_with(|| "html".to_string());
+            if let Some(t) = title.filter(|t| !t.is_empty()) {
+                e.title.get_or_insert_with(|| cap(t, TITLE_CAP));
+            }
+        }
+    }
+}
+
+/// Writes merged pages into the search index, shared by the workers, and
+/// keeps the crawl's page count and capture range as it goes.
+struct PageWriter<'a> {
+    docs: &'a Docs<'a>,
+    stats: Mutex<CrawlStats>,
+}
+
+impl<'a> PageWriter<'a> {
+    fn new(docs: &'a Docs<'a>) -> Self {
+        Self {
+            docs,
+            stats: Mutex::new(CrawlStats::default()),
+        }
+    }
+
+    fn write(&self, url: &str, m: MergedPage) -> Result<()> {
+        use crate::search::Page;
+        // Prefer the fully rendered text; fall back to scraped HTML.
+        let body = m.rendered_text.or(m.html_body).unwrap_or_default();
+        let title = m.title.unwrap_or_default();
+        let description = m.description.unwrap_or_default();
+        if title.is_empty() && body.is_empty() && description.is_empty() {
+            return Ok(());
+        }
+        self.docs.search.lock().unwrap().index_page(&Page {
+            url,
+            timestamp: &m.timestamp,
+            title: &title,
+            body: &body,
+            description: &description,
+            headings: m.headings.as_deref().unwrap_or_default(),
+            keywords: m.keywords.as_deref().unwrap_or_default(),
+            author: m.author.as_deref().unwrap_or_default(),
+            media_type: m.media_type.as_deref().unwrap_or_default(),
+            lang: m.lang.as_deref().unwrap_or_default(),
+            status: m.status,
+            modified_year: m.modified_year,
+            crawl_id: self.docs.crawl_id,
+            crawl_name: self.docs.crawl_name,
+            collection: self.docs.collection,
+        })?;
+        let mut stats = self.stats.lock().unwrap();
+        stats.pages += 1;
+        // 14-digit timestamps sort chronologically as plain strings.
+        if !m.timestamp.is_empty() {
+            merge_min(&mut stats.earliest_capture, Some(m.timestamp.clone()));
+            merge_max(&mut stats.latest_capture, Some(m.timestamp));
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> CrawlStats {
+        self.stats.into_inner().unwrap()
+    }
+}
+
+/// Several files read as one [`RangeFetch`], each at its own base offset, so
+/// the CDX built for a WACZ's extracted WARCs can address all of them. A
+/// record never spans two files.
+#[derive(Clone)]
+struct ConcatFetch {
+    files: std::sync::Arc<Vec<(u64, crate::http_range::FileFetch)>>,
+    total: u64,
+}
+
+impl ConcatFetch {
+    /// The fetch over `files`, and each file's base offset by name, which is
+    /// what [`fetch_raw_records`] adds a record's offset to.
+    fn open(files: &[(String, tempfile::NamedTempFile)]) -> Result<(Self, HashMap<String, u64>)> {
+        let mut parts = Vec::new();
+        let mut starts = HashMap::new();
+        let mut base = 0u64;
+        for (name, tmp) in files {
+            let f = crate::http_range::FileFetch::open(tmp.path())?;
+            starts.insert(name.clone(), base);
+            let len = f.total_len();
+            parts.push((base, f));
+            base += len;
+        }
+        Ok((
+            Self {
+                files: std::sync::Arc::new(parts),
+                total: base,
+            },
+            starts,
+        ))
+    }
+}
+
+impl RangeFetch for ConcatFetch {
+    fn total_len(&self) -> u64 {
+        self.total
+    }
+
+    fn fetch(&self, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
+        let Some((base, file)) = self.files.iter().rev().find(|(base, _)| *base <= start) else {
+            return Err(std::io::Error::other("offset before the first file"));
+        };
+        if end - base > file.total_len() {
+            return Err(std::io::Error::other("a record past the end of its file"));
+        }
+        file.fetch(start - base, end - base)
+    }
 }
 
 /// Cache a representative thumbnail for a crawl (best-effort). Any failure - no
@@ -780,6 +985,15 @@ pub(super) fn default_concurrency(remote: bool) -> usize {
 /// thumbnail, …), non-HTML/PDF responses, or empty payloads. Shared by the
 /// scan-everything path ([`collect_page_records`]) and the CDX-guided path
 /// ([`collect_page_records_via_cdx`]) so both index identically.
+impl RawRecord {
+    /// The page this contributes to.
+    fn url(&self) -> &str {
+        match self {
+            RawRecord::Html { url, .. } | RawRecord::Text { url, .. } => url,
+        }
+    }
+}
+
 fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
     let uri = record.target_uri.as_str();
     if uri.is_empty() || uri.starts_with("dns:") {
@@ -835,7 +1049,12 @@ fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
     if !mime.contains("html") || record.payload.is_empty() {
         return None;
     }
-    let html = extract_html_text(&record.payload);
+    // Parsed into a DOM to find the text, which costs many times the page's
+    // size: measured, a 100 MiB page of paragraphs took 2.3 GB to read. So no
+    // more than HTML_TEXT_CAP of a page is parsed; a real page is far smaller,
+    // and text past it in one that is not is simply not searchable.
+    let html = &record.payload[..record.payload.len().min(HTML_TEXT_CAP)];
+    let html = extract_html_text(html);
     if html.title.is_empty() && html.body.is_empty() && html.description.is_empty() {
         return None;
     }
@@ -879,4 +1098,70 @@ fn pdf_title_from_url(url: &str) -> String {
         .find(|seg| !seg.is_empty())
         .unwrap_or(url)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fetch that must not be called.
+    #[derive(Clone)]
+    struct NoFetch;
+    impl RangeFetch for NoFetch {
+        fn total_len(&self) -> u64 {
+            u64::MAX
+        }
+        fn fetch(&self, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
+            panic!("fetched {start}..{end}, which should have been refused");
+        }
+    }
+
+    /// The CDX's length is allocated before reading, so one past the limit is
+    /// refused without fetching anything.
+    #[test]
+    fn a_cdx_length_past_the_limit_is_not_fetched() {
+        let starts = HashMap::from([("w.warc.gz".to_string(), 0)]);
+        let c = crate::wacz::CdxjRecord {
+            url: "https://ex.test/".into(),
+            timestamp: String::new(),
+            mime: "text/html".into(),
+            status: 200,
+            filename: "w.warc.gz".into(),
+            offset: 0,
+            length: 100 * 1024 * 1024 * 1024,
+        };
+        let lock = Mutex::new(());
+        let mut held = None;
+        let gate = Gate {
+            lock: &lock,
+            held: &mut held,
+        };
+        assert!(fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, gate).is_empty());
+    }
+
+    /// Extracted WARCs read as one address space: each at its base, and no
+    /// record across two files.
+    #[test]
+    fn concat_fetch_reads_each_file_at_its_base() {
+        use std::io::Write;
+        let file = |bytes: &[u8]| {
+            let mut f = tempfile::NamedTempFile::new().unwrap();
+            f.write_all(bytes).unwrap();
+            f
+        };
+        let files = vec![
+            ("one".to_string(), file(b"abc")),
+            ("two".to_string(), file(b"defgh")),
+        ];
+        let (fetch, starts) = ConcatFetch::open(&files).unwrap();
+        assert_eq!(fetch.total_len(), 8);
+        assert_eq!(starts["one"], 0);
+        assert_eq!(starts["two"], 3);
+        assert_eq!(fetch.fetch(0, 3).unwrap(), b"abc");
+        assert_eq!(fetch.fetch(4, 6).unwrap(), b"ef");
+        assert!(
+            fetch.fetch(2, 5).is_err(),
+            "a span across two files is refused"
+        );
+    }
 }

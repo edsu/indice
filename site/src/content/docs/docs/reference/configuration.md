@@ -30,9 +30,9 @@ index:
   max_member_mb: 1024
 ```
 
-A WACZ is a zip, and a file inside a zip can inflate to a thousand times its stored size, so a WACZ of a few megabytes can contain gigabytes of page list or index. indice reads no single file inside a WACZ past this limit. A WACZ that asks for more is refused, naming the file and this setting, and is not added. This applies to `indice index` and `reindex` as well as to the browser, since it protects the machine doing the indexing whoever started it.
+A WACZ is a zip, and a file inside a zip can inflate to a thousand times its stored size, so a WACZ of a few megabytes can contain gigabytes of page list or index. indice reads no single file inside a WACZ past this limit. A WACZ whose metadata, page lists or index ask for more is refused, naming the file and this setting, and is not added. A single archived page or record over it is skipped with a warning, and the rest of the crawl is indexed. This applies to `indice index` and `reindex` as well as to the browser, since it protects the machine doing the indexing whoever started it.
 
-The default leaves plenty of room for a genuine crawl. The largest file in one is usually `pages/extraPages.jsonl`, which holds the rendered text of every page. If a crawl you trust is refused, raise the limit to fit it: the indexer needs about that much memory to read it.
+The default leaves plenty of room for a genuine crawl. The largest file in one is usually `pages/extraPages.jsonl`, which holds the rendered text of every page. If a crawl you trust is refused, raise the limit to fit it. Indexing reads a WACZ a page at a time, so the memory it needs does not grow with the crawl; raising the limit only lets a single file or record be larger.
 
 ## Upload limits
 

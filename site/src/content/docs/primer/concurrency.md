@@ -44,15 +44,16 @@ runtime.
 ## rayon: parallelism as a change of iterator
 
 ```rust
-let per_warc: Vec<(Vec<RawRecord>, Option<Warcinfo>)> = warc_paths
+groups
     .par_iter()
-    .map(|entry_name| { … })
+    .try_for_each(|(page, records)| -> Result<()> { … })
 ```
 
 `par_iter()` instead of `iter()`, and the work spreads across a thread pool.
 That is most of it. rayon's data-parallel API is a drop-in for the iterator you
 already wrote, and it will not compile unless the closure and its captures are
-`Send`.
+`Send`. `try_for_each` is the fallible `for_each`: each page returns a `Result`,
+and the first `Err` stops the rest and comes back out.
 
 Where the work needs a bounded pool rather than the global one, indice builds
 its own:
@@ -61,7 +62,7 @@ its own:
 let pool = rayon::ThreadPoolBuilder::new()
     .num_threads(concurrency)
     .build()?;
-let mut out: Vec<RawRecord> = pool.install(|| { … par_iter() … });
+pool.install(|| groups.par_iter().try_for_each(|(page, records)| { … }))?;
 ```
 
 The reason is politeness rather than performance: each task fetches a byte range
@@ -69,7 +70,10 @@ over HTTP, and the pool size is how many requests a remote host sees at once.
 Inside `pool.install`, the `par_iter` uses that pool instead of the global one.
 
 Shared mutable state in there goes behind the usual things: an `AtomicU64` for a
-progress counter, a `Mutex<SearchIndex>` for the writer.
+progress counter, a `Mutex<SearchIndex>` for the writer, and a `Mutex<()>` that
+guards nothing but a turn. A worker whose record grows large takes that lock and
+keeps the `MutexGuard` until its page is written, so only one large record is in
+memory at once; dropping the guard is what hands the turn on.
 
 The `Mutex` deserves a precise explanation, because the obvious guess about it is
 wrong. `SearchIndex` *is* `Sync`, so sharing a `&SearchIndex` across threads

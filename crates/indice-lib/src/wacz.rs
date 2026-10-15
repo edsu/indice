@@ -104,7 +104,7 @@ fn check_declared(entry: &zip::read::ZipFile<'_, impl Read>, limit: u64) -> Resu
 /// An I/O error as an `anyhow` error, with a [`MemberTooLarge`] inside it
 /// lifted to the top, so callers can tell a refusal from a broken file with
 /// `downcast_ref`.
-fn lift(e: std::io::Error) -> anyhow::Error {
+pub(crate) fn lift(e: std::io::Error) -> anyhow::Error {
     if e.get_ref()
         .is_some_and(|inner| inner.downcast_ref::<MemberTooLarge>().is_some())
     {
@@ -320,16 +320,39 @@ pub(crate) struct PageText {
 }
 
 /// Read extracted page text from a WACZ's `pages/pages.jsonl` and
-/// `pages/extraPages.jsonl`. Each file's header line ({format,id,title}) carries
-/// no url/text and is skipped naturally, so we don't depend on a fixed header
-/// row. Entries without a URL or with empty text are dropped; missing or
-/// unreadable files are not an error. A file inflating past `limit` is one,
-/// [`MemberTooLarge`], since skipping it would index the crawl without its
-/// text and say nothing.
+/// `pages/extraPages.jsonl`, all of it, in order. See [`for_each_page_text`],
+/// which this collects; indexing streams it instead.
+#[cfg(test)]
 pub(crate) fn read_page_texts<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     limit: u64,
 ) -> Result<Vec<PageText>> {
+    let mut out = Vec::new();
+    for_each_page_text(zip, limit, |_, text| {
+        out.push(text);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Where a page-list line sits: which file (`0` for `pages.jsonl`, `1` for
+/// `extraPages.jsonl`) and which line of it. Two passes over the same WACZ
+/// see the same positions, which is how indexing finds a page's line again.
+pub(crate) type PageTextPos = (u8, u64);
+
+/// Call `f` with every page's extracted text from `pages/pages.jsonl` and
+/// `pages/extraPages.jsonl`, a line at a time, in file order. Each file's
+/// header line ({format,id,title}) carries no url/text and is skipped
+/// naturally, so no fixed header row is assumed. Entries without a URL or with
+/// empty text are dropped; missing files are not an error, and the rest of an
+/// unreadable one (not UTF-8, a broken entry) is skipped. A file inflating past
+/// `limit` is an error, [`MemberTooLarge`], since skipping it would index the
+/// crawl without its text and say nothing.
+pub(crate) fn for_each_page_text<R: std::io::Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    limit: u64,
+    mut f: impl FnMut(PageTextPos, PageText) -> Result<()>,
+) -> Result<()> {
     #[derive(Deserialize)]
     struct Entry {
         url: Option<String>,
@@ -337,44 +360,48 @@ pub(crate) fn read_page_texts<R: std::io::Read + std::io::Seek>(
         ts: Option<String>,
         text: Option<String>,
     }
-    let mut out = Vec::new();
-    for name in ["pages/pages.jsonl", "pages/extraPages.jsonl"] {
+    for (file, name) in ["pages/pages.jsonl", "pages/extraPages.jsonl"]
+        .into_iter()
+        .enumerate()
+    {
         let Ok(entry) = zip.by_name(name) else {
             continue;
         };
         check_declared(&entry, limit)?;
         let lines =
             std::io::BufRead::lines(std::io::BufReader::new(Limited::new(entry, limit, name)));
-        for line in lines {
+        for (n, line) in lines.enumerate() {
             let line = match line.map_err(lift) {
                 Ok(line) => line,
                 Err(e) if is_too_large(&e) => return Err(e),
-                // Unreadable (not UTF-8, a broken entry): the rest of this
-                // file is skipped, as a file that cannot be read at all is.
                 Err(_) => break,
             };
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            if let Ok(e) = serde_json::from_str::<Entry>(line) {
-                let (Some(url), Some(text)) = (e.url, e.text) else {
-                    continue;
-                };
-                let text = text.trim().to_string();
-                if text.is_empty() {
-                    continue;
-                }
-                out.push(PageText {
+            let Ok(e) = serde_json::from_str::<Entry>(line) else {
+                continue;
+            };
+            let (Some(url), Some(text)) = (e.url, e.text) else {
+                continue;
+            };
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            f(
+                (file as u8, n as u64),
+                PageText {
                     url,
                     ts: e.ts.unwrap_or_default(),
                     title: clean(e.title),
                     text,
-                });
-            }
+                },
+            )?;
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Trim a metadata string and drop it if empty.
@@ -732,7 +759,7 @@ pub fn read_warcinfo(wacz_path: &Path) -> Result<Option<crate::warc::Warcinfo>> 
     for entry_name in &warc_paths {
         let tmp = extract_warc_from_wacz(wacz_path, entry_name)
             .with_context(|| format!("extracting {} from {}", entry_name, wacz_path.display()))?;
-        for record in iter_records(tmp.path())? {
+        for record in iter_records(tmp.path(), DEFAULT_MEMBER_LIMIT)? {
             let record = record?;
             if let Some(info) = Warcinfo::from_record(&record) {
                 if !info.is_empty() {
@@ -791,11 +818,73 @@ pub(crate) fn records_from_slice(
     limit: u64,
 ) -> Result<Vec<crate::warc::WarcRecord>> {
     use std::io::Read;
+    // A record from a plain `.warc` is its own bytes; only a gzip member,
+    // which is every record in a `.warc.gz`, needs inflating.
+    if !buf.starts_with(&[0x1f, 0x8b]) {
+        if buf.len() as u64 > limit {
+            return Err(MemberTooLarge {
+                member: "a WARC record".to_string(),
+                limit,
+            }
+            .into());
+        }
+        return Ok(crate::warc::parse_warc_records(buf, offset, length)
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect());
+    }
     let mut decompressed = Vec::new();
     Limited::new(flate2::read::GzDecoder::new(buf), limit, "a WARC record")
         .read_to_end(&mut decompressed)
         .map_err(lift)
         .context("decompressing WARC record slice")?;
+    Ok(
+        crate::warc::parse_warc_records(&decompressed, offset, length)
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect(),
+    )
+}
+
+/// [`records_from_slice`] for many workers at once: the first `small` bytes of
+/// a record inflate freely, and only past them does a worker take `gate`, so
+/// any number of ordinary records can be read in parallel while only one at a
+/// time can grow toward `limit`. The guard is left in `held`, for the caller to
+/// keep for as long as it holds what it made of the record.
+pub(crate) fn records_from_slice_gated<'g>(
+    buf: &[u8],
+    offset: u64,
+    length: u64,
+    limit: u64,
+    small: u64,
+    gate: &'g std::sync::Mutex<()>,
+    held: &mut Option<std::sync::MutexGuard<'g, ()>>,
+) -> Result<Vec<crate::warc::WarcRecord>> {
+    use std::io::Read;
+    // A plain record is already in hand, as long as its CDX length, which the
+    // caller has checked against the limit; only a gzip member inflates.
+    if !buf.starts_with(&[0x1f, 0x8b]) {
+        if buf.len() as u64 > small && held.is_none() {
+            *held = Some(gate.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+        return records_from_slice(buf, offset, length, limit);
+    }
+    let mut inflate = Limited::new(flate2::read::GzDecoder::new(buf), limit, "a WARC record");
+    let mut decompressed = Vec::new();
+    (&mut inflate)
+        .take(small)
+        .read_to_end(&mut decompressed)
+        .map_err(lift)
+        .context("decompressing WARC record slice")?;
+    if decompressed.len() as u64 == small {
+        if held.is_none() {
+            *held = Some(gate.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+        inflate
+            .read_to_end(&mut decompressed)
+            .map_err(lift)
+            .context("decompressing WARC record slice")?;
+    }
     Ok(
         crate::warc::parse_warc_records(&decompressed, offset, length)
             .into_iter()
@@ -897,6 +986,26 @@ mod tests {
 
         let mut zip = zip_of(&[("indexes/index.cdx.gz", &cdx, true)]);
         assert!(!cdx_records(&mut zip, 4 * MIB).unwrap().is_empty());
+    }
+
+    /// Small records inflate without the shared lock; one that grows past
+    /// `small` takes it, and keeps it for the caller.
+    #[test]
+    fn only_a_large_record_takes_the_shared_lock() {
+        let gate = std::sync::Mutex::new(());
+        let mut held = None;
+        let small = gzip(&[b'x'; 1024]);
+        records_from_slice_gated(&small, 0, small.len() as u64, MIB, 4096, &gate, &mut held)
+            .unwrap();
+        assert!(held.is_none(), "a small record leaves the lock alone");
+
+        let large = gzip(&[b'x'; 8192]);
+        records_from_slice_gated(&large, 0, large.len() as u64, MIB, 4096, &gate, &mut held)
+            .unwrap();
+        assert!(held.is_some(), "a large record holds the lock");
+        assert!(gate.try_lock().is_err(), "and nobody else can take it");
+        drop(held);
+        assert!(gate.try_lock().is_ok());
     }
 
     #[test]

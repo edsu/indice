@@ -262,6 +262,11 @@ fn fetch_record_bytes<F: RangeFetch>(
     let Some(&start) = starts.get(base) else {
         return Ok(None);
     };
+    // The CDX's length is allocated before reading, so refuse one past the
+    // limit rather than fetch it.
+    if rec.length > limit {
+        return Ok(None);
+    }
     let from = start + rec.offset;
     let bytes = fetch.fetch(from, from + rec.length)?;
     let records = wacz::records_from_slice(&bytes, from, rec.length, limit)?;
