@@ -536,8 +536,21 @@ impl RangeFetch for HttpFetch {
                     self.url
                 )));
             }
-            let mut v = Vec::with_capacity((end - start) as usize);
-            match resp.into_body().into_reader().read_to_end(&mut v) {
+            // At most what was asked for, plus one byte to notice more: a host
+            // that answers a small range with an endless body would otherwise
+            // be read into memory until it stopped.
+            let want = end - start;
+            let mut v = Vec::with_capacity(want as usize);
+            match resp
+                .into_body()
+                .into_reader()
+                .take(want + 1)
+                .read_to_end(&mut v)
+            {
+                Ok(_) if v.len() as u64 > want => Attempt::Fatal(io::Error::other(format!(
+                    "range GET of {} returned more than the {want} bytes asked for",
+                    self.url
+                ))),
                 Ok(_) => Attempt::Done(v),
                 // A mid-stream read failure is usually transient; retry the
                 // range. The policy refusal cannot reach here: it happens
@@ -937,5 +950,59 @@ mod tests {
         for c in [200, 206, 301, 404, 416, 500, 501] {
             assert!(!is_transient_status(c), "{c} should not be transient");
         }
+    }
+}
+
+#[cfg(test)]
+mod body_cap_tests {
+    use super::*;
+
+    /// A host that honours the range probe and then answers every range with
+    /// fifty bytes, whatever was asked for.
+    fn overlong_host() -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/a.wacz", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let mut stream = stream.unwrap();
+                let mut probe = false;
+                for line in std::io::BufReader::new(&stream).lines() {
+                    let line = line.unwrap();
+                    if line.eq_ignore_ascii_case("range: bytes=0-0") {
+                        probe = true;
+                    }
+                    if line.is_empty() {
+                        break;
+                    }
+                }
+                let body: &[u8] = if probe { b"x" } else { &[b'y'; 50] };
+                let range = if probe {
+                    "bytes 0-0/100"
+                } else {
+                    "bytes 0-9/100"
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: {range}\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            }
+        });
+        (url, handle)
+    }
+
+    /// A range comes back no longer than it was asked to be: a host that
+    /// sends more is refused rather than read until it stops.
+    #[test]
+    fn a_range_longer_than_asked_for_is_refused() {
+        let (url, host) = overlong_host();
+        let fetch = HttpFetch::open(&url, FetchPolicy::Unrestricted).unwrap();
+        let err = fetch.fetch(0, 10).unwrap_err();
+        assert!(err.to_string().contains("more than the 10 bytes"), "{err}");
+        host.join().unwrap();
     }
 }

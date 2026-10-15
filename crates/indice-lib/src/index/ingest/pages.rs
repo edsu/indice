@@ -44,6 +44,9 @@ pub(super) struct Docs<'a> {
     /// The curated collection id (slug) the crawl belongs to.
     pub collection: &'a str,
     pub search: &'a Mutex<SearchIndex>,
+    /// The most to inflate of any one WACZ member (`index.max_member_mb`). See
+    /// [`crate::wacz::DEFAULT_MEMBER_LIMIT`].
+    pub read_limit: u64,
 }
 
 /// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
@@ -106,6 +109,7 @@ where
         ctx.docs.crawl_id,
         ctx.main_page_url,
         ctx.pinned_thumb,
+        ctx.docs.read_limit,
     );
     Ok(stats)
 }
@@ -371,7 +375,7 @@ pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
     if let Ok(file) = std::fs::File::open(wacz_path) {
         if let Ok(mut zip) = zip::ZipArchive::new(file) {
             raws.extend(
-                crate::wacz::read_page_texts(&mut zip)
+                crate::wacz::read_page_texts(&mut zip, docs.read_limit)?
                     .into_iter()
                     .map(|pt| RawRecord::Text {
                         url: pt.url,
@@ -380,8 +384,12 @@ pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
                         title: pt.title,
                     }),
             );
-            if let Ok(cdx) = crate::wacz::cdx_records(&mut zip) {
-                status_counts = tally_status(&cdx);
+            // The tally is a nicety, so a CDX that cannot be read is skipped;
+            // one that inflates past the limit is still a refusal.
+            match crate::wacz::cdx_records(&mut zip, docs.read_limit) {
+                Ok(cdx) => status_counts = tally_status(&cdx),
+                Err(e) if crate::wacz::is_too_large(&e) => return Err(e),
+                Err(_) => {}
             }
         }
     }
@@ -409,7 +417,7 @@ where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
 {
     let (raws, warcinfo, status_counts) =
-        collect_page_records_via_cdx(fetch, concurrency, progress)?;
+        collect_page_records_via_cdx(fetch, concurrency, progress, docs.read_limit)?;
     index_merged(raws, warcinfo, status_counts, docs, label)
 }
 
@@ -430,6 +438,7 @@ fn index_merged(
         crawl_name,
         collection,
         search,
+        ..
     } = *docs;
     let build_start = std::time::Instant::now();
     let mut pages: HashMap<String, MergedPage> = HashMap::new();
@@ -613,6 +622,7 @@ fn collect_page_records_via_cdx<F>(
     fetch: F,
     concurrency: usize,
     progress: &dyn IndexProgress,
+    read_limit: u64,
 ) -> Result<PageRecords>
 where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
@@ -628,14 +638,14 @@ where
     let mut zip = zip::ZipArchive::new(crate::http_range::RangeReader::new(fetch.clone()))
         .context("opening WACZ ZIP")?;
     wacz::ensure_warcs_stored(&mut zip)?;
-    let cdx = wacz::cdx_records(&mut zip)?;
+    let cdx = wacz::cdx_records(&mut zip, read_limit)?;
     let status_counts = tally_status(&cdx);
     let starts = wacz::warc_data_starts(&mut zip)?;
-    let warcinfo = wacz::find_warcinfo_streaming(&mut zip)?;
+    let warcinfo = wacz::find_warcinfo_streaming(&mut zip, read_limit)?;
     // Extracted page text from pages.jsonl/extraPages.jsonl (read once, while the
     // ZIP is open). Some crawls store rendered text only here - not as urn:text:
     // WARC records the CDX points at - so without this that text is unsearchable.
-    let page_texts = wacz::read_page_texts(&mut zip);
+    let page_texts = wacz::read_page_texts(&mut zip, read_limit)?;
     drop(zip);
 
     // Records that can become a page; skip media/pseudo-records. The count is the
@@ -671,7 +681,7 @@ where
                         match fetch
                             .fetch(from, from + len)
                             .map_err(anyhow::Error::from)
-                            .and_then(|bytes| wacz::records_from_slice(&bytes, from, len))
+                            .and_then(|bytes| wacz::records_from_slice(&bytes, from, len, read_limit))
                         {
                             Ok(records) => records.iter().filter_map(record_to_raw).collect(),
                             Err(e) => {
@@ -724,13 +734,14 @@ fn cache_thumbnail<F>(
     crawl_id: &str,
     main_page_url: Option<&str>,
     pinned_dest: &Path,
+    read_limit: u64,
 ) where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
 {
     let Some(url) = main_page_url else {
         return;
     };
-    match crate::thumbnail::generate(fetch, thumbs_dir, crawl_id, url, pinned_dest) {
+    match crate::thumbnail::generate(fetch, thumbs_dir, crawl_id, url, pinned_dest, read_limit) {
         Ok(true) => debug!(crawl_id, "cached representative thumbnail"),
         Ok(false) => {}
         Err(e) => debug!(crawl_id, "thumbnail generation failed: {e:#}"),

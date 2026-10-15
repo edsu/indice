@@ -76,6 +76,7 @@ pub(crate) fn generate<F>(
     crawl_id: &str,
     main_page_url: &str,
     pinned_dest: &Path,
+    limit: u64,
 ) -> Result<bool>
 where
     F: RangeFetch + Clone + Send + Sync,
@@ -86,7 +87,7 @@ where
 
     let mut zip = zip::ZipArchive::new(RangeReader::new(fetch.clone()))
         .context("opening WACZ for thumbnail")?;
-    let cdx = wacz::cdx_records(&mut zip)?;
+    let cdx = wacz::cdx_records(&mut zip, limit)?;
     let starts = wacz::warc_data_starts(&mut zip)?;
     drop(zip);
 
@@ -94,13 +95,13 @@ where
     //    rendered picture of the page, so it beats every heuristic below and works
     //    for JS-rendered sites where the saved HTML lists no usable image. Checked
     //    first, before the HTML is even fetched.
-    if let Some(bytes) = screenshot_bytes(&fetch, &cdx, &starts, main_page_url)? {
+    if let Some(bytes) = screenshot_bytes(&fetch, &cdx, &starts, main_page_url, limit)? {
         write_thumbnail(&thumb_file(thumbs_dir, crawl_id), &bytes)?;
         return Ok(true);
     }
 
     // The main page's HTML → image candidates.
-    let Some(html) = fetch_payload(&fetch, &cdx, &starts, main_page_url, "html")? else {
+    let Some(html) = fetch_payload(&fetch, &cdx, &starts, main_page_url, "html", limit)? else {
         return Ok(false);
     };
     let (og_image, embedded) = candidate_images(&html);
@@ -108,7 +109,7 @@ where
     // 1. The declared og:image / twitter:image, if it was captured.
     if let Some(src) = og_image {
         if let Some(abs) = resolve(main_page_url, &src) {
-            if let Some(bytes) = fetch_payload(&fetch, &cdx, &starts, &abs, "image")? {
+            if let Some(bytes) = fetch_payload(&fetch, &cdx, &starts, &abs, "image", limit)? {
                 write_thumbnail(&thumb_file(thumbs_dir, crawl_id), &bytes)?;
                 return Ok(true);
             }
@@ -153,7 +154,7 @@ where
     }
 
     if let Some(rec) = best {
-        if let Some(bytes) = fetch_record_bytes(&fetch, &starts, rec)? {
+        if let Some(bytes) = fetch_record_bytes(&fetch, &starts, rec, limit)? {
             write_thumbnail(&thumb_file(thumbs_dir, crawl_id), &bytes)?;
             return Ok(true);
         }
@@ -236,11 +237,12 @@ fn screenshot_bytes<F: RangeFetch>(
     cdx: &[CdxjRecord],
     starts: &HashMap<String, u64>,
     page_url: &str,
+    limit: u64,
 ) -> Result<Option<Vec<u8>>> {
     for scheme in ["urn:thumbnail:", "urn:view:"] {
         for variant in page_url_variants(page_url) {
             if let Some(rec) = find_image_record(cdx, &format!("{scheme}{variant}")) {
-                if let Some(bytes) = fetch_record_bytes(fetch, starts, rec)? {
+                if let Some(bytes) = fetch_record_bytes(fetch, starts, rec, limit)? {
                     return Ok(Some(bytes));
                 }
             }
@@ -254,6 +256,7 @@ fn fetch_record_bytes<F: RangeFetch>(
     fetch: &F,
     starts: &HashMap<String, u64>,
     rec: &CdxjRecord,
+    limit: u64,
 ) -> Result<Option<Vec<u8>>> {
     let base = rec.filename.rsplit('/').next().unwrap_or(&rec.filename);
     let Some(&start) = starts.get(base) else {
@@ -261,7 +264,7 @@ fn fetch_record_bytes<F: RangeFetch>(
     };
     let from = start + rec.offset;
     let bytes = fetch.fetch(from, from + rec.length)?;
-    let records = wacz::records_from_slice(&bytes, from, rec.length)?;
+    let records = wacz::records_from_slice(&bytes, from, rec.length, limit)?;
     Ok(records.into_iter().next().map(|r| r.payload))
 }
 
@@ -273,6 +276,7 @@ fn fetch_payload<F: RangeFetch>(
     starts: &HashMap<String, u64>,
     url: &str,
     mime_hint: &str,
+    limit: u64,
 ) -> Result<Option<Vec<u8>>> {
     let Some(rec) = cdx
         .iter()
@@ -280,7 +284,7 @@ fn fetch_payload<F: RangeFetch>(
     else {
         return Ok(None);
     };
-    fetch_record_bytes(fetch, starts, rec)
+    fetch_record_bytes(fetch, starts, rec, limit)
 }
 
 #[cfg(test)]
@@ -349,7 +353,15 @@ mod tests {
         let dummy = tmp.path().join("dummy.bin");
         std::fs::write(&dummy, b"not a wacz").unwrap();
         let fetch = crate::http_range::FileFetch::open(&dummy).unwrap();
-        let wrote = generate(fetch, &thumbs, "pinned1", "https://ex.com/", &pinned).unwrap();
+        let wrote = generate(
+            fetch,
+            &thumbs,
+            "pinned1",
+            "https://ex.com/",
+            &pinned,
+            crate::wacz::DEFAULT_MEMBER_LIMIT,
+        )
+        .unwrap();
 
         assert!(
             !wrote,

@@ -6,6 +6,120 @@ use serde::Deserialize;
 
 use crate::collections::SeedPage;
 
+/// The most indice inflates of one WACZ member when nothing says otherwise:
+/// 1 GiB, set by `index.max_member_mb` in `config.yaml`.
+///
+/// A WACZ is a zip, and a zip entry can inflate to a thousand times its
+/// stored size, so a WACZ of a few megabytes can name gigabytes of
+/// `pages.jsonl`, CDX or record. Every member indice reads is read through
+/// [`Limited`], so a hostile WACZ costs at most this much memory per member
+/// rather than whatever it asks for. A genuine crawl's largest member, usually
+/// `extraPages.jsonl` with the rendered text of every page, fits well inside.
+pub const DEFAULT_MEMBER_LIMIT: u64 = 1024 * 1024 * 1024;
+
+/// A WACZ member that inflates past the limit: the refusal, with what to do
+/// about it if the archive is genuine.
+#[derive(Debug)]
+pub struct MemberTooLarge {
+    pub member: String,
+    pub limit: u64,
+}
+
+impl std::fmt::Display for MemberTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} in this WACZ inflates past {} MiB, the most indice reads of one member. \
+             If the archive is genuine, raise index.max_member_mb in config.yaml.",
+            self.member,
+            self.limit / (1024 * 1024)
+        )
+    }
+}
+
+impl std::error::Error for MemberTooLarge {}
+
+/// A reader that yields at most `limit` bytes of `inner`, and fails with
+/// [`MemberTooLarge`] if there are more, rather than stopping quietly: a
+/// truncated CDX or page list would index as if it were whole.
+///
+/// The check is on what is actually read, so it holds whatever size a zip
+/// header claims; [`check_declared`] refuses an honest one sooner.
+pub(crate) struct Limited<R> {
+    inner: R,
+    remaining: u64,
+    member: String,
+    limit: u64,
+}
+
+impl<R: Read> Limited<R> {
+    pub(crate) fn new(inner: R, limit: u64, member: &str) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+            member: member.to_string(),
+            limit,
+        }
+    }
+}
+
+impl<R: Read> Read for Limited<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            // At the limit: one more byte means the member is over it.
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(std::io::Error::other(MemberTooLarge {
+                    member: self.member.clone(),
+                    limit: self.limit,
+                })),
+            };
+        }
+        let want = buf
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..want])?;
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+}
+
+/// Refuse a zip entry whose header already says it inflates past `limit`,
+/// before any of it is read.
+fn check_declared(entry: &zip::read::ZipFile<'_, impl Read>, limit: u64) -> Result<()> {
+    if entry.size() > limit {
+        return Err(MemberTooLarge {
+            member: entry.name().to_string(),
+            limit,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// An I/O error as an `anyhow` error, with a [`MemberTooLarge`] inside it
+/// lifted to the top, so callers can tell a refusal from a broken file with
+/// `downcast_ref`.
+fn lift(e: std::io::Error) -> anyhow::Error {
+    if e.get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<MemberTooLarge>().is_some())
+    {
+        let inner = e.into_inner().expect("checked above");
+        return anyhow::Error::from(*inner.downcast::<MemberTooLarge>().expect("checked above"));
+    }
+    anyhow::Error::from(e)
+}
+
+/// Whether an error is the member limit refusing, which callers that skip a
+/// member they cannot read must still pass on.
+pub(crate) fn is_too_large(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<MemberTooLarge>().is_some()
+}
+
 /// Metadata extracted from a WACZ file's `datapackage.json` and `pages/pages.jsonl`.
 #[derive(Debug, Default)]
 pub struct WaczMetadata {
@@ -43,16 +157,20 @@ pub struct CdxjRecord {
 /// Read `datapackage.json` and `pages/pages.jsonl` from a WACZ file and return
 /// collected metadata.  Missing or unrecognised fields are silently ignored so
 /// that the function works with minimal / non-standard WACZ files.
-pub fn read_datapackage(wacz_path: &Path) -> Result<WaczMetadata> {
+pub fn read_datapackage(wacz_path: &Path, limit: u64) -> Result<WaczMetadata> {
     let file = std::fs::File::open(wacz_path)
         .with_context(|| format!("opening WACZ {}", wacz_path.display()))?;
-    read_datapackage_from(file)
+    read_datapackage_from(file, limit)
 }
 
 /// Read `datapackage.json` + `pages/pages.jsonl` metadata from any `Read + Seek`
 /// WACZ — a local file, or an HTTP range reader for streaming indexing.
+///
+/// Each member is read through [`Limited`] at `limit` bytes; past it this is a
+/// [`MemberTooLarge`] error, while a member that is merely malformed is skipped.
 pub(crate) fn read_datapackage_from<R: std::io::Read + std::io::Seek>(
     reader: R,
+    limit: u64,
 ) -> Result<WaczMetadata> {
     let mut zip = zip::ZipArchive::new(reader).context("reading WACZ ZIP")?;
 
@@ -108,9 +226,12 @@ pub(crate) fn read_datapackage_from<R: std::io::Read + std::io::Seek>(
 
     let mut meta = WaczMetadata::default();
 
-    if let Ok(mut entry) = zip.by_name("datapackage.json") {
+    if let Ok(entry) = zip.by_name("datapackage.json") {
+        check_declared(&entry, limit)?;
         let mut buf = String::new();
-        entry.read_to_string(&mut buf)?;
+        Limited::new(entry, limit, "datapackage.json")
+            .read_to_string(&mut buf)
+            .map_err(lift)?;
         if let Ok(dp) = serde_json::from_str::<DataPackage>(&buf) {
             let nested = dp.metadata.unwrap_or_default();
             meta.title = clean(dp.title.or(nested.title));
@@ -147,12 +268,17 @@ pub(crate) fn read_datapackage_from<R: std::io::Read + std::io::Seek>(
     }
 
     // --- pages/pages.jsonl ------------------------------------------------
-    // First line is a header object; subsequent lines are page entries.
-    if let Ok(mut entry) = zip.by_name("pages/pages.jsonl") {
-        let mut buf = String::new();
-        entry.read_to_string(&mut buf)?;
-
-        for line in buf.lines().skip(1) {
+    // First line is a header object; subsequent lines are page entries. Read a
+    // line at a time, so memory follows the pages kept, not the file's size.
+    if let Ok(entry) = zip.by_name("pages/pages.jsonl") {
+        check_declared(&entry, limit)?;
+        let lines = std::io::BufRead::lines(std::io::BufReader::new(Limited::new(
+            entry,
+            limit,
+            "pages/pages.jsonl",
+        )));
+        for line in lines.skip(1) {
+            let line = line.map_err(lift)?;
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -196,11 +322,14 @@ pub(crate) struct PageText {
 /// Read extracted page text from a WACZ's `pages/pages.jsonl` and
 /// `pages/extraPages.jsonl`. Each file's header line ({format,id,title}) carries
 /// no url/text and is skipped naturally, so we don't depend on a fixed header
-/// row. Entries without a URL or with empty text are dropped; missing files are
-/// not an error.
+/// row. Entries without a URL or with empty text are dropped; missing or
+/// unreadable files are not an error. A file inflating past `limit` is one,
+/// [`MemberTooLarge`], since skipping it would index the crawl without its
+/// text and say nothing.
 pub(crate) fn read_page_texts<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
-) -> Vec<PageText> {
+    limit: u64,
+) -> Result<Vec<PageText>> {
     #[derive(Deserialize)]
     struct Entry {
         url: Option<String>,
@@ -210,14 +339,20 @@ pub(crate) fn read_page_texts<R: std::io::Read + std::io::Seek>(
     }
     let mut out = Vec::new();
     for name in ["pages/pages.jsonl", "pages/extraPages.jsonl"] {
-        let Ok(mut entry) = zip.by_name(name) else {
+        let Ok(entry) = zip.by_name(name) else {
             continue;
         };
-        let mut buf = String::new();
-        if entry.read_to_string(&mut buf).is_err() {
-            continue;
-        }
-        for line in buf.lines() {
+        check_declared(&entry, limit)?;
+        let lines =
+            std::io::BufRead::lines(std::io::BufReader::new(Limited::new(entry, limit, name)));
+        for line in lines {
+            let line = match line.map_err(lift) {
+                Ok(line) => line,
+                Err(e) if is_too_large(&e) => return Err(e),
+                // Unreadable (not UTF-8, a broken entry): the rest of this
+                // file is skipped, as a file that cannot be read at all is.
+                Err(_) => break,
+            };
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -239,7 +374,7 @@ pub(crate) fn read_page_texts<R: std::io::Read + std::io::Seek>(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Trim a metadata string and drop it if empty.
@@ -259,47 +394,61 @@ fn millis_to_rfc3339(ms: i64) -> Option<String> {
 /// - NDJSON format: `{json}` where the JSON object has a `"url"` field
 ///
 /// The index file may be compressed (`.cdx.gz`) or plain (`.cdx`).
-pub fn search_cdx(wacz_path: &Path, url: &str) -> Result<Vec<CdxjRecord>> {
+pub fn search_cdx(wacz_path: &Path, url: &str, limit: u64) -> Result<Vec<CdxjRecord>> {
     let file = std::fs::File::open(wacz_path)
         .with_context(|| format!("opening WACZ {}", wacz_path.display()))?;
     let mut zip = zip::ZipArchive::new(file)
         .with_context(|| format!("reading ZIP {}", wacz_path.display()))?;
-
-    // Find the CDX entry (may be .cdx or .cdx.gz, may be in a subdirectory).
-    let cdx_name = find_cdx_entry(&mut zip)?;
-    let Some(cdx_name) = cdx_name else {
-        return Ok(Vec::new());
-    };
-
-    let mut entry = zip.by_name(&cdx_name)?;
-    let mut raw = Vec::new();
-    entry.read_to_end(&mut raw)?;
-
-    // Decompress if gzipped. The CDX is often a multi-member gzip (ZipNum
-    // blocks), so use MultiGzDecoder to read every block, not just the first.
-    let text = if cdx_name.ends_with(".gz") {
-        let mut decoder = flate2::read::MultiGzDecoder::new(raw.as_slice());
-        let mut out = String::new();
-        decoder.read_to_string(&mut out)?;
-        out
-    } else {
-        String::from_utf8_lossy(&raw).into_owned()
-    };
-
     let mut results = Vec::new();
-    for line in text.lines() {
+    for_each_cdx_record(&mut zip, limit, |rec| {
+        if rec.url == url {
+            results.push(rec);
+        }
+    })?;
+    Ok(results)
+}
+
+/// Call `f` with every record in the WACZ's CDX, read a line at a time.
+///
+/// The CDX can be compressed twice over: deflated as a zip entry, and gzipped
+/// within it (often as many gzip members, ZipNum-style, so `MultiGzDecoder`
+/// reads them all). Both layers are read through [`Limited`] at `limit`, so a
+/// CDX that inflates past it at either one is a [`MemberTooLarge`] error, and
+/// memory follows the records kept rather than the CDX's size.
+fn for_each_cdx_record<R: std::io::Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    limit: u64,
+    mut f: impl FnMut(CdxjRecord),
+) -> Result<()> {
+    let Some(cdx_name) = find_cdx_entry(zip)? else {
+        return Ok(());
+    };
+    let entry = zip.by_name(&cdx_name)?;
+    check_declared(&entry, limit)?;
+    let stored = Limited::new(entry, limit, &cdx_name);
+    let text: Box<dyn Read> = if cdx_name.ends_with(".gz") {
+        Box::new(Limited::new(
+            flate2::read::MultiGzDecoder::new(stored),
+            limit,
+            &cdx_name,
+        ))
+    } else {
+        Box::new(stored)
+    };
+    // Split on raw bytes, not UTF-8 lines, so one bad byte in an otherwise
+    // good CDX costs its line rather than the rest of the file.
+    for line in std::io::BufRead::split(std::io::BufReader::new(text), b'\n') {
+        let line = line.map_err(lift)?;
+        let line = String::from_utf8_lossy(&line);
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         if let Some(rec) = parse_cdx_line(line) {
-            if rec.url == url {
-                results.push(rec);
-            }
+            f(rec);
         }
     }
-
-    Ok(results)
+    Ok(())
 }
 
 fn find_cdx_entry<R: std::io::Read + std::io::Seek>(
@@ -388,28 +537,11 @@ pub(crate) struct NestedWacz {
 /// CDX-guided/streaming indexing. Unlike [`search_cdx`], no URL filter.
 pub(crate) fn cdx_records<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
+    limit: u64,
 ) -> Result<Vec<CdxjRecord>> {
-    let Some(cdx_name) = find_cdx_entry(zip)? else {
-        return Ok(Vec::new());
-    };
-    let mut raw = Vec::new();
-    zip.by_name(&cdx_name)?.read_to_end(&mut raw)?;
-    let text = if cdx_name.ends_with(".gz") {
-        // The CDX is often a multi-member gzip (ZipNum-clustered blocks); use
-        // MultiGzDecoder so every block is read, not just the first.
-        let mut out = String::new();
-        flate2::read::MultiGzDecoder::new(raw.as_slice()).read_to_string(&mut out)?;
-        out
-    } else {
-        String::from_utf8_lossy(&raw).into_owned()
-    };
-    Ok(text
-        .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            (!l.is_empty()).then(|| parse_cdx_line(l)).flatten()
-        })
-        .collect())
+    let mut records = Vec::new();
+    for_each_cdx_record(zip, limit, |rec| records.push(rec))?;
+    Ok(records)
 }
 
 /// Error unless every embedded WARC is `Stored` (uncompressed). CDX-guided
@@ -470,8 +602,13 @@ pub(crate) fn warc_data_starts<R: std::io::Read + std::io::Seek>(
 /// embedded WARC (warcinfo is the first record) and parsing it — so streaming
 /// indexing gets provenance without reading whole WARCs. Returns the first
 /// non-empty warcinfo found.
+///
+/// Best effort: a first member that inflates past `limit` is skipped like an
+/// unreadable one, since warcinfo only adds provenance and a WARC without one
+/// may well start with a large record.
 pub(crate) fn find_warcinfo_streaming<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
+    limit: u64,
 ) -> Result<Option<crate::warc::Warcinfo>> {
     let names: Vec<String> = (0..zip.len())
         .filter_map(|i| zip.by_index(i).ok().map(|e| e.name().to_string()))
@@ -480,9 +617,13 @@ pub(crate) fn find_warcinfo_streaming<R: std::io::Read + std::io::Seek>(
     for name in names {
         let mut decoded = Vec::new();
         // read::GzDecoder decodes only the first member, which is enough.
-        if flate2::read::GzDecoder::new(zip.by_name(&name)?)
-            .read_to_end(&mut decoded)
-            .is_err()
+        if Limited::new(
+            flate2::read::GzDecoder::new(zip.by_name(&name)?),
+            limit,
+            &name,
+        )
+        .read_to_end(&mut decoded)
+        .is_err()
             || decoded.is_empty()
         {
             continue;
@@ -640,15 +781,20 @@ pub fn extract_warc_from_wacz(
 /// concurrently via [`crate::http_range::RangeFetch`]) and hands the bytes here
 /// to gunzip + parse without a `Read + Seek`. Returns the record(s) in the member
 /// (usually one).
+///
+/// The slice is as long as the CDX says, but what it inflates to is not, so
+/// it is read through [`Limited`] at `limit`.
 pub(crate) fn records_from_slice(
     buf: &[u8],
     offset: u64,
     length: u64,
+    limit: u64,
 ) -> Result<Vec<crate::warc::WarcRecord>> {
     use std::io::Read;
     let mut decompressed = Vec::new();
-    flate2::read::GzDecoder::new(buf)
+    Limited::new(flate2::read::GzDecoder::new(buf), limit, "a WARC record")
         .read_to_end(&mut decompressed)
+        .map_err(lift)
         .context("decompressing WARC record slice")?;
     Ok(
         crate::warc::parse_warc_records(&decompressed, offset, length)
@@ -661,6 +807,117 @@ pub(crate) fn records_from_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The member limit ────────────────────────────────────────────────────
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// A zip in memory holding `(name, bytes, stored)` entries.
+    fn zip_of(entries: &[(&str, &[u8], bool)]) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            for (name, bytes, stored) in entries {
+                let method = if *stored {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                };
+                let opt = zip::write::SimpleFileOptions::default()
+                    .compression_method(method)
+                    .large_file(bytes.len() as u64 > u32::MAX as u64);
+                zw.start_file(*name, opt).unwrap();
+                zw.write_all(bytes).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        zip::ZipArchive::new(std::io::Cursor::new(buf)).unwrap()
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(bytes).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// Two MiB of page lines, which compress to almost nothing.
+    fn two_mib_of_pages() -> Vec<u8> {
+        let line =
+            b"{\"url\":\"https://ex.org/p\",\"ts\":\"2026\",\"text\":\"xxxxxxxxxxxxxxxx\"}\n";
+        line.repeat((2 * MIB as usize) / line.len() + 1)
+    }
+
+    #[test]
+    fn limited_reads_up_to_its_limit_and_refuses_past_it() {
+        let mut out = Vec::new();
+        Limited::new(&b"0123456789"[..], 10, "m")
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, b"0123456789", "exactly the limit is fine");
+
+        let err = Limited::new(&b"0123456789"[..], 9, "m")
+            .read_to_end(&mut Vec::new())
+            .map_err(lift)
+            .unwrap_err();
+        assert!(is_too_large(&err), "{err}");
+        assert!(err.to_string().contains("index.max_member_mb"), "{err}");
+    }
+
+    /// A deflated pages file that says in its header it inflates past the
+    /// limit is refused before any of it is read, by both readers of it.
+    #[test]
+    fn a_pages_bomb_is_refused() {
+        let pages = two_mib_of_pages();
+        let mut zip = zip_of(&[("pages/extraPages.jsonl", &pages, false)]);
+        let err = read_page_texts(&mut zip, MIB).unwrap_err();
+        assert!(is_too_large(&err), "{err}");
+        assert!(err.to_string().contains("pages/extraPages.jsonl"), "{err}");
+
+        let zip = zip_of(&[("pages/pages.jsonl", &pages, false)]);
+        let err = read_datapackage_from(zip.into_inner(), MIB).unwrap_err();
+        assert!(is_too_large(&err), "{err}");
+
+        // Under the limit, the same file reads.
+        let mut zip = zip_of(&[("pages/extraPages.jsonl", &pages, false)]);
+        assert!(!read_page_texts(&mut zip, 4 * MIB).unwrap().is_empty());
+    }
+
+    /// A gzipped CDX inside a stored entry: the zip header knows only the
+    /// gzip's size, which passes, so the limit has to hold while inflating.
+    #[test]
+    fn a_gzipped_cdx_bomb_is_refused_while_it_inflates() {
+        let line = "com,example)/ 20200101000000 {\"url\":\"https://example.com/\",\"filename\":\"x.warc.gz\",\"offset\":0,\"length\":10}\n";
+        let cdx = gzip(line.repeat((2 * MIB as usize) / line.len() + 1).as_bytes());
+        assert!((cdx.len() as u64) < MIB, "the stored entry itself is small");
+        let mut zip = zip_of(&[("indexes/index.cdx.gz", &cdx, true)]);
+        let err = cdx_records(&mut zip, MIB).unwrap_err();
+        assert!(is_too_large(&err), "{err}");
+
+        let mut zip = zip_of(&[("indexes/index.cdx.gz", &cdx, true)]);
+        assert!(!cdx_records(&mut zip, 4 * MIB).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_record_that_inflates_past_the_limit_is_refused() {
+        let slice = gzip(&vec![b'x'; 2 * MIB as usize]);
+        let err = records_from_slice(&slice, 0, slice.len() as u64, MIB).unwrap_err();
+        assert!(
+            err.chain()
+                .any(|c| c.downcast_ref::<MemberTooLarge>().is_some()),
+            "{err:#}"
+        );
+    }
+
+    /// warcinfo only adds provenance, so a first member past the limit is
+    /// skipped, not fatal.
+    #[test]
+    fn an_oversized_first_warc_member_is_skipped_for_warcinfo() {
+        let warc = gzip(&vec![b'x'; 2 * MIB as usize]);
+        let mut zip = zip_of(&[("archive/data.warc.gz", &warc, true)]);
+        assert!(find_warcinfo_streaming(&mut zip, MIB).unwrap().is_none());
+    }
 
     #[test]
     fn cdx_records_reads_all_members_of_a_multimember_gzip() {
@@ -689,7 +946,7 @@ mod tests {
             zw.finish().unwrap();
         }
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(buf)).unwrap();
-        let recs = cdx_records(&mut zip).unwrap();
+        let recs = cdx_records(&mut zip, DEFAULT_MEMBER_LIMIT).unwrap();
         let urls: Vec<&str> = recs.iter().map(|r| r.url.as_str()).collect();
         assert_eq!(
             recs.len(),
@@ -716,7 +973,7 @@ mod tests {
             zw.finish().unwrap();
         }
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(buf)).unwrap();
-        let recs = cdx_records(&mut zip).unwrap();
+        let recs = cdx_records(&mut zip, DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(recs.len(), 1, "a plain .cdxj index must be recognized");
         assert_eq!(recs[0].url, "https://example.com/");
     }
@@ -743,7 +1000,7 @@ mod tests {
             zw.finish().unwrap();
         }
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(buf)).unwrap();
-        let texts = read_page_texts(&mut zip);
+        let texts = read_page_texts(&mut zip, DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(
             texts.len(),
             2,
@@ -781,7 +1038,7 @@ mod tests {
         // The extractor fetches exactly the record's byte slice, then gunzips +
         // parses it (offset/length are informational).
         let len = member.len() as u64;
-        let recs = records_from_slice(&member, 64, len).unwrap();
+        let recs = records_from_slice(&member, 64, len, DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].target_uri, "https://ex.com/p");
         assert_eq!(recs[0].http_status, Some(200));
@@ -822,7 +1079,7 @@ mod tests {
 
     #[test]
     fn read_datapackage_from_simple_wacz() {
-        let meta = read_datapackage(&fixture("simple.wacz")).unwrap();
+        let meta = read_datapackage(&fixture("simple.wacz"), DEFAULT_MEMBER_LIMIT).unwrap();
         // simple.wacz has a pages/pages.jsonl with one page entry
         assert!(
             !meta.seed_pages.is_empty(),
@@ -837,7 +1094,8 @@ mod tests {
         // github-bitcoin-mining.wacz has no top-level title/created; its title
         // lives under a nested `metadata` object, and the timestamp is mtime
         // (epoch ms). Both should be picked up.
-        let meta = read_datapackage(&fixture("github-bitcoin-mining.wacz")).unwrap();
+        let meta =
+            read_datapackage(&fixture("github-bitcoin-mining.wacz"), DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(meta.title.as_deref(), Some("GitHub Bitcoin Mining"));
         let created = meta.created.expect("created should fall back to mtime");
         assert!(
@@ -848,7 +1106,12 @@ mod tests {
 
     #[test]
     fn search_cdx_finds_url_in_ndjson_wacz() {
-        let records = search_cdx(&fixture("simple.wacz"), "http://example.com/").unwrap();
+        let records = search_cdx(
+            &fixture("simple.wacz"),
+            "http://example.com/",
+            DEFAULT_MEMBER_LIMIT,
+        )
+        .unwrap();
         assert!(!records.is_empty(), "should find CDX entry for example.com");
         assert_eq!(records[0].url, "http://example.com/");
         assert_eq!(records[0].status, 200);
@@ -860,6 +1123,7 @@ mod tests {
         let records = search_cdx(
             &fixture("github-bitcoin-mining.wacz"),
             "https://github.com/DocNow/hydrator/pull/78/files",
+            DEFAULT_MEMBER_LIMIT,
         )
         .unwrap();
         assert!(!records.is_empty(), "should find CDX entry");
@@ -872,6 +1136,7 @@ mod tests {
         let records = search_cdx(
             &fixture("a.wacz"),
             "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179",
+            DEFAULT_MEMBER_LIMIT,
         )
         .unwrap();
         assert!(!records.is_empty(), "should parse string-typed CDX fields");
@@ -881,7 +1146,12 @@ mod tests {
 
     #[test]
     fn search_cdx_finds_redirect_record() {
-        let records = search_cdx(&fixture("a.wacz"), "https://arcg.is/1zLCSC4").unwrap();
+        let records = search_cdx(
+            &fixture("a.wacz"),
+            "https://arcg.is/1zLCSC4",
+            DEFAULT_MEMBER_LIMIT,
+        )
+        .unwrap();
         let redirect = records.iter().find(|r| r.status == 301);
         assert!(
             redirect.is_some(),
@@ -891,14 +1161,19 @@ mod tests {
 
     #[test]
     fn search_cdx_no_match() {
-        let records = search_cdx(&fixture("simple.wacz"), "http://notexist.example/").unwrap();
+        let records = search_cdx(
+            &fixture("simple.wacz"),
+            "http://notexist.example/",
+            DEFAULT_MEMBER_LIMIT,
+        )
+        .unwrap();
         assert!(records.is_empty());
     }
 
     #[test]
     fn read_datapackage_reads_software() {
         // a.wacz records the crawler in datapackage.json's `software` field.
-        let meta = read_datapackage(&fixture("a.wacz")).unwrap();
+        let meta = read_datapackage(&fixture("a.wacz"), DEFAULT_MEMBER_LIMIT).unwrap();
         let software = meta.software.expect("datapackage should carry software");
         assert!(
             software.contains("Browsertrix-Crawler"),
@@ -950,7 +1225,7 @@ mod tests {
             zw.write_all(dp.as_bytes()).unwrap();
             zw.finish().unwrap();
         }
-        let meta = read_datapackage_from(std::io::Cursor::new(buf)).unwrap();
+        let meta = read_datapackage_from(std::io::Cursor::new(buf), DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(meta.modified.as_deref(), Some("2026-05-01T00:00:00Z"));
         // Blank keyword is dropped by `clean`.
         assert_eq!(meta.keywords, vec!["climate", "policy"]);
@@ -976,7 +1251,7 @@ mod tests {
             zw.write_all(dp.as_bytes()).unwrap();
             zw.finish().unwrap();
         }
-        let meta = read_datapackage_from(std::io::Cursor::new(buf)).unwrap();
+        let meta = read_datapackage_from(std::io::Cursor::new(buf), DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(meta.creator.as_deref(), Some("SUCHO"));
     }
 }

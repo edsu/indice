@@ -351,6 +351,18 @@ only who may frame it.
   `security_headers.rs::the_replay_origin_says_only_who_may_frame_it`,
   `security_headers.rs::a_workstations_replay_may_be_framed_only_by_its_viewer`
 
+**A curator-supplied WACZ cannot take the indexer's memory.**
+
+- No WACZ member is inflated past the limit, whatever its zip header says: page
+  lists, the CDX at both compression layers, and WARC records.
+  `wacz.rs::a_pages_bomb_is_refused`,
+  `wacz.rs::a_gzipped_cdx_bomb_is_refused_while_it_inflates`,
+  `wacz.rs::a_record_that_inflates_past_the_limit_is_refused`
+- A WACZ that asks for more is refused whole, naming the member and the setting.
+  `integration.rs::a_wacz_bomb_is_refused_and_not_added`
+- A remote host that answers a range with more than was asked is refused.
+  `http_range.rs::a_range_longer_than_asked_for_is_refused`
+
 **Curator-supplied content does not become executable or escape its directory.**
 
 - Note HTML is sanitized. `manage.rs::annotation_note_html_cannot_carry_executable_markup`,
@@ -361,16 +373,20 @@ only who may frame it.
   `manage.rs::public_annotation_api_never_exposes_a_login_address`
 
 **Is a curator-supplied WACZ trusted input?** On a workstation, yes: you chose the
-file. On a server, no, and indice does not yet act on that. Zip entries are read
-by name or index and never extracted to a path taken from the archive, so
-zip-slip is structurally impossible. But `datapackage.json`, `pages/pages.jsonl`
-and the CDX are each read with `read_to_end` and no size cap (`wacz.rs:276,396`),
-so a small WACZ whose `pages.jsonl` inflates to many gigabytes is a decompression
-bomb that takes the indexer's memory with it (`rustyweb-wacz-read-caps-q39p`).
-That is acceptable where curators are colleagues and is not where they are
-approved strangers, which is the first place the answer to this question changes
-the code. Replay, where it would otherwise matter most, isolates every capture
-alike; see *Guarantees*.
+file. On a server, no. Zip entries are read by name or index and never extracted
+to a path taken from the archive, so zip-slip is structurally impossible. A WACZ
+can still ask for far more than it holds, since a zip entry inflates to a
+thousand times its size, so no member is inflated into memory past
+`index.max_member_mb` (default 1024 MiB): `datapackage.json`, the page lists, the
+CDX at both its compression layers, and each WARC record read for indexing all go
+through `wacz::Limited`, and an entry whose header already declares more is
+refused unread. Past the limit the ingest fails and the crawl is not added; a
+missing warcinfo is the one exception, skipped since it only adds provenance. The
+limit applies on a workstation too, because it protects the indexing machine
+whoever started the ingest. What a WACZ inflates to on *disk*, a deflated WARC or
+inner WACZ extracted to a temp file, is not yet bounded (`rustyweb-6vjz`). Replay,
+where hostile input would otherwise matter most, isolates every capture alike; see
+*Guarantees*.
 
 ### Assumptions
 
@@ -388,7 +404,7 @@ alike; see *Guarantees*.
 | ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
 | The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
 | Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
-| Curators supply well-formed WACZs | Uncapped reads make a decompression bomb an out-of-memory | `rustyweb-wacz-read-caps-q39p` |
+| ~~Curators supply well-formed WACZs~~ | Closed for memory: no WACZ member is inflated past `index.max_member_mb`, and a remote range is read no further than was asked. Open for disk: a deflated WARC or inner WACZ extracted to a temp file is not yet bounded (`rustyweb-6vjz`) | `rustyweb-wacz-read-caps-q39p` |
 | ~~Archived captures do not script their host~~ | Closed: replay runs on an origin of its own, with no write route and no identity, and a server will not start without one. A capture's script still runs there and can forge the frame's messages to the viewer, which move the banner or pre-fill a note the reader must still save | `rustyweb-replay-origin-isolation-5h67` |
 
 A future premise change, a PaaS deployment, a multi-tenant host, or the

@@ -622,7 +622,8 @@ mod tests {
         assert_eq!(packaged, original, "WARC packaged verbatim");
 
         // datapackage round-trips our metadata.
-        let dp = crate::wacz::read_datapackage(&built.path).unwrap();
+        let dp =
+            crate::wacz::read_datapackage(&built.path, crate::wacz::DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(dp.title.as_deref(), Some("My Build"));
         assert_eq!(dp.creator.as_deref(), Some("Test Org"));
         assert_eq!(dp.keywords, vec!["alpha".to_string(), "beta".to_string()]);

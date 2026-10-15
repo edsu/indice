@@ -62,6 +62,12 @@ pub struct IndexConfig {
     /// `stored_body_cap_kb`, `0` here is *not* "unlimited": any value below
     /// Tantivy's ~15 MiB minimum (including 0) is clamped up to it.
     pub writer_heap_mb: Option<u64>,
+
+    /// The most indice inflates of any one WACZ member, in MiB, so a WACZ
+    /// whose `pages.jsonl` or CDX expands to gigabytes is refused rather than
+    /// read into memory. Omit for the default (1024 MiB); raise it for a
+    /// genuine crawl that exceeds it, which the refusal names. `0` is no limit.
+    pub max_member_mb: Option<u64>,
 }
 
 /// Limits on what the browser write surface may add to the archive.
@@ -175,6 +181,16 @@ impl Config {
             Some(0) => usize::MAX,
             Some(kb) => (kb as usize).saturating_mul(1024),
             None => DEFAULT_STORED_BODY_CAP_BYTES,
+        }
+    }
+
+    /// The most to inflate of one WACZ member, in bytes; see
+    /// [`IndexConfig::max_member_mb`].
+    pub fn max_member_bytes(&self) -> u64 {
+        match self.index.max_member_mb {
+            Some(0) => u64::MAX,
+            Some(mb) => mb.saturating_mul(1024 * 1024),
+            None => crate::wacz::DEFAULT_MEMBER_LIMIT,
         }
     }
 

@@ -72,15 +72,22 @@ impl WaczAccess {
         matches!(self, WaczAccess::Stream { .. })
     }
 
-    /// The WACZ's `datapackage.json` metadata (default when it can't be parsed).
-    fn read_datapackage(&self) -> Result<crate::wacz::WaczMetadata> {
-        Ok(match self {
-            WaczAccess::Stream { url, fetch } => {
-                crate::wacz::read_datapackage_from(crate::http_range::open_remote(url, *fetch)?)
-                    .unwrap_or_default()
-            }
-            WaczAccess::Local { path, .. } => read_datapackage(path).unwrap_or_default(),
-        })
+    /// The WACZ's `datapackage.json` metadata (default when it can't be
+    /// parsed). A member past `limit` is still an error: defaulting would index
+    /// the crawl without its metadata and say nothing.
+    fn read_datapackage(&self, limit: u64) -> Result<crate::wacz::WaczMetadata> {
+        let read = match self {
+            WaczAccess::Stream { url, fetch } => crate::wacz::read_datapackage_from(
+                crate::http_range::open_remote(url, *fetch)?,
+                limit,
+            ),
+            WaczAccess::Local { path, .. } => read_datapackage(path, limit),
+        };
+        match read {
+            Ok(meta) => Ok(meta),
+            Err(e) if crate::wacz::is_too_large(&e) => Err(e),
+            Err(_) => Ok(Default::default()),
+        }
     }
 
     /// The `(sha256, size)` fixity pair recorded in the manifest.
@@ -442,7 +449,9 @@ pub(super) fn index_one(
 
     // Its datapackage metadata, read up front so the title can name the crawl.
     // Precedence: explicit --name, then the WACZ title, then the filename/URL stem.
-    let meta = access.read_datapackage()?;
+    // Read here, per crawl, so a reindex and an ingest both honour it.
+    let read_limit = crate::config::Config::load(home)?.max_member_bytes();
+    let meta = access.read_datapackage(read_limit)?;
     let id = wacz_id(&effective_source);
     let crawl_name = pick_display_name(name, &meta, &effective_source);
 
@@ -468,6 +477,7 @@ pub(super) fn index_one(
                 crawl_name: &crawl_name,
                 collection: collection.0,
                 search,
+                read_limit,
             },
             workers: resolve_workers(concurrency, access.is_remote()),
             thumbs_dir: &thumbs_dir,
