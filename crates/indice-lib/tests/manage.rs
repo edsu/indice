@@ -1468,31 +1468,136 @@ fn upload_body(collection: &str, file: &[u8]) -> (String, Vec<u8>) {
     (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
-/// POST an upload body, either with a `Content-Length` or chunked without one.
+/// POST an upload body, either with a `Content-Length` or chunked without one,
+/// the way a browser does: the body goes out on one thread while the reply is
+/// read on another.
+///
+/// That is the point of it. A server refusing an upload answers before the body
+/// has all arrived, then closes rather than read the rest. ureq writes the whole
+/// body before it reads anything, so it met that refusal as a broken pipe and
+/// never saw the status, which on Linux, where the reset comes sooner, failed
+/// these tests now and then (`rustyweb-6a1b`).
 async fn post_upload(
     base: &str,
     content_type: String,
     body: Vec<u8>,
     chunked: bool,
 ) -> (u16, String) {
-    let url = format!("{base}/api/archives/upload");
+    send_upload(base, content_type, body, chunked, std::time::Duration::ZERO).await
+}
+
+/// [`post_upload`], pausing between chunks of a chunked body, so a test can be
+/// sure the server answers while the body is still being sent.
+async fn send_upload(
+    base: &str,
+    content_type: String,
+    body: Vec<u8>,
+    chunked: bool,
+    pause: std::time::Duration,
+) -> (u16, String) {
+    use std::io::Write;
+    let addr = base.trim_start_matches("http://").to_string();
     tokio::task::spawn_blocking(move || {
-        let req = agent().post(&url).header("content-type", &content_type);
-        let mut res = if chunked {
-            // `from_reader` gives ureq no length, so it sends the body chunked.
-            let mut reader = std::io::Cursor::new(body);
-            req.send(ureq::SendBody::from_reader(&mut reader))
-        } else {
-            req.send(&body[..])
-        }
-        .unwrap();
-        (
-            res.status().as_u16(),
-            res.body_mut().read_to_string().unwrap_or_default(),
-        )
+        let mut sock = std::net::TcpStream::connect(&addr).unwrap();
+        let limit = Some(std::time::Duration::from_secs(30));
+        sock.set_read_timeout(limit).unwrap();
+        sock.set_write_timeout(limit).unwrap();
+        let mut out = sock.try_clone().unwrap();
+        let send = std::thread::spawn(move || -> std::io::Result<()> {
+            let framing = if chunked {
+                "Transfer-Encoding: chunked".to_string()
+            } else {
+                format!("Content-Length: {}", body.len())
+            };
+            write_upload_head(&mut out, &addr, &content_type, &framing)?;
+            if chunked {
+                for chunk in body.chunks(64 * 1024) {
+                    write!(out, "{:x}\r\n", chunk.len())?;
+                    out.write_all(chunk)?;
+                    out.write_all(b"\r\n")?;
+                    std::thread::sleep(pause);
+                }
+                out.write_all(b"0\r\n\r\n")
+            } else {
+                out.write_all(&body)
+            }
+        });
+        let reply = read_reply(&mut sock);
+        // The reply is in, so the send is over whatever state it is in. Shut
+        // the socket so a write the server will never read fails now, rather
+        // than leaving the join below waiting on it.
+        let _ = sock.shutdown(std::net::Shutdown::Both);
+        // Ignored on purpose: a refused upload's send fails, and that is the
+        // case this client exists to survive.
+        let _ = send.join().unwrap();
+        reply
     })
     .await
     .unwrap()
+}
+
+/// The head of an upload request, up to where the body starts.
+fn write_upload_head(
+    out: &mut impl std::io::Write,
+    addr: &str,
+    content_type: &str,
+    framing: &str,
+) -> std::io::Result<()> {
+    write!(
+        out,
+        "POST /api/archives/upload HTTP/1.1\r\nHost: {addr}\r\n\
+         Content-Type: {content_type}\r\n{framing}\r\nConnection: close\r\n\r\n"
+    )
+}
+
+/// Read one HTTP/1.1 reply: its head, then exactly `Content-Length` bytes of
+/// body. Returns as soon as the reply is whole, so a reset that follows it, the
+/// server closing on a body it would not read, is never seen. Anything short of
+/// a whole reply panics with what did arrive, rather than passing a truncated
+/// one off as complete.
+fn read_reply(sock: &mut std::net::TcpStream) -> (u16, String) {
+    use std::io::Read;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        if let Some(reply) = whole_reply(&got) {
+            return reply;
+        }
+        let read = sock.read(&mut buf);
+        let partial = String::from_utf8_lossy(&got).into_owned();
+        match read {
+            Ok(0) => panic!("the connection closed mid-reply: {partial:?}"),
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) => panic!("{e} before the whole reply arrived: {partial:?}"),
+        }
+    }
+}
+
+/// The status and body, once `got` holds a whole reply.
+fn whole_reply(got: &[u8]) -> Option<(u16, String)> {
+    let end = got.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&got[..end]).expect("a reply head is ASCII");
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("no status line: {head:?}"));
+    let mut length = None;
+    for (name, value) in head.lines().skip(1).filter_map(|l| l.split_once(':')) {
+        // Every upload reply is a string or JSON, which hyper sends with its
+        // length. A chunked one would need a decoder this does not have, so it
+        // is a failure here rather than a body read as text.
+        assert!(
+            !name.trim().eq_ignore_ascii_case("transfer-encoding"),
+            "a reply without a length: {head:?}"
+        );
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            length = value.trim().parse::<usize>().ok();
+        }
+    }
+    let length = length.unwrap_or_else(|| panic!("a reply without Content-Length: {head:?}"));
+    let body = got.get(end + 4..end + 4 + length)?;
+    Some((status, String::from_utf8_lossy(body).into_owned()))
 }
 
 /// Serve a fresh workstation home with this `config.yaml`.
@@ -1525,11 +1630,7 @@ const GIB: u64 = 1024 * MIB;
 /// Sent chunked, with no length, so the refusal can only come from counting as
 /// it streams. A body that declares its length is refused from its headers
 /// before any of it is read, which is
-/// `a_body_that_declares_itself_too_large_is_refused_before_it_is_sent`; that
-/// test reads the reply the way a well-behaved client does. Sending a whole body
-/// with a length through ureq here would test ureq instead: it writes the body
-/// before reading anything, so a refusal that arrives early reaches it as a
-/// broken pipe. That is also why the desk checks the size itself.
+/// `a_body_that_declares_itself_too_large_is_refused_before_it_is_sent`.
 #[tokio::test]
 async fn an_upload_over_the_size_limit_is_refused() {
     let (tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
@@ -1556,6 +1657,32 @@ async fn an_upload_over_the_size_limit_is_refused() {
     let (status, _) = post_upload(&base, ct, body, false).await;
     assert_eq!(status, 202, "an upload under the limit is accepted");
     drop(tmp);
+    server.abort();
+}
+
+/// A refusal reaches a client that is still sending.
+///
+/// The server answers an over-limit upload as soon as it has counted past the
+/// limit, and closes rather than read the rest. Sent slowly, the body is
+/// certainly still going out when that happens, so this is the race the other
+/// upload tests can only lose by chance, made certain: a client that reads
+/// while it sends must still get the 413.
+///
+/// On loopback the reply reliably arrives ahead of the reset that follows it
+/// (200 runs of 200 on Linux). Over a real network it need not, because a reset
+/// can discard a reply the client has not yet read (RFC 9112, section 9.6), and
+/// a browser may then report a network error instead. That is why the desk
+/// checks both limits before it sends anything (`views/manage.rs`).
+#[tokio::test]
+async fn a_refusal_reaches_a_client_still_sending() {
+    let (_tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
+    // 4 MiB in 64 KiB chunks, 20 ms apart: over a second of sending, and the
+    // limit is passed about a quarter of the way in.
+    let (ct, body) = upload_body("Slow", &vec![0u8; 4 * MIB as usize]);
+    let (status, text) =
+        send_upload(&base, ct, body, true, std::time::Duration::from_millis(20)).await;
+    assert_eq!(status, 413, "the refusal must arrive: {text}");
+    assert!(text.contains("uploads.max_mb"), "{text}");
     server.abort();
 }
 
@@ -1634,31 +1761,27 @@ async fn the_tighter_of_the_two_limits_is_the_one_reported() {
 /// was waiting for a body it should never have wanted.
 #[tokio::test]
 async fn a_body_that_declares_itself_too_large_is_refused_before_it_is_sent() {
-    use std::io::{Read, Write};
     let (_tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
     let addr = base.trim_start_matches("http://").to_string();
-    let reply = tokio::task::spawn_blocking(move || {
+    let (status, text) = tokio::task::spawn_blocking(move || {
         let mut sock = std::net::TcpStream::connect(&addr).unwrap();
+        // Short: a server waiting for the body would never answer.
         sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        write!(
-            sock,
-            "POST /api/archives/upload HTTP/1.1\r\nHost: {addr}\r\n\
-             Content-Type: multipart/form-data; boundary=x\r\n\
-             Content-Length: 10737418240\r\n\r\n"
+        write_upload_head(
+            &mut sock,
+            &addr,
+            "multipart/form-data; boundary=x",
+            "Content-Length: 10737418240",
         )
         .unwrap();
-        let mut buf = [0u8; 512];
-        let n = sock
-            .read(&mut buf)
-            .expect("the server should answer, not wait");
-        String::from_utf8_lossy(&buf[..n]).to_string()
+        read_reply(&mut sock)
     })
     .await
     .unwrap();
-    assert!(
-        reply.starts_with("HTTP/1.1 413"),
-        "a declared 10 GB body should be refused at once, got: {reply}"
+    assert_eq!(
+        status, 413,
+        "a declared 10 GB body should be refused at once, got: {text}"
     );
     server.abort();
 }
