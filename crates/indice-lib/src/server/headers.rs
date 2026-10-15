@@ -3,7 +3,9 @@
 //! indice's two origins want opposite things from a browser. The app origin
 //! runs only indice's own code, so it gets a Content-Security-Policy that
 //! allows nothing else: no inline script, nothing loaded from another site, and
-//! no framing by anyone. The replay origin exists to run archived pages' code,
+//! no framing by anyone. No framing because of clickjacking: a page that frames
+//! the workroom under a decoy turns a curator's click into a Delete, and the
+//! CSRF check cannot see that, since the click lands on indice's own page. The replay origin exists to run archived pages' code,
 //! whatever it is, so a script policy there would protect nothing and break
 //! replay; it gets only a rule about who may frame it. What keeps archived
 //! script away from indice is the origin itself (see [`super::ReplayOrigin`]),

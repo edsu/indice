@@ -935,3 +935,140 @@ async fn collect_violations(
     .await;
     Ok((violations, rendered))
 }
+
+/// Replay plays only this server's own archives, and only in indice's frame.
+///
+/// ReplayWeb.page replays whatever WACZ its page's address names. Unchecked,
+/// anyone could show a WACZ of their own making under an institution's replay
+/// hostname: by linking to the viewer with a foreign `source`, or by opening
+/// ReplayWeb.page's shell at `/replay/` directly. The shell matters most,
+/// because once the service worker is installed it serves the shell itself,
+/// without asking the server, so this checks it both before and after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn replay_plays_only_its_own_archives() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "own").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+
+    let driver = connect().await;
+    let result = try_foreign_replays(&driver, addr, &id).await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+}
+
+/// Poll for the archived page's title for `secs`, returning whether it ever
+/// appeared, from wherever the driver is.
+async fn renders_within(driver: &WebDriver, secs: u64) -> Result<bool, String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() <= deadline {
+        if deep_contains(driver, "2Tone").await? {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Ok(false)
+}
+
+async fn try_foreign_replays(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {
+    let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
+    let ts = "20260609213407";
+    let viewer = |source: &str| {
+        format!("http://{addr}/replay/viewer?source={source}&url={page_url}&ts={ts}&name=x")
+    };
+    driver
+        .goto(&viewer(&format!("/files/{id}")))
+        .await
+        .map_err(|e| e.to_string())?;
+    let replay = driver
+        .execute(
+            "return document.querySelector('meta[name=\"indice-replay-origin\"]').content;",
+            vec![],
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let shell = format!(
+        "{replay}/replay/?source={}&customColl={id}#url={page_url}&ts={ts}",
+        url_escape(&format!("{replay}/files/{id}"))
+    );
+
+    // 1. The shell, opened directly before any service worker is installed:
+    //    the server's copy, which is the guard's first case.
+    driver.goto(&shell).await.map_err(|e| e.to_string())?;
+    if renders_within(driver, 8).await? {
+        return Err("the shell replayed when opened directly, before the worker".into());
+    }
+
+    // 2. A foreign WACZ, named in a viewer link. It is a real archive, the
+    //    same bytes served by the site rather than the replay host, so nothing
+    //    but where it comes from stops it.
+    let foreign = url_escape(&format!("http://{addr}/files/{id}"));
+    driver
+        .goto(&viewer(&foreign))
+        .await
+        .map_err(|e| e.to_string())?;
+    enter_replay_frame(driver).await?;
+    if renders_within(driver, 8).await? {
+        return Err("the viewer replayed a WACZ from another origin".into());
+    }
+    if !deep_contains(driver, "only this archive").await? {
+        return Err("the frame did not say why it refused the foreign WACZ".into());
+    }
+    driver
+        .enter_default_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 3. An ordinary replay, which installs the service worker on the replay
+    //    origin, and shows the guard lets indice's own replay through.
+    driver
+        .goto(&viewer(&format!("/files/{id}")))
+        .await
+        .map_err(|e| e.to_string())?;
+    enter_replay_frame(driver).await?;
+    if !renders_within(driver, 45).await? {
+        let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+        return Err(format!("indice's own replay did not render.\nDIAG: {diag}"));
+    }
+    driver
+        .enter_default_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 4. The shell, opened directly again, now served by the worker without
+    //    asking the server. This is the case only the guard can catch.
+    driver.goto(&shell).await.map_err(|e| e.to_string())?;
+    let controlled = driver
+        .execute("return !!navigator.serviceWorker.controller;", vec![])
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .as_bool()
+        .unwrap_or(false);
+    if !controlled {
+        return Err("expected the service worker to serve the shell by now".into());
+    }
+    if renders_within(driver, 8).await? {
+        return Err("the shell replayed when opened directly, served by the worker".into());
+    }
+    Ok(())
+}
+
+/// Percent-encode a URL for use as one query parameter's value.
+fn url_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}

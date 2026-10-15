@@ -213,7 +213,38 @@ pub(super) async fn replay_asset(
     axum::extract::Path(path): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if path == "ui.js" {
+        return guarded_ui(&headers);
+    }
     listed_asset(REPLAY_FILES, &path, &headers)
+}
+
+/// ReplayWeb.page, with indice's guard ahead of it in the same file.
+///
+/// ReplayWeb.page replays whatever WACZ its page's address names, and its
+/// shell at `/replay/` is served by the service worker itself once installed,
+/// so a check in a page indice serves would miss most visits. Every page that
+/// starts ReplayWeb.page loads this file, though, and a script that throws
+/// stops there: the guard (`guard.js`) refuses any source but indice's own,
+/// and ReplayWeb.page never runs. One file rather than a second `<script>`,
+/// because the shell the service worker writes loads only this one. The
+/// vendored `ui.js` stays exactly as fetched, so an upgrade is still a copy.
+fn guarded_ui(headers: &HeaderMap) -> Response {
+    let (Some(guard), Some(ui)) = (ReplayAssets::get("guard.js"), ReplayAssets::get("ui.js"))
+    else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let mut body = guard.data.to_vec();
+    body.extend_from_slice(b"\n");
+    body.extend_from_slice(&ui.data);
+    let hash: [u8; 32] = {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(guard.metadata.sha256_hash());
+        h.update(ui.metadata.sha256_hash());
+        h.finalize().into()
+    };
+    serve_bytes(body, &hash, "ui.js", headers)
 }
 
 fn listed_asset(list: &[&str], path: &str, headers: &HeaderMap) -> Response {

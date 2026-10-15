@@ -28,37 +28,28 @@
   <script>
     (function () {
       const params = new URLSearchParams(window.location.search);
-      const source = params.get('source'); // e.g. /files/a926c132
       const url    = params.get('url') || '';
       const ts     = params.get('ts') || '';
-      const collectionId = params.get('collection_id') || '';
 
+      // Only one of indice's own archives, by its path on this server: never
+      // a WACZ from anywhere else, which would let anyone show their own
+      // under this hostname. The collection name ReplayWeb.page caches it
+      // under comes from the path too, never from the query, so one archive
+      // cannot be cached under another's name. `indiceSource` is the check
+      // ReplayWeb.page's shell makes as well; see guard.js.
+      const source = window.indiceSource(params.get('source') || '');
       if (!source) {
         document.body.innerHTML =
-          '<div id="error">Missing <code>source</code> parameter.</div>';
+          '<div id="error">This page replays only this archive\'s own collections.</div>';
         return;
       }
-
-      // wabac collection namespace (its IndexedDB cache key). For a multi-WACZ
-      // collection manifest (…/replay.json) the last path segment is the shared
-      // "replay.json", so fall back to the collection id to keep each collection
-      // in its own namespace. An explicit `coll` param wins; otherwise a
-      // single-WACZ source uses its last segment (the WACZ id).
-      const explicitColl = params.get('coll') || '';
-      let collId;
-      if (explicitColl) {
-        collId = explicitColl;
-      } else if (source.endsWith('/replay.json')) {
-        collId = collectionId || 'collection';
-      } else {
-        collId = source.split('/').pop();
-      }
+      const collId = source.coll;
 
       // Mount the ReplayWebPage component in WACZ-direct mode: it reads the
       // WACZ from `source` (our /files/{id} byte-range endpoint), extracts the
       // internal CDX into IndexedDB, and serves all resources client-side.
       const rp = document.createElement('replay-web-page');
-      rp.setAttribute('source', source);
+      rp.setAttribute('source', source.path);
       rp.setAttribute('coll', collId);
       // Chrome-free inline replay for both single-WACZ and multi-WACZ collection
       // sources. A collection is a native multi-WACZ source: wabac loads each

@@ -324,6 +324,14 @@ origin of its own, so the browser keeps a capture's script away from indice.
   `browser.rs::the_replay_frame_refuses_to_replay_unframed`
 - A server will not start without a replay origin.
   `replay_origin.rs::a_server_without_a_replay_origin_refuses_to_start`
+- The replay origin replays only this server's own archives, and only in
+  indice's replay frame, so nobody can show their own WACZ under its hostname.
+  A guard served ahead of ReplayWeb.page in `/replay/ui.js` checks the source,
+  and that the shell is framed by `/replay-frame`, in every page that loads
+  the player, including the shell the service worker serves without asking the
+  server. Who may embed the frame is `frame-ancestors`'s question, below.
+  `browser.rs::replay_plays_only_its_own_archives`,
+  `replay_origin.rs::the_replay_origin_serves_the_frame_and_replayweb`
 
 **The browser is told what indice's pages may do.** One policy per origin, in
 `server::headers`: the app's runs only indice's code, the replay origin's says
@@ -331,7 +339,9 @@ only who may frame it.
 
 - The app origin allows script, style and images from itself alone, frames
   only the replay origin, and is framed by nothing; a refusal carries the
-  policy too. `security_headers.rs::the_app_origin_allows_only_its_own_code`,
+  policy too. Framed by nothing because of clickjacking: a hostile page that
+  frames the workroom under a decoy turns a curator's click into a Delete, and
+  the CSRF check cannot see it, since that click is on indice's own page. `security_headers.rs::the_app_origin_allows_only_its_own_code`,
   `security_headers.rs::a_refusal_carries_the_headers_too`
 - Every page indice serves works under that policy, which a browser checks by
   reporting nothing but a probe of the test's own.
@@ -396,9 +406,9 @@ Saying so here is what stops these being re-litigated.
   values with no class to hold them; inline style can restyle a page but not
   run anything, and no visitor's markup reaches it unsanitized. And a server
   without `--site-url` does not know its own address, so its replay origin says
-  nothing about who may frame it: `requireSubdomainIframe` still refuses to
-  replay unframed, and a stranger framing replay gains nothing, since nothing
-  on that origin acts for anyone.
+  nothing about who may frame it. That costs little: the frame and the shell
+  replay only this server's own archives (*Guarantees*), so a stranger framing
+  replay can show only what the site already shows.
 - **Archived script runs, on the replay origin.** That is replay's job, and the
   origin is what contains it. Within that origin it is unconstrained: one
   capture's script can read every other capture this browser has replayed,
@@ -1481,14 +1491,22 @@ and shows no bar, so logs aren't lost.
 
 `static/replay/` holds the [ReplayWeb.page][rwp] JS bundle (`ui.js` + `sw.js`), embedded in the binary at compile time via `rust-embed` and served under `/replay/`. Replay runs in WACZ-direct mode: the `<replay-web-page>` component reads the WACZ over byte-range from our `/files/{id}` endpoint and serves every resource client-side through its service worker (`sw.js`); indice does no server-side rewriting (see *Replay Viewer*).
 
-These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.4.6**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
+These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.5.3**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
 
 ```sh
-./scripts/fetch-replay.sh          # re-fetch the pinned VERSION (2.4.6)
-./scripts/fetch-replay.sh 2.4.7    # fetch a specific version (one-off)
+./scripts/fetch-replay.sh          # re-fetch the pinned VERSION
+./scripts/fetch-replay.sh 2.5.4    # fetch a specific version (one-off)
 ```
 
 To upgrade: pick a version from <https://www.npmjs.com/package/replaywebpage>, bump `VERSION` in `scripts/fetch-replay.sh`, re-run it (downloads `ui.js`/`sw.js` from the jsDelivr npm CDN), rebuild, **re-test replay in a browser** (`cargo test -p indice-lib --test browser` needs Chrome + chromedriver), then commit the refreshed assets. Do this periodically so replay keeps up with wabac.js fixes.
+
+`ui.js` is served with indice's guard (`static/replay/guard.js`) ahead of it in the same
+response, and the vendored file stays exactly as fetched. The guard leans on three things
+about ReplayWeb.page that an upgrade could change: its shell lives at the replay base
+(`/replay/`); the shell names its archive and collection in `source` and `customColl`; and
+the shell the service worker writes for itself loads `./ui.js` and nothing else (`getIndexHtml`
+in `sw.js`). `browser.rs::replay_plays_only_its_own_archives` fails if
+any of them stops holding, so run it on every upgrade.
 
 [rwp]: https://replayweb.page
 
