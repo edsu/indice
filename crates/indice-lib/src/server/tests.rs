@@ -559,3 +559,28 @@ async fn a_timed_out_request_answers_503() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// Every crawl replays through its own `/files/{id}`, whatever its source,
+/// because the replay origin replays nothing else (`static/replay/guard.js`).
+/// A remote URL handed to the viewer directly would be refused there.
+#[test]
+fn every_crawl_replays_through_its_own_files_path() {
+    let crawl = |source: serde_json::Value| -> crate::collections::Wacz {
+        serde_json::from_value(serde_json::json!({
+            "id": "abc123",
+            "collection": "c",
+            "source": source,
+            "name": "n",
+            "date_indexed": "2026-01-01T00:00:00Z",
+            "file_size": 1,
+            "sha256": "0",
+        }))
+        .unwrap()
+    };
+    let file = crawl(serde_json::json!("archive/c/a.wacz"));
+    let remote = crawl(serde_json::json!("https://example.org/a.wacz"));
+    assert!(matches!(file.source, crate::collections::Source::File(_)));
+    assert!(matches!(remote.source, crate::collections::Source::Url(_)));
+    assert_eq!(viewer_source(&file), "/files/abc123");
+    assert_eq!(viewer_source(&remote), "/files/abc123");
+}

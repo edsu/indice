@@ -40,9 +40,11 @@
 #       services set on the parent domain. indice refuses to start without it.
 #   REPLAY_URL (optional)
 #       The URL indice frames replay from. Defaults to https://$REPLAY_ADDRESS.
-#   SITE_URL (optional)
-#       The site's own URL, https://$SITE_ADDRESS. With it, the replay host
-#       tells browsers that only this site may frame it.
+#   SITE_URL (recommended)
+#       The site's own URL, https://$SITE_ADDRESS. indice starts without it,
+#       but with it the replay host tells browsers that only this site may
+#       frame it, and indice checks that REPLAY_ADDRESS is a different host.
+#       See the security guide.
 #
 # ── And one file ──
 #

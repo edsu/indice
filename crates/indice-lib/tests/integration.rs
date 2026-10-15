@@ -1087,7 +1087,7 @@ async fn homepage_empty_collections() {
 // ── Remote (HTTP) source ────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn index_from_http_url_and_link_directly() {
+async fn index_from_http_url_and_replay_through_files() {
     use axum::routing::get;
 
     // Serve the simple.wacz fixture bytes over a local HTTP server.
@@ -1140,9 +1140,12 @@ async fn index_from_http_url_and_link_directly() {
         assert!(!idx.search("example", 10).unwrap().is_empty());
     }
 
-    // The crawl page links wabac directly at the remote URL, not through /files/{id}.
+    // The crawl page links to its own /files/{id}, as for every crawl: the
+    // replay origin replays only this server's paths. That path redirects to
+    // the remote URL, so the bytes still come from the remote host.
     let app2 = public_router(tmp.path());
     let resp = app2
+        .clone()
         .oneshot(
             Request::get(format!("/crawl/{}", col.id))
                 .body(Body::empty())
@@ -1153,13 +1156,23 @@ async fn index_from_http_url_and_link_directly() {
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
     assert!(
-        html.contains("source=http%3A%2F%2F127.0.0.1"),
-        "remote source should be used directly in viewer links"
+        html.contains(&format!("source=%2Ffiles%2F{}", col.id)),
+        "a remote crawl replays through its own /files/{{id}}"
     );
     assert!(
-        !html.contains(&format!("/files/{}", col.id)),
-        "remote source should not be routed through /files/{{id}}"
+        !html.contains("source=http%3A%2F%2F127.0.0.1"),
+        "the remote URL is never handed to the viewer, which would refuse it"
     );
+    let resp = app2
+        .oneshot(
+            Request::get(format!("/files/{}", col.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(resp.status().is_redirection());
+    assert_eq!(resp.headers().get("location").unwrap(), url.as_str());
 }
 
 /// A rebuild must not download a remote source, however the `Ingest` it is

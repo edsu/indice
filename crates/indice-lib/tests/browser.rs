@@ -1072,3 +1072,114 @@ fn url_escape(s: &str) -> String {
         })
         .collect()
 }
+
+/// A crawl added by URL replays, by way of its own `/files/{id}`.
+///
+/// The replay origin replays only this server's own paths, so the viewer is
+/// handed `/files/{id}` for every crawl, and for one added by URL that path
+/// redirects to where the WACZ lives. Here it lives on a plain static host
+/// that does what a real one (S3, nginx) does: byte ranges, `HEAD` with a
+/// length, and CORS for any origin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn a_crawl_added_by_url_replays() {
+    let (remote, remote_server) = static_wacz_host(fixture("a.wacz")).await;
+
+    // This archive, which adds that WACZ by its URL.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let url = format!("http://{remote}/a.wacz");
+    let home = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&home)
+            .index_location(&url, "by-url")
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let crawl = &manifest.waczs[0];
+    assert!(
+        matches!(crawl.source, indice_lib::collections::Source::Url(_)),
+        "the crawl should be held by URL, not copied"
+    );
+    let id = crawl.id.clone();
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+
+    let driver = connect().await;
+    let result = async {
+        // The crawl page's own Replay link, so the test follows what a reader
+        // would click rather than a URL it built.
+        driver
+            .goto(&format!("http://{addr}/crawl/{id}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let href = driver
+            .execute(
+                "const a = document.querySelector('a[href*=\"/replay/viewer\"]'); return a ? a.href : '';",
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if href.is_empty() {
+            return Err("the crawl page has no replay link".to_string());
+        }
+        driver.goto(&href).await.map_err(|e| e.to_string())?;
+        enter_replay_frame(&driver).await?;
+        if renders_within(&driver, 45).await? {
+            Ok(())
+        } else {
+            let diag = diagnostics(&driver).await.unwrap_or_else(|e| e);
+            Err(format!("a crawl added by URL did not replay from {href}.\nDIAG: {diag}"))
+        }
+    }
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    remote_server.abort();
+    result.unwrap();
+}
+
+/// A static host for one WACZ at `/a.wacz`, behaving as an object store does
+/// for a public bucket: ranges and `HEAD` from `ServeFile`, and CORS headers
+/// that let any page read them, ranges included.
+async fn static_wacz_host(path: std::path::PathBuf) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    use axum::http::{header, HeaderValue, Method, StatusCode};
+    let app = axum::Router::new()
+        .route_service("/a.wacz", tower_http::services::ServeFile::new(path))
+        .layer(axum::middleware::from_fn(
+            |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                let preflight = req.method() == Method::OPTIONS;
+                let mut res = if preflight {
+                    axum::response::IntoResponse::into_response(StatusCode::NO_CONTENT)
+                } else {
+                    next.run(req).await
+                };
+                let h = res.headers_mut();
+                h.insert(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_static("*"),
+                );
+                h.insert(
+                    header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                    HeaderValue::from_static("content-range, content-length, accept-ranges"),
+                );
+                if preflight {
+                    h.insert(
+                        header::ACCESS_CONTROL_ALLOW_HEADERS,
+                        HeaderValue::from_static("range"),
+                    );
+                }
+                res
+            },
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, handle)
+}

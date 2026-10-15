@@ -173,6 +173,12 @@ pub struct ServerConfig {
     /// that rewrites `Host` *without* setting `X-Forwarded-Host`, which is
     /// nginx's and Apache's default.
     pub site_authority: Option<String>,
+    /// This site's public origin (`scheme://host[:port]`), from the same
+    /// `--site-url`, for the replay origin's `frame-ancestors`. Kept whole
+    /// because a host without a scheme there matches only the replay origin's
+    /// own scheme, so a site on http with replay on https would be refused.
+    /// Set both with [`ServerConfig::set_site_url`].
+    pub site_origin: Option<String>,
     /// Let a networked instance fetch a curator-supplied URL that resolves to
     /// this machine or this network.
     ///
@@ -204,12 +210,32 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
+    /// Set this site's public URL (`--site-url`): the authority the CSRF check
+    /// compares with, and the origin replay may be framed by. Refuses anything
+    /// without a host.
+    pub fn set_site_url(&mut self, raw: &str) -> Result<()> {
+        let url = url::Url::parse(raw.trim())
+            .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
+        let Some(host) = url.host_str() else {
+            anyhow::bail!("{raw:?} has no host");
+        };
+        // `Url::port()` elides the scheme's default port, as a browser's
+        // `Origin` does, so the two compare directly.
+        self.site_authority = Some(match url.port() {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        });
+        self.site_origin = Some(url.origin().ascii_serialization());
+        Ok(())
+    }
+
     /// The given access, with everything else defaulted.
     pub fn new(access: Access) -> Self {
         Self {
             access,
             logout_redirect: None,
             site_authority: None,
+            site_origin: None,
             allow_internal_fetch: false,
             replay_origin: None,
             app_addr: None,
@@ -790,17 +816,13 @@ fn build_routers(
         .route("/health", get(health));
 
     // Who may frame replay: wherever the viewer is served from. A workstation
-    // knows its own listener; a server knows only what `--site-url` says, and
-    // a host without a scheme matches the replay origin's own scheme.
-    let ancestors = match (access_is_local, config.app_addr, &site_authority) {
+    // knows its own listener; a server knows only what `--site-url` says.
+    let ancestors = match (access_is_local, config.app_addr, &config.site_origin) {
         (true, Some(addr), _) => headers::loopback_origins(addr),
-        (false, _, Some(authority)) => vec![authority.clone()],
+        (false, _, Some(origin)) => vec![origin.clone()],
         _ => Vec::new(),
     };
-    let app_headers = headers::SecurityHeaders::app(
-        config.replay_origin.as_ref(),
-        config.logout_redirect.as_deref(),
-    );
+    let app_headers = headers::SecurityHeaders::app(config.replay_origin.as_ref());
     let replay_headers = headers::SecurityHeaders::replay(&ancestors);
 
     Ok(Routers {

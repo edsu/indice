@@ -184,7 +184,7 @@ chk 404 "$(code "$R/")" "the replay host serves no pages"
 replay_hdrs=$(curl -s -D- -o /dev/null --max-time 15 "$R/replay-frame")
 chk 1 "$(grep -ci '^x-content-type-options: nosniff' <<<"$replay_hdrs")" "nosniff on the replay host"
 chk 1 "$(grep -ci '^strict-transport-security:' <<<"$replay_hdrs")" "HSTS on the replay host"
-chk 1 "$(grep -ci "^content-security-policy: frame-ancestors 'self' localhost:${PORT}" <<<"$replay_hdrs")" \
+chk 1 "$(grep -ci "^content-security-policy: frame-ancestors 'self' ${B}" <<<"$replay_hdrs")" \
 	"only the site may frame the replay host (SITE_URL)"
 
 echo

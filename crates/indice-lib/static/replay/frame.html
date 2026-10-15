@@ -37,7 +37,9 @@
       // under comes from the path too, never from the query, so one archive
       // cannot be cached under another's name. `indiceSource` is the check
       // ReplayWeb.page's shell makes as well; see guard.js.
-      const source = window.indiceSource(params.get('source') || '');
+      // Missing only if /replay/ui.js did not load, which is a refusal too.
+      const check = window.indiceSource;
+      const source = typeof check === 'function' ? check(params.get('source') || '') : null;
       if (!source) {
         document.body.innerHTML =
           '<div id="error">This page replays only this archive\'s own collections.</div>';

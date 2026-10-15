@@ -82,7 +82,7 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    OAUTH2_PROXY_COOKIE_SECRET=      # a 32-char secret from: openssl rand -hex 16
    INDICE_AUTH_PROXY_SECRET=a-long-random-string
    REPLAY_ADDRESS=replay.your-domain
-   SITE_URL=https://your-domain        # optional: replay then refuses to be framed by other sites
+   SITE_URL=https://your-domain        # recommended; see Securing a server
    # OIDC_EMAIL_DOMAINS=example.edu    # who may sign in at all; defaults to anyone
    # OAUTH2_PROXY_COOKIE_SECURE=false  # only to run the stack on plain-HTTP localhost
    ```

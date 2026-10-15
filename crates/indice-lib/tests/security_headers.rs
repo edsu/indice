@@ -127,31 +127,18 @@ async fn a_refusal_carries_the_headers_too() {
     assert!(!csp(&h).is_empty());
 }
 
-/// Logout is a form whose POST redirects to `INDICE_LOGOUT_REDIRECT`, and
-/// browsers check `form-action` on that redirect, so an absolute one is
-/// allowed as a form target and a relative one adds nothing.
+/// No `form-action`: logout is a form whose POST redirects to the login
+/// service's sign-out, which may redirect on to an identity provider, and
+/// browsers check `form-action` at every hop. A policy naming only the site
+/// would break single sign-out.
 #[tokio::test]
-async fn the_logout_redirect_is_an_allowed_form_target() {
+async fn forms_may_follow_logout_to_the_identity_provider() {
     let tmp = TempDir::new().unwrap();
     let mut c = config();
-    c.logout_redirect = Some("https://idp.example.test/logout?rd=x".into());
+    c.logout_redirect = Some("/oauth2/sign_out?rd=https%3A%2F%2Fidp.example.test%2Flogout".into());
     let Routers { app, .. } = routers(tmp.path(), c);
     let policy = csp(&headers(&app, Method::GET, "/", &[]).await);
-    assert_eq!(
-        directive(&policy, "form-action"),
-        Some("'self' https://idp.example.test"),
-        "{policy}"
-    );
-
-    let mut c = config();
-    c.logout_redirect = Some("/oauth2/sign_out?rd=/".into());
-    let Routers { app, .. } = routers(tmp.path(), c);
-    let policy = csp(&headers(&app, Method::GET, "/", &[]).await);
-    assert_eq!(
-        directive(&policy, "form-action"),
-        Some("'self'"),
-        "{policy}"
-    );
+    assert_eq!(directive(&policy, "form-action"), None, "{policy}");
 }
 
 /// The replay origin sets no script policy, since running archived script is
@@ -161,17 +148,28 @@ async fn the_logout_redirect_is_an_allowed_form_target() {
 async fn the_replay_origin_says_only_who_may_frame_it() {
     let tmp = TempDir::new().unwrap();
     let mut c = config();
-    c.site_authority = Some("archive.example.test".into());
+    c.set_site_url("https://archive.example.test/").unwrap();
     let Routers { replay, .. } = routers(tmp.path(), c);
     for path in ["/replay-frame", "/replay/", "/replay/sw.js"] {
         let h = headers(&replay, Method::GET, path, &[]).await;
         assert_common(&h, path);
         assert_eq!(
             csp(&h),
-            "frame-ancestors 'self' archive.example.test",
+            "frame-ancestors 'self' https://archive.example.test",
             "{path}"
         );
     }
+
+    // The site's scheme is kept, so a site on plain http still matches when
+    // replay is on https: a host alone there would match only https.
+    let mut c = config();
+    c.set_site_url("http://archive.internal:8080").unwrap();
+    let Routers { replay, .. } = routers(tmp.path(), c);
+    let h = headers(&replay, Method::GET, "/replay-frame", &[]).await;
+    assert_eq!(
+        csp(&h),
+        "frame-ancestors 'self' http://archive.internal:8080"
+    );
 
     // A server that does not know its own address says nothing about framing
     // rather than guess, and still refuses sniffing.

@@ -1217,21 +1217,13 @@ async fn main() -> Result<()> {
             // `filter(|_| manage.enabled)` guard existed to prevent. One env
             // file is commonly shared between a server and a laptop.
             if let Some(raw) = site_url.filter(|_| !access_is_local) {
-                let authority = url::Url::parse(&raw).ok().and_then(|u| {
-                    let host = u.host_str()?.to_string();
-                    Some(match u.port() {
-                        Some(p) => format!("{host}:{p}"),
-                        None => host,
-                    })
-                });
-                let Some(authority) = authority else {
+                if let Err(e) = config.set_site_url(&raw) {
                     eprintln!(
                         "--site-url must be an absolute URL with a host, e.g. \
-                         https://archive.example.org (got: {raw})"
+                         https://archive.example.org: {e}"
                     );
                     std::process::exit(2);
-                };
-                config.site_authority = Some(authority);
+                }
             }
 
             // A server's replay origin. Ignored on a workstation, which uses

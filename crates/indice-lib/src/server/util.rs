@@ -33,24 +33,20 @@ pub(super) fn load_waczs(state: &AppState) -> Vec<Wacz> {
         .unwrap_or_default()
 }
 
-/// The `source` value to hand wabac.js for a collection: our local byte-range
-/// endpoint for a file, or the remote URL directly (read client-side) for a URL.
+/// The `source` value to hand ReplayWeb.page for a crawl: always its
+/// `/files/{id}`, whatever the crawl's source. A file is served from there; a
+/// remote URL or a Browsertrix crawl is redirected from there to where its
+/// bytes are (`serve_file`). The replay origin replays only this server's own
+/// paths (`static/replay/guard.js`), so a remote URL handed over directly
+/// would be refused.
 pub(super) fn viewer_source(col: &Wacz) -> String {
-    match &col.source {
-        // A Browsertrix source is served through /files/{id}, which re-resolves a
-        // fresh presigned URL and 302-redirects to it (its stored URL expires).
-        crate::collections::Source::File(_)
-        | crate::collections::Source::Browsertrix { .. }
-        | crate::collections::Source::BrowsertrixPublic { .. } => {
-            format!("/files/{}", col.id)
-        }
-        crate::collections::Source::Url(u) => u.clone(),
-    }
+    format!("/files/{}", col.id)
 }
 
 /// The viewer URL that replays a whole collection (multi-WACZ): wabac loads the
 /// collection's `replay.json` manifest (see `collection_replay_json`) as one
-/// merged collection. Passes an explicit `coll` namespace plus breadcrumb params.
+/// merged collection, cached under the collection's id, which the frame takes
+/// from the manifest's path. The rest are breadcrumb params.
 ///
 /// A whole-collection entry has no page in mind, so it opens on a sensible
 /// default landing page (`default_page`) when one is known — otherwise wabac
@@ -64,9 +60,8 @@ pub(super) fn collection_replay_href(
 ) -> String {
     let source = format!("/collection/{id}/replay.json");
     let mut href = format!(
-        "/replay/viewer?source={}&coll={}&name={}&collection={}&collection_id={}",
+        "/replay/viewer?source={}&name={}&collection={}&collection_id={}",
         url_encode(&source),
-        url_encode(id),
         url_encode(name),
         url_encode(name),
         url_encode(id),

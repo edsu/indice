@@ -33,11 +33,10 @@
     document.getElementById('collection-sep').style.display = 'none';
   }
   const nameEl = document.getElementById('collection-name');
-  // Without a name, the same fallback the frame uses for wabac's collection
-  // id: a collection's manifest ends in the shared "replay.json", so show
-  // the collection id rather than that.
-  nameEl.textContent = name || params.get('coll') ||
-    (source.endsWith('/replay.json') ? (collectionId || 'collection') : source.split('/').pop());
+  // Without a name, the id in the source's path, as the frame names its
+  // cache: the crawl's for /files/{id}, the collection's for its manifest.
+  const fromPath = source.match(/^\/(?:files|collection)\/([^/]+)/);
+  nameEl.textContent = name || (fromPath ? fromPath[1] : source);
   if (crawlId) nameEl.href = '/crawl/' + encodeURIComponent(crawlId);
   const currentUrl = document.getElementById('current-url');
   currentUrl.textContent = url;

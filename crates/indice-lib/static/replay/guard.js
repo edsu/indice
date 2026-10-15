@@ -40,12 +40,26 @@
     var m =
       url.pathname.match(/^\/files\/([^/]+)$/) ||
       url.pathname.match(/^\/collection\/([^/]+)\/replay\.json$/);
-    return m ? { path: url.pathname, coll: decodeURIComponent(m[1]) } : null;
+    if (!m) return null;
+    try {
+      return { path: url.pathname, coll: decodeURIComponent(m[1]) };
+    } catch (e) {
+      return null; // a malformed escape: not one of ours
+    }
   }
   window.indiceSource = indiceSource;
 
+  // Refuse by default: only the two pages indice puts on this origin may
+  // start ReplayWeb.page, so a page added later, or a path ReplayWeb.page
+  // starts using after an upgrade, is refused until someone decides it is
+  // safe, rather than allowed until someone notices it is not.
   var path = window.location.pathname;
-  if (path !== "/replay/" && path !== "/replay/index.html") return;
+  if (path === "/replay-frame") return; // checks its own source; see frame.html
+  if (path !== "/replay/" && path !== "/replay/index.html") {
+    throw new Error(
+      "indice: replay refused. ReplayWeb.page runs only in indice's replay frame."
+    );
+  }
 
   // The shell. Framed by our own frame, on this origin, or not at all.
   var framedByUs = false;

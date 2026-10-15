@@ -5,9 +5,11 @@
 //! allows nothing else: no inline script, nothing loaded from another site, and
 //! no framing by anyone. No framing because of clickjacking: a page that frames
 //! the workroom under a decoy turns a curator's click into a Delete, and the
-//! CSRF check cannot see that, since the click lands on indice's own page. The replay origin exists to run archived pages' code,
-//! whatever it is, so a script policy there would protect nothing and break
-//! replay; it gets only a rule about who may frame it. What keeps archived
+//! CSRF check cannot see that, since the click lands on indice's own page.
+//!
+//! The replay origin exists to run archived pages' code, whatever it is, so a
+//! script policy there would protect nothing and break replay; it gets only a
+//! rule about who may frame it. What keeps archived
 //! script away from indice is the origin itself (see [`super::ReplayOrigin`]),
 //! not a header on it.
 //!
@@ -36,20 +38,16 @@ const REFERRER_POLICY: &str = "same-origin";
 
 impl SecurityHeaders {
     /// For the app origin. `replay` is the one origin its pages may frame; the
-    /// viewer frames it, and nothing else frames anything. `logout_redirect`
-    /// is allowed as a form target because logout is a form whose POST
-    /// redirects there, and browsers check `form-action` on redirects too.
-    pub(super) fn app(replay: Option<&ReplayOrigin>, logout_redirect: Option<&str>) -> Self {
+    /// viewer frames it, and nothing else frames anything.
+    ///
+    /// No `form-action`. Browsers check it on every redirect a form's
+    /// submission follows, and logout is a form whose POST redirects to the
+    /// login service's sign-out, which may redirect on to an identity
+    /// provider indice cannot name. Restricting it would break single
+    /// sign-out to guard against a form injected into a page, and no markup a
+    /// visitor supplies reaches a page unsanitized.
+    pub(super) fn app(replay: Option<&ReplayOrigin>) -> Self {
         let frame_src = replay.map_or("'none'", ReplayOrigin::as_str);
-        let mut form_action = "'self'".to_string();
-        if let Some(origin) = logout_redirect
-            .and_then(|r| url::Url::parse(r).ok())
-            .map(|u| u.origin().ascii_serialization())
-            .filter(|o| o != "null")
-        {
-            form_action.push(' ');
-            form_action.push_str(&origin);
-        }
         let csp = format!(
             "default-src 'self'; \
              script-src 'self'; \
@@ -59,7 +57,6 @@ impl SecurityHeaders {
              connect-src 'self'; \
              frame-src {frame_src}; \
              frame-ancestors 'none'; \
-             form-action {form_action}; \
              base-uri 'none'; \
              object-src 'none'"
         );
@@ -80,11 +77,13 @@ impl SecurityHeaders {
     /// Itself, because `/replay-frame` frames ReplayWeb.page's shell at
     /// `/replay/`, and `frame-ancestors` checks every ancestor: without
     /// `'self'` the shell is refused whenever the server rather than the service
-    /// worker answers it, which is the first visit's race (see `replay_index`). Empty when indice cannot know
-    /// them (a server without `--site-url`), and then replay says nothing about
-    /// framing rather than guess: `requireSubdomainIframe` still refuses to
-    /// replay unframed, and framing by a stranger is unwelcome rather than
-    /// dangerous, since nothing on this origin acts for anyone.
+    /// worker answers it, which is the first visit's race (see `replay_index`).
+    ///
+    /// Empty when indice cannot know them (a server without `--site-url`), and
+    /// then replay says nothing about framing rather than guess. A stranger's
+    /// page may then embed the frame, but it replays only this server's own
+    /// archives (`static/replay/guard.js`), and nothing on this origin acts
+    /// for anyone.
     pub(super) fn replay(ancestors: &[String]) -> Self {
         let mut pairs = vec![
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),

@@ -341,7 +341,8 @@ only who may frame it.
   only the replay origin, and is framed by nothing; a refusal carries the
   policy too. Framed by nothing because of clickjacking: a hostile page that
   frames the workroom under a decoy turns a curator's click into a Delete, and
-  the CSRF check cannot see it, since that click is on indice's own page. `security_headers.rs::the_app_origin_allows_only_its_own_code`,
+  the CSRF check cannot see it, since that click is on indice's own page.
+  `security_headers.rs::the_app_origin_allows_only_its_own_code`,
   `security_headers.rs::a_refusal_carries_the_headers_too`
 - Every page indice serves works under that policy, which a browser checks by
   reporting nothing but a probe of the test's own.

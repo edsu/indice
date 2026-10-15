@@ -69,13 +69,13 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 
 ## What `--site-url` does
 
-The site's public URL, e.g. `https://archive.example.org`. It is optional, and it does three things:
+The site's public URL, e.g. `https://archive.example.org`. A server starts without it, but set it on every server, because it does three things:
 
 1. **The cross-site check compares against it.** Without it, indice works out its own address from `X-Forwarded-Host` or `Host`, which is right behind Caddy and wrong behind nginx's or Apache's defaults. There, every write is refused until you set it.
 2. **The replay host refuses to be framed by other sites.** Without it, replay cannot know which site is yours, so it says nothing about framing.
 3. **indice checks that replay is on a different host.** A different port on the same host is a different origin, but cookies ignore ports, so indice refuses to start with `--replay-url` on `--site-url`'s host. Without `--site-url` there is nothing to compare.
 
-Set it on every server. In the shipped stack that is `SITE_URL` in `.env`.
+In the shipped stack it is `SITE_URL` in `.env`.
 
 ## Limits
 
