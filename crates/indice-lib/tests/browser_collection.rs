@@ -208,7 +208,7 @@ async fn render_check(
     needle: &str,
 ) -> Result<(), String> {
     let viewer = format!(
-        "http://{addr}/replay/viewer?source={source}&coll=test-collection&url={url}&ts={ts}&name=Test%20Collection&collection_id=test-collection"
+        "http://{addr}/replay/viewer?source={source}&url={url}&ts={ts}&name=Test%20Collection&collection_id=test-collection"
     );
     driver.goto(&viewer).await.map_err(|e| e.to_string())?;
 

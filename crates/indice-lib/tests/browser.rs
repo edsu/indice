@@ -800,3 +800,386 @@ async fn open_frame_unframed(driver: &WebDriver, addr: SocketAddr, id: &str) -> 
         "the unframed frame neither refused nor replayed.\nDIAG: {diag}"
     ))
 }
+
+/// Every kind of page indice serves runs under its Content-Security-Policy
+/// with nothing refused: the policy and the pages agree.
+///
+/// A policy that breaks a page breaks it silently, a button that does nothing
+/// or a panel that never fills, so this collects the browser's own reports.
+/// A listener for `securitypolicyviolation` is installed through the DevTools
+/// protocol before each page's own scripts run, and read back after the page
+/// has settled. As a workstation, so the workroom pages and their scripts are
+/// all reachable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn every_page_runs_under_its_content_security_policy() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "csp").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), workstation()).await;
+
+    let driver = connect().await;
+    let result = collect_violations(&driver, addr, &id).await;
+    let _ = driver.quit().await;
+    server.abort();
+    let (violations, rendered) = result.unwrap();
+    assert!(
+        violations.is_empty(),
+        "the browser refused:\n{}",
+        violations.join("\n")
+    );
+    rendered.unwrap();
+}
+
+/// The violations each page reported, and whether the viewer, the last page,
+/// went on to replay. Kept apart so a refused page is reported as that, rather
+/// than as whatever it then failed to do.
+async fn collect_violations(
+    driver: &WebDriver,
+    addr: SocketAddr,
+    id: &str,
+) -> Result<(Vec<String>, Result<(), String>), String> {
+    driver
+        .cdp()
+        .send_raw(
+            "Page.addScriptToEvaluateOnNewDocument",
+            serde_json::json!({
+                "source": "window.__csp = []; document.addEventListener('securitypolicyviolation', \
+                    function (e) { window.__csp.push(e.effectiveDirective + ' blocked ' + \
+                    (e.blockedURI || '?') + ' at ' + (e.sourceFile || '') + ':' + e.lineNumber); });"
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
+    let pages = [
+        "/".to_string(),
+        "/search?q=2Tone".to_string(),
+        "/collection/csp".to_string(),
+        "/collection/csp/annotations".to_string(),
+        format!("/crawl/{id}"),
+        "/manage/add".to_string(),
+        "/manage/collections/new".to_string(),
+        "/manage/edit/csp".to_string(),
+        format!(
+            "/replay/viewer?source=/files/{id}&url={page_url}&ts=20260609213407\
+             &name=2Tone&collection=csp&collection_id=csp"
+        ),
+    ];
+    let mut violations = Vec::new();
+    for page in &pages {
+        driver
+            .goto(&format!("http://{addr}{page}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        // Long enough for each page's own fetches, the viewer's included.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // A violation of our own, which the policy must refuse and the
+        // listener must hear: without it, an empty list could mean a listener
+        // that never ran. An inline <script> element rather than `eval`,
+        // because script WebDriver runs is exempt from the page's policy but
+        // an element it inserts is not. Reports arrive as a task, so wait.
+        let seen = driver
+            .execute(
+                "var s = document.createElement('script'); s.textContent = 'window.__ran = 1;'; \
+                 document.head.appendChild(s); \
+                 return new Promise(function (r) { setTimeout(function () { \
+                   r({ csp: window.__csp || null, ran: !!window.__ran }); }, 200); });",
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let seen = seen.json();
+        if seen["ran"].as_bool() == Some(true) {
+            violations.push(format!(
+                "{page}: an inline script ran, so no policy is in force"
+            ));
+        }
+        let Some(reports) = seen["csp"].as_array() else {
+            violations.push(format!("{page}: the listener was never installed"));
+            continue;
+        };
+        // The probe's own report, an inline script refused by script-src, is
+        // expected once; anything else is the page and the policy disagreeing.
+        let mut probe_seen = false;
+        for v in reports.iter().map(|v| v.as_str().unwrap_or("?")) {
+            if !probe_seen && v.starts_with("script-src") && v.contains(" blocked inline ") {
+                probe_seen = true;
+            } else {
+                violations.push(format!("{page}: {v}"));
+            }
+        }
+        if !probe_seen {
+            violations.push(format!("{page}: the probe's refusal was not reported"));
+        }
+    }
+
+    // And the viewer still does its job under the policy: the frame loads
+    // from the replay origin and the archived page renders in it.
+    let rendered = async {
+        enter_replay_frame(driver).await?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !deep_contains(driver, "2Tone").await? {
+            if Instant::now() > deadline {
+                let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+                return Err(format!(
+                    "the archived page never rendered under the policy.\nDIAG: {diag}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok(())
+    }
+    .await;
+    Ok((violations, rendered))
+}
+
+/// Replay plays only this server's own archives, and only in indice's frame.
+///
+/// ReplayWeb.page replays whatever WACZ its page's address names. Unchecked,
+/// anyone could show a WACZ of their own making under an institution's replay
+/// hostname: by linking to the viewer with a foreign `source`, or by opening
+/// ReplayWeb.page's shell at `/replay/` directly. The shell matters most,
+/// because once the service worker is installed it serves the shell itself,
+/// without asking the server, so this checks it both before and after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn replay_plays_only_its_own_archives() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "own").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+
+    let driver = connect().await;
+    let result = try_foreign_replays(&driver, addr, &id).await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+}
+
+/// Poll for the archived page's title for `secs`, returning whether it ever
+/// appeared, from wherever the driver is.
+async fn renders_within(driver: &WebDriver, secs: u64) -> Result<bool, String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() <= deadline {
+        if deep_contains(driver, "2Tone").await? {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Ok(false)
+}
+
+async fn try_foreign_replays(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {
+    let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
+    let ts = "20260609213407";
+    let viewer = |source: &str| {
+        format!("http://{addr}/replay/viewer?source={source}&url={page_url}&ts={ts}&name=x")
+    };
+    driver
+        .goto(&viewer(&format!("/files/{id}")))
+        .await
+        .map_err(|e| e.to_string())?;
+    let replay = driver
+        .execute(
+            "return document.querySelector('meta[name=\"indice-replay-origin\"]').content;",
+            vec![],
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let shell = format!(
+        "{replay}/replay/?source={}&customColl={id}#url={page_url}&ts={ts}",
+        url_escape(&format!("{replay}/files/{id}"))
+    );
+
+    // 1. The shell, opened directly before any service worker is installed:
+    //    the server's copy, which is the guard's first case.
+    driver.goto(&shell).await.map_err(|e| e.to_string())?;
+    if renders_within(driver, 8).await? {
+        return Err("the shell replayed when opened directly, before the worker".into());
+    }
+
+    // 2. A foreign WACZ, named in a viewer link. It is a real archive, the
+    //    same bytes served by the site rather than the replay host, so nothing
+    //    but where it comes from stops it.
+    let foreign = url_escape(&format!("http://{addr}/files/{id}"));
+    driver
+        .goto(&viewer(&foreign))
+        .await
+        .map_err(|e| e.to_string())?;
+    enter_replay_frame(driver).await?;
+    if renders_within(driver, 8).await? {
+        return Err("the viewer replayed a WACZ from another origin".into());
+    }
+    if !deep_contains(driver, "only this archive").await? {
+        return Err("the frame did not say why it refused the foreign WACZ".into());
+    }
+    driver
+        .enter_default_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 3. An ordinary replay, which installs the service worker on the replay
+    //    origin, and shows the guard lets indice's own replay through.
+    driver
+        .goto(&viewer(&format!("/files/{id}")))
+        .await
+        .map_err(|e| e.to_string())?;
+    enter_replay_frame(driver).await?;
+    if !renders_within(driver, 45).await? {
+        let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+        return Err(format!("indice's own replay did not render.\nDIAG: {diag}"));
+    }
+    driver
+        .enter_default_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 4. The shell, opened directly again, now served by the worker without
+    //    asking the server. This is the case only the guard can catch.
+    driver.goto(&shell).await.map_err(|e| e.to_string())?;
+    let controlled = driver
+        .execute("return !!navigator.serviceWorker.controller;", vec![])
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .as_bool()
+        .unwrap_or(false);
+    if !controlled {
+        return Err("expected the service worker to serve the shell by now".into());
+    }
+    if renders_within(driver, 8).await? {
+        return Err("the shell replayed when opened directly, served by the worker".into());
+    }
+    Ok(())
+}
+
+/// Percent-encode a URL for use as one query parameter's value.
+fn url_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// A crawl added by URL replays, by way of its own `/files/{id}`.
+///
+/// The replay origin replays only this server's own paths, so the viewer is
+/// handed `/files/{id}` for every crawl, and for one added by URL that path
+/// redirects to where the WACZ lives. Here it lives on a plain static host
+/// that does what a real one (S3, nginx) does: byte ranges, `HEAD` with a
+/// length, and CORS for any origin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn a_crawl_added_by_url_replays() {
+    let (remote, remote_server) = static_wacz_host(fixture("a.wacz")).await;
+
+    // This archive, which adds that WACZ by its URL.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let url = format!("http://{remote}/a.wacz");
+    let home = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        indice_lib::index::Ingest::new(&home)
+            .index_location(&url, "by-url")
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let crawl = &manifest.waczs[0];
+    assert!(
+        matches!(crawl.source, indice_lib::collections::Source::Url(_)),
+        "the crawl should be held by URL, not copied"
+    );
+    let id = crawl.id.clone();
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+
+    let driver = connect().await;
+    let result = async {
+        // The crawl page's own Replay link, so the test follows what a reader
+        // would click rather than a URL it built.
+        driver
+            .goto(&format!("http://{addr}/crawl/{id}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let href = driver
+            .execute(
+                "const a = document.querySelector('a[href*=\"/replay/viewer\"]'); return a ? a.href : '';",
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if href.is_empty() {
+            return Err("the crawl page has no replay link".to_string());
+        }
+        driver.goto(&href).await.map_err(|e| e.to_string())?;
+        enter_replay_frame(&driver).await?;
+        if renders_within(&driver, 45).await? {
+            Ok(())
+        } else {
+            let diag = diagnostics(&driver).await.unwrap_or_else(|e| e);
+            Err(format!("a crawl added by URL did not replay from {href}.\nDIAG: {diag}"))
+        }
+    }
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    remote_server.abort();
+    result.unwrap();
+}
+
+/// A static host for one WACZ at `/a.wacz`, behaving as an object store does
+/// for a public bucket: ranges and `HEAD` from `ServeFile`, and CORS headers
+/// that let any page read them, ranges included.
+async fn static_wacz_host(path: std::path::PathBuf) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    use axum::http::{header, HeaderValue, Method, StatusCode};
+    let app = axum::Router::new()
+        .route_service("/a.wacz", tower_http::services::ServeFile::new(path))
+        .layer(axum::middleware::from_fn(
+            |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                let preflight = req.method() == Method::OPTIONS;
+                let mut res = if preflight {
+                    axum::response::IntoResponse::into_response(StatusCode::NO_CONTENT)
+                } else {
+                    next.run(req).await
+                };
+                let h = res.headers_mut();
+                h.insert(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_static("*"),
+                );
+                h.insert(
+                    header::ACCESS_CONTROL_EXPOSE_HEADERS,
+                    HeaderValue::from_static("content-range, content-length, accept-ranges"),
+                );
+                if preflight {
+                    h.insert(
+                        header::ACCESS_CONTROL_ALLOW_HEADERS,
+                        HeaderValue::from_static("range"),
+                    );
+                }
+                res
+            },
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, handle)
+}

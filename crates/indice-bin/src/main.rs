@@ -142,12 +142,13 @@ enum Commands {
         #[arg(long, value_name = "SECRET", requires = "auth_proxy_header")]
         auth_proxy_secret: Option<String>,
 
-        /// This site's public URL (e.g. `https://archive.example.org`), used by the
-        /// cross-site (CSRF) check on writes. Only needed behind a proxy that
-        /// rewrites the Host header without setting X-Forwarded-Host, which is
-        /// nginx's and Apache's default; Caddy and a direct bind are detected
-        /// automatically. May also be given via the INDICE_SITE_URL environment
-        /// variable.
+        /// This site's public URL (e.g. `https://archive.example.org`). The
+        /// cross-site (CSRF) check on writes compares against it, which is
+        /// needed behind a proxy that rewrites the Host header without setting
+        /// X-Forwarded-Host (nginx's and Apache's default); Caddy and a direct
+        /// bind are detected automatically. It also lets the replay host tell
+        /// browsers that only this site may frame it. May also be given via the
+        /// INDICE_SITE_URL environment variable.
         #[arg(long, value_name = "URL")]
         site_url: Option<String>,
 
@@ -1216,21 +1217,13 @@ async fn main() -> Result<()> {
             // `filter(|_| manage.enabled)` guard existed to prevent. One env
             // file is commonly shared between a server and a laptop.
             if let Some(raw) = site_url.filter(|_| !access_is_local) {
-                let authority = url::Url::parse(&raw).ok().and_then(|u| {
-                    let host = u.host_str()?.to_string();
-                    Some(match u.port() {
-                        Some(p) => format!("{host}:{p}"),
-                        None => host,
-                    })
-                });
-                let Some(authority) = authority else {
+                if let Err(e) = config.set_site_url(&raw) {
                     eprintln!(
                         "--site-url must be an absolute URL with a host, e.g. \
-                         https://archive.example.org (got: {raw})"
+                         https://archive.example.org: {e}"
                     );
                     std::process::exit(2);
-                };
-                config.site_authority = Some(authority);
+                }
             }
 
             // A server's replay origin. Ignored on a workstation, which uses

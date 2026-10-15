@@ -90,8 +90,10 @@ async fn the_viewer_frames_the_configured_replay_origin() {
         "the placeholder must be filled"
     );
     // The code that builds the frame's URL, not a comment naming it.
+    let (status, js) = get(&app, "/replay/viewer.js").await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains("'/replay-frame?'"),
+        js.contains("'/replay-frame?'"),
         "viewer must embed the frame"
     );
     assert!(
@@ -133,7 +135,12 @@ async fn the_app_origin_serves_nothing_that_replays() {
 async fn the_viewer_files_are_the_apps() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, replay } = server(tmp.path());
-    for path in ["/replay/annotations.js", "/replay/annotations.css"] {
+    for path in [
+        "/replay/viewer.js",
+        "/replay/viewer.css",
+        "/replay/annotations.js",
+        "/replay/annotations.css",
+    ] {
         let (status, headers, _) = call(&app, Method::GET, path, &[]).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert_eq!(headers.get("cache-control").unwrap(), "no-cache");
@@ -213,9 +220,23 @@ async fn the_replay_origin_serves_the_frame_and_replayweb() {
         "the shell must load ReplayWeb.page"
     );
 
-    for path in ["/replay/ui.js", "/replay/sw.js"] {
-        assert_eq!(get(&replay, path).await.0, StatusCode::OK, "{path}");
-    }
+    assert_eq!(get(&replay, "/replay/sw.js").await.0, StatusCode::OK);
+    // ReplayWeb.page comes with indice's guard ahead of it, in one file, so
+    // whatever page loads it is checked first; the guard alone is not served.
+    let (status, ui) = get(&replay, "/replay/ui.js").await;
+    assert_eq!(status, StatusCode::OK);
+    let guard_at = ui.find("indice: replay refused").expect("the guard");
+    let rwp_at = ui
+        .find("customElements.define(\"replay-web-page\"")
+        .expect("ReplayWeb.page");
+    assert!(
+        guard_at < rwp_at,
+        "the guard must run before ReplayWeb.page"
+    );
+    assert_eq!(
+        get(&replay, "/replay/guard.js").await.0,
+        StatusCode::NOT_FOUND
+    );
     // The agent is what tells the viewer where the reader is.
     let (status, agent) = get(&replay, "/replay/agent.js").await;
     assert_eq!(status, StatusCode::OK);

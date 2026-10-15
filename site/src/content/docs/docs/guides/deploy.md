@@ -11,7 +11,7 @@ indice runs in one of two shapes, and the only question that separates them is w
 No read-only server shape exists. A server you cannot write to sends you back to the command line the first time you want to fix a finding aid, and a server with an empty `users.yaml` already reads as read-only to every visitor.
 
 :::note[Read this before a public instance]
-indice is alpha, and what it does and does not defend is written down rather than implied: see [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) for what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so it is worth ten minutes before you put one on the open web.
+indice is alpha, and what it does and does not defend is written down rather than implied: [Securing a server](/docs/guides/security/) is the operator's version, [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes is the full argument, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) lists what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so it is worth ten minutes before you put one on the open web.
 :::
 
 ## Container image
@@ -82,6 +82,7 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    OAUTH2_PROXY_COOKIE_SECRET=      # a 32-char secret from: openssl rand -hex 16
    INDICE_AUTH_PROXY_SECRET=a-long-random-string
    REPLAY_ADDRESS=replay.your-domain
+   SITE_URL=https://your-domain        # recommended; see Securing a server
    # OIDC_EMAIL_DOMAINS=example.edu    # who may sign in at all; defaults to anyone
    # OAUTH2_PROXY_COOKIE_SECURE=false  # only to run the stack on plain-HTTP localhost
    ```
@@ -203,15 +204,16 @@ Two requirements of whatever you put in front:
 
 ## Using a different web server
 
-Caddy is doing five separable jobs here, and none of them is Caddy-specific. Anything that can do all five works:
+Caddy is doing six separable jobs here, and none of them is Caddy-specific. Anything that can do all six works:
 
 1. **Route `/oauth2/*`** to your login service.
 2. **Ask who the caller is on every request, and continue anonymously when the answer is nobody.** This is the one people get wrong. Gating only `/manage` and the write APIs looks right and costs you the workroom chrome on ordinary pages, because indice decides whether to draw the edit controls from the forwarded identity.
 3. **Inject the identity and the shared secret together**, only on a request your proxy authenticated, replacing any copy the client sent.
 4. **Leave byte ranges alone.** No gzip on a ranged response, no buffering of large bodies, or WACZ replay breaks.
 5. **Send the replay hostname to the replay listener**, port 8081 by default (`--replay-bind`), with no login and with both identity headers stripped, and pass that hostname to indice as `--replay-url`.
+6. **Set `Strict-Transport-Security`** on both hostnames, since the proxy is what terminates TLS. indice sets its other security headers itself (a `Content-Security-Policy` per origin, `X-Content-Type-Options` and `Referrer-Policy`), so pass them through rather than replacing them.
 
-Add one indice-side detail: if your proxy rewrites `Host` without setting `X-Forwarded-Host`, pass `--site-url` so the cross-site check knows the address the browser used. nginx and Apache both rewrite it by default.
+Add one indice-side detail: if your proxy rewrites `Host` without setting `X-Forwarded-Host`, pass `--site-url` so the cross-site check knows the address the browser used. nginx and Apache both rewrite it by default. It is worth passing anyway, because it also lets the replay host refuse to be framed by any other site.
 
 **nginx** does this with `auth_request`, which is the same subrequest mechanism, plus `error_page 401 = @anonymous;` pointing at a named location that proxies to indice with no identity headers. That named location is the equivalent of the shipped `Caddyfile`'s `handle_errors` block. Check `proxy_buffering` against a large ranged read while you are there.
 

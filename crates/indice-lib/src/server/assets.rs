@@ -185,13 +185,18 @@ pub(super) async fn replay_viewer(
         h.update(origin.as_str().as_bytes());
         h.finalize().into()
     };
-    serve_bytes(html.into_bytes(), &hash, "viewer.html", &headers)
+    serve_bytes(html.into_bytes().into(), &hash, "viewer.html", &headers)
 }
 
 /// What the app origin serves under `/replay/`: the viewer's own script and
 /// style. Listed rather than "everything embedded", because the same folder
 /// holds ReplayWeb.page, and the app origin must never serve that.
-const VIEWER_FILES: &[&str] = &["annotations.js", "annotations.css"];
+const VIEWER_FILES: &[&str] = &[
+    "viewer.js",
+    "viewer.css",
+    "annotations.js",
+    "annotations.css",
+];
 
 /// What the replay origin serves under `/replay/`: ReplayWeb.page, its service
 /// worker, and the agent that runs beside it in the frame.
@@ -208,7 +213,46 @@ pub(super) async fn replay_asset(
     axum::extract::Path(path): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if path == "ui.js" {
+        return guarded_ui(&headers);
+    }
     listed_asset(REPLAY_FILES, &path, &headers)
+}
+
+/// ReplayWeb.page, with indice's guard ahead of it in the same file.
+///
+/// ReplayWeb.page replays whatever WACZ its page's address names, and its
+/// shell at `/replay/` is served by the service worker itself once installed,
+/// so a check in a page indice serves would miss most visits. Every page that
+/// starts ReplayWeb.page loads this file, though, and a script that throws
+/// stops there: the guard (`guard.js`) refuses any source but indice's own,
+/// and ReplayWeb.page never runs. One file rather than a second `<script>`,
+/// because the shell the service worker writes loads only this one. The
+/// vendored `ui.js` stays exactly as fetched, so an upgrade is still a copy.
+fn guarded_ui(headers: &HeaderMap) -> Response {
+    // Built once: the two files are compiled in, so the result never changes,
+    // and every replay frame and shell asks for it. A `Bytes` clone is a
+    // reference count, not a copy of the 700-odd KB.
+    static GUARDED: std::sync::OnceLock<Option<(axum::body::Bytes, [u8; 32])>> =
+        std::sync::OnceLock::new();
+    let built = GUARDED.get_or_init(|| {
+        let (guard, ui) = (ReplayAssets::get("guard.js")?, ReplayAssets::get("ui.js")?);
+        let mut body = guard.data.to_vec();
+        body.extend_from_slice(b"\n");
+        body.extend_from_slice(&ui.data);
+        let hash: [u8; 32] = {
+            use sha2::Digest;
+            let mut h = sha2::Sha256::new();
+            h.update(guard.metadata.sha256_hash());
+            h.update(ui.metadata.sha256_hash());
+            h.finalize().into()
+        };
+        Some((body.into(), hash))
+    });
+    match built {
+        Some((body, hash)) => serve_bytes(body.clone(), hash, "ui.js", headers),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
 fn listed_asset(list: &[&str], path: &str, headers: &HeaderMap) -> Response {
@@ -374,7 +418,11 @@ fn serve_embedded_asset(
 ) -> Response {
     match content {
         Some(content) => serve_bytes(
-            content.data.to_vec(),
+            match content.data {
+                // Compiled in, in a release build: no copy at all.
+                std::borrow::Cow::Borrowed(b) => axum::body::Bytes::from_static(b),
+                std::borrow::Cow::Owned(v) => v.into(),
+            },
             &content.metadata.sha256_hash(),
             path,
             req_headers,
@@ -385,7 +433,12 @@ fn serve_embedded_asset(
 
 /// Serve `data` with an ETag from `hash`, answering a matching
 /// `If-None-Match` with 304.
-fn serve_bytes(data: Vec<u8>, hash: &[u8], path: &str, req_headers: &HeaderMap) -> Response {
+fn serve_bytes(
+    data: axum::body::Bytes,
+    hash: &[u8],
+    path: &str,
+    req_headers: &HeaderMap,
+) -> Response {
     let etag = etag_for(hash);
     let matches = req_headers
         .get("if-none-match")

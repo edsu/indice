@@ -42,6 +42,7 @@ mod assets;
 mod auth;
 mod collection;
 mod crawl;
+mod headers;
 mod imports;
 mod limits;
 mod manage;
@@ -172,6 +173,12 @@ pub struct ServerConfig {
     /// that rewrites `Host` *without* setting `X-Forwarded-Host`, which is
     /// nginx's and Apache's default.
     pub site_authority: Option<String>,
+    /// This site's public origin (`scheme://host[:port]`), from the same
+    /// `--site-url`, for the replay origin's `frame-ancestors`. Kept whole
+    /// because a host without a scheme there matches only the replay origin's
+    /// own scheme, so a site on http with replay on https would be refused.
+    /// Set both with [`ServerConfig::set_site_url`].
+    pub site_origin: Option<String>,
     /// Let a networked instance fetch a curator-supplied URL that resolves to
     /// this machine or this network.
     ///
@@ -196,17 +203,42 @@ pub struct ServerConfig {
     /// without it). A workstation's is the address its replay listener bound,
     /// and this setting is ignored there.
     pub replay_origin: Option<ReplayOrigin>,
+    /// The app listener's address, on a workstation, so the replay origin can
+    /// say who may frame it. Set by [`serve_on_listeners`], which is the only
+    /// thing that knows it.
+    app_addr: Option<std::net::SocketAddr>,
 }
 
 impl ServerConfig {
+    /// Set this site's public URL (`--site-url`): the authority the CSRF check
+    /// compares with, and the origin replay may be framed by. Refuses anything
+    /// without a host.
+    pub fn set_site_url(&mut self, raw: &str) -> Result<()> {
+        let url = url::Url::parse(raw.trim())
+            .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
+        let Some(host) = url.host_str() else {
+            anyhow::bail!("{raw:?} has no host");
+        };
+        // `Url::port()` elides the scheme's default port, as a browser's
+        // `Origin` does, so the two compare directly.
+        self.site_authority = Some(match url.port() {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        });
+        self.site_origin = Some(url.origin().ascii_serialization());
+        Ok(())
+    }
+
     /// The given access, with everything else defaulted.
     pub fn new(access: Access) -> Self {
         Self {
             access,
             logout_redirect: None,
             site_authority: None,
+            site_origin: None,
             allow_internal_fetch: false,
             replay_origin: None,
+            app_addr: None,
         }
     }
 }
@@ -755,7 +787,7 @@ fn build_routers(
         // requirement. The two settings are now independent: the loopback check
         // reads `Host` directly and ignores `site_authority` entirely.
         require_loopback: access_is_local,
-        site_authority,
+        site_authority: site_authority.clone(),
     });
 
     // Replay alone, on its own listener and so its own origin. Everything here
@@ -783,17 +815,31 @@ fn build_routers(
         ))
         .route("/health", get(health));
 
+    // Who may frame replay: wherever the viewer is served from. A workstation
+    // knows its own listener; a server knows only what `--site-url` says.
+    let ancestors = match (access_is_local, config.app_addr, &config.site_origin) {
+        (true, Some(addr), _) => headers::loopback_origins(addr),
+        (false, _, Some(origin)) => vec![origin.clone()],
+        _ => Vec::new(),
+    };
+    let app_headers = headers::SecurityHeaders::app(config.replay_origin.as_ref());
+    let replay_headers = headers::SecurityHeaders::replay(&ancestors);
+
     Ok(Routers {
-        app: outer_layers(app, csrf.clone()).with_state(state.clone()),
+        app: outer_layers(app, csrf.clone(), app_headers).with_state(state.clone()),
         // The CSRF guard has nothing to refuse here, since every route is a
         // GET, but on a workstation it is also the loopback-Host check that
         // stops DNS rebinding, and the replay listener needs that as much.
-        replay: outer_layers(replay, csrf).with_state(state),
+        replay: outer_layers(replay, csrf, replay_headers).with_state(state),
     })
 }
 
 /// The layers both routers share, outermost last.
-fn outer_layers(router: Router<Arc<AppState>>, csrf: Arc<CsrfPolicy>) -> Router<Arc<AppState>> {
+fn outer_layers(
+    router: Router<Arc<AppState>>,
+    csrf: Arc<CsrfPolicy>,
+    security: headers::SecurityHeaders,
+) -> Router<Arc<AppState>> {
     router
         // Mark rendered HTML non-cacheable (it varies by auth); innermost so it
         // tags the handler's response before compression. Runs before with_state.
@@ -850,6 +896,12 @@ fn outer_layers(router: Router<Arc<AppState>>, csrf: Arc<CsrfPolicy>) -> Router<
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let csrf = csrf.clone();
                 async move { same_origin_guard(&csrf, req, next).await }
+            },
+        ))
+        // Outside the CSRF guard, so its refusals carry the headers too.
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                security.clone().apply(req, next)
             },
         ))
 }
@@ -931,6 +983,7 @@ pub async fn serve_on_listeners(
             }
         }
         config.replay_origin = Some(ReplayOrigin::for_listener(replay_addr));
+        config.app_addr = Some(listener.local_addr()?);
     } else if config.replay_origin.is_none() {
         // The fact, not the flag: indice-bin names `--replay-url` when it
         // prints this, as it does for the loopback refusal.

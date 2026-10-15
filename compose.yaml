@@ -40,6 +40,11 @@
 #       services set on the parent domain. indice refuses to start without it.
 #   REPLAY_URL (optional)
 #       The URL indice frames replay from. Defaults to https://$REPLAY_ADDRESS.
+#   SITE_URL (recommended)
+#       The site's own URL, https://$SITE_ADDRESS. indice starts without it,
+#       but with it the replay host tells browsers that only this site may
+#       frame it, and indice checks that REPLAY_ADDRESS is a different host.
+#       See the security guide.
 #
 # ── And one file ──
 #
@@ -72,6 +77,8 @@ services:
               "--home", "/data", "--auth-proxy-header", "X-Forwarded-Email"]
     environment:
       INDICE_REPLAY_URL: ${REPLAY_URL:-https://${REPLAY_ADDRESS:?set REPLAY_ADDRESS, a hostname for replay}}
+      # Empty means unset; see SITE_URL above.
+      INDICE_SITE_URL: ${SITE_URL:-}
       # indice reads the shared secret from the env, keeping it out of process args.
       INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
       # One click ends both sessions: indice clears its display cookie, then

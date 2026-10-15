@@ -29,7 +29,9 @@ I would rather tell you "yes, and it will be a while" than leave you guessing.
 ## Scope
 
 indice's threat model is written down:
-[*Threat Model* in DESIGN.md](DESIGN.md#threat-model). It names the two
+[*Threat Model* in DESIGN.md](DESIGN.md#threat-model). For an operator, the
+same ground is covered in
+[Securing a server](https://indice.page/docs/guides/security/). It names the two
 deployment shapes, the principals in each, every guarantee paired with the test
 that pins it, and the things indice deliberately does not defend.
 
@@ -57,8 +59,6 @@ Filed, documented, and not news. The tracker is in this repo, so
   with a shell can remove it. `rustyweb-failed-ingest-leaves-file-d1dw`
 - Error responses carry server internals, including filesystem paths.
   `rustyweb-open-web-hardening-u9y6.5`
-- No CSP, `X-Content-Type-Options`, or referrer policy.
-  `rustyweb-open-web-hardening-u9y6.6`
 - No crawler or scraper policy. `rustyweb-open-web-hardening-u9y6.7`
 - Request logs record client IP and full query strings.
   `rustyweb-open-web-hardening-u9y6.8`

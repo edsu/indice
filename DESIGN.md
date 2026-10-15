@@ -324,6 +324,32 @@ origin of its own, so the browser keeps a capture's script away from indice.
   `browser.rs::the_replay_frame_refuses_to_replay_unframed`
 - A server will not start without a replay origin.
   `replay_origin.rs::a_server_without_a_replay_origin_refuses_to_start`
+- The replay origin replays only this server's own archives, and only in
+  indice's replay frame, so nobody can show their own WACZ under its hostname.
+  A guard served ahead of ReplayWeb.page in `/replay/ui.js` checks the source,
+  and that the shell is framed by `/replay-frame`, in every page that loads
+  the player, including the shell the service worker serves without asking the
+  server. Who may embed the frame is `frame-ancestors`'s question, below.
+  `browser.rs::replay_plays_only_its_own_archives`,
+  `replay_origin.rs::the_replay_origin_serves_the_frame_and_replayweb`
+
+**The browser is told what indice's pages may do.** One policy per origin, in
+`server::headers`: the app's runs only indice's code, the replay origin's says
+only who may frame it.
+
+- The app origin allows script, style and images from itself alone, frames
+  only the replay origin, and is framed by nothing; a refusal carries the
+  policy too. Framed by nothing because of clickjacking: a hostile page that
+  frames the workroom under a decoy turns a curator's click into a Delete, and
+  the CSRF check cannot see it, since that click is on indice's own page.
+  `security_headers.rs::the_app_origin_allows_only_its_own_code`,
+  `security_headers.rs::a_refusal_carries_the_headers_too`
+- Every page indice serves works under that policy, which a browser checks by
+  reporting nothing but a probe of the test's own.
+  `browser.rs::every_page_runs_under_its_content_security_policy`
+- Replay may be framed only by itself and the site, when the site is known.
+  `security_headers.rs::the_replay_origin_says_only_who_may_frame_it`,
+  `security_headers.rs::a_workstations_replay_may_be_framed_only_by_its_viewer`
 
 **Curator-supplied content does not become executable or escape its directory.**
 
@@ -359,7 +385,7 @@ alike; see *Guarantees*.
 | Writers are not hostile to the disk | Configurable: `uploads.max_mb` and `uploads.max_total_gb` bound one WACZ and `archive/`. Unset is unlimited, so an operator taking curators they do not know must set them. Archive-wide, so one curator can still use everyone's share (`rustyweb-upload-quota-hryt`); a failed ingest's file stays in `archive/` and counts until removed (`rustyweb-failed-ingest-leaves-file-d1dw`) | `u9y6.3` |
 | Readers are not hostile to availability | Closed for one client, bounded for many. A query is capped at 2 KiB, index reads run on the blocking pool, quick routes time out at 30s, and a server caps quick requests in flight (256), each client's rate (a burst of 100, then 20/s), and open `/files` streams (64 per client, 512 in all). Many clients together are bounded by the global caps, not refused one by one, so a large enough crowd degrades the site to `503` for everyone | `u9y6.1` |
 | Error text is read by the operator | Responses carry server internals, including paths | `u9y6.5` |
-| A browser will apply sensible defaults | No CSP, no `X-Content-Type-Options`, no referrer policy, and replay needs an exception from whatever lands | `u9y6.6` |
+| ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
 | The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
 | Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
 | Curators supply well-formed WACZs | Uncapped reads make a decompression bomb an out-of-memory | `rustyweb-wacz-read-caps-q39p` |
@@ -376,6 +402,14 @@ Saying so here is what stops these being re-litigated.
   session lifetime belong to the proxy. The gain is that one header contract
   covers Shibboleth, OIDC, and whatever an operator already runs; the cost is
   that indice cannot tell a compromised account from its owner.
+- **Two things the policies leave open.** The app origin allows inline
+  `style` attributes (`style-src-attr 'unsafe-inline'`), for two computed
+  values with no class to hold them; inline style can restyle a page but not
+  run anything, and no visitor's markup reaches it unsanitized. And a server
+  without `--site-url` does not know its own address, so its replay origin says
+  nothing about who may frame it. That costs little: the frame and the shell
+  replay only this server's own archives (*Guarantees*), so a stranger framing
+  replay can show only what the site already shows.
 - **Archived script runs, on the replay origin.** That is replay's job, and the
   origin is what contains it. Within that origin it is unconstrained: one
   capture's script can read every other capture this browser has replayed,
@@ -974,7 +1008,10 @@ viewer does. The viewer learns the replay origin from the server, in a `<meta>` 
 when it is served, and checks every message against it. The frame is told its parent's
 origin in its query string, which is safe because nothing the frame receives grants
 anything. ReplayWeb.page's `requireSubdomainIframe` makes the frame refuse to replay unless
-another origin frames it.
+another origin frames it, and the replay origin's `frame-ancestors` names which: the
+site, and itself, because `/replay-frame` frames ReplayWeb.page's shell at `/replay/` and
+the directive checks every ancestor (without `'self'` the first visit's race refuses the
+shell).
 
 Two placement rules keep replay working, and the multi-WACZ browser test
 (`browser_collection.rs`) fails without either:
@@ -1455,14 +1492,22 @@ and shows no bar, so logs aren't lost.
 
 `static/replay/` holds the [ReplayWeb.page][rwp] JS bundle (`ui.js` + `sw.js`), embedded in the binary at compile time via `rust-embed` and served under `/replay/`. Replay runs in WACZ-direct mode: the `<replay-web-page>` component reads the WACZ over byte-range from our `/files/{id}` endpoint and serves every resource client-side through its service worker (`sw.js`); indice does no server-side rewriting (see *Replay Viewer*).
 
-These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.4.6**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
+These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.5.3**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
 
 ```sh
-./scripts/fetch-replay.sh          # re-fetch the pinned VERSION (2.4.6)
-./scripts/fetch-replay.sh 2.4.7    # fetch a specific version (one-off)
+./scripts/fetch-replay.sh          # re-fetch the pinned VERSION
+./scripts/fetch-replay.sh 2.5.4    # fetch a specific version (one-off)
 ```
 
 To upgrade: pick a version from <https://www.npmjs.com/package/replaywebpage>, bump `VERSION` in `scripts/fetch-replay.sh`, re-run it (downloads `ui.js`/`sw.js` from the jsDelivr npm CDN), rebuild, **re-test replay in a browser** (`cargo test -p indice-lib --test browser` needs Chrome + chromedriver), then commit the refreshed assets. Do this periodically so replay keeps up with wabac.js fixes.
+
+`ui.js` is served with indice's guard (`static/replay/guard.js`) ahead of it in the same
+response, and the vendored file stays exactly as fetched. The guard leans on three things
+about ReplayWeb.page that an upgrade could change: its shell lives at the replay base
+(`/replay/`); the shell names its archive and collection in `source` and `customColl`; and
+the shell the service worker writes for itself loads `./ui.js` and nothing else (`getIndexHtml`
+in `sw.js`). `browser.rs::replay_plays_only_its_own_archives` fails if
+any of them stops holding, so run it on every upgrade.
 
 [rwp]: https://replayweb.page
 
