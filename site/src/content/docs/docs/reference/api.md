@@ -104,7 +104,7 @@ The operator sees a refusal in the server log twice: once when it starts, naming
 
 ## Machine-readable replay endpoints
 
-These serve ReplayWeb.page and are handy for tooling, though their primary consumer is the in-browser player:
+These serve ReplayWeb.page and are handy for tooling, though their primary consumer is the in-browser player. They answer on both the site and the replay origin; the player reads them from the replay origin:
 
 - **`GET /files/{id}`**: the raw WACZ for a crawl, honoring HTTP `Range` requests (partial fetches). This is how replay reads archived resources without downloading the whole file.
 - **`GET /collection/{id}/replay.json`**: a multi-WACZ replay manifest for a collection (every member crawl), handed to wabac.js so cross-crawl links resolve.

@@ -92,6 +92,8 @@ indice serve [OPTIONS]
 | `--auth-proxy-secret <SECRET>` | Shared secret the proxy must send in `X-Indice-Auth-Secret`. Also `INDICE_AUTH_PROXY_SECRET` |
 | `--site-url <URL>` | This site's public URL, for the cross-site (CSRF) check on writes. Also `INDICE_SITE_URL` |
 | `--allow-internal-fetch` | Let curators add archives by a URL resolving to this machine or network. Refused by default behind an auth proxy; no effect on a workstation |
+| `--replay-url <URL>` | Where replay is served from, e.g. `https://replay.archive.example.org`. Required with `--auth-proxy-header`; ignored on a workstation. Also `INDICE_REPLAY_URL` |
+| `--replay-bind <ADDR>` | Address for the replay listener (default: the `--bind` address with the next port, `127.0.0.1:8081`) |
 
 There is no flag for the write surface. Every route is always mounted, and who may use it follows
 from two things already on the command line:
@@ -110,6 +112,12 @@ A loopback bind keeps indice off the network and promises nothing about who reac
 Another account on the machine can write to it, as can anyone on the far side of an `ssh -L` or a
 `tailscale serve`. Sharing an archive is the server shape, not this one. See
 [Manage &amp; curate](/docs/guides/manage/#on-a-workstation).
+
+Replay always runs on a listener of its own, because archived pages run their own JavaScript and
+must not do it on the origin that holds the write API. On a workstation that is the next loopback
+port, with nothing to configure. A server needs `--replay-url`, a hostname of its own that your
+proxy sends to the replay listener, and refuses to start without one. See
+[Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own).
 
 `--site-url` is only needed behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`
 (nginx's and Apache's default); Caddy and a direct bind are detected automatically.

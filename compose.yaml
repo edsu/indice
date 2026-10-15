@@ -1,9 +1,10 @@
 # Self-host indice as a server: Caddy terminates TLS, oauth2-proxy brokers the
 # login against your OIDC identity provider, indice serves the archive.
 #
-#   SITE_ADDRESS=archive.example.org docker compose up -d
+#   SITE_ADDRESS=archive.example.org REPLAY_ADDRESS=replay.archive.example.org \
+#     docker compose up -d
 #
-# Caddy fetches and renews a Let's Encrypt certificate for that domain. There is
+# Caddy fetches and renews a Let's Encrypt certificate for each domain. There is
 # no plain-HTTP quickstart here any more: this stack needs an identity provider,
 # and the five-minute way to try indice is `indice serve` on a workstation, which
 # uses none of these files. To run it on localhost anyway, point
@@ -30,6 +31,15 @@
 #   INDICE_AUTH_PROXY_SECRET
 #       A long random string, shared between Caddy and indice. indice trusts a
 #       forwarded identity only on requests that carry this secret.
+#   REPLAY_ADDRESS
+#       A second hostname, pointing at this machine, for replay. Archived pages
+#       run their own JavaScript, so indice replays them on an origin of their
+#       own, where that script can reach neither the write API nor a reader's
+#       session. A subdomain such as replay.archive.example.org works. A
+#       separate domain also keeps archived pages away from cookies your other
+#       services set on the parent domain. indice refuses to start without it.
+#   REPLAY_URL (optional)
+#       The URL indice frames replay from. Defaults to https://$REPLAY_ADDRESS.
 #
 # ── And one file ──
 #
@@ -58,9 +68,10 @@ services:
     # Once images are published you can drop `build:` above and pull instead:
     #   image: ghcr.io/edsu/indice:latest
     image: indice:local
-    command: ["serve", "--bind", "0.0.0.0:8080", "--home", "/data",
-              "--auth-proxy-header", "X-Forwarded-Email"]
+    command: ["serve", "--bind", "0.0.0.0:8080", "--replay-bind", "0.0.0.0:8081",
+              "--home", "/data", "--auth-proxy-header", "X-Forwarded-Email"]
     environment:
+      INDICE_REPLAY_URL: ${REPLAY_URL:-https://${REPLAY_ADDRESS:?set REPLAY_ADDRESS, a hostname for replay}}
       # indice reads the shared secret from the env, keeping it out of process args.
       INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
       # One click ends both sessions: indice clears its display cookie, then
@@ -132,6 +143,7 @@ services:
       # Defaults to :80 (plain HTTP) for local use; set SITE_ADDRESS to a domain
       # for automatic HTTPS.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      REPLAY_ADDRESS: ${REPLAY_ADDRESS:?set REPLAY_ADDRESS, a hostname for replay}
       INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

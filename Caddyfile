@@ -1,8 +1,10 @@
 # indice behind Caddy, with an identity provider in front.
 #
-# SITE_ADDRESS comes from compose. It defaults to :80 (plain HTTP, for local
-# work); set it to your domain, say archive.example.org, and Caddy obtains and
-# renews a Let's Encrypt certificate for you.
+# SITE_ADDRESS and REPLAY_ADDRESS come from compose. SITE_ADDRESS defaults to
+# :80 (plain HTTP, for local work); set it to your domain, say
+# archive.example.org, and Caddy obtains and renews a Let's Encrypt certificate
+# for you. REPLAY_ADDRESS is the hostname replay is served on, say
+# replay.archive.example.org, and gets a certificate the same way.
 #
 # ── Who decides what ──
 #
@@ -42,7 +44,7 @@
 		# Treat this as a performance list. Getting it wrong costs a round-trip or
 		# a missing chrome element. Do not grow it into a list of routes that need
 		# auth; indice decides that, for the reasons in the header comment.
-		@bytes path /files/* /assets/* /replay/* /replay-frame /thumb/* /collection-thumb/* /health
+		@bytes path /files/* /assets/* /replay/* /thumb/* /collection-thumb/* /health
 		handle @bytes {
 			reverse_proxy indice:8080 {
 				header_up -X-Forwarded-Email
@@ -123,5 +125,20 @@
 			header_up -X-Forwarded-Email
 			header_up -X-Indice-Auth-Secret
 		}
+	}
+}
+
+# Replay, on a hostname of its own. Archived pages run their own JavaScript, and
+# on the site's origin that script could act as whoever views it, so indice
+# serves replay from a second listener and the browser keeps the two apart.
+#
+# Nothing here asks who the caller is, and both identity headers are stripped:
+# replay is the same for everyone, and indice's replay listener has no route
+# that would read them. Keep it that way. This block is the one place on the
+# site where a stranger's script runs.
+{$REPLAY_ADDRESS} {
+	reverse_proxy indice:8081 {
+		header_up -X-Forwarded-Email
+		header_up -X-Indice-Auth-Secret
 	}
 }

@@ -35,6 +35,11 @@ are revision control ready.
 - **A management workroom** where authenticated users add archives and edit
   collection metadata and descriptions. They can also annotate individual pages 
   or regions of pages as [Web Annotations Vocabulary](https://www.w3.org/TR/annotation-vocab/)
+- **Careful with archived code**: replayed pages run their own JavaScript, so
+  indice replays them on an origin of their own, where that script cannot act as
+  the person reading. On a server, changes need a sign-in through your identity
+  provider and a role you grant. The [threat model](DESIGN.md#threat-model) says
+  what indice defends and what it does not.
 
 It ships as a single self-contained binary, so there is no Solr, no
 Elasticsearch, no separate database server. indice is built for **small, local,

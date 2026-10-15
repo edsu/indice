@@ -16,7 +16,8 @@ COPY --from=builder /src/target/release/indice /usr/local/bin/indice
 
 # The indice home (archive/ + index/) lives here; mount a volume for persistence.
 WORKDIR /data
-EXPOSE 8080
+# 8080 is the app, 8081 replay, which runs on an origin of its own.
+EXPOSE 8080 8081
 
 # Inside the container `indice health` probes the local server; a distroless
 # image has no curl, so the binary checks itself.

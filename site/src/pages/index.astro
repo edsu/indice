@@ -132,6 +132,15 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               </p>
             </div>
             <div class="feature">
+              <h3>Careful with archived code</h3>
+              <p>
+                Replayed pages run their own JavaScript, so indice replays them on an origin
+                of their own, where that script can't act as the person reading. Changes need
+                a sign-in and a role you grant.
+                <a href="https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model">The threat model →</a>
+              </p>
+            </div>
+            <div class="feature">
               <h3>Annotations on the record</h3>
               <p>
                 Signed-in users attach Markdown notes to a whole page or a selected passage;

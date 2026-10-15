@@ -40,6 +40,8 @@ Every one of these routes is always mounted. Whether you may use them is an auth
 
 Because it trusts everything, indice **refuses to start** on a non-loopback address with no auth proxy configured, rather than putting an unauthenticated write surface on the network.
 
+Replay runs on the next port, `127.0.0.1:8081`, because archived pages run their own JavaScript and a different port is a different origin to the browser: script on it cannot act as you. There is nothing to set up. If that port is taken, `indice serve` says so; pick another with `--replay-bind`.
+
 :::caution[A loopback port is not a user boundary]
 "Whoever reaches the port" is literal. Another account on the machine reaches it: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection. So does anyone at the far end of an `ssh -L`, and so does every peer of your tailnet the moment you point `tailscale serve` at it.
 
@@ -58,10 +60,12 @@ Anything that can set both headers qualifies. Note the second one rules out some
 indice serve \
   --bind 127.0.0.1:8080 \
   --auth-proxy-header X-Forwarded-Email \
-  --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET"   # or set that env var
+  --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET" \
+  --replay-url https://replay.archive.example.org
 ```
 
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
+- **`--replay-url`** (or `INDICE_REPLAY_URL`) is the hostname replay is served on, which your proxy sends to indice's replay listener (`127.0.0.1:8081` here). A server will not start without one; [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own) explains why, and how to choose it.
 - **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
 Every write must carry both the identity header and the secret; anything else is rejected. Reading is not gated, so search, browse and replay stay open to anyone.
@@ -121,10 +125,10 @@ If your proxy gates only the management routes, browsers will not send its crede
 
 Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin` against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies on a workstation too: a loopback bind is not a boundary a browser respects. While indice is running, any page you visit can reach `127.0.0.1`.
 
-:::caution[One place this does not reach: replay]
-A replayed page runs its own archived JavaScript, and ReplayWeb.page serves it from indice's own origin. A write that script makes is genuinely same-origin, so the `Origin` check matches and lets it through. A hostile capture can therefore drive a signed-in curator's browser into any write that curator is allowed to make, and on a workstation that is everything.
+:::note[Replay runs on an origin of its own]
+A replayed page runs its own archived JavaScript, which is replay's job. indice serves replay from a second listener, on its own origin, so that script is cross-site to indice like any other website's: a write it attempts is refused by this same check, and it cannot reach the page around it. On a workstation that listener is the next loopback port; a server gives it a hostname of its own (see [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own)).
 
-Nothing in the chain is misbehaving; the capture is third-party code and replay's job is to run it. Until indice serves replay from a separate origin (tracked as `rustyweb-replay-origin-isolation-5h67`), weigh that when you accession a WACZ from a source you do not control.
+What a capture's script can still do is read other captures replayed in the same browser, since they share the replay origin. Weigh that if one instance holds both captures from sources you do not control and material that is not public.
 :::
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
@@ -143,6 +147,7 @@ If you get a `403` mentioning a cross-site request when using the workroom norma
 - Configure the proxy to **strip any client-supplied** identity header on inbound requests before setting its own, so a client can't smuggle one in. (The shared secret is your backstop if this is ever missed.)
 - Set the static `X-Indice-Auth-Secret` header in the proxy, and terminate TLS there.
 - Make sure the proxy passes through `X-Forwarded-Host` (or pass `--site-url`), so the cross-site check knows what the browser sees.
+- Give replay its own hostname, proxied to the replay listener with no login and both identity headers stripped, and pass it as `--replay-url`.
 
 One more, easy to miss: **forward the identity on every request, including the ordinary pages.** indice draws the workroom chrome on the homepage for a signed-in curator, so it needs to know who you are there too.
 

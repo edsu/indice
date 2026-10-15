@@ -161,6 +161,26 @@ enum Commands {
         /// No effect on a workstation, which never restricted it.
         #[arg(long)]
         allow_internal_fetch: bool,
+
+        /// Where replay is served from, as a URL with only a scheme and host,
+        /// e.g. `https://replay.archive.example.org`. Required with
+        /// `--auth-proxy-header`.
+        ///
+        /// Archived pages run their own JavaScript. Replayed on indice's own
+        /// origin, a page someone got crawled could act as whoever views it,
+        /// so replay is served on a second listener (see `--replay-bind`) and
+        /// your proxy gives that listener a hostname of its own. A subdomain
+        /// works; a separate domain also keeps archived pages away from your
+        /// other services' cookies. A workstation needs none of this: its
+        /// replay runs on the next loopback port, automatically. May also be
+        /// given via the INDICE_REPLAY_URL environment variable.
+        #[arg(long, value_name = "URL")]
+        replay_url: Option<String>,
+
+        /// Address for the replay listener. Defaults to the `--bind` address
+        /// with the next port (127.0.0.1:8081 for the default bind).
+        #[arg(long, value_name = "ADDR")]
+        replay_bind: Option<String>,
     },
     /// Rebuild the search index from collections.json (re-fetches remote sources).
     Reindex {
@@ -1069,6 +1089,8 @@ async fn main() -> Result<()> {
             auth_proxy_secret,
             site_url,
             allow_internal_fetch,
+            replay_url,
+            replay_bind,
         } => {
             // Who is trusted follows from two things already on the command
             // line: whether a proxy is named, and what we are bound to. There
@@ -1111,7 +1133,7 @@ async fn main() -> Result<()> {
             } else {
                 // No proxy named, so every caller is the operator. `Access::local`
                 // refuses anything but a loopback address. Resolve the bind string
-                // first, since it may be a name: `serve_on_listener` re-checks
+                // first, since it may be a name: `serve_on_listeners` re-checks
                 // against the real socket, but failing here names the flag.
                 //
                 // `lookup_host` rather than `ToSocketAddrs`, which would block the
@@ -1189,7 +1211,7 @@ async fn main() -> Result<()> {
                     .filter(|s| !s.is_empty())
             });
             // Skipped entirely in local mode: the setting has no effect there
-            // (build_router drops it), and refusing to start over a typo in a
+            // (build_routers drops it), and refusing to start over a typo in a
             // value this shape never reads is the behaviour the old
             // `filter(|_| manage.enabled)` guard existed to prevent. One env
             // file is commonly shared between a server and a laptop.
@@ -1209,6 +1231,55 @@ async fn main() -> Result<()> {
                     std::process::exit(2);
                 };
                 config.site_authority = Some(authority);
+            }
+
+            // A server's replay origin. Ignored on a workstation, which uses
+            // its replay listener's own address, for the same shared-env-file
+            // reason `--site-url` is.
+            let replay_url = replay_url.or_else(|| {
+                std::env::var("INDICE_REPLAY_URL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            });
+            if !access_is_local {
+                let Some(raw) = replay_url else {
+                    eprintln!(
+                        "refusing to start: a server needs --replay-url (or INDICE_REPLAY_URL).\n\
+                         Archived pages run their own JavaScript, and replayed on indice's own \
+                         origin that script could act as whoever views it. Give replay a \
+                         hostname of its own, e.g. --replay-url https://replay.archive.example.org, \
+                         and point it at the replay listener (--replay-bind).\n\
+                         See https://indice.page/docs/guides/deploy/"
+                    );
+                    std::process::exit(2);
+                };
+                let origin = match indice_lib::server::ReplayOrigin::parse(&raw) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("error: --replay-url: {e}");
+                        std::process::exit(2);
+                    }
+                };
+                // Same host on another port is another origin, but cookies
+                // ignore ports, so it would share the app's cookies.
+                let app_host =
+                    config
+                        .site_authority
+                        .as_deref()
+                        .map(|a| match a.strip_prefix('[') {
+                            Some(v6) => v6.split(']').next().unwrap_or(v6),
+                            None => a.rsplit_once(':').map_or(a, |(h, _)| h),
+                        });
+                if app_host.is_some_and(|h| h.eq_ignore_ascii_case(origin.host())) {
+                    eprintln!(
+                        "error: --replay-url must name a different host from --site-url \
+                         (both are {}). A different port is not enough: cookies are shared \
+                         across ports.",
+                        origin.host()
+                    );
+                    std::process::exit(2);
+                }
+                config.replay_origin = Some(origin);
             }
 
             let ctrl_c = async {
@@ -1251,7 +1322,7 @@ async fn main() -> Result<()> {
             };
 
             tokio::select! {
-                result = indice_lib::server::serve_with_resolver(&bind, &home, Some(resolver), config, providers) => {
+                result = indice_lib::server::serve_with_resolver(&bind, replay_bind.as_deref(), &home, Some(resolver), config, providers) => {
                     result?;
                 }
                 _ = ctrl_c => {}
