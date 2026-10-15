@@ -1476,8 +1476,7 @@ fn upload_body(collection: &str, file: &[u8]) -> (String, Vec<u8>) {
 /// has all arrived, then closes rather than read the rest. ureq writes the whole
 /// body before it reads anything, so it met that refusal as a broken pipe and
 /// never saw the status, which on Linux, where the reset comes sooner, failed
-/// these tests now and then (`rustyweb-6a1b`). Raw HTTP/1.1 over a socket, with
-/// `Connection: close` so the reply ends where the stream does.
+/// these tests now and then (`rustyweb-6a1b`).
 async fn post_upload(
     base: &str,
     content_type: String,
@@ -1496,12 +1495,13 @@ async fn send_upload(
     chunked: bool,
     pause: std::time::Duration,
 ) -> (u16, String) {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let addr = base.trim_start_matches("http://").to_string();
     tokio::task::spawn_blocking(move || {
         let mut sock = std::net::TcpStream::connect(&addr).unwrap();
-        sock.set_read_timeout(Some(std::time::Duration::from_secs(30)))
-            .unwrap();
+        let limit = Some(std::time::Duration::from_secs(30));
+        sock.set_read_timeout(limit).unwrap();
+        sock.set_write_timeout(limit).unwrap();
         let mut out = sock.try_clone().unwrap();
         let send = std::thread::spawn(move || -> std::io::Result<()> {
             let framing = if chunked {
@@ -1509,11 +1509,7 @@ async fn send_upload(
             } else {
                 format!("Content-Length: {}", body.len())
             };
-            write!(
-                out,
-                "POST /api/archives/upload HTTP/1.1\r\nHost: {addr}\r\n\
-                 Content-Type: {content_type}\r\n{framing}\r\nConnection: close\r\n\r\n"
-            )?;
+            write_upload_head(&mut out, &addr, &content_type, &framing)?;
             if chunked {
                 for chunk in body.chunks(64 * 1024) {
                     write!(out, "{:x}\r\n", chunk.len())?;
@@ -1526,55 +1522,82 @@ async fn send_upload(
                 out.write_all(&body)
             }
         });
-        let mut reply = Vec::new();
-        let mut buf = [0u8; 8192];
-        loop {
-            match sock.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => reply.extend_from_slice(&buf[..n]),
-                // A reset once the reply is in is the server closing on a body
-                // it would not read. What arrived before it stands.
-                Err(_) if !reply.is_empty() => break,
-                Err(e) => panic!("no reply to the upload: {e}"),
-            }
-        }
+        let reply = read_reply(&mut sock);
+        // The reply is in, so the send is over whatever state it is in. Shut
+        // the socket so a write the server will never read fails now, rather
+        // than leaving the join below waiting on it.
+        let _ = sock.shutdown(std::net::Shutdown::Both);
         // Ignored on purpose: a refused upload's send fails, and that is the
         // case this client exists to survive.
         let _ = send.join().unwrap();
-        parse_reply(&reply)
+        reply
     })
     .await
     .unwrap()
 }
 
-/// The status and body of an HTTP/1.1 reply read to the end of the stream.
-fn parse_reply(reply: &[u8]) -> (u16, String) {
-    let text = String::from_utf8_lossy(reply);
-    let (head, body) = text
-        .split_once("\r\n\r\n")
-        .unwrap_or_else(|| panic!("an incomplete reply: {text:?}"));
+/// The head of an upload request, up to where the body starts.
+fn write_upload_head(
+    out: &mut impl std::io::Write,
+    addr: &str,
+    content_type: &str,
+    framing: &str,
+) -> std::io::Result<()> {
+    write!(
+        out,
+        "POST /api/archives/upload HTTP/1.1\r\nHost: {addr}\r\n\
+         Content-Type: {content_type}\r\n{framing}\r\nConnection: close\r\n\r\n"
+    )
+}
+
+/// Read one HTTP/1.1 reply: its head, then exactly `Content-Length` bytes of
+/// body. Returns as soon as the reply is whole, so a reset that follows it, the
+/// server closing on a body it would not read, is never seen. Anything short of
+/// a whole reply panics with what did arrive, rather than passing a truncated
+/// one off as complete.
+fn read_reply(sock: &mut std::net::TcpStream) -> (u16, String) {
+    use std::io::Read;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        if let Some(reply) = whole_reply(&got) {
+            return reply;
+        }
+        let read = sock.read(&mut buf);
+        let partial = String::from_utf8_lossy(&got).into_owned();
+        match read {
+            Ok(0) => panic!("the connection closed mid-reply: {partial:?}"),
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) => panic!("{e} before the whole reply arrived: {partial:?}"),
+        }
+    }
+}
+
+/// The status and body, once `got` holds a whole reply.
+fn whole_reply(got: &[u8]) -> Option<(u16, String)> {
+    let end = got.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&got[..end]).expect("a reply head is ASCII");
     let status = head
         .split(' ')
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| panic!("no status line: {head:?}"));
-    let chunked = head
-        .lines()
-        .any(|l| l.eq_ignore_ascii_case("transfer-encoding: chunked"));
-    if !chunked {
-        return (status, body.to_string());
-    }
-    let mut rest = body;
-    let mut decoded = String::new();
-    while let Some((size, after)) = rest.split_once("\r\n") {
-        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
-        if n == 0 {
-            break;
+    let mut length = None;
+    for (name, value) in head.lines().skip(1).filter_map(|l| l.split_once(':')) {
+        // Every upload reply is a string or JSON, which hyper sends with its
+        // length. A chunked one would need a decoder this does not have, so it
+        // is a failure here rather than a body read as text.
+        assert!(
+            !name.trim().eq_ignore_ascii_case("transfer-encoding"),
+            "a reply without a length: {head:?}"
+        );
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            length = value.trim().parse::<usize>().ok();
         }
-        decoded.push_str(&after[..n]);
-        rest = after[n..].trim_start_matches("\r\n");
     }
-    (status, decoded)
+    let length = length.unwrap_or_else(|| panic!("a reply without Content-Length: {head:?}"));
+    let body = got.get(end + 4..end + 4 + length)?;
+    Some((status, String::from_utf8_lossy(body).into_owned()))
 }
 
 /// Serve a fresh workstation home with this `config.yaml`.
@@ -1642,8 +1665,14 @@ async fn an_upload_over_the_size_limit_is_refused() {
 /// The server answers an over-limit upload as soon as it has counted past the
 /// limit, and closes rather than read the rest. Sent slowly, the body is
 /// certainly still going out when that happens, so this is the race the other
-/// upload tests can only lose by chance, made certain: the client must still
-/// read the 413, as a browser's upload does, rather than a reset.
+/// upload tests can only lose by chance, made certain: a client that reads
+/// while it sends must still get the 413.
+///
+/// On loopback the reply reliably arrives ahead of the reset that follows it
+/// (200 runs of 200 on Linux). Over a real network it need not, because a reset
+/// can discard a reply the client has not yet read (RFC 9112, section 9.6), and
+/// a browser may then report a network error instead. That is why the desk
+/// checks both limits before it sends anything (`views/manage.rs`).
 #[tokio::test]
 async fn a_refusal_reaches_a_client_still_sending() {
     let (_tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
@@ -1732,31 +1761,27 @@ async fn the_tighter_of_the_two_limits_is_the_one_reported() {
 /// was waiting for a body it should never have wanted.
 #[tokio::test]
 async fn a_body_that_declares_itself_too_large_is_refused_before_it_is_sent() {
-    use std::io::{Read, Write};
     let (_tmp, base, server) = serve_with_config("uploads:\n  max_mb: 1\n").await;
     let addr = base.trim_start_matches("http://").to_string();
-    let reply = tokio::task::spawn_blocking(move || {
+    let (status, text) = tokio::task::spawn_blocking(move || {
         let mut sock = std::net::TcpStream::connect(&addr).unwrap();
+        // Short: a server waiting for the body would never answer.
         sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        write!(
-            sock,
-            "POST /api/archives/upload HTTP/1.1\r\nHost: {addr}\r\n\
-             Content-Type: multipart/form-data; boundary=x\r\n\
-             Content-Length: 10737418240\r\n\r\n"
+        write_upload_head(
+            &mut sock,
+            &addr,
+            "multipart/form-data; boundary=x",
+            "Content-Length: 10737418240",
         )
         .unwrap();
-        let mut buf = [0u8; 512];
-        let n = sock
-            .read(&mut buf)
-            .expect("the server should answer, not wait");
-        String::from_utf8_lossy(&buf[..n]).to_string()
+        read_reply(&mut sock)
     })
     .await
     .unwrap();
-    assert!(
-        reply.starts_with("HTTP/1.1 413"),
-        "a declared 10 GB body should be refused at once, got: {reply}"
+    assert_eq!(
+        status, 413,
+        "a declared 10 GB body should be refused at once, got: {text}"
     );
     server.abort();
 }
