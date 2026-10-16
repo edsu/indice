@@ -1143,9 +1143,12 @@ grouped at query time instead (see *Faceted, temporal discovery*).
 **What a WACZ can make the indexer read.** No member is inflated past
 `index.max_member_mb` (default 1024 MiB; see *Threat Model*): metadata, page lists
 and the CDX are read through `wacz::Limited`, and a record whose CDX length or
-inflated size is past it is skipped. Records are read in parallel, but a record that
-inflates past 16 MiB takes a shared lock first and holds it until its page is
-written or set aside, so only one large record is in memory at a time.
+inflated size is past it is skipped. Records are read in parallel, but a record whose
+CDX length is past 16 MiB takes a shared lock before it is fetched, and one that
+inflates past 16 MiB takes it before inflating further; either holds it until its
+page is written or set aside, so only one large record is in memory at a time. The
+page lists are read twice; a remote WACZ's are copied to a local temp file first, so
+the second read is not a second download.
 
 ### CDX-guided extraction (default) vs. full scan (fallback)
 

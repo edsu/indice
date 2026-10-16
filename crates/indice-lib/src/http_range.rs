@@ -218,6 +218,12 @@ pub trait RangeFetch {
     fn total_len(&self) -> u64;
     /// Fetch bytes `[start, end)` (end exclusive); `end <= total_len`.
     fn fetch(&self, start: u64, end: u64) -> io::Result<Vec<u8>>;
+    /// Whether each fetch crosses a network, so that reading the same bytes
+    /// twice costs a second download rather than a second disk read. Indexing
+    /// copies what it must read twice to a local file when this is true.
+    fn is_remote(&self) -> bool {
+        false
+    }
 }
 
 /// A `Read + Seek` over a [`RangeFetch`] with a single read-ahead buffer.
@@ -512,6 +518,10 @@ impl RangeFetch for HttpFetch {
         self.len
     }
 
+    fn is_remote(&self) -> bool {
+        true
+    }
+
     fn fetch(&self, start: u64, end: u64) -> io::Result<Vec<u8>> {
         let range = format!("bytes={}-{}", start, end - 1);
         with_retry(&format!("range GET of {}", self.url), || {
@@ -628,6 +638,9 @@ impl<F: RangeFetch> RangeFetch for SubRangeFetch<F> {
         let end = end.min(self.len);
         let start = start.min(end);
         self.inner.fetch(self.base + start, self.base + end)
+    }
+    fn is_remote(&self) -> bool {
+        self.inner.is_remote()
     }
 }
 

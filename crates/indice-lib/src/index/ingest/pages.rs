@@ -477,8 +477,11 @@ where
 /// `urn:text:` record of rendered text. Media and other pseudo-records are
 /// never fetched.
 fn is_page_record(c: &crate::wacz::CdxjRecord) -> bool {
+    // A content type's case is not significant (`Text/HTML` is HTML), and
+    // record_to_raw, which decides in the end, lowercases it too.
+    let mime = c.mime.to_ascii_lowercase();
     c.length != 0
-        && (c.url.starts_with("urn:text:") || c.mime.contains("html") || c.mime.contains("pdf"))
+        && (c.url.starts_with("urn:text:") || mime.contains("html") || mime.contains("pdf"))
 }
 
 /// Index one WACZ a page at a time, from its CDX.
@@ -536,8 +539,21 @@ where
         title: Option<String>,
         timestamp: String,
     }
+    // The page lists are read twice. A remote WACZ's are copied out once
+    // first, so the second read is from disk rather than a second download of
+    // what is usually the crawl's largest member.
+    let spooled = if fetch.is_remote() {
+        Some(wacz::spool_page_lists(&mut open_lists()?, limit)?)
+    } else {
+        None
+    };
+    let each_page_text =
+        |f: &mut dyn FnMut(PageTextPos, wacz::PageText) -> Result<()>| match &spooled {
+            Some(files) => wacz::for_each_spooled_page_text(files, f),
+            None => wacz::for_each_page_text(&mut open_lists()?, limit, f),
+        };
     let mut listed: HashMap<String, Listed> = HashMap::new();
-    wacz::for_each_page_text(&mut open_lists()?, limit, |pos, page| {
+    each_page_text(&mut |pos, page| {
         let e = listed.entry(page.url).or_default();
         e.last = pos;
         if e.title.is_none() {
@@ -592,7 +608,7 @@ where
                             held: &mut held,
                         };
                         for raw in fetch_raw_records(&fetch, starts, c, limit, gate) {
-                            if raw.url() == *page {
+                            if belongs_to(raw.url(), page, &slot) {
                                 merge_raw(&mut merged, raw);
                             }
                         }
@@ -613,7 +629,8 @@ where
     // 3. The page lists again: each page's last line, with its waiting metadata.
     progress.phase("building index");
     let mut waiting = waiting.into_inner().unwrap();
-    wacz::for_each_page_text(&mut open_lists()?, limit, |pos, page| {
+    let mut completed = 0usize;
+    each_page_text(&mut |pos, page| {
         let Some(l) = listed.get(&page.url) else {
             return Ok(());
         };
@@ -631,13 +648,22 @@ where
         if let Some(t) = &l.title {
             merged.title.get_or_insert_with(|| t.clone());
         }
+        completed += 1;
         writer.write(&page.url, merged)
     })?;
-    // Both passes read the same lines, so nothing should be left waiting; if
-    // something is, it is still a page, written without a body.
-    for (url, merged) in waiting {
-        writer.write(&url, merged)?;
+    // The second pass must reach every page the first one listed. It reads the
+    // same bytes, so the only way it falls short is a read that failed this
+    // time, a remote range after its retries, say; and then the pages it did
+    // not reach would be written without their text, or not at all, under a
+    // crawl that reported success. Refuse instead, so a retry can finish it.
+    if completed != listed.len() {
+        anyhow::bail!(
+            "the page lists could not be read in full a second time ({completed} of {} \
+             pages); nothing from this crawl was committed, so it can be retried",
+            listed.len()
+        );
     }
+    debug_assert!(waiting.is_empty(), "every waiting page is a listed one");
 
     debug!(
         records = wanted.len(),
@@ -650,6 +676,15 @@ where
     let stats = writer.finish();
     info!(pages = stats.pages, wacz = %label, "indexed pages from WACZ");
     Ok(stats)
+}
+
+/// Whether a record fetched for `page` is that page's to merge. A gzip member
+/// can hold another page's record, which that page's own group merges; any
+/// other record is this page's, even when its WARC URI is spelled differently
+/// from the CDX's key (a different indexer's normalisation, say), which would
+/// otherwise drop it unseen.
+fn belongs_to(url: &str, page: &str, pages: &HashMap<&str, usize>) -> bool {
+    url == page || !pages.contains_key(url)
 }
 
 /// What [`index_pages`] reads: the WACZ's bytes, the CDX that says where its
@@ -708,6 +743,11 @@ fn fetch_raw_records<F: RangeFetch>(
     if len > limit {
         tracing::warn!(url = %c.url, "skipping a CDX record longer than the limit ({len} bytes)");
         return Vec::new();
+    }
+    // A record already large as fetched waits its turn before the fetch, not
+    // after it: the bytes themselves are what would be held at once.
+    if len > SMALL_RECORD && gate.held.is_none() {
+        *gate.held = Some(gate.lock.lock().unwrap_or_else(|e| e.into_inner()));
     }
     match fetch
         .fetch(from, from + len)
@@ -980,11 +1020,6 @@ pub(super) fn default_concurrency(remote: bool) -> usize {
     }
 }
 
-/// Transform one WARC record into an indexable [`RawRecord`], or `None` if it is
-/// not a page: warcinfo, `dns:`, other `urn:` pseudo-records (pageinfo,
-/// thumbnail, …), non-HTML/PDF responses, or empty payloads. Shared by the
-/// scan-everything path ([`collect_page_records`]) and the CDX-guided path
-/// ([`collect_page_records_via_cdx`]) so both index identically.
 impl RawRecord {
     /// The page this contributes to.
     fn url(&self) -> &str {
@@ -994,6 +1029,10 @@ impl RawRecord {
     }
 }
 
+/// Transform one WARC record into an indexable [`RawRecord`], or `None` if it is
+/// not a page: warcinfo, `dns:`, other `urn:` pseudo-records (pageinfo,
+/// thumbnail, …), non-HTML/PDF responses, or empty payloads. Both extraction
+/// paths come through here, via [`index_pages`], so both index identically.
 fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
     let uri = record.target_uri.as_str();
     if uri.is_empty() || uri.starts_with("dns:") {
@@ -1137,6 +1176,141 @@ mod tests {
             held: &mut held,
         };
         assert!(fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, gate).is_empty());
+    }
+
+    #[test]
+    fn a_content_types_case_does_not_matter() {
+        let record = |mime: &str| crate::wacz::CdxjRecord {
+            url: "https://ex.test/".into(),
+            timestamp: String::new(),
+            mime: mime.into(),
+            status: 200,
+            filename: "w".into(),
+            offset: 0,
+            length: 10,
+        };
+        for mime in ["text/html", "Text/HTML; charset=UTF-8", "APPLICATION/PDF"] {
+            assert!(is_page_record(&record(mime)), "{mime}");
+        }
+        assert!(!is_page_record(&record("image/png")));
+    }
+
+    #[test]
+    fn a_record_belongs_to_its_page_unless_another_page_claims_it() {
+        let pages = HashMap::from([("https://ex.test/a", 0), ("https://ex.test/b", 1)]);
+        assert!(belongs_to("https://ex.test/a", "https://ex.test/a", &pages));
+        assert!(
+            !belongs_to("https://ex.test/b", "https://ex.test/a", &pages),
+            "another page's record, fetched in the same member, is that page's"
+        );
+        assert!(
+            belongs_to("https://ex.test/a/", "https://ex.test/a", &pages),
+            "a URI spelled differently from the CDX key is still this page's"
+        );
+    }
+
+    /// A record already large as fetched is fetched with the lock held, so
+    /// the workers cannot each download one at once.
+    #[test]
+    fn a_long_record_is_fetched_with_the_lock_held() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct LockedFetch<'a> {
+            lock: &'a Mutex<()>,
+            held_during_fetch: &'a AtomicBool,
+        }
+        impl RangeFetch for LockedFetch<'_> {
+            fn total_len(&self) -> u64 {
+                u64::MAX
+            }
+            fn fetch(&self, _: u64, _: u64) -> std::io::Result<Vec<u8>> {
+                self.held_during_fetch
+                    .store(self.lock.try_lock().is_err(), Ordering::SeqCst);
+                Ok(Vec::new())
+            }
+        }
+        let lock = Mutex::new(());
+        let held_during_fetch = AtomicBool::new(false);
+        let fetch = LockedFetch {
+            lock: &lock,
+            held_during_fetch: &held_during_fetch,
+        };
+        let starts = HashMap::from([("w".to_string(), 0)]);
+        let c = crate::wacz::CdxjRecord {
+            url: "https://ex.test/".into(),
+            timestamp: String::new(),
+            mime: "text/html".into(),
+            status: 200,
+            filename: "w".into(),
+            offset: 0,
+            length: SMALL_RECORD + 1,
+        };
+        let mut held = None;
+        let gate = Gate {
+            lock: &lock,
+            held: &mut held,
+        };
+        fetch_raw_records(&fetch, &starts, &c, u64::MAX, gate);
+        assert!(held_during_fetch.load(Ordering::SeqCst));
+    }
+
+    /// The second pass over the page lists must reach every page the first
+    /// listed; if a read falls short the second time, the crawl is refused
+    /// rather than written with pages missing their text.
+    #[test]
+    fn a_second_pass_that_falls_short_is_refused() {
+        use std::io::Write;
+        let lists = |lines: &[&str]| {
+            let mut buf = Vec::new();
+            {
+                let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                zw.start_file(
+                    "pages/extraPages.jsonl",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                for line in lines {
+                    writeln!(zw, "{line}").unwrap();
+                }
+                zw.finish().unwrap();
+            }
+            buf
+        };
+        let full = lists(&[
+            r#"{"url":"https://ex.test/a","text":"aaa"}"#,
+            r#"{"url":"https://ex.test/b","text":"bbb"}"#,
+        ]);
+        let short = lists(&[r#"{"url":"https://ex.test/a","text":"aaa"}"#]);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let open_lists = || -> Result<_> {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let bytes = if n == 0 { full.clone() } else { short.clone() };
+            Ok(zip::ZipArchive::new(std::io::Cursor::new(bytes))?)
+        };
+        let tmp = tempfile::TempDir::new().unwrap();
+        let search = Mutex::new(SearchIndex::open(tmp.path()).unwrap());
+        let docs = Docs {
+            crawl_id: "c",
+            crawl_name: "c",
+            collection: "c",
+            search: &search,
+            read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
+        };
+        let err = index_pages(
+            PageSource {
+                fetch: NoFetch,
+                cdx: &[],
+                starts: &HashMap::new(),
+                open_lists,
+            },
+            &Run {
+                docs: &docs,
+                label: "t",
+                concurrency: 1,
+                progress: crate::index::no_progress(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("1 of 2"), "{err}");
     }
 
     /// Extracted WARCs read as one address space: each at its base, and no

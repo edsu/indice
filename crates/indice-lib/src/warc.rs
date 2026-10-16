@@ -331,10 +331,25 @@ fn parse_all_warc_records_from(
 fn read_one_warc_bytes<R: BufRead>(r: &mut R, limit: u64) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let mut content_length: Option<usize> = None;
+    // The header is read a line at a time, and a line is as long as the file
+    // says, so the header gets the limit too: past it the record cannot be
+    // stepped over (its end is unknown), and the WARC ends with an error.
+    let mut header_budget = limit;
+    let mut read_line = |r: &mut R, line: &mut String| -> Result<usize> {
+        let n = r
+            .by_ref()
+            .take(header_budget.saturating_add(1))
+            .read_line(line)?;
+        if n as u64 > header_budget {
+            return Err(anyhow!("a WARC header runs past the {limit}-byte limit"));
+        }
+        header_budget -= n as u64;
+        Ok(n)
+    };
 
     // Read the WARC/1.0 first line.
     let mut first = String::new();
-    let n = r.read_line(&mut first)?;
+    let n = read_line(r, &mut first)?;
     if n == 0 {
         return Err(anyhow!("unexpected EOF"));
     }
@@ -349,7 +364,7 @@ fn read_one_warc_bytes<R: BufRead>(r: &mut R, limit: u64) -> Result<Vec<u8>> {
     // Read header lines until blank line.
     loop {
         let mut line = String::new();
-        let n = r.read_line(&mut line)?;
+        let n = read_line(r, &mut line)?;
         if n == 0 {
             return Err(anyhow!("unexpected EOF reading WARC header"));
         }
@@ -594,6 +609,22 @@ impl<R: Read> BufRead for CountingBufReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header line is as long as the file says, so it is bounded too: one
+    /// past the limit ends the WARC with an error instead of growing a string
+    /// to the size of the file.
+    #[test]
+    fn a_header_past_the_limit_ends_the_warc() {
+        let mut warc = b"WARC/1.0\r\nX-Long: ".to_vec();
+        warc.extend(std::iter::repeat_n(b'a', 4096));
+        warc.extend_from_slice(b"\r\n\r\n");
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &warc).unwrap();
+        let mut records = iter_records(tmp.path(), 1024).unwrap();
+        let err = records.next().unwrap().unwrap_err();
+        assert!(err.to_string().contains("header runs past"), "{err}");
+        assert!(records.next().is_none(), "and the WARC ends there");
+    }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 

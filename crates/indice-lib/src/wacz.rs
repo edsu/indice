@@ -12,9 +12,12 @@ use crate::collections::SeedPage;
 /// A WACZ is a zip, and a zip entry can inflate to a thousand times its
 /// stored size, so a WACZ of a few megabytes can name gigabytes of
 /// `pages.jsonl`, CDX or record. Every member indice reads is read through
-/// [`Limited`], so a hostile WACZ costs at most this much memory per member
-/// rather than whatever it asks for. A genuine crawl's largest member, usually
-/// `extraPages.jsonl` with the rendered text of every page, fits well inside.
+/// [`Limited`], so a hostile WACZ can make indice inflate at most this much of
+/// any one member rather than whatever it asks for. Using what was inflated
+/// takes a small multiple of it (a page-list line is held, then parsed into
+/// its text), so the memory a member can cost is a few times this, not more.
+/// A genuine crawl's largest member, usually `extraPages.jsonl` with the
+/// rendered text of every page, fits well inside.
 pub const DEFAULT_MEMBER_LIMIT: u64 = 1024 * 1024 * 1024;
 
 /// A WACZ member that inflates past the limit: the refusal, with what to do
@@ -353,6 +356,59 @@ pub(crate) fn for_each_page_text<R: std::io::Read + std::io::Seek>(
     limit: u64,
     mut f: impl FnMut(PageTextPos, PageText) -> Result<()>,
 ) -> Result<()> {
+    for (file, name) in PAGE_LISTS.into_iter().enumerate() {
+        let Ok(entry) = zip.by_name(name) else {
+            continue;
+        };
+        check_declared(&entry, limit)?;
+        page_lines(file as u8, Limited::new(entry, limit, name), &mut f)?;
+    }
+    Ok(())
+}
+
+/// The page lists, in the order their positions number them.
+const PAGE_LISTS: [&str; 2] = ["pages/pages.jsonl", "pages/extraPages.jsonl"];
+
+/// The page lists copied out of the WACZ to local temp files, each read
+/// through [`Limited`] at `limit`. For a remote WACZ, which indexing reads the
+/// page lists of twice: the copy turns the second download into a disk read.
+pub(crate) fn spool_page_lists<R: std::io::Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    limit: u64,
+) -> Result<Vec<(u8, tempfile::NamedTempFile)>> {
+    let mut out = Vec::new();
+    for (file, name) in PAGE_LISTS.into_iter().enumerate() {
+        let Ok(entry) = zip.by_name(name) else {
+            continue;
+        };
+        check_declared(&entry, limit)?;
+        let mut tmp = tempfile::NamedTempFile::new().context("temp for a page list")?;
+        std::io::copy(&mut Limited::new(entry, limit, name), tmp.as_file_mut())
+            .map_err(lift)
+            .with_context(|| format!("copying {name}"))?;
+        out.push((file as u8, tmp));
+    }
+    Ok(out)
+}
+
+/// [`for_each_page_text`] over page lists already copied out by
+/// [`spool_page_lists`], with the same positions.
+pub(crate) fn for_each_spooled_page_text(
+    files: &[(u8, tempfile::NamedTempFile)],
+    mut f: impl FnMut(PageTextPos, PageText) -> Result<()>,
+) -> Result<()> {
+    for (file, tmp) in files {
+        page_lines(*file, std::fs::File::open(tmp.path())?, &mut f)?;
+    }
+    Ok(())
+}
+
+/// The page texts in one page list, a line at a time.
+fn page_lines(
+    file: u8,
+    reader: impl std::io::Read,
+    f: &mut impl FnMut(PageTextPos, PageText) -> Result<()>,
+) -> Result<()> {
     #[derive(Deserialize)]
     struct Entry {
         url: Option<String>,
@@ -360,48 +416,49 @@ pub(crate) fn for_each_page_text<R: std::io::Read + std::io::Seek>(
         ts: Option<String>,
         text: Option<String>,
     }
-    for (file, name) in ["pages/pages.jsonl", "pages/extraPages.jsonl"]
-        .into_iter()
-        .enumerate()
-    {
-        let Ok(entry) = zip.by_name(name) else {
+    let lines = std::io::BufRead::lines(std::io::BufReader::new(reader));
+    for (n, line) in lines.enumerate() {
+        let line = match line.map_err(lift) {
+            Ok(line) => line,
+            Err(e) if is_too_large(&e) => return Err(e),
+            Err(_) => break,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(e) = serde_json::from_str::<Entry>(line) else {
             continue;
         };
-        check_declared(&entry, limit)?;
-        let lines =
-            std::io::BufRead::lines(std::io::BufReader::new(Limited::new(entry, limit, name)));
-        for (n, line) in lines.enumerate() {
-            let line = match line.map_err(lift) {
-                Ok(line) => line,
-                Err(e) if is_too_large(&e) => return Err(e),
-                Err(_) => break,
-            };
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Ok(e) = serde_json::from_str::<Entry>(line) else {
-                continue;
-            };
-            let (Some(url), Some(text)) = (e.url, e.text) else {
-                continue;
-            };
-            let text = text.trim().to_string();
-            if text.is_empty() {
-                continue;
-            }
-            f(
-                (file as u8, n as u64),
-                PageText {
-                    url,
-                    ts: e.ts.unwrap_or_default(),
-                    title: clean(e.title),
-                    text,
-                },
-            )?;
+        let (Some(url), Some(text)) = (e.url, e.text) else {
+            continue;
+        };
+        // Trimmed in place rather than copied, since the line and its text
+        // are already two copies of what may be a large page.
+        let text = trim_owned(text);
+        if text.is_empty() {
+            continue;
         }
+        f(
+            (file, n as u64),
+            PageText {
+                url,
+                ts: e.ts.unwrap_or_default(),
+                title: clean(e.title),
+                text,
+            },
+        )?;
     }
     Ok(())
+}
+
+/// `s` with surrounding whitespace removed, reusing its allocation.
+fn trim_owned(mut s: String) -> String {
+    let end = s.trim_end().len();
+    s.truncate(end);
+    let start = s.len() - s.trim_start().len();
+    s.drain(..start);
+    s
 }
 
 /// Trim a metadata string and drop it if empty.
@@ -748,29 +805,6 @@ pub fn iter_warc_paths(wacz_path: &Path) -> Result<impl Iterator<Item = Result<S
     Ok(names.into_iter().map(Ok))
 }
 
-/// Read the first `warcinfo` record found in a WACZ's WARC(s) and return its
-/// parsed provenance ([`crate::warc::Warcinfo`]). `warcinfo` normally leads each
-/// WARC, so the first hit describes how the capture was produced. Returns
-/// `Ok(None)` when the WACZ has no warcinfo (or none with recognized fields).
-pub fn read_warcinfo(wacz_path: &Path) -> Result<Option<crate::warc::Warcinfo>> {
-    use crate::warc::{iter_records, Warcinfo};
-
-    let warc_paths: Vec<String> = iter_warc_paths(wacz_path)?.collect::<Result<Vec<_>>>()?;
-    for entry_name in &warc_paths {
-        let tmp = extract_warc_from_wacz(wacz_path, entry_name)
-            .with_context(|| format!("extracting {} from {}", entry_name, wacz_path.display()))?;
-        for record in iter_records(tmp.path(), DEFAULT_MEMBER_LIMIT)? {
-            let record = record?;
-            if let Some(info) = Warcinfo::from_record(&record) {
-                if !info.is_empty() {
-                    return Ok(Some(info));
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
 /// Extract a single named WARC entry from a WACZ ZIP into a temp file.
 pub fn extract_warc_from_wacz(
     wacz_path: &Path,
@@ -936,6 +970,36 @@ mod tests {
         let line =
             b"{\"url\":\"https://ex.org/p\",\"ts\":\"2026\",\"text\":\"xxxxxxxxxxxxxxxx\"}\n";
         line.repeat((2 * MIB as usize) / line.len() + 1)
+    }
+
+    /// The page lists copied out for a remote WACZ read exactly as they do
+    /// from the zip: same pages, same positions.
+    #[test]
+    fn spooled_page_lists_read_as_the_zip_does() {
+        let pages = b"{\"format\":\"x\"}\n{\"url\":\"https://ex.org/a\",\"text\":\"  a \"}\n";
+        let extra = b"{\"url\":\"https://ex.org/b\",\"title\":\"B\",\"text\":\"b\"}\n";
+        let collect = |via_spool: bool| {
+            let mut zip = zip_of(&[
+                ("pages/pages.jsonl", pages, false),
+                ("pages/extraPages.jsonl", extra, false),
+            ]);
+            let mut out = Vec::new();
+            let mut push = |pos, t: PageText| {
+                out.push((pos, t.url, t.title, t.text));
+                Ok(())
+            };
+            if via_spool {
+                let files = spool_page_lists(&mut zip, MIB).unwrap();
+                for_each_spooled_page_text(&files, &mut push).unwrap();
+            } else {
+                for_each_page_text(&mut zip, MIB, &mut push).unwrap();
+            }
+            out
+        };
+        let direct = collect(false);
+        assert_eq!(direct.len(), 2);
+        assert_eq!(direct[0].3, "a", "text is trimmed");
+        assert_eq!(collect(true), direct);
     }
 
     #[test]
@@ -1291,10 +1355,12 @@ mod tests {
     }
 
     #[test]
-    fn read_warcinfo_extracts_software_from_real_wacz() {
+    fn warcinfo_extracts_software_from_real_wacz() {
         // a.wacz was produced by Browsertrix-Crawler, which writes a warcinfo
         // record with a `software` field.
-        let info = read_warcinfo(&fixture("a.wacz"))
+        let mut zip =
+            zip::ZipArchive::new(std::fs::File::open(fixture("a.wacz")).unwrap()).unwrap();
+        let info = find_warcinfo_streaming(&mut zip, DEFAULT_MEMBER_LIMIT)
             .unwrap()
             .expect("a.wacz has a warcinfo record");
         let software = info.software.expect("warcinfo should carry software");
@@ -1305,9 +1371,13 @@ mod tests {
     }
 
     #[test]
-    fn read_warcinfo_returns_none_when_absent() {
+    fn warcinfo_is_none_when_absent() {
         // simple.wacz has no warcinfo record.
-        assert!(read_warcinfo(&fixture("simple.wacz")).unwrap().is_none());
+        let mut zip =
+            zip::ZipArchive::new(std::fs::File::open(fixture("simple.wacz")).unwrap()).unwrap();
+        assert!(find_warcinfo_streaming(&mut zip, DEFAULT_MEMBER_LIMIT)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
