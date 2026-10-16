@@ -351,6 +351,24 @@ only who may frame it.
   `security_headers.rs::the_replay_origin_says_only_who_may_frame_it`,
   `security_headers.rs::a_workstations_replay_may_be_framed_only_by_its_viewer`
 
+**A curator-supplied WACZ cannot take the indexer's memory.**
+
+- No WACZ member is inflated past the limit, whatever its zip header says: page
+  lists, the CDX at both compression layers, and WARC records.
+  `wacz.rs::a_pages_bomb_is_refused`,
+  `wacz.rs::a_gzipped_cdx_bomb_is_refused_while_it_inflates`,
+  `wacz.rs::a_record_that_inflates_past_the_limit_is_refused`
+- A WACZ that asks for more is refused whole, naming the member and the setting.
+  `integration.rs::a_wacz_bomb_is_refused_and_not_added`
+- Indexing does not hold the crawl's text: a page's sources are merged a page at
+  a time, and each source still wins where it should.
+  `ingest/tests.rs::each_source_wins_where_it_should_on_both_paths`
+- Only one large record inflates at a time, and a record whose CDX length is past
+  the limit is not fetched. `wacz.rs::only_a_large_record_takes_the_shared_lock`,
+  `pages.rs::a_cdx_length_past_the_limit_is_not_fetched`
+- A remote host that answers a range with more than was asked is refused.
+  `http_range.rs::a_range_longer_than_asked_for_is_refused`
+
 **Curator-supplied content does not become executable or escape its directory.**
 
 - Note HTML is sanitized. `manage.rs::annotation_note_html_cannot_carry_executable_markup`,
@@ -361,16 +379,23 @@ only who may frame it.
   `manage.rs::public_annotation_api_never_exposes_a_login_address`
 
 **Is a curator-supplied WACZ trusted input?** On a workstation, yes: you chose the
-file. On a server, no, and indice does not yet act on that. Zip entries are read
-by name or index and never extracted to a path taken from the archive, so
-zip-slip is structurally impossible. But `datapackage.json`, `pages/pages.jsonl`
-and the CDX are each read with `read_to_end` and no size cap (`wacz.rs:276,396`),
-so a small WACZ whose `pages.jsonl` inflates to many gigabytes is a decompression
-bomb that takes the indexer's memory with it (`rustyweb-wacz-read-caps-q39p`).
-That is acceptable where curators are colleagues and is not where they are
-approved strangers, which is the first place the answer to this question changes
-the code. Replay, where it would otherwise matter most, isolates every capture
-alike; see *Guarantees*.
+file. On a server, no. Zip entries are read by name or index and never extracted
+to a path taken from the archive, so zip-slip is structurally impossible. A WACZ
+can still ask for far more than it holds, since a zip entry inflates to a
+thousand times its size. Two things bound what it can cost. Indexing goes a page at
+a time (see *Indexing Pipeline*), so memory does not grow with the crawl's text. And
+no member is inflated past `index.max_member_mb` (default 1024 MiB): metadata, the
+page lists and the CDX (at both its compression layers) are read through
+`wacz::Limited`, and an entry whose header already declares more is refused unread.
+Past the limit on those, the ingest fails and the crawl is not added. A single WARC
+record over it, by its CDX length or what it inflates to, is skipped with a warning
+and the crawl is indexed without it, as warcinfo is skipped. Records inflate in
+parallel only up to 16 MiB; past that a worker waits its turn, so one large record
+is in memory at a time. The limit applies on a workstation too, because it protects
+the indexing machine whoever started the ingest. What a WACZ inflates to on *disk*, a deflated WARC or
+inner WACZ extracted to a temp file, is not yet bounded (`rustyweb-6vjz`). Replay,
+where hostile input would otherwise matter most, isolates every capture alike; see
+*Guarantees*.
 
 ### Assumptions
 
@@ -388,7 +413,7 @@ alike; see *Guarantees*.
 | ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
 | The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
 | Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
-| Curators supply well-formed WACZs | Uncapped reads make a decompression bomb an out-of-memory | `rustyweb-wacz-read-caps-q39p` |
+| ~~Curators supply well-formed WACZs~~ | Closed for memory: no WACZ member is inflated past `index.max_member_mb`, and a remote range is read no further than was asked. Open for disk: a deflated WARC or inner WACZ extracted to a temp file is not yet bounded (`rustyweb-6vjz`) | `rustyweb-wacz-read-caps-q39p` |
 | ~~Archived captures do not script their host~~ | Closed: replay runs on an origin of its own, with no write route and no identity, and a server will not start without one. A capture's script still runs there and can forge the frame's messages to the viewer, which move the banner or pre-fill a note the reader must still save | `rustyweb-replay-origin-isolation-5h67` |
 
 A future premise change, a PaaS deployment, a multi-tenant host, or the
@@ -1066,56 +1091,87 @@ Input WACZ
        ├── Read datapackage.json ──► WaczMetadata (title, description, crawl date, seed pages)
        │    └── Index as collection document in Tantivy
        │    └── Write to collections.json
-       ├── Iterate archive/*.warc(.gz) members, collecting per record:
+       ├── Read the CDX ──► the records that can become a page, grouped by page
+       ├── Stream pages/pages.jsonl + extraPages.jsonl once ──► which pages have
+       │    rendered text there (URLs, first title, first timestamp; no text)
+       ├── For each page, in parallel: fetch its records and merge them
        │    ├── HTML response        ──► title (<title>) + scraped body text
        │    ├── urn:text: resource   ──► fully rendered (post-JS) page text
        │    └── application/pdf resp ──► extracted PDF text (title from filename)
-       └── Read pages/pages.jsonl + pages/extraPages.jsonl `text` field
-            └── fully rendered page text (where a crawl stores it here
-                instead of as urn:text: records) + a fallback title
-                 │
-                 └── Merge into one document per URL (body prefers rendered
-                     text, then PDF text, then scraped HTML; title from HTML)
-                     └── Derive domain/year/month/type/lang, then write the page
-                         document to Tantivy (see the schema table above)
+       │    └── No page-list text: write the page document now
+       │        Page-list text: keep only its metadata, for the next pass
+       └── Stream the page lists again ──► each page's last line, merged with
+            its waiting metadata, written (body prefers page-list text, then
+            urn:text, then PDF text, then scraped HTML; title from HTML)
+                 └── Derive domain/year/month/type/lang, then write the page
+                     document to Tantivy (see the schema table above)
 ```
 
-Records are collected across all inner WARCs before merging, because a page's
-rendered `urn:text` often lives in a different WARC than its HTML response.
-Rendered text is *also* read from `pages/pages.jsonl` and `pages/extraPages.jsonl`
-(Browsertrix's `text` field): many crawls - including this era of SUCHO WACZs -
-store the fully rendered, post-JS page text only there, not as `urn:text:` WARC
-records. Without it, JS-rendered content is visible in replay but unsearchable.
-The jsonl text is merged into the same per-URL document (interchangeable with
-`urn:text:`), so it enriches the existing HTML-response document rather than
-adding a duplicate.
+Indexing goes **a page at a time** (`index_pages`). A page's search document draws
+on up to three sources that arrive apart: its HTML response record, a `urn:text:`
+record of Browsertrix's rendered text (often in a different WARC from the HTML), and
+a line of `pages/pages.jsonl` or `pages/extraPages.jsonl` carrying rendered text and
+a title. Many crawls, including this era of SUCHO WACZs, store the fully rendered,
+post-JS text only in the page lists, so without them JS-rendered content would be
+visible in replay but unsearchable. Tantivy writes a document once, so a page's
+sources have to meet before it is written. They meet like this, without holding the
+crawl:
+
+- The CDX's page records (HTML and PDF responses, `urn:text:` records) are grouped
+  by page, with each `urn:text:` record joining its page, and each page's records are
+  fetched and merged together by one worker. Within a page, CDX order is capture
+  order, so a later capture's fields win.
+- The page lists are streamed once beforehand to learn which pages have text there.
+  Such a page's body would lose to that text anyway, so after the merge it keeps only
+  its metadata, and a second stream of the page lists merges each page's last line
+  (the one that wins) with it and writes the document. Every other page is written
+  as soon as its records are merged.
+
+So memory holds the CDX, the listed URLs, the waiting pages' metadata, and a page
+per worker. It does not hold the crawl's text, which for a large crawl is gigabytes
+and for a hostile one is whatever it asks for. Measured on Linux with 4 workers, a
+20,000-page, 120 MB crawl indexes in 371 MB; a 12 MB WACZ whose 40 records inflate to
+4 GB of HTML indexes in 733 MB. A page's metadata fields are capped (64 KiB of
+headings, 8 KiB of description, 2 KiB of title) since it may wait in memory, and no
+more than 16 MiB of a page's HTML is parsed for text, since parsing builds a DOM many
+times the page's size; neither cap touches a real page. The body is indexed in full.
+
 Collapsing to one document per URL deduplicates repeat captures *within a WACZ*;
 repeat captures of the same URL *across* WACZs stay as separate documents and are
 grouped at query time instead (see *Faceted, temporal discovery*).
 
-Parallelism: Rayon parallel iterator over the WARC member list within each WACZ;
-merge and Tantivy writes happen once per WACZ.
+**What a WACZ can make the indexer read.** No member is inflated past
+`index.max_member_mb` (default 1024 MiB; see *Threat Model*): metadata, page lists
+and the CDX are read through `wacz::Limited`, and a record whose CDX length or
+inflated size is past it is skipped. Records are read in parallel, but a record whose
+CDX length is past 16 MiB takes a shared lock before it is fetched, and one that
+inflates past 16 MiB takes it before inflating further; either holds it until its
+page is written or set aside, so only one large record is in memory at a time. The
+page lists are read twice; a remote WACZ's are copied to a local temp file first, so
+the second read is not a second download.
 
 ### CDX-guided extraction (default) vs. full scan (fallback)
 
-There are two extraction modes, sharing the same per-record transform
-(`record_to_raw`) and merge step (`index_merged`) so they produce an identical
-index:
+There are two extraction modes. Both end in the same page-at-a-time indexing
+(`index_pages`), with the same per-record transform (`record_to_raw`), so they
+produce an identical index:
 
 - **CDX-guided** (`index_wacz_streaming`, over a pluggable `RangeFetch` byte
   source) - **the default**: read the WACZ's CDX, then fetch *only* the page
   records (HTML/PDF responses and `urn:text:` rendered text) at
   `data_start + offset` for the length the CDX gives. Media (images/JS/CSS/JSON)
-  and pseudo-records (pageinfo, thumbnail) are never read. It also reads the
-  `pages/*.jsonl` `text` once during setup (cheap, alongside the CDX), folding it
-  in as rendered text - so crawls that store rendered text only in the pages files
-  are fully searchable even though the CDX never points at it. The byte source is
+  and pseudo-records (pageinfo, thumbnail) are never read. The page lists'
+  rendered text is streamed alongside, as above, so crawls that store rendered
+  text only there are fully searchable even though the CDX never points at it.
+  The byte source is
   pluggable (`http_range.rs`): a local `FileFetch`, or an `HttpFetch` issuing HTTP
   range requests for a remote WACZ - so a remote WACZ is indexed **without
   downloading it**, fetching only the central directory, the CDX, and the page
   records. The same primitive wabac.js uses for replay.
-- **Scan** (`index_wacz`) - **the fallback**: decompress and inspect *every*
-  WARC record. Used only when a WACZ can't be CDX-guided (see below).
+- **Scan** (`index_wacz`) - **the fallback**: inflate each WARC to a temp file and
+  build a CDX for it by streaming its records once (positions and types, no
+  payloads), then index from that CDX as above. Used only when a WACZ can't be
+  CDX-guided (see below).
 
 **Why CDX-guided is the default everywhere.** Extraction mode is really about
 CDX-guided vs. full-scan, not local vs. remote - the reader abstracts over where

@@ -91,8 +91,8 @@ fn cdxj_line(rec: &WarcRecord, filename: &str) -> Option<String> {
 #[cfg(test)]
 pub(crate) fn cdxj_lines(warc_path: &std::path::Path, filename: &str) -> Result<Vec<String>> {
     let mut lines = Vec::new();
-    for rec in
-        iter_records(warc_path).with_context(|| format!("reading WARC {}", warc_path.display()))?
+    for rec in iter_records(warc_path, u64::MAX)
+        .with_context(|| format!("reading WARC {}", warc_path.display()))?
     {
         let rec = rec?;
         if let Some(line) = cdxj_line(&rec, filename) {
@@ -306,7 +306,10 @@ fn scan_warcs(warcs: &[std::path::PathBuf], names: &[String]) -> Result<Scanned>
     let mut records = 0u64;
     for (warc, basename) in warcs.iter().zip(names) {
         let mut indexable = 0u64;
-        for rec in iter_records(warc)
+        // No record limit: these are the operator's own WARCs being packaged,
+        // and a genuine one can hold a record bigger than any sensible limit
+        // (a video). The reader still holds only one record at a time.
+        for rec in iter_records(warc, u64::MAX)
             .with_context(|| format!("{} does not look like a valid WARC", warc.display()))?
         {
             let rec =
@@ -622,7 +625,8 @@ mod tests {
         assert_eq!(packaged, original, "WARC packaged verbatim");
 
         // datapackage round-trips our metadata.
-        let dp = crate::wacz::read_datapackage(&built.path).unwrap();
+        let dp =
+            crate::wacz::read_datapackage(&built.path, crate::wacz::DEFAULT_MEMBER_LIMIT).unwrap();
         assert_eq!(dp.title.as_deref(), Some("My Build"));
         assert_eq!(dp.creator.as_deref(), Some("Test Org"));
         assert_eq!(dp.keywords, vec!["alpha".to_string(), "beta".to_string()]);

@@ -437,7 +437,12 @@ async fn served_wacz_cdx_resolves_a_replayable_page() {
     let served_path = tmp.path().join("served.wacz");
     std::fs::write(&served_path, &served).unwrap();
 
-    let records = indice_lib::wacz::search_cdx(&served_path, REAL_URL).unwrap();
+    let records = indice_lib::wacz::search_cdx(
+        &served_path,
+        REAL_URL,
+        indice_lib::wacz::DEFAULT_MEMBER_LIMIT,
+    )
+    .unwrap();
     let page = records
         .iter()
         .find(|r| r.status == 200 && r.mime.contains("html"));
@@ -1925,4 +1930,84 @@ async fn public_only_refuses_a_fetch_that_lands_on_this_machine() {
         "the refusal should name the address it refused, got: {msg}"
     );
     assert!(allowed, "the same fetch must still work unrestricted");
+}
+
+// ── Hostile WACZs ───────────────────────────────────────────────────────────
+
+/// A WACZ whose member inflates past `index.max_member_mb` is refused whole:
+/// the ingest fails, naming the member and the setting, and the crawl is not
+/// added, rather than added without the text it would not read.
+#[test]
+fn a_wacz_bomb_is_refused_and_not_added() {
+    use std::io::{Read, Write};
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        "index:\n  max_member_mb: 1\n",
+    )
+    .unwrap();
+
+    // A real WACZ, with two MiB of page text added that deflates to little.
+    let mut src = zip::ZipArchive::new(std::fs::File::open(fixture("a.wacz")).unwrap()).unwrap();
+    let bomb = tmp.path().join("bomb.wacz");
+    {
+        let mut out = zip::ZipWriter::new(std::fs::File::create(&bomb).unwrap());
+        for i in 0..src.len() {
+            let mut entry = src.by_index(i).unwrap();
+            if entry.name() == "pages/extraPages.jsonl" {
+                continue;
+            }
+            let opt = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            out.start_file(entry.name(), opt).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            out.write_all(&bytes).unwrap();
+        }
+        out.start_file(
+            "pages/extraPages.jsonl",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let line =
+            b"{\"url\":\"https://ex.org/p\",\"ts\":\"2026\",\"text\":\"xxxxxxxxxxxxxxxx\"}\n";
+        for _ in 0..(2 * 1024 * 1024 / line.len() + 1) {
+            out.write_all(line).unwrap();
+        }
+        out.finish().unwrap();
+    }
+    assert!(std::fs::metadata(&bomb).unwrap().len() < 6 * 1024 * 1024);
+
+    // Streamed from a URL, as a crawl added by link is, the same refusal: the
+    // readers are the same whether the bytes come from a file or a range.
+    let host = tower_http::services::ServeFile::new(&bomb);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let url = format!("http://{}/bomb.wacz", listener.local_addr().unwrap());
+    rt.spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().route_service("/bomb.wacz", host),
+        )
+        .await
+        .unwrap();
+    });
+    let err = indice_lib::index::Ingest::new(tmp.path())
+        .index_location(&url, "test")
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("index.max_member_mb"),
+        "a streamed bomb is refused too: {err:#}"
+    );
+
+    let err = indice_lib::index::index_path(&bomb, tmp.path(), None, "test").unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("pages/extraPages.jsonl") && msg.contains("index.max_member_mb"),
+        "the refusal should name the member and the setting: {msg}"
+    );
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    assert!(manifest.waczs.is_empty(), "the crawl must not be added");
 }

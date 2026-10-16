@@ -1946,6 +1946,19 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         cfg.writer_heap_bytes() / (1024 * 1024)
     );
 
+    let member_set = cfg
+        .index
+        .max_member_mb
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    let member = cfg.max_member_bytes();
+    let member_resolved = if member == u64::MAX {
+        "no limit on what a WACZ member inflates to".to_string()
+    } else {
+        format!("{} MiB per WACZ member, inflated", member / (1024 * 1024))
+    };
+    println!("index.max_member_mb:      {member_set}  ->  {member_resolved}");
+
     // Unset is reported as "no limit" rather than left blank, because for these
     // two that is a decision with consequences: it is what a server exposing
     // its archive to curators it does not know should not be running with.
@@ -2238,6 +2251,7 @@ fn run_search_url(url: &str, home: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
+    let limit = indice_lib::config::Config::load(home)?.max_member_bytes();
     let mut found_any = false;
     for col in &manifest.waczs {
         // This debugging aid reads the CDX from the local WACZ; skip every remote
@@ -2259,7 +2273,7 @@ fn run_search_url(url: &str, home: &std::path::Path) -> Result<()> {
             eprintln!("warning: {} not found at {}", col.name, path.display());
             continue;
         }
-        let records = search_cdx(&path, url)?;
+        let records = search_cdx(&path, url, limit)?;
         if records.is_empty() {
             continue;
         }

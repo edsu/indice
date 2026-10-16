@@ -118,19 +118,166 @@ pub(crate) fn parse_warc_records(
     out
 }
 
-/// Iterate over records in a `.warc` or `.warc.gz` file.
+/// Iterate over records in a `.warc` or `.warc.gz` file, one at a time.
 ///
 /// For `.warc.gz`, each gzip member is read individually to track the
-/// compressed byte offset of every record.  For plain `.warc`, offsets are
+/// compressed byte offset of every record. For plain `.warc`, offsets are
 /// tracked via an in-band counting wrapper.
-pub fn iter_records(path: &Path) -> Result<impl Iterator<Item = Result<WarcRecord>>> {
-    let records = if is_gzip(path)? {
-        collect_records_gz(path)?
+///
+/// Streaming, so memory holds one record (or one gzip member's records) at a
+/// time, never the WARC: a deflated WARC can be gigabytes of images and video.
+/// No record is read past `limit` bytes, inflated. A record over it, a gzip
+/// member that is a decompression bomb or a plain record whose header claims
+/// an absurd length, is yielded as a [`crate::wacz::MemberTooLarge`] error and
+/// passed over without being held, and the records after it follow as usual:
+/// one oversized record, such as a video, does not end the WARC.
+pub fn iter_records(path: &Path, limit: u64) -> Result<impl Iterator<Item = Result<WarcRecord>>> {
+    let gzip = is_gzip(path)?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = BufReader::new(file);
+    Ok(if gzip {
+        Records::Gz {
+            reader: Some(reader),
+            queue: std::collections::VecDeque::new(),
+            limit,
+        }
     } else {
-        collect_records_plain(path)?
-    };
+        Records::Plain {
+            counting: Some(CountingBufReader::new(reader)),
+            limit,
+        }
+    })
+}
 
-    Ok(records.into_iter())
+/// The state of [`iter_records`]: the reader, `None` once it has ended or
+/// failed, and for gzip the records of a member not yet handed out.
+enum Records {
+    Gz {
+        reader: Option<BufReader<std::fs::File>>,
+        queue: std::collections::VecDeque<Result<WarcRecord>>,
+        limit: u64,
+    },
+    Plain {
+        counting: Option<CountingBufReader<std::fs::File>>,
+        limit: u64,
+    },
+}
+
+impl Iterator for Records {
+    type Item = Result<WarcRecord>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Records::Gz {
+                reader,
+                queue,
+                limit,
+            } => loop {
+                if let Some(record) = queue.pop_front() {
+                    return Some(record);
+                }
+                match next_gzip_member(reader.take()?, *limit) {
+                    Ok(Some(member)) => {
+                        *reader = Some(member.reader);
+                        queue.extend(member.records);
+                    }
+                    Ok(None) => return None,
+                    Err(e) => return Some(Err(e)),
+                }
+            },
+            Records::Plain { counting, limit } => loop {
+                let reader = counting.as_mut()?;
+                let offset = reader.pos();
+                match reader.inner.fill_buf() {
+                    Ok([]) => {
+                        *counting = None;
+                        return None;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        *counting = None;
+                        return Some(Err(e.into()));
+                    }
+                }
+                match read_one_warc_bytes(reader, *limit) {
+                    // Over the limit, and skipped past: report it, and go on.
+                    Err(e) if crate::wacz::is_too_large(&e) => return Some(Err(e)),
+                    Ok(bytes) => {
+                        let record_length = reader.pos() - offset;
+                        let cursor = BufReader::new(Cursor::new(bytes));
+                        match parse_one_warc_record(cursor, offset, record_length) {
+                            Ok(Some(rec)) => return Some(Ok(rec)),
+                            Ok(None) => continue,
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                    Err(e) => {
+                        *counting = None;
+                        return Some(Err(e));
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// One gzip member's records, and the reader, positioned at the next member.
+struct GzMember {
+    reader: BufReader<std::fs::File>,
+    records: Vec<Result<WarcRecord>>,
+}
+
+/// Read the next gzip member of a `.warc.gz` and parse the records in it,
+/// handing the reader back for the next one. `None` at the end of the file,
+/// or at a byte that cannot start a gzip member.
+fn next_gzip_member(mut reader: BufReader<std::fs::File>, limit: u64) -> Result<Option<GzMember>> {
+    use std::io::Seek;
+    {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(None);
+        }
+        // Only bail on a byte that is definitively not the gzip magic 0x1f.
+        // fill_buf() may return just 1 byte (0x1f) after an into_inner() +
+        // stream_position() pair discards the buffer; in that case buf.get(1)
+        // would be None, falsely triggering a two-byte check and stopping
+        // records short. Let GzDecoder validate the full header instead.
+        if buf[0] != 0x1f {
+            tracing::debug!("stopping at non-gzip byte 0x{:02x}", buf[0]);
+            return Ok(None);
+        }
+    }
+    // BufReader::stream_position() returns the logical consumed position (OS
+    // file pos minus buffered-but-not-consumed bytes), so use it directly.
+    let offset = reader.stream_position()?;
+    // bufread::GzDecoder takes ownership of the BufReader and returns it via
+    // into_inner(), positioned right after the member's compressed footer, so
+    // the next member starts cleanly. read::GzDecoder wraps an extra BufReader
+    // internally and over-reads, losing the start of the next member.
+    let mut gz = flate2::bufread::GzDecoder::new(reader);
+    let mut decompressed = Vec::new();
+    let read = crate::wacz::Limited::new(&mut gz, limit, "a WARC record")
+        .read_to_end(&mut decompressed)
+        .map_err(crate::wacz::lift);
+    if let Err(e) = read {
+        if !crate::wacz::is_too_large(&e) {
+            return Err(e.context("decompressing gzip member"));
+        }
+        // Over the limit: inflate the rest of the member into nothing, which
+        // costs time but no memory, so the next member can be read.
+        drop(decompressed);
+        std::io::copy(&mut gz, &mut std::io::sink()).context("skipping a gzip member")?;
+        return Ok(Some(GzMember {
+            reader: gz.into_inner(),
+            records: vec![Err(e)],
+        }));
+    }
+    let mut reader = gz.into_inner();
+    let record_length = reader.stream_position()? - offset;
+    let mut records = Vec::new();
+    // A single gzip member may contain multiple concatenated WARC records.
+    parse_all_warc_records_from(&decompressed, offset, record_length, &mut records);
+    Ok(Some(GzMember { reader, records }))
 }
 
 /// Detect gzip content by magic bytes rather than file extension.
@@ -147,65 +294,6 @@ fn is_gzip(path: &Path) -> Result<bool> {
 }
 
 // ── gzip (one member per record) ─────────────────────────────────────────────
-
-fn collect_records_gz(path: &Path) -> Result<Vec<Result<WarcRecord>>> {
-    use std::io::Seek;
-
-    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    // Use bufread::GzDecoder so we can call into_inner() to recover the
-    // BufReader after each member.  read::GzDecoder wraps an extra BufReader
-    // internally and over-reads, losing the start of the next member.
-    let mut reader = BufReader::new(file);
-    let mut records: Vec<Result<WarcRecord>> = Vec::new();
-
-    loop {
-        // Peek at the next two bytes to detect EOF or non-gzip padding.
-        {
-            let buf = reader.fill_buf()?;
-            if buf.is_empty() {
-                break;
-            }
-            // Only bail on a byte that is definitively not the gzip magic 0x1f.
-            // fill_buf() may return just 1 byte (0x1f) after an into_inner() +
-            // stream_position() pair discards the buffer; in that case buf.get(1)
-            // would be None, falsely triggering the old two-byte check and stopping
-            // 142 records short. Let GzDecoder validate the full header instead.
-            if buf[0] != 0x1f {
-                tracing::debug!(
-                    "stopping at non-gzip byte 0x{:02x} in {}",
-                    buf[0],
-                    path.display()
-                );
-                break;
-            }
-        }
-
-        // BufReader::stream_position() returns the logical consumed position
-        // (OS file pos minus buffered-but-not-consumed bytes), so use it directly.
-        let offset = reader.stream_position()?;
-
-        // bufread::GzDecoder takes ownership of the BufReader and returns it
-        // via into_inner() - leaving it positioned right after the member's
-        // compressed footer, so the next member starts cleanly.
-        let mut gz = flate2::bufread::GzDecoder::new(reader);
-        let mut decompressed = Vec::new();
-        gz.read_to_end(&mut decompressed)
-            .with_context(|| "decompressing gzip member")?;
-        reader = gz.into_inner();
-
-        let end_offset = reader.stream_position()?;
-        let record_length = end_offset - offset;
-
-        if decompressed.is_empty() {
-            continue;
-        }
-
-        // A single gzip member may contain multiple concatenated WARC records.
-        parse_all_warc_records_from(&decompressed, offset, record_length, &mut records);
-    }
-
-    Ok(records)
-}
 
 /// Extract all WARC records from a decompressed byte buffer.
 ///
@@ -236,53 +324,32 @@ fn parse_all_warc_records_from(
 
 // ── plain (uncompressed) ──────────────────────────────────────────────────────
 
-fn collect_records_plain(path: &Path) -> Result<Vec<Result<WarcRecord>>> {
-    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-
-    let mut counting = CountingBufReader::new(BufReader::new(file));
-    let mut records: Vec<Result<WarcRecord>> = Vec::new();
-
-    loop {
-        let offset = counting.pos();
-
-        // Peek for EOF.
-        {
-            let buf = counting.inner.fill_buf()?;
-            if buf.is_empty() {
-                break;
-            }
-        }
-
-        match read_one_warc_bytes(&mut counting) {
-            Ok(bytes) => {
-                let end = counting.pos();
-                let record_length = end - offset;
-                let cursor = BufReader::new(Cursor::new(bytes));
-                match parse_one_warc_record(cursor, offset, record_length) {
-                    Ok(Some(rec)) => records.push(Ok(rec)),
-                    Ok(None) => {}
-                    Err(e) => records.push(Err(e)),
-                }
-            }
-            Err(e) => {
-                records.push(Err(e));
-                break;
-            }
-        }
-    }
-
-    Ok(records)
-}
-
 /// Read exactly one WARC record (header + block + trailing `\r\n\r\n`) from
-/// `r`, returning the raw bytes.
-fn read_one_warc_bytes<R: BufRead>(r: &mut R) -> Result<Vec<u8>> {
+/// `r`, returning the raw bytes. The block is allocated from the header's
+/// `Content-Length`, which the file chooses, so a length past `limit` is
+/// refused before anything is allocated.
+fn read_one_warc_bytes<R: BufRead>(r: &mut R, limit: u64) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let mut content_length: Option<usize> = None;
+    // The header is read a line at a time, and a line is as long as the file
+    // says, so the header gets the limit too: past it the record cannot be
+    // stepped over (its end is unknown), and the WARC ends with an error.
+    let mut header_budget = limit;
+    let mut read_line = |r: &mut R, line: &mut String| -> Result<usize> {
+        let n = r
+            .by_ref()
+            .take(header_budget.saturating_add(1))
+            .read_line(line)?;
+        if n as u64 > header_budget {
+            return Err(anyhow!("a WARC header runs past the {limit}-byte limit"));
+        }
+        header_budget -= n as u64;
+        Ok(n)
+    };
 
     // Read the WARC/1.0 first line.
     let mut first = String::new();
-    let n = r.read_line(&mut first)?;
+    let n = read_line(r, &mut first)?;
     if n == 0 {
         return Err(anyhow!("unexpected EOF"));
     }
@@ -297,7 +364,7 @@ fn read_one_warc_bytes<R: BufRead>(r: &mut R) -> Result<Vec<u8>> {
     // Read header lines until blank line.
     loop {
         let mut line = String::new();
-        let n = r.read_line(&mut line)?;
+        let n = read_line(r, &mut line)?;
         if n == 0 {
             return Err(anyhow!("unexpected EOF reading WARC header"));
         }
@@ -316,6 +383,18 @@ fn read_one_warc_bytes<R: BufRead>(r: &mut R) -> Result<Vec<u8>> {
     }
 
     let content_length = content_length.unwrap_or(0);
+    if content_length as u64 > limit {
+        // Skip the block without holding it, so the next record can be read.
+        std::io::copy(
+            &mut r.by_ref().take(content_length as u64 + 4),
+            &mut std::io::sink(),
+        )?;
+        return Err(crate::wacz::MemberTooLarge {
+            member: "a WARC record".to_string(),
+            limit,
+        }
+        .into());
+    }
     // Read block + trailing \r\n\r\n.
     let mut block = vec![0u8; content_length + 4];
     r.read_exact(&mut block)
@@ -531,6 +610,22 @@ impl<R: Read> BufRead for CountingBufReader<R> {
 mod tests {
     use super::*;
 
+    /// A header line is as long as the file says, so it is bounded too: one
+    /// past the limit ends the WARC with an error instead of growing a string
+    /// to the size of the file.
+    #[test]
+    fn a_header_past_the_limit_ends_the_warc() {
+        let mut warc = b"WARC/1.0\r\nX-Long: ".to_vec();
+        warc.extend(std::iter::repeat_n(b'a', 4096));
+        warc.extend_from_slice(b"\r\n\r\n");
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &warc).unwrap();
+        let mut records = iter_records(tmp.path(), 1024).unwrap();
+        let err = records.next().unwrap().unwrap_err();
+        assert!(err.to_string().contains("header runs past"), "{err}");
+        assert!(records.next().is_none(), "and the WARC ends there");
+    }
+
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
     fn fixture(name: &str) -> std::path::PathBuf {
@@ -618,10 +713,13 @@ mod tests {
 
     #[test]
     fn parse_simple_warc_gz() {
-        let records: Vec<_> = iter_records(&fixture("simple.warc.gz"))
-            .unwrap()
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
+        let records: Vec<_> = iter_records(
+            &fixture("simple.warc.gz"),
+            crate::wacz::DEFAULT_MEMBER_LIMIT,
+        )
+        .unwrap()
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
 
         let resp = records
             .iter()
@@ -656,10 +754,11 @@ mod tests {
 
     #[test]
     fn parse_post_warc_gz() {
-        let records: Vec<_> = iter_records(&fixture("post.warc.gz"))
-            .unwrap()
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
+        let records: Vec<_> =
+            iter_records(&fixture("post.warc.gz"), crate::wacz::DEFAULT_MEMBER_LIMIT)
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
 
         assert!(records
             .iter()
@@ -687,10 +786,11 @@ mod tests {
     #[test]
     fn all_records_have_record_length() {
         // Verify that record_length is populated (> 0) for every record.
-        let records: Vec<_> = iter_records(&fixture("post.warc.gz"))
-            .unwrap()
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
+        let records: Vec<_> =
+            iter_records(&fixture("post.warc.gz"), crate::wacz::DEFAULT_MEMBER_LIMIT)
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
 
         assert!(!records.is_empty());
         for r in &records {

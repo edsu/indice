@@ -47,9 +47,9 @@ Filed, documented, and not news. The tracker is in this repo, so
 - Every capture a browser replays shares the replay origin, so a hostile
   capture's script can read the others replayed in that browser.
   See *Not defended* in the threat model.
-- `datapackage.json`, `pages/pages.jsonl` and the CDX are read whole with no
-  size cap, so a WACZ can be a decompression bomb.
-  `rustyweb-wacz-read-caps-q39p`
+- What a WACZ inflates to on disk is not bounded: a deflated WARC or inner
+  WACZ extracted to a temp file can fill the temp volume. (What it inflates to
+  in memory is: `index.max_member_mb`.) `rustyweb-6vjz`
 - Upload size and total archive size are limited only when `uploads.max_mb`
   and `uploads.max_total_gb` are set in `config.yaml`; both are unset by default.
   The limits apply to the whole archive, not to each curator.
