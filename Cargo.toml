@@ -38,7 +38,7 @@ tantivy = { version = "0.26", features = ["zstd-compression"] }
 
 # WARC / WACZ
 warc = "0.4"
-zip = "8"
+zip = "9"
 
 # URL / HTML
 url = "2"
