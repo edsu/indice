@@ -37,6 +37,7 @@ fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
         crawl_name: "cname",
         collection: "coll",
         search,
+        read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
     }
 }
 
@@ -443,6 +444,7 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
             crawl_name: "Nested",
             collection: "coll",
             search: &search,
+            read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
         },
         2,
         crate::index::no_progress(),
@@ -1222,4 +1224,198 @@ fn mime_display_name_strips_extension() {
     assert_eq!(file_display_name(p), "my-archive");
     let p2 = Path::new("/data/my.warc.gz");
     assert_eq!(file_display_name(p2), "my");
+}
+
+// ── Page-at-a-time indexing: which source wins ───────────────────────────────
+
+/// A WACZ whose pages each draw on a different mix of sources, built here so
+/// the rules it pins are readable: `/a` has an HTML capture, a `urn:text:`
+/// record and two page-list lines; `/b` only HTML; `/c` only `urn:text:`; `/d`
+/// only a page-list line. Returned stored, or with its WARCs deflated so the
+/// scan path reads it.
+fn mixed_sources_wacz(dir: &std::path::Path, deflate: bool) -> std::path::PathBuf {
+    use std::io::{Read, Write};
+    let record = |kind: &str, uri: &str, content_type: &str, body: &str| -> Vec<u8> {
+        let block = if kind == "response" {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        } else {
+            body.to_string()
+        };
+        let head = format!(
+            "WARC/1.0\r\nWARC-Type: {kind}\r\nWARC-Record-ID: <urn:uuid:{}>\r\n\
+             WARC-Date: 2026-01-01T00:00:00Z\r\nWARC-Target-URI: {uri}\r\n\
+             Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+            uuid_for(uri),
+            block.len()
+        );
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(format!("{head}{block}\r\n\r\n").as_bytes())
+            .unwrap();
+        gz.finish().unwrap()
+    };
+    fn uuid_for(uri: &str) -> String {
+        let h = uri
+            .bytes()
+            .fold(0u128, |a, b| a.wrapping_mul(131).wrapping_add(b as u128));
+        format!("{:032x}", h)
+    }
+    let html = |title: &str, body: &str| {
+        format!("<html><head><title>{title}</title></head><body><p>{body}</p></body></html>")
+    };
+    let http = "application/http; msgtype=response";
+    let mut warc = Vec::new();
+    for r in [
+        record(
+            "response",
+            "https://ex.test/a",
+            http,
+            &html("HTML A", "htmlbodyword"),
+        ),
+        record(
+            "resource",
+            "urn:text:https://ex.test/a",
+            "text/plain",
+            "urnbodyword",
+        ),
+        record(
+            "response",
+            "https://ex.test/b",
+            http,
+            &html("HTML B", "bbodyword"),
+        ),
+        record(
+            "resource",
+            "urn:text:https://ex.test/c",
+            "text/plain",
+            "cbodyword",
+        ),
+    ] {
+        warc.extend(r);
+    }
+    let warc_path = dir.join("mixed.warc.gz");
+    std::fs::write(&warc_path, warc).unwrap();
+    let built = crate::wacz_build::build_wacz(
+        &[warc_path],
+        &crate::wacz_build::WaczBuildMeta::default(),
+        dir,
+        "mixed-built",
+    )
+    .unwrap();
+
+    // Repack with the page lists added, deflating the WARCs if asked.
+    let out = dir.join(if deflate {
+        "mixed-deflated.wacz"
+    } else {
+        "mixed.wacz"
+    });
+    let mut src = zip::ZipArchive::new(std::fs::File::open(&built.path).unwrap()).unwrap();
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&out).unwrap());
+    for i in 0..src.len() {
+        let mut e = src.by_index(i).unwrap();
+        if e.name() == "pages/extraPages.jsonl" {
+            continue;
+        }
+        let method = if deflate && e.name().starts_with("archive/") {
+            zip::CompressionMethod::Deflated
+        } else {
+            e.compression()
+        };
+        zw.start_file(
+            e.name(),
+            zip::write::SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        e.read_to_end(&mut bytes).unwrap();
+        zw.write_all(&bytes).unwrap();
+    }
+    zw.start_file(
+        "pages/extraPages.jsonl",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    for line in [
+        r#"{"format":"json-pages-1.0","id":"extra-pages"}"#,
+        r#"{"url":"https://ex.test/a","ts":"2026-01-01T00:00:00Z","title":"List A","text":"firstlistword"}"#,
+        r#"{"url":"https://ex.test/a","ts":"2026-01-01T00:00:00Z","text":"secondlistword"}"#,
+        r#"{"url":"https://ex.test/d","ts":"2026-01-01T00:00:00Z","title":"List D","text":"dbodyword"}"#,
+    ] {
+        writeln!(zw, "{line}").unwrap();
+    }
+    zw.finish().unwrap();
+    out
+}
+
+/// Each source wins where it should, on both paths: a page's last page-list
+/// line beats its `urn:text:` record, which beats the body scraped from the
+/// HTML; the HTML title beats a page-list title, which fills in only when there
+/// is none; and a page known only from one source is still a page.
+#[test]
+fn each_source_wins_where_it_should_on_both_paths() {
+    use crate::search::SearchIndex;
+    for deflate in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        let wacz = mixed_sources_wacz(tmp.path(), deflate);
+        let ft = tmp.path().join("ft");
+        let search = Mutex::new(SearchIndex::open(&ft).unwrap());
+        let stats = if deflate {
+            index_wacz(&wacz, &docs(&search)).unwrap()
+        } else {
+            let fetch = crate::http_range::FileFetch::open(&wacz).unwrap();
+            index_wacz_streaming(
+                fetch,
+                &docs(&search),
+                "mixed",
+                4,
+                crate::index::no_progress(),
+            )
+            .unwrap()
+        };
+        search.lock().unwrap().commit().unwrap();
+        drop(search);
+        let path = if deflate { "scan" } else { "stream" };
+        assert_eq!(stats.pages, 4, "{path}: /a, /b, /c and /d");
+
+        let index = SearchIndex::open_read_only(&ft).unwrap();
+        let hits = |q: &str| -> Vec<(String, String)> {
+            index
+                .search(q, 10)
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.url, r.title))
+                .collect()
+        };
+        let one = |url: &str, title: &str| vec![(url.to_string(), title.to_string())];
+        assert_eq!(
+            hits("secondlistword"),
+            one("https://ex.test/a", "HTML A"),
+            "{path}"
+        );
+        assert!(
+            hits("firstlistword").is_empty(),
+            "{path}: an earlier line loses"
+        );
+        assert!(
+            hits("urnbodyword").is_empty(),
+            "{path}: page-list text beats urn:text"
+        );
+        assert!(
+            hits("htmlbodyword").is_empty(),
+            "{path}: rendered text beats HTML body"
+        );
+        assert_eq!(
+            hits("bbodyword"),
+            one("https://ex.test/b", "HTML B"),
+            "{path}"
+        );
+        assert_eq!(hits("cbodyword"), one("https://ex.test/c", ""), "{path}");
+        assert_eq!(
+            hits("dbodyword"),
+            one("https://ex.test/d", "List D"),
+            "{path}"
+        );
+    }
 }
