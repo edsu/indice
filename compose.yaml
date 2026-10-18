@@ -4,12 +4,14 @@
 #   SITE_ADDRESS=archive.example.org REPLAY_ADDRESS=replay.archive.example.org \
 #     docker compose up -d
 #
-# Caddy fetches and renews a Let's Encrypt certificate for each domain. There is
-# no plain-HTTP quickstart here any more: this stack needs an identity provider,
-# and the five-minute way to try indice is `indice serve` on a workstation, which
-# uses none of these files. To run it on localhost anyway, point
-# OIDC_REDIRECT_URL at http://localhost/oauth2/callback and set
-# OAUTH2_PROXY_COOKIE_SECURE=false, or the login will loop.
+# Caddy fetches and renews a Let's Encrypt certificate for each domain. The
+# quickest way to try indice is `indice serve` on a workstation, which uses none
+# of these files. To try this stack on your own machine, see "Trying the stack
+# on your machine" in the deployment guide: it needs a few localhost settings.
+#
+# Keep your own changes, such as a bind mount for /data, in a
+# compose.override.yaml beside this file. Compose reads it automatically, and
+# this file stays as shipped.
 #
 # This is the server shape: anyone may read the archive, and the people listed in
 # <home>/users.yaml may change it. The other shape is a workstation, running
@@ -45,6 +47,17 @@
 #       but with it the replay host tells browsers that only this site may
 #       frame it, and indice checks that REPLAY_ADDRESS is a different host.
 #       See the security guide.
+#
+# ── Optional: import credentials ──
+#
+#   BROWSERTRIX_USER + BROWSERTRIX_PASSWORD, or BROWSERTRIX_TOKEN
+#   BROWSERTRIX_HOST (defaults to https://app.browsertrix.com)
+#       A Browsertrix account for the accession desk's import tab, and for
+#       `indice import browsertrix` run in the container.
+#   ARCHIVEIT_USER + ARCHIVEIT_PASSWORD
+#   ARCHIVEIT_HOST (defaults to the public Archive-It host)
+#       The same, for Archive-It.
+#   Leave them unset and indice does not offer that import.
 #
 # ── And one file ──
 #
@@ -84,8 +97,18 @@ services:
       # One click ends both sessions: indice clears its display cookie, then
       # bounces to oauth2-proxy's sign-out, which clears its own and returns to /.
       INDICE_LOGOUT_REDIRECT: "/oauth2/sign_out?rd=/"
+      # Import credentials; see above. indice treats an empty value as unset.
+      BROWSERTRIX_HOST: ${BROWSERTRIX_HOST:-}
+      BROWSERTRIX_USER: ${BROWSERTRIX_USER:-}
+      BROWSERTRIX_PASSWORD: ${BROWSERTRIX_PASSWORD:-}
+      BROWSERTRIX_TOKEN: ${BROWSERTRIX_TOKEN:-}
+      ARCHIVEIT_HOST: ${ARCHIVEIT_HOST:-}
+      ARCHIVEIT_USER: ${ARCHIVEIT_USER:-}
+      ARCHIVEIT_PASSWORD: ${ARCHIVEIT_PASSWORD:-}
     volumes:
-      - indice-data:/data # archive/ + index/ + collections/, kept across restarts
+      # archive/ + index/ + collections/ + users.yaml, kept across restarts. To
+      # use a directory you can see instead, bind-mount it from an override.
+      - indice-data:/data
     restart: unless-stopped
     # The image already declares a HEALTHCHECK (via `indice health`), so Caddy
     # can wait for indice to be healthy before it starts (below).

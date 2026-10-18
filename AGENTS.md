@@ -55,8 +55,9 @@ focused test alongside the code it covers.
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
 - **Don't commit scratch/data files**: loose `*.wacz`, URL lists, ad-hoc scripts
   (e.g. `scripts/browsertrix-wacz-urls.py` stays uncommitted). `/target`,
-  `/index`, `/archive`, `/a` are gitignored. Stage files explicitly rather than
-  `git add -A` so scratch doesn't sneak in.
+  `indice-data` and `users.yaml` are gitignored: keep a local test home in
+  `indice-data` (`--home indice-data`), not the repo root. Stage files
+  explicitly rather than `git add -A` so scratch doesn't sneak in.
 - Keep the PR description in sync with the work as it evolves.
 
 ## Issue tracking (beads)
