@@ -1315,16 +1315,17 @@ fn mixed_sources_wacz(dir: &std::path::Path, deflate: bool) -> std::path::PathBu
     let mut zw = zip::ZipWriter::new(std::fs::File::create(&out).unwrap());
     for i in 0..src.len() {
         let mut e = src.by_index(i).unwrap();
-        if e.name() == "pages/extraPages.jsonl" {
+        let name = e.name().unwrap().into_owned();
+        if name == "pages/extraPages.jsonl" {
             continue;
         }
-        let method = if deflate && e.name().starts_with("archive/") {
+        let method = if deflate && name.starts_with("archive/") {
             zip::CompressionMethod::Deflated
         } else {
             e.compression()
         };
         zw.start_file(
-            e.name(),
+            name,
             zip::write::SimpleFileOptions::default().compression_method(method),
         )
         .unwrap();

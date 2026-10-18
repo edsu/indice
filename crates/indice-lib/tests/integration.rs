@@ -1954,12 +1954,13 @@ fn a_wacz_bomb_is_refused_and_not_added() {
         let mut out = zip::ZipWriter::new(std::fs::File::create(&bomb).unwrap());
         for i in 0..src.len() {
             let mut entry = src.by_index(i).unwrap();
-            if entry.name() == "pages/extraPages.jsonl" {
+            let name = entry.name().unwrap().into_owned();
+            if name == "pages/extraPages.jsonl" {
                 continue;
             }
             let opt = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
-            out.start_file(entry.name(), opt).unwrap();
+            out.start_file(name, opt).unwrap();
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
             out.write_all(&bytes).unwrap();
