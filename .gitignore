@@ -1,28 +1,11 @@
 # Rust build output
 /target
 
-# Local search index created by `indice index`
-/index
+# Local indice instance (for testing usually)
+indice-data
 
-# Curator finding aids / per-crawl notes when the repo root is used as a test
-# home (real curator data in a real home is committed; here it's just scratch)
-/collections
-/crawls
-
-# Audit trail written by `serve --manage`; holds login identities, and here
-# it's only ever from local testing.
-/events
-
-# Local test archives and unpacked WACZ scratch (large, not part of the repo)
-/archive
-/archive-old
-/a
-
-# Loose scratch / working-data files (ad-hoc URL lists, exports, one-off scripts)
-/waczs.csv
-/waczs.tsv
-/sucho-wacz-urls*.txt
-/scripts/browsertrix-wacz-urls.py
+# User file
+users.yaml
 
 # Node / Playwright tooling (not used)
 /node_modules
@@ -52,6 +35,5 @@ env.sh
 /site/dist/
 /site/.astro/
 
-# Archive-It import staging (created under the indice home; shows up here when
-# the home dir is the repo root during local testing).
-/.import-tmp/
+# overriding the stock compose
+compose.override.yaml

@@ -85,7 +85,10 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    SITE_URL=https://your-domain        # recommended; see Securing a server
    # OIDC_EMAIL_DOMAINS=example.edu    # who may sign in at all; defaults to anyone
    # OAUTH2_PROXY_COOKIE_SECURE=false  # only to run the stack on plain-HTTP localhost
+   # BROWSERTRIX_USER=... BROWSERTRIX_PASSWORD=...  # optional: the accession desk's imports
+   # ARCHIVEIT_USER=...   ARCHIVEIT_PASSWORD=...
    ```
+   The import credentials are optional. With them, the accession desk offers a Browsertrix or Archive-It import, and `indice import` works in the container; see [Importing from Browsertrix](/docs/guides/import-browsertrix/) and [Importing from Archive-It](/docs/guides/import-archive-it/).
 3. Write a [`users.yaml`](/docs/reference/configuration/#usersyaml) saying who may do what. **A server will not start without one**, for the reason in the next section. It lives at `/data/users.yaml` inside the container, which is the named volume, so put it there before the first start:
    ```sh
    cat > users.yaml <<'YAML'
@@ -108,6 +111,37 @@ Clicking **Log in** sends you to your issuer. After you authenticate you come ba
 The stack uses plain OIDC rather than oauth2-proxy's GitHub integration, which asks for `read:org` whether or not you restrict anyone by organization: it calls GitHub's `/user/orgs` on every login to populate groups for apps that authorize on them. indice authorizes on `users.yaml`, so that would be asking visitors for something it never reads. Plain OIDC makes no calls beyond the issuer's own endpoints.
 
 GitHub publishes no OIDC discovery document for user login, so signing in with a GitHub account now means putting a broker in front, such as [Dex](https://dexidp.io/) with its GitHub connector, which then presents OIDC to oauth2-proxy. That costs a fourth container and buys back a minimal consent screen.
+
+## Trying the stack on your machine
+
+You can run the whole stack on your own machine before you have a domain. You still need an OIDC client: with Google, make an OAuth client ID of type "Web application" with `http://localhost/oauth2/callback` as its redirect URI. Then set these in `.env`, alongside the client's details and the two secrets:
+
+```sh
+OIDC_REDIRECT_URL=http://localhost/oauth2/callback
+OAUTH2_PROXY_COOKIE_SECURE=false
+REPLAY_ADDRESS=http://replay.localhost
+REPLAY_URL=http://replay.localhost
+SITE_URL=http://localhost
+```
+
+- Browsers send a `Secure` cookie only over HTTPS, so on plain HTTP the login loops unless `OAUTH2_PROXY_COOKIE_SECURE` is `false`.
+- The `http://` on `REPLAY_ADDRESS` tells Caddy to serve that name over plain HTTP instead of getting a certificate for it. `REPLAY_URL` has to say the same, because its default puts `https://` in front of `REPLAY_ADDRESS`.
+- Chrome and Firefox send every `*.localhost` name to your own machine, so `replay.localhost` needs no DNS entry.
+
+Leave `SITE_ADDRESS` unset. It defaults to plain HTTP on port 80, which has to be free.
+
+To keep indice's home in a directory you can see, rather than in a named volume, add a `compose.override.yaml` beside `compose.yaml`:
+
+```yaml
+services:
+  indice:
+    volumes:
+      - ./indice-data:/data
+```
+
+Compose reads `compose.override.yaml` automatically and merges it over `compose.yaml`. It matches volumes by their path in the container, so this one replaces the named volume at `/data`. Put `users.yaml` in `indice-data/` and run `docker compose up -d`. The image runs as an unprivileged user, UID 65532. Docker Desktop lets it write to a bind mount; on Linux, `chown` the directory to that UID first.
+
+An override file is the way to keep any local change out of the shipped file, on a server too: a bind mount, other ports, a pinned image tag. `git pull` then never conflicts with your edits. Compose's documentation covers [how the files merge](https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/).
 
 ## Who gets in, and who can write
 
