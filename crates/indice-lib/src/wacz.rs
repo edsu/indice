@@ -96,7 +96,7 @@ impl<R: Read> Read for Limited<R> {
 fn check_declared(entry: &zip::read::ZipFile<'_, impl Read>, limit: u64) -> Result<()> {
     if entry.size() > limit {
         return Err(MemberTooLarge {
-            member: entry.name().to_string(),
+            member: entry.name()?.to_string(),
             limit,
         }
         .into());
@@ -540,7 +540,7 @@ fn find_cdx_entry<R: std::io::Read + std::io::Seek>(
 ) -> Result<Option<String>> {
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
-        let name = entry.name().to_string();
+        let name = entry.name()?.to_string();
         // The index holds CDXJ data; the extension varies by tool: compressed
         // `.cdx.gz`/`.cdxj.gz` or plain `.cdx`/`.cdxj`. Match any of them.
         if name.starts_with("indexes/")
@@ -586,7 +586,9 @@ pub(crate) fn nested_wacz_locations<R: std::io::Read + std::io::Seek>(
     let mut has_warc = false;
     for i in 0..zip.len() {
         let Ok(f) = zip.by_index(i) else { continue };
-        let name = f.name().to_string();
+        let Ok(name) = f.name().map(String::from) else {
+            continue;
+        };
         if is_warc_entry(&name) {
             has_warc = true;
         } else if name.to_ascii_lowercase().ends_with(".wacz") {
@@ -655,7 +657,7 @@ pub(crate) fn warcs_stored<R: std::io::Read + std::io::Seek>(
 ) -> Result<bool> {
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
-        if is_warc_entry(entry.name()) && entry.compression() != zip::CompressionMethod::Stored {
+        if is_warc_entry(&entry.name()?) && entry.compression() != zip::CompressionMethod::Stored {
             return Ok(false);
         }
     }
@@ -671,7 +673,7 @@ pub(crate) fn warc_data_starts<R: std::io::Read + std::io::Seek>(
     let mut map = std::collections::HashMap::new();
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
-        let name = entry.name().to_string();
+        let name = entry.name()?.to_string();
         // `data_start()` is `Option<u64>` (zip 8+): `Some` once the local header
         // has been read, which `by_index` does. A WARC without a known data start
         // can't be seeked into, so skip it (its CDX records are then not fetched).
@@ -695,7 +697,7 @@ pub(crate) fn find_warcinfo_streaming<R: std::io::Read + std::io::Seek>(
     limit: u64,
 ) -> Result<Option<crate::warc::Warcinfo>> {
     let names: Vec<String> = (0..zip.len())
-        .filter_map(|i| zip.by_index(i).ok().map(|e| e.name().to_string()))
+        .filter_map(|i| zip.by_index(i).ok()?.name().ok().map(String::from))
         .filter(|n| is_warc_entry(n))
         .collect();
     for name in names {
@@ -796,7 +798,7 @@ pub fn iter_warc_paths(wacz_path: &Path) -> Result<impl Iterator<Item = Result<S
     let mut names: Vec<String> = Vec::new();
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
-        let name = entry.name().to_string();
+        let name = entry.name()?.to_string();
         if name.starts_with("archive/") && (name.ends_with(".warc.gz") || name.ends_with(".warc")) {
             names.push(name);
         }
