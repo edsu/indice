@@ -853,8 +853,10 @@ fn outer_layers(
                         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                         .map(|ci| ci.0.ip().to_string())
                         .unwrap_or_else(|| "-".to_string());
+                    let id = req.extensions().get::<RequestId>().copied();
                     tracing::info_span!(
                         "request",
+                        id = id.map(tracing::field::display),
                         method = %req.method(),
                         uri = %req.uri(),
                         client_ip = %ip,
@@ -887,6 +889,8 @@ fn outer_layers(
                     },
                 ),
         )
+        // Outside the trace layer, so the span it makes can carry the id.
+        .layer(axum::middleware::from_fn(assign_request_id))
         // Outermost: `Router::layer` wraps, so this runs FIRST. A cross-site
         // POST is refused before anything else happens to it — before
         // forward-auth does any identity bookkeeping (notably before it

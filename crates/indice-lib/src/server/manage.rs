@@ -438,10 +438,10 @@ pub(super) async fn upload_archive(
                     .unwrap_or_else(|| "upload.wacz".to_string());
                 let dir = match tempfile::TempDir::new() {
                     Ok(d) => d,
-                    Err(e) => return error_response(anyhow::anyhow!(e)).into_response(),
+                    Err(e) => return curator.error_response(anyhow::anyhow!(e)),
                 };
                 let path = dir.path().join(&fname);
-                let bytes = match stream_field_to_file(field, &path, budget).await {
+                let bytes = match stream_field_to_file(&curator, field, &path, budget).await {
                     Ok(b) => b,
                     Err(refusal) => return refusal,
                 };
@@ -483,6 +483,7 @@ pub(super) async fn upload_archive(
 /// to leave room for multipart framing. A body that *declares* itself too large
 /// never gets this far; `upload_archive` refuses it from its headers.
 async fn stream_field_to_file(
+    curator: &Curator,
     mut field: axum::extract::multipart::Field<'_>,
     path: &Path,
     budget: Option<Budget>,
@@ -490,7 +491,7 @@ async fn stream_field_to_file(
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::File::create(path)
         .await
-        .map_err(|e| error_response(e.into()))?;
+        .map_err(|e| curator.error_response(e.into()))?;
     let mut written: u64 = 0;
     loop {
         let chunk = match field.chunk().await {
@@ -508,9 +509,11 @@ async fn stream_field_to_file(
         }
         file.write_all(&chunk)
             .await
-            .map_err(|e| error_response(e.into()))?;
+            .map_err(|e| curator.error_response(e.into()))?;
     }
-    file.flush().await.map_err(|e| error_response(e.into()))?;
+    file.flush()
+        .await
+        .map_err(|e| curator.error_response(e.into()))?;
     Ok(written)
 }
 
@@ -779,13 +782,13 @@ pub(super) async fn edit_collection_form(
     // Same rule as the danger zone: don't render a form whose every
     // control would 403. Without this an authenticated Reader reaches
     // the upload form and the pre-filled finding-aid editor.
-    _curator: Curator,
+    curator: Curator,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return curator.error_response(e),
     };
     let Some(c) = manifest.collections.iter().find(|c| c.id == id) else {
         return (StatusCode::NOT_FOUND, "unknown collection").into_response();
@@ -989,8 +992,8 @@ pub(super) async fn create_collection(
     .await;
     match result {
         Ok(Ok(id)) => Redirect::to(&format!("/collection/{id}")).into_response(),
-        Ok(Err(e)) => error_response(e).into_response(),
-        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
 }
 
@@ -1046,8 +1049,8 @@ pub(super) async fn delete_crawl_handler(
         Ok(Ok(CrawlDeleteOutcome::Denied)) => {
             Denied::Insufficient("deleting a crawl someone else added").into_response()
         }
-        Ok(Err(e)) => error_response(e).into_response(),
-        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
 }
 
@@ -1134,8 +1137,8 @@ pub(super) async fn delete_collection_handler(
             ),
         )
             .into_response(),
-        Ok(Err(e)) => error_response(e).into_response(),
-        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+        Ok(Err(e)) => admin.error_response(e),
+        Err(e) => admin.error_response(anyhow::anyhow!(e)),
     }
 }
 

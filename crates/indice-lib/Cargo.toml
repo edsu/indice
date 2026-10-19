@@ -45,6 +45,8 @@ tokio-stream = { workspace = true }
 version = "3"
 
 [dev-dependencies]
+# Reads the log back in tests/errors.rs, to check a failure's cause is kept there.
+tracing-subscriber = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 # Real-socket HTTP client for the serve_on_listeners integration test (the crate's
 # own ureq isn't visible to integration-test crates).

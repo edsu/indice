@@ -665,8 +665,11 @@ fn read_json<T: for<'de> serde::Deserialize<'de>>(path: &Path) -> Result<Option<
     if !path.exists() {
         return Ok(None);
     }
-    let data = std::fs::read_to_string(path)?;
-    Ok(Some(serde_json::from_str(&data)?))
+    let data =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let value =
+        serde_json::from_str(&data).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(Some(value))
 }
 
 // ── Finding-aid files (git-committable curator source of truth) ────────────────

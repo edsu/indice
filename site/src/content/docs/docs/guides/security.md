@@ -14,6 +14,7 @@ A workstation is a different promise. `indice serve` on loopback keeps indice of
 - **Archived pages cannot act as the reader.** Replay runs on a hostname of its own, where a capture's JavaScript can reach neither indice's API with the reader's session nor the page around it.
 - **Your replay hostname shows only your archive.** It replays only this server's own WACZs, and only in indice's replay frame, never as a page of its own.
 - **Other websites cannot drive a signed-in curator's browser.** Writes started by another site's page are refused, and no other site may frame indice's pages.
+- **A failure does not describe the server.** A visitor whose request fails is told so, with a reference to quote; the cause, which can name files on the server, goes to the log under that reference.
 - **One client cannot take the site down for everyone.** Requests are rate-limited per client and capped in total, and slow work has a time limit.
 
 ## Who can change the archive
@@ -84,6 +85,16 @@ In the shipped stack it is `SITE_URL` in `.env`.
 - **Slow work.** A search query is capped at 2 KiB, and every quick request at 30 seconds.
 - **What a WACZ unpacks to.** A WACZ is a zip, so a file of a few megabytes can contain gigabytes once inflated. indice reads no file inside a WACZ past `index.max_member_mb` (1 GiB by default) and refuses one that asks for more; see [Reading a WACZ](/docs/reference/configuration/#reading-a-wacz).
 
+## When something fails
+
+A request that fails answers `500` with *Something went wrong on the server (reference 3f9a1c2e07d4b6a1).* The reference is an id indice gives every request and puts on every line it logs while handling it, as `id=…`, so searching the log for that finds the request and what went wrong:
+
+```sh
+docker compose logs indice | grep id=3f9a1c2e07d4b6a1
+```
+
+The cause stays out of the answer because it usually names a file, such as `parsing /data/index/waczs.json`, and that tells a stranger how the server is laid out. Curators and admins are the exception: when something they started fails, such as an upload, an import or an edit, the answer says what went wrong, since they are the ones who can act on it, and still gives the reference to pass on.
+
 ## Adding archives by URL
 
 A curator can add an archive by its URL, and indice then fetches that URL from the server. On a server it refuses a URL that resolves to the machine itself or to your internal network, so the form cannot be used to probe services behind your firewall. If your WACZs really do live on an internal host, `--allow-internal-fetch` allows it. There is no way to add an archive by a path on the server's disk over the web; that is `indice index` at the command line.
@@ -96,7 +107,6 @@ A server serves reads to anyone. To keep an archive off the open web, gate reads
 
 These are filed and not yet fixed. The tracker is in the repository: `grep <id> .beads/issues.jsonl` shows the whole writeup.
 
-- Error responses can include server internals, such as filesystem paths (`rustyweb-open-web-hardening-u9y6.5`).
 - Request logs record client addresses and full query strings (`rustyweb-open-web-hardening-u9y6.8`).
 - There is no crawler or scraper policy (`rustyweb-open-web-hardening-u9y6.7`).
 - A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume (`rustyweb-6vjz`).

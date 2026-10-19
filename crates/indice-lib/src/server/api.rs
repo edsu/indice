@@ -242,7 +242,7 @@ pub(super) async fn create_annotation(
     match Manifest::open(&state.index_dir) {
         Ok(m) if m.collection_by_id(&req.collection).is_some() => {}
         Ok(_) => return (StatusCode::NOT_FOUND, "collection not found").into_response(),
-        Err(e) => return error_response(e),
+        Err(e) => return curator.error_response(e),
     }
     // No invented identity: if we can't say who is writing, we don't write.
     // (Unreachable while the route is gated, but it means this handler no longer
@@ -300,8 +300,8 @@ pub(super) async fn create_annotation(
     match saved {
         Ok(Ok(Write::Done(()))) => (StatusCode::CREATED, Json(view)).into_response(),
         Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
-        Ok(Err(e)) => error_response(e),
-        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }
 
@@ -364,8 +364,8 @@ pub(super) async fn update_annotation(
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
         Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
-        Ok(Err(e)) => error_response(e),
-        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }
 
@@ -416,7 +416,7 @@ pub(super) async fn delete_annotation(
         Ok(Ok(Write::Done(EditOutcome::Forbidden))) => {
             (StatusCode::FORBIDDEN, "not your annotation").into_response()
         }
-        Ok(Err(e)) => error_response(e),
-        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
 }

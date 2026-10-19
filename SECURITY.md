@@ -57,8 +57,6 @@ Filed, documented, and not news. The tracker is in this repo, so
 - A failed upload leaves its file in `archive/`. It counts against
   `uploads.max_total_gb` but appears nowhere in the workroom, so only someone
   with a shell can remove it. `rustyweb-failed-ingest-leaves-file-d1dw`
-- Error responses carry server internals, including filesystem paths.
-  `rustyweb-open-web-hardening-u9y6.5`
 - No crawler or scraper policy. `rustyweb-open-web-hardening-u9y6.7`
 - Request logs record client IP and full query strings.
   `rustyweb-open-web-hardening-u9y6.8`

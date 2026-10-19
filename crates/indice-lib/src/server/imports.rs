@@ -91,7 +91,11 @@ pub(super) struct BxBrowse {
 
 /// Run a blocking Browsertrix client call off the async runtime, returning its
 /// JSON result (or a 502 on a Browsertrix/transport error).
-async fn bx_json<F>(provider: Arc<dyn crate::browsertrix::BrowsertrixProvider>, f: F) -> Response
+async fn bx_json<F>(
+    curator: &Curator,
+    provider: Arc<dyn crate::browsertrix::BrowsertrixProvider>,
+    f: F,
+) -> Response
 where
     F: FnOnce(&crate::browsertrix::Client) -> Result<serde_json::Value> + Send + 'static,
 {
@@ -105,16 +109,16 @@ where
         Ok(Err(e)) => {
             (StatusCode::BAD_GATEWAY, format!("Browsertrix error: {e:#}")).into_response()
         }
-        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+        Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
 }
 
 /// `GET /api/browsertrix/orgs` — the orgs the configured credentials can see.
-pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>, _curator: Curator) -> Response {
+pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>, curator: Curator) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
         return browsertrix_unconfigured();
     };
-    bx_json(provider, |c| {
+    bx_json(&curator, provider, |c| {
         let orgs = c.orgs()?;
         Ok(serde_json::json!(orgs
             .iter()
@@ -127,7 +131,7 @@ pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>, _curator: Curato
 /// `GET /api/browsertrix/collections?org=<oid>` — collections in an org.
 pub(super) async fn bx_collections(
     State(state): State<Arc<AppState>>,
-    _curator: Curator,
+    curator: Curator,
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -137,7 +141,7 @@ pub(super) async fn bx_collections(
         return (StatusCode::BAD_REQUEST, "org is required").into_response();
     }
     let org = q.org.clone();
-    bx_json(provider, move |c| {
+    bx_json(&curator, provider, move |c| {
         let colls = c.collections(&org)?;
         Ok(serde_json::json!(colls
             .iter()
@@ -175,7 +179,7 @@ pub(super) fn imported_browsertrix_ids<'a>(
 /// scoped to a collection), with QA-review status for the selection UI.
 pub(super) async fn bx_items(
     State(state): State<Arc<AppState>>,
-    _curator: Curator,
+    curator: Curator,
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -193,7 +197,7 @@ pub(super) async fn bx_items(
             imported_browsertrix_ids(m.waczs.iter().map(|w| (&w.source, w.browsertrix.as_ref())))
         })
         .unwrap_or_default();
-    bx_json(provider, move |c| {
+    bx_json(&curator, provider, move |c| {
         let query = crate::browsertrix::ItemQuery {
             collection_id: (!collection.is_empty()).then_some(collection.as_str()),
             item_id: None,
@@ -491,7 +495,11 @@ fn archiveit_unconfigured() -> Response {
 
 /// Run a blocking Archive-It client call off the async runtime, returning its
 /// JSON result (or a 502 on an Archive-It/transport error). Mirrors [`bx_json`].
-async fn archiveit_json<F>(provider: Arc<dyn crate::archiveit::ArchiveItProvider>, f: F) -> Response
+async fn archiveit_json<F>(
+    curator: &Curator,
+    provider: Arc<dyn crate::archiveit::ArchiveItProvider>,
+    f: F,
+) -> Response
 where
     F: FnOnce(&crate::archiveit::Client) -> Result<serde_json::Value> + Send + 'static,
 {
@@ -503,7 +511,7 @@ where
     {
         Ok(Ok(v)) => Json(v).into_response(),
         Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("Archive-It error: {e:#}")).into_response(),
-        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+        Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
 }
 
@@ -511,12 +519,12 @@ where
 /// inactive ones, which still hold importable crawls).
 pub(super) async fn ait_collections(
     State(state): State<Arc<AppState>>,
-    _curator: Curator,
+    curator: Curator,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
         return archiveit_unconfigured();
     };
-    archiveit_json(provider, |c| {
+    archiveit_json(&curator, provider, |c| {
         let colls = c.collections(false)?;
         Ok(serde_json::json!(colls
             .iter()
@@ -535,7 +543,7 @@ pub(super) struct AitBrowse {
 /// (finished, not deleted), each marked if already imported into this instance.
 pub(super) async fn ait_crawls(
     State(state): State<Arc<AppState>>,
-    _curator: Curator,
+    curator: Curator,
     Query(q): Query<AitBrowse>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
@@ -545,7 +553,7 @@ pub(super) async fn ait_crawls(
         return (StatusCode::BAD_REQUEST, "collection is required").into_response();
     };
     let index_dir = state.index_dir.clone();
-    archiveit_json(provider, move |c| {
+    archiveit_json(&curator, provider, move |c| {
         // Crawls of this collection already imported from this host, so the UI can
         // mark them and prevent accidental re-imports (keyed by host+collection).
         let host = c.host().to_string();
