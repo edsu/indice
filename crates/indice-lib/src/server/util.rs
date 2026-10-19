@@ -126,31 +126,32 @@ pub(super) fn query_too_long(q: &str) -> Option<Response> {
     })
 }
 
-/// A short random id for one request, so a reader who was told "something went
-/// wrong" can be matched to the log line that says what.
+/// A random id for one request, so a reader who was told "something went
+/// wrong" can be matched to the log lines that say what.
 ///
 /// Random rather than a counter, so it says nothing about how busy the server
-/// is, and short, because a person may read it out. It only has to be unique
-/// among the log lines around the time of the report, not forever.
+/// is. 64 bits, so two requests in the same log do not share one.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct RequestId(u32);
+pub(super) struct RequestId(u64);
 
 impl RequestId {
     fn new() -> Self {
-        use std::hash::{BuildHasher, Hasher};
+        use std::hash::BuildHasher;
+        use std::sync::OnceLock;
+        // A counter hashed under a key chosen at random once per process:
+        // unique because the counter is, unpredictable because the key is.
+        // `RandomState` is the standard library's randomly keyed hasher, so this
+        // needs no new dependency.
+        static KEY: OnceLock<std::hash::RandomState> = OnceLock::new();
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        // `RandomState` is the standard library's randomly keyed hasher: hashing
-        // a counter under it gives an unpredictable value with no new
-        // dependency. The counter keeps two ids from one key apart.
-        let mut h = std::hash::RandomState::new().build_hasher();
-        h.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        RequestId(h.finish() as u32)
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RequestId(KEY.get_or_init(std::hash::RandomState::new).hash_one(n))
     }
 }
 
 impl std::fmt::Display for RequestId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:08x}", self.0)
+        write!(f, "{:016x}", self.0)
     }
 }
 
@@ -162,9 +163,9 @@ tokio::task_local! {
 }
 
 /// Give each request an id: in its extensions, where the trace span reads it so
-/// every log line for the request carries it, and in [`REQUEST_ID`] for the
-/// answer to quote. Runs outside the trace layer, so the id exists by the time
-/// the span is made.
+/// every line logged while handling the request carries it, and in
+/// [`REQUEST_ID`] for the answer to quote. Runs outside the trace layer, so the
+/// id exists by the time the span is made.
 pub(super) async fn assign_request_id(
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -172,6 +173,14 @@ pub(super) async fn assign_request_id(
     let id = RequestId::new();
     req.extensions_mut().insert(id);
     REQUEST_ID.scope(id, next.run(req)).await
+}
+
+/// `message`, with the request's reference when there is one, as a sentence.
+pub(super) fn with_reference(message: &str) -> String {
+    match REQUEST_ID.try_with(|id| *id) {
+        Ok(id) => format!("{message} (reference {id})."),
+        Err(_) => format!("{message}."),
+    }
 }
 
 /// The answer when a request's work failed: a `500` that says so, and the
@@ -183,18 +192,18 @@ pub(super) async fn assign_request_id(
 /// operator can find it. A handler serving someone who may change the archive
 /// uses [`Curator::error_response`] instead, which says what went wrong.
 pub(super) fn error_response(e: anyhow::Error) -> Response {
-    failure(StatusCode::INTERNAL_SERVER_ERROR, e)
+    failure(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Something went wrong on the server",
+        e,
+    )
 }
 
-/// As [`error_response`], with another status, such as `502` when the failure
-/// was another service's.
-pub(super) fn failure(status: StatusCode, e: anyhow::Error) -> Response {
+/// As [`error_response`], with another status and what to tell the reader, such
+/// as a `502` that says which service failed.
+pub(super) fn failure(status: StatusCode, message: &str, e: anyhow::Error) -> Response {
     tracing::error!("{e:#}");
-    let body = match REQUEST_ID.try_with(|id| *id) {
-        Ok(id) => format!("Something went wrong on the server (reference {id})."),
-        Err(_) => "Something went wrong on the server.".to_string(),
-    };
-    (status, body).into_response()
+    (status, with_reference(message)).into_response()
 }
 
 /// How long a request-path write waits for the cross-process index lock before

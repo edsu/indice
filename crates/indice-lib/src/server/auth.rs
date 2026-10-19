@@ -395,14 +395,15 @@ impl Admin {
 }
 
 /// The answer when a request's work failed, for someone who may change the
-/// archive: the whole error chain, as well as the log line.
+/// archive: the whole error chain, and the reference to quote to whoever reads
+/// the log.
 ///
 /// Private to this module, like the extractors' fields, so the only way to it is
 /// through [`Curator::error_response`] or [`Admin::error_response`]. That is what
 /// keeps the detail off public routes.
 fn detailed_failure(status: StatusCode, e: anyhow::Error) -> Response {
     tracing::error!("{e:#}");
-    (status, format!("{e:#}")).into_response()
+    (status, with_reference(&format!("{e:#}"))).into_response()
 }
 
 /// Record who performed a state change, to two places at once.

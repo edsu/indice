@@ -853,14 +853,10 @@ fn outer_layers(
                         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                         .map(|ci| ci.0.ip().to_string())
                         .unwrap_or_else(|| "-".to_string());
-                    let id = req
-                        .extensions()
-                        .get::<RequestId>()
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "-".to_string());
+                    let id = req.extensions().get::<RequestId>().copied();
                     tracing::info_span!(
                         "request",
-                        id = %id,
+                        id = id.map(tracing::field::display),
                         method = %req.method(),
                         uri = %req.uri(),
                         client_ip = %ip,

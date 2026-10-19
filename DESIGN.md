@@ -291,11 +291,17 @@ mutates cannot be written without one and a forgotten gate is a compile error.
   shrug. `identity.rs::an_empty_roster_is_not_the_same_as_no_roster`,
   `identity.rs::a_malformed_roster_is_an_error_not_a_shrug`
 - A failure tells a public caller only that something went wrong, with a request
-  id, and logs the whole error under that id. The detail goes back only through
-  `Curator::error_response` and `Admin::error_response`, so a public handler,
-  which has neither, cannot send it.
+  id, and logs the whole error under that id. The helper that answers with the
+  detail is reachable only through `Curator::error_response` and
+  `Admin::error_response`, so a public handler cannot use it. A handler that
+  formats an error into its own response by hand is not caught by the type;
+  only gated handlers do that today (the import tabs' `502`s, the upload quota,
+  job progress).
   `errors.rs::a_public_failure_answers_with_a_reference_and_logs_the_cause`,
-  `errors.rs::a_curator_is_told_what_failed`
+  `errors.rs::a_curator_is_told_what_failed`,
+  `errors.rs::an_admin_is_told_what_failed`,
+  `errors.rs::a_failure_on_the_replay_origin_has_a_reference_too`,
+  `errors.rs::an_unreachable_browsertrix_is_named_but_not_described`
 
 **The browser is not a trusted intermediary.**
 

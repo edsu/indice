@@ -11,6 +11,8 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use indice_lib::server;
+
 const SECRET: &str = "s3cret";
 
 /// Everything logged by this test binary, for the tests to search.
@@ -40,58 +42,72 @@ impl Write for Sink {
     }
 }
 
-/// A server whose manifest is unreadable, so the homepage and the edit form
-/// both fail. Returns its base URL and its home, whose path must not escape.
-async fn broken_server() -> (String, tempfile::TempDir) {
+/// A running server, and the home whose path must not escape.
+struct Server {
+    app: String,
+    replay: String,
+    home: tempfile::TempDir,
+}
+
+/// Serve `home` with a curator and an admin on the roster.
+async fn serve(
+    home: tempfile::TempDir,
+    resolver: Option<Arc<dyn indice_lib::index::SourceResolver>>,
+) -> Server {
     log();
-    let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(
-        tmp.path().join("users.yaml"),
-        "users:\n  - id: curator@x.edu\n    role: curator\n",
+        home.path().join("users.yaml"),
+        "users:\n  \
+         - id: curator@x.edu\n    role: curator\n  \
+         - id: boss@x.edu\n    role: admin\n",
     )
     .unwrap();
-    std::fs::create_dir_all(tmp.path().join("index")).unwrap();
-    std::fs::write(tmp.path().join("index/waczs.json"), "not json").unwrap();
-
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-        "x-forwarded-email",
-        SECRET,
+    let app = format!("http://{}", listener.local_addr().unwrap());
+    let replay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replay = format!("http://{}", replay_listener.local_addr().unwrap());
+    let mut config = server::ServerConfig::new(server::Access::proxy("x-forwarded-email", SECRET));
+    config.replay_origin = Some(server::ReplayOrigin::for_listener(
+        replay_listener.local_addr().unwrap(),
     ));
-    config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
-        replay.local_addr().unwrap(),
-    ));
-    let home = tmp.path().to_path_buf();
+    let path = home.path().to_path_buf();
     tokio::spawn(async move {
-        indice_lib::server::serve_on_listeners(
+        server::serve_on_listeners(
             listener,
-            replay,
-            &home,
-            None,
+            replay_listener,
+            &path,
+            resolver,
             config,
-            indice_lib::server::Providers::default(),
+            server::Providers::default(),
         )
         .await
     });
-    (format!("http://127.0.0.1:{port}"), tmp)
+    Server { app, replay, home }
 }
 
-/// GET `url`, optionally signed in as `who`, returning status and body.
-async fn get(url: String, who: Option<&'static str>) -> (u16, String) {
+/// A home whose manifest is unreadable, so anything that opens it fails.
+fn broken_home() -> tempfile::TempDir {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("index")).unwrap();
+    std::fs::write(tmp.path().join("index/waczs.json"), "not json").unwrap();
+    tmp
+}
+
+/// Send `method` to `url`, signed in as `who` if given; status and body back.
+async fn call(method: &'static str, url: String, who: Option<&'static str>) -> (u16, String) {
     tokio::task::spawn_blocking(move || {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .max_redirects(0)
             .build()
             .into();
-        let mut req = agent.get(&url);
-        if let Some(who) = who {
-            req = req
-                .header("x-forwarded-email", who)
-                .header("x-indice-auth-secret", SECRET);
+        let mut res = match method {
+            "GET" => sign_in(agent.get(&url), who).call(),
+            _ => sign_in(agent.post(&url), who)
+                .content_type("application/x-www-form-urlencoded")
+                .send("with_crawls=false"),
         }
-        let mut res = req.call().unwrap();
+        .unwrap();
         (
             res.status().as_u16(),
             res.body_mut().read_to_string().unwrap(),
@@ -101,28 +117,50 @@ async fn get(url: String, who: Option<&'static str>) -> (u16, String) {
     .unwrap()
 }
 
-#[tokio::test]
-async fn a_public_failure_answers_with_a_reference_and_logs_the_cause() {
-    let (base, home) = broken_server().await;
-    let (status, body) = get(format!("{base}/"), None).await;
+/// Add the proxy's headers for `who`, if anyone is signed in.
+fn sign_in<B>(req: ureq::RequestBuilder<B>, who: Option<&str>) -> ureq::RequestBuilder<B> {
+    match who {
+        Some(who) => req
+            .header("x-forwarded-email", who)
+            .header("x-indice-auth-secret", SECRET),
+        None => req,
+    }
+}
 
-    assert_eq!(status, 500, "{body}");
-    let home = home.path().to_string_lossy().to_string();
-    assert!(!body.contains(&home), "the home path escaped: {body}");
-    assert!(!body.contains("waczs.json"), "a file name escaped: {body}");
-
+/// The reference an answer quotes, checked to be the 16 hex digits of an id.
+fn reference(body: &str) -> String {
     let (_, rest) = body
         .split_once("reference ")
         .unwrap_or_else(|| panic!("no reference in {body:?}"));
-    let id = &rest[..8];
-    assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "{body:?}");
+    let id: String = rest.chars().take(16).collect();
+    assert!(
+        id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit()),
+        "{body:?}"
+    );
+    id
+}
 
-    // The log has the cause, on a line carrying the same reference.
+/// The log line for request `id` that contains `needle`.
+fn logged(id: &str, needle: &str) -> String {
     let log = String::from_utf8(log().lock().unwrap().clone()).unwrap();
-    let line = log
-        .lines()
-        .find(|l| l.contains(&format!("id={id}")) && l.contains("waczs.json"))
-        .unwrap_or_else(|| panic!("no log line for {id} naming the file in:\n{log}"));
+    log.lines()
+        .find(|l| l.contains(&format!("id={id}")) && l.contains(needle))
+        .unwrap_or_else(|| panic!("no log line for {id} containing {needle:?} in:\n{log}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_public_failure_answers_with_a_reference_and_logs_the_cause() {
+    let s = serve(broken_home(), None).await;
+    let (status, body) = call("GET", format!("{}/", s.app), None).await;
+
+    assert_eq!(status, 500, "{body}");
+    let home = s.home.path().to_string_lossy().to_string();
+    assert!(!body.contains(&home), "the home path escaped: {body}");
+    assert!(!body.contains("waczs.json"), "a file name escaped: {body}");
+
+    // The log has the cause, with its full path, under the same reference.
+    let line = logged(&reference(&body), "waczs.json");
     assert!(
         line.contains(&home),
         "the log should keep the full path: {line}"
@@ -130,15 +168,70 @@ async fn a_public_failure_answers_with_a_reference_and_logs_the_cause() {
 }
 
 #[tokio::test]
+async fn a_failure_on_the_replay_origin_has_a_reference_too() {
+    let s = serve(broken_home(), None).await;
+    let url = format!("{}/collection/anything/replay.json", s.replay);
+    let (status, body) = call("GET", url, None).await;
+
+    assert_eq!(status, 500, "{body}");
+    assert!(!body.contains("waczs.json"), "{body}");
+    logged(&reference(&body), "waczs.json");
+}
+
+#[tokio::test]
 async fn a_curator_is_told_what_failed() {
-    let (base, _home) = broken_server().await;
-    let (status, body) = get(
-        format!("{base}/manage/edit/anything"),
-        Some("curator@x.edu"),
-    )
-    .await;
+    let s = serve(broken_home(), None).await;
+    let url = format!("{}/manage/edit/anything", s.app);
+    let (status, body) = call("GET", url, Some("curator@x.edu")).await;
 
     assert_eq!(status, 500, "{body}");
     assert!(body.contains("waczs.json"), "{body}");
-    assert!(!body.contains("reference"), "{body}");
+    logged(&reference(&body), "waczs.json");
+}
+
+#[tokio::test]
+async fn an_admin_is_told_what_failed() {
+    let s = serve(broken_home(), None).await;
+    let url = format!("{}/api/collections/anything/delete", s.app);
+    let (status, body) = call("POST", url, Some("boss@x.edu")).await;
+
+    assert_eq!(status, 500, "{body}");
+    assert!(body.contains("waczs.json"), "{body}");
+    logged(&reference(&body), "waczs.json");
+}
+
+/// A resolver standing in for a Browsertrix that refuses the server.
+struct Unreachable;
+
+impl indice_lib::index::SourceResolver for Unreachable {
+    fn resolve(&self, _: &indice_lib::collections::Source) -> anyhow::Result<String> {
+        anyhow::bail!("login refused for org 75f05fd9 at https://bx.internal.example")
+    }
+}
+
+#[tokio::test]
+async fn an_unreachable_browsertrix_is_named_but_not_described() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("index")).unwrap();
+    let crawl = serde_json::json!([{
+        "id": "bx1",
+        "collection": "c",
+        "source": "browsertrix|https://bx.internal.example|org|item|a.wacz",
+        "name": "n",
+        "date_indexed": "2026-01-01T00:00:00Z",
+        "file_size": 1,
+        "sha256": "0",
+    }]);
+    std::fs::write(tmp.path().join("index/waczs.json"), crawl.to_string()).unwrap();
+    let s = serve(tmp, Some(Arc::new(Unreachable))).await;
+
+    let (status, body) = call("GET", format!("{}/files/bx1", s.replay), None).await;
+
+    assert_eq!(status, 502, "{body}");
+    assert!(body.contains("Browsertrix"), "{body}");
+    assert!(
+        !body.contains("bx.internal"),
+        "the upstream's error escaped: {body}"
+    );
+    logged(&reference(&body), "login refused");
 }

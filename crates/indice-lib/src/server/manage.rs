@@ -438,7 +438,7 @@ pub(super) async fn upload_archive(
                     .unwrap_or_else(|| "upload.wacz".to_string());
                 let dir = match tempfile::TempDir::new() {
                     Ok(d) => d,
-                    Err(e) => return curator.error_response(anyhow::anyhow!(e)).into_response(),
+                    Err(e) => return curator.error_response(anyhow::anyhow!(e)),
                 };
                 let path = dir.path().join(&fname);
                 let bytes = match stream_field_to_file(&curator, field, &path, budget).await {
@@ -788,7 +788,7 @@ pub(super) async fn edit_collection_form(
 ) -> Response {
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return curator.error_response(e).into_response(),
+        Err(e) => return curator.error_response(e),
     };
     let Some(c) = manifest.collections.iter().find(|c| c.id == id) else {
         return (StatusCode::NOT_FOUND, "unknown collection").into_response();
@@ -992,8 +992,8 @@ pub(super) async fn create_collection(
     .await;
     match result {
         Ok(Ok(id)) => Redirect::to(&format!("/collection/{id}")).into_response(),
-        Ok(Err(e)) => curator.error_response(e).into_response(),
-        Err(e) => curator.error_response(anyhow::anyhow!(e)).into_response(),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
 }
 
@@ -1049,8 +1049,8 @@ pub(super) async fn delete_crawl_handler(
         Ok(Ok(CrawlDeleteOutcome::Denied)) => {
             Denied::Insufficient("deleting a crawl someone else added").into_response()
         }
-        Ok(Err(e)) => curator.error_response(e).into_response(),
-        Err(e) => curator.error_response(anyhow::anyhow!(e)).into_response(),
+        Ok(Err(e)) => curator.error_response(e),
+        Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
 }
 
@@ -1137,8 +1137,8 @@ pub(super) async fn delete_collection_handler(
             ),
         )
             .into_response(),
-        Ok(Err(e)) => admin.error_response(e).into_response(),
-        Err(e) => admin.error_response(anyhow::anyhow!(e)).into_response(),
+        Ok(Err(e)) => admin.error_response(e),
+        Err(e) => admin.error_response(anyhow::anyhow!(e)),
     }
 }
 

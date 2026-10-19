@@ -54,6 +54,7 @@ fn browsertrix_redirect(state: &AppState, col: &Wacz) -> Response {
         }
         Err(e) => failure(
             StatusCode::BAD_GATEWAY,
+            "The archived copy could not be fetched from Browsertrix",
             anyhow::anyhow!("could not resolve the archived copy from Browsertrix: {e:#}"),
         ),
     }

@@ -87,13 +87,13 @@ In the shipped stack it is `SITE_URL` in `.env`.
 
 ## When something fails
 
-A request that fails answers `500` with *Something went wrong on the server (reference 3f9a1c2e).* The reference is an id indice gives every request and attaches to every line it logs for it, so searching the log for it finds the request and what went wrong:
+A request that fails answers `500` with *Something went wrong on the server (reference 3f9a1c2e07d4b6a1).* The reference is an id indice gives every request and puts on every line it logs while handling it, as `id=…`, so searching the log for that finds the request and what went wrong:
 
 ```sh
-docker compose logs indice | grep 3f9a1c2e
+docker compose logs indice | grep id=3f9a1c2e07d4b6a1
 ```
 
-The cause stays out of the answer because it usually names a file, such as `parsing /data/index/waczs.json`, and that tells a stranger how the server is laid out. Curators and admins are the exception: when something they started fails, such as an upload, an import or an edit, the answer says what went wrong, since they are the ones who can act on it.
+The cause stays out of the answer because it usually names a file, such as `parsing /data/index/waczs.json`, and that tells a stranger how the server is laid out. Curators and admins are the exception: when something they started fails, such as an upload, an import or an edit, the answer says what went wrong, since they are the ones who can act on it, and still gives the reference to pass on.
 
 ## Adding archives by URL
 
