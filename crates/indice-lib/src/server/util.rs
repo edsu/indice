@@ -126,9 +126,75 @@ pub(super) fn query_too_long(q: &str) -> Option<Response> {
     })
 }
 
+/// A short random id for one request, so a reader who was told "something went
+/// wrong" can be matched to the log line that says what.
+///
+/// Random rather than a counter, so it says nothing about how busy the server
+/// is, and short, because a person may read it out. It only has to be unique
+/// among the log lines around the time of the report, not forever.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RequestId(u32);
+
+impl RequestId {
+    fn new() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        // `RandomState` is the standard library's randomly keyed hasher: hashing
+        // a counter under it gives an unpredictable value with no new
+        // dependency. The counter keeps two ids from one key apart.
+        let mut h = std::hash::RandomState::new().build_hasher();
+        h.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        RequestId(h.finish() as u32)
+    }
+}
+
+impl std::fmt::Display for RequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:08x}", self.0)
+    }
+}
+
+tokio::task_local! {
+    /// The id of the request this task is serving. A task-local rather than a
+    /// parameter, so [`error_response`] can name it from any handler without
+    /// every handler passing it down.
+    static REQUEST_ID: RequestId;
+}
+
+/// Give each request an id: in its extensions, where the trace span reads it so
+/// every log line for the request carries it, and in [`REQUEST_ID`] for the
+/// answer to quote. Runs outside the trace layer, so the id exists by the time
+/// the span is made.
+pub(super) async fn assign_request_id(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let id = RequestId::new();
+    req.extensions_mut().insert(id);
+    REQUEST_ID.scope(id, next.run(req)).await
+}
+
+/// The answer when a request's work failed: a `500` that says so, and the
+/// request id, but not the error.
+///
+/// Errors here carry context such as `reading /srv/indice/index/waczs.json`,
+/// which tells a stranger where the server keeps its files. The whole chain goes
+/// to the log instead, under the request's id, which the answer quotes so the
+/// operator can find it. A handler serving someone who may change the archive
+/// uses [`Curator::error_response`] instead, which says what went wrong.
 pub(super) fn error_response(e: anyhow::Error) -> Response {
+    failure(StatusCode::INTERNAL_SERVER_ERROR, e)
+}
+
+/// As [`error_response`], with another status, such as `502` when the failure
+/// was another service's.
+pub(super) fn failure(status: StatusCode, e: anyhow::Error) -> Response {
     tracing::error!("{e:#}");
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+    let body = match REQUEST_ID.try_with(|id| *id) {
+        Ok(id) => format!("Something went wrong on the server (reference {id})."),
+        Err(_) => "Something went wrong on the server.".to_string(),
+    };
+    (status, body).into_response()
 }
 
 /// How long a request-path write waits for the cross-process index lock before

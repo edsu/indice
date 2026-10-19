@@ -374,12 +374,35 @@ impl Curator {
     pub(super) fn principal(&self) -> &Principal {
         &self.0
     }
+
+    /// A `500` that says what went wrong. A method, so only a handler that
+    /// has checked the caller may change the archive can send one; a public
+    /// handler has no `Curator` and uses [`error_response`], which doesn't.
+    pub(super) fn error_response(&self, e: anyhow::Error) -> Response {
+        detailed_failure(StatusCode::INTERNAL_SERVER_ERROR, e)
+    }
 }
 
 impl Admin {
     pub(super) fn principal(&self) -> &Principal {
         &self.0
     }
+
+    /// As [`Curator::error_response`].
+    pub(super) fn error_response(&self, e: anyhow::Error) -> Response {
+        detailed_failure(StatusCode::INTERNAL_SERVER_ERROR, e)
+    }
+}
+
+/// The answer when a request's work failed, for someone who may change the
+/// archive: the whole error chain, as well as the log line.
+///
+/// Private to this module, like the extractors' fields, so the only way to it is
+/// through [`Curator::error_response`] or [`Admin::error_response`]. That is what
+/// keeps the detail off public routes.
+fn detailed_failure(status: StatusCode, e: anyhow::Error) -> Response {
+    tracing::error!("{e:#}");
+    (status, format!("{e:#}")).into_response()
 }
 
 /// Record who performed a state change, to two places at once.

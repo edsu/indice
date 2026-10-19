@@ -52,11 +52,10 @@ fn browsertrix_redirect(state: &AppState, col: &Wacz) -> Response {
                 .insert(col.id.clone(), (url.clone(), std::time::Instant::now()));
             axum::response::Redirect::temporary(&url).into_response()
         }
-        Err(e) => (
+        Err(e) => failure(
             StatusCode::BAD_GATEWAY,
-            format!("could not resolve the archived copy from Browsertrix: {e}"),
-        )
-            .into_response(),
+            anyhow::anyhow!("could not resolve the archived copy from Browsertrix: {e:#}"),
+        ),
     }
 }
 

@@ -290,6 +290,12 @@ mutates cannot be written without one and a forgotten gate is a compile error.
 - An empty roster means nobody, and a malformed one is an error rather than a
   shrug. `identity.rs::an_empty_roster_is_not_the_same_as_no_roster`,
   `identity.rs::a_malformed_roster_is_an_error_not_a_shrug`
+- A failure tells a public caller only that something went wrong, with a request
+  id, and logs the whole error under that id. The detail goes back only through
+  `Curator::error_response` and `Admin::error_response`, so a public handler,
+  which has neither, cannot send it.
+  `errors.rs::a_public_failure_answers_with_a_reference_and_logs_the_cause`,
+  `errors.rs::a_curator_is_told_what_failed`
 
 **The browser is not a trusted intermediary.**
 
@@ -409,7 +415,7 @@ where hostile input would otherwise matter most, isolates every capture alike; s
 | Writers are not hostile to the host | Closed. Adding by reference over HTTP takes a URL only, in both shapes, and on a server that URL must resolve to a public address (`--allow-internal-fetch` opts back in). The CLI still takes a path. The Browsertrix and Archive-It hosts stay unrestricted on purpose: they are operator configuration read from the environment, never request input | `u9y6.4` |
 | Writers are not hostile to the disk | Configurable: `uploads.max_mb` and `uploads.max_total_gb` bound one WACZ and `archive/`. Unset is unlimited, so an operator taking curators they do not know must set them. Archive-wide, so one curator can still use everyone's share (`rustyweb-upload-quota-hryt`); a failed ingest's file stays in `archive/` and counts until removed (`rustyweb-failed-ingest-leaves-file-d1dw`) | `u9y6.3` |
 | Readers are not hostile to availability | Closed for one client, bounded for many. A query is capped at 2 KiB, index reads run on the blocking pool, quick routes time out at 30s, and a server caps quick requests in flight (256), each client's rate (a burst of 100, then 20/s), and open `/files` streams (64 per client, 512 in all). Many clients together are bounded by the global caps, not refused one by one, so a large enough crowd degrades the site to `503` for everyone | `u9y6.1` |
-| Error text is read by the operator | Responses carry server internals, including paths | `u9y6.5` |
+| ~~Error text is read by the operator~~ | Closed: a public route answers a failure with a request id and logs the cause under it; only a curator or admin is told what went wrong | `u9y6.5` |
 | ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
 | The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
 | Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
