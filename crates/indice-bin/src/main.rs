@@ -1209,11 +1209,10 @@ async fn main() -> Result<()> {
                     .ok()
                     .filter(|s| !s.is_empty())
             });
-            // Skipped entirely in local mode: the setting has no effect there
-            // (build_routers drops it), and refusing to start over a typo in a
-            // value this shape never reads is the behaviour the old
-            // `filter(|_| manage.enabled)` guard existed to prevent. One env
-            // file is commonly shared between a server and a laptop.
+            // Not read at all in local mode, where the cross-site check uses
+            // the request's own loopback Host. Refusing to start over a typo in
+            // a value this shape never uses would be wrong: one env file is
+            // commonly shared between a server and a laptop.
             if !access_is_local {
                 let Some(raw) = site_url else {
                     eprintln!(

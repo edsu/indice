@@ -429,3 +429,37 @@ fn replay_on_the_sites_own_host_is_refused() {
     config.replay_origin = Some(ReplayOrigin::parse(REPLAY).unwrap());
     assert!(config.check_replay_host().is_ok());
 }
+
+/// A site URL is a bare origin, by the same rules as a replay URL. Keeping
+/// only the origin of anything longer would start a server whose every write
+/// is refused: `https://http://archive.internal`, which compose builds from a
+/// SITE_ADDRESS written with a scheme, is a valid URL whose origin is
+/// `https://http`.
+#[test]
+fn a_site_url_must_be_a_bare_origin() {
+    let mut config = proxy_config();
+    for bad in [
+        "https://http://archive.internal",
+        "https://archive.example.test/indice",
+        "https://archive.example.test/?a=b",
+        "https://user@archive.example.test",
+        "ftp://archive.example.test",
+        "archive.example.test",
+    ] {
+        assert!(config.set_site_url(bad).is_err(), "{bad} should be refused");
+    }
+    // A trailing slash and a default port are what an origin already is.
+    config
+        .set_site_url("https://archive.example.test:443/")
+        .unwrap();
+    assert_eq!(config.site_url(), Some("https://archive.example.test"));
+}
+
+/// The same-host check sees through IPv6 brackets on both sides.
+#[test]
+fn replay_on_the_sites_own_ipv6_host_is_refused() {
+    let mut config = proxy_config();
+    config.set_site_url("http://[::1]:8080").unwrap();
+    config.replay_origin = Some(ReplayOrigin::parse("http://[::1]:8081").unwrap());
+    assert!(config.check_replay_host().is_err());
+}

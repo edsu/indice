@@ -200,45 +200,26 @@ pub struct ServerConfig {
     app_addr: Option<std::net::SocketAddr>,
 }
 
-/// A server's public URL, kept as the two things indice compares with it.
+/// A server's public URL, as an origin (`scheme://host[:port]`) spelled exactly
+/// as a browser's `Origin` is: what a write's `Origin` must equal, and who may
+/// frame replay. The scheme is kept so a page on `http://` cannot write to a
+/// site on `https://`, and so `frame-ancestors` matches a site on plain http
+/// while replay is on https.
 #[derive(Clone, Debug)]
-struct SiteUrl {
-    /// `scheme://host[:port]`, exactly as a browser's `Origin` spells it: what
-    /// a write's `Origin` must equal, and who may frame replay. The scheme is
-    /// kept so a page on `http://` cannot write to a site on `https://`, and so
-    /// `frame-ancestors` matches a site on plain http while replay is on https.
-    origin: String,
-    /// The host alone, without brackets for IPv6, to check replay is elsewhere.
-    host: String,
-}
+struct SiteUrl(String);
 
 impl ServerConfig {
     /// Set this site's public URL (`--site-url`): the origin the CSRF check
     /// compares with, and the origin replay may be framed by. Refuses anything
-    /// but an http(s) URL with a host.
+    /// but a bare http(s) origin, by the same rules as [`ReplayOrigin::parse`].
     pub fn set_site_url(&mut self, raw: &str) -> Result<()> {
-        let url = url::Url::parse(raw.trim())
-            .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            anyhow::bail!("{raw:?} is not an http(s) URL");
-        }
-        let Some(host) = url.host_str() else {
-            anyhow::bail!("{raw:?} has no host");
-        };
-        let host = host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .to_string();
-        // `ascii_serialization` elides the scheme's default port, as a
-        // browser's `Origin` does, so the two compare directly.
-        let origin = url.origin().ascii_serialization();
-        self.site = Some(SiteUrl { origin, host });
+        self.site = Some(SiteUrl(parse_origin(raw, "https://archive.example.org")?));
         Ok(())
     }
 
     /// The site's public origin, if one has been set.
     pub fn site_url(&self) -> Option<&str> {
-        self.site.as_ref().map(|s| s.origin.as_str())
+        self.site.as_ref().map(|s| s.0.as_str())
     }
 
     /// Refuse replay on the site's own host. A different port is another
@@ -252,12 +233,13 @@ impl ServerConfig {
     /// and the replay host opened directly only when they are same-site.
     pub fn check_replay_host(&self) -> Result<()> {
         if let (Some(site), Some(replay)) = (&self.site, &self.replay_origin) {
-            if site.host.eq_ignore_ascii_case(replay.host()) {
+            let host = origin_host(&site.0);
+            if host.eq_ignore_ascii_case(replay.host()) {
                 anyhow::bail!(
                     "replay is on the site's own host ({}). A different port is not \
                      enough, because cookies are shared across ports, so give replay a \
                      hostname of its own.",
-                    site.host
+                    host
                 );
             }
         }
@@ -293,30 +275,50 @@ impl ServerConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayOrigin(String);
 
+/// Parse `raw` as a bare http(s) origin, `scheme://host[:port]`, spelled as a
+/// browser spells `Origin`. Refuses a path, query, fragment or credentials
+/// rather than dropping them: `https://http://archive.example.org` is a valid
+/// URL whose origin is `https://http`, and keeping only that would start a
+/// server that refuses every write. `example` goes in the error message.
+fn parse_origin(raw: &str, example: &str) -> Result<String> {
+    let url = url::Url::parse(raw.trim())
+        .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("{raw:?} is not an http or https URL");
+    }
+    if url.host_str().is_none() {
+        anyhow::bail!("{raw:?} has no host");
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        anyhow::bail!(
+            "{raw:?} is more than an origin; give only the scheme and host, e.g. {example}"
+        );
+    }
+    // `ascii_serialization` elides the scheme's default port, as a browser's
+    // `Origin` does, so the two compare directly.
+    Ok(url.origin().ascii_serialization())
+}
+
+/// The host of an origin from [`parse_origin`], without scheme, port or the
+/// brackets around an IPv6 address.
+fn origin_host(origin: &str) -> &str {
+    let rest = origin.split_once("://").map_or(origin, |(_, r)| r);
+    if let Some(v6) = rest.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or(v6);
+    }
+    rest.rsplit_once(':').map_or(rest, |(h, _)| h)
+}
+
 impl ReplayOrigin {
     /// Parse a replay URL such as `https://replay.example.org`. Refuses
-    /// anything but http(s), and anything with a path, query, fragment or
-    /// credentials, since an origin has none of those.
+    /// anything but a bare http(s) origin; see [`parse_origin`].
     pub fn parse(raw: &str) -> Result<Self> {
-        let url = url::Url::parse(raw.trim())
-            .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            anyhow::bail!("{raw:?} is not an http or https URL");
-        }
-        if url.host_str().is_none() {
-            anyhow::bail!("{raw:?} has no host");
-        }
-        if !url.username().is_empty()
-            || url.password().is_some()
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            anyhow::bail!(
-                "{raw:?} is more than an origin; give only the scheme and host,                  e.g. https://replay.example.org"
-            );
-        }
-        Ok(Self(url.origin().ascii_serialization()))
+        parse_origin(raw, "https://replay.example.org").map(Self)
     }
 
     /// The origin of a listener bound on this machine, for a workstation.
@@ -331,11 +333,7 @@ impl ReplayOrigin {
 
     /// The host, without scheme or port.
     pub fn host(&self) -> &str {
-        let rest = self.0.split_once("://").map_or(&*self.0, |(_, r)| r);
-        if let Some(v6) = rest.strip_prefix('[') {
-            return v6.split(']').next().unwrap_or(v6);
-        }
-        rest.rsplit_once(':').map_or(rest, |(h, _)| h)
+        origin_host(&self.0)
     }
 }
 
@@ -539,7 +537,7 @@ fn build_routers(
         CsrfPolicy::Loopback
     } else {
         match &config.site {
-            Some(site) => CsrfPolicy::Site(site.origin.clone()),
+            Some(site) => CsrfPolicy::Site(site.0.clone()),
             // The fact, not the flag, as for the replay origin: indice-bin
             // names `--site-url` when it prints this.
             None => anyhow::bail!(
@@ -550,6 +548,9 @@ fn build_routers(
         }
     };
 
+    if let CsrfPolicy::Site(origin) = &csrf {
+        tracing::info!("site: {origin} (writes are accepted only from pages here)");
+    }
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
     // `indice index` (and, in management mode, an add-archive job in a separate
@@ -852,7 +853,7 @@ fn build_routers(
     // workstation router built without listeners, as tests do.
     let ancestors = match (access_is_local, config.app_addr, &config.site) {
         (true, Some(addr), _) => headers::loopback_origins(addr),
-        (false, _, Some(site)) => vec![site.origin.clone()],
+        (false, _, Some(site)) => vec![site.0.clone()],
         _ => Vec::new(),
     };
     let app_headers = headers::SecurityHeaders::app(config.replay_origin.as_ref());

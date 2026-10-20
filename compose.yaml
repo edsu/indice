@@ -173,8 +173,9 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # Defaults to :80 (plain HTTP) for local use; set SITE_ADDRESS to a domain
-      # for automatic HTTPS.
+      # Set SITE_ADDRESS to a domain for automatic HTTPS. Unset, Caddy serves the
+      # site on :80 (plain HTTP), for local use, where SITE_URL must then say
+      # what browsers use, e.g. http://localhost.
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
       REPLAY_ADDRESS: ${REPLAY_ADDRESS:?set REPLAY_ADDRESS, a hostname for replay}
       INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}

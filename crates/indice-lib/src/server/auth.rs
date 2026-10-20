@@ -85,12 +85,9 @@ pub(super) async fn forward_auth(
 /// types) there is no CORS preflight to stop it. The attacker can't *read* the
 /// reply, but by then the collection is already deleted.
 ///
-/// What this cannot reach is a write issued by a replayed page. ReplayWeb.page
-/// serves archived responses from indice's own origin, so archived script sends
-/// a genuinely same-origin request and `Origin` matches. The guard is answering
-/// the question it was asked. Fixing it means separating the replay origin;
-/// tracked as `rustyweb-replay-origin-isolation-5h67` and written up under
-/// *Threat Model* in `DESIGN.md`.
+/// A write from a replayed page is refused the same way: replay runs on an
+/// origin of its own, so archived script's requests carry that origin rather
+/// than the site's. See *Threat Model* in `DESIGN.md`.
 pub(super) async fn same_origin_guard(
     policy: &CsrfPolicy,
     req: axum::extract::Request,
@@ -220,9 +217,8 @@ pub(super) enum CsrfPolicy {
 /// loopback block (`127.0.0.0/8`), and IPv6 `::1` in its bracketed form.
 fn is_loopback_authority(authority: &str) -> bool {
     // Strip the port. An IPv6 literal is bracketed, so split after the bracket.
-    // Borrowed rather than owned: local mode runs this on every request, and
-    // replay issues many ranged reads per page, so there is no reason to
-    // allocate twice for a comparison.
+    // Borrowed rather than owned: there is no reason to allocate for a
+    // comparison.
     let host = match authority.rsplit_once(']') {
         Some((bracketed, _)) => bracketed.trim_start_matches('['),
         None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),

@@ -128,8 +128,9 @@ SITE_URL=http://localhost
 - Browsers send a `Secure` cookie only over HTTPS, so on plain HTTP the login loops unless `OAUTH2_PROXY_COOKIE_SECURE` is `false`.
 - The `http://` on `REPLAY_ADDRESS` tells Caddy to serve that name over plain HTTP instead of getting a certificate for it. `REPLAY_URL` has to say the same, because its default puts `https://` in front of `REPLAY_ADDRESS`.
 - Chrome and Firefox send every `*.localhost` name to your own machine, so `replay.localhost` needs no DNS entry.
+- `SITE_URL` is the address your browser uses for the site. indice accepts a write only from pages there, and its default, `https://` in front of `SITE_ADDRESS`, would be wrong on plain HTTP.
 
-Leave `SITE_ADDRESS` unset. It defaults to plain HTTP on port 80, which has to be free.
+Leave `SITE_ADDRESS` unset. Caddy then serves the site over plain HTTP on port 80, which has to be free.
 
 To keep indice's home in a directory you can see, rather than in a named volume, add a `compose.override.yaml` beside `compose.yaml`:
 
