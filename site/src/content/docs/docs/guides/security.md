@@ -15,6 +15,7 @@ A workstation is a different promise. `indice serve` on loopback keeps indice of
 - **Your replay hostname shows only your archive.** It replays only this server's own WACZs, and only in indice's replay frame, never as a page of its own.
 - **Other websites cannot drive a signed-in curator's browser.** Writes started by another site's page are refused, and no other site may frame indice's pages.
 - **A failure does not describe the server.** A visitor whose request fails is told so, with a reference to quote; the cause, which can name files on the server, goes to the log under that reference.
+- **What readers read is not logged.** indice's log keeps the path of each request, not the search terms or the address of the reader.
 - **One client cannot take the site down for everyone.** Requests are rate-limited per client and capped in total, and slow work has a time limit.
 
 ## Who can change the archive
@@ -95,6 +96,19 @@ docker compose logs indice | grep id=3f9a1c2e07d4b6a1
 
 The cause stays out of the answer because it usually names a file, such as `parsing /data/index/waczs.json`, and that tells a stranger how the server is laid out. Curators and admins are the exception: when something they started fails, such as an upload, an import or an edit, the answer says what went wrong, since they are the ones who can act on it, and still gives the reference to pass on.
 
+## What is recorded
+
+A reader's searches and the pages they replay are a record of what they read, and indice does not keep one. Here is everything the shipped stack records, and where:
+
+- **indice's log** has one line per request: the method, the path, the status, the content type, how long it took, and the request's reference. It has no query string, so no search terms and no replayed page's address, and no client address. A failure's error goes in full under its reference. Startup lines record the settings indice started with.
+- **The rate limiter's reports** are the one place indice logs a client's address, and only for a client it refused: once a minute, saying how many times. That is the address an operator may need to block. A reader within the limits never appears.
+- **What curators change** goes to the log on its own target (`indice::audit`) and to `<home>/events/`, with the identity of whoever did it. Those are contributors, not readers; [the home directory](/docs/reference/home-directory/#events-the-audit-trail) says what that means for committing the directory.
+- **Caddy** keeps no access log. The shipped `Caddyfile` has no `log` directive, and Caddy writes access logs only when one is set. Add one and it records every reader's address and full URL, including what they searched for.
+- **oauth2-proxy** logs sign-ins, which are curators and admins. Its per-request log is turned off in the shipped `compose.yaml` (`OAUTH2_PROXY_REQUEST_LOGGING=false`), because Caddy asks it about every page, so that log would record every reader's address and when they came.
+- **Docker** rotates each container's log at 20 MB, keeping five, as `compose.yaml` sets. Without that it keeps them forever.
+
+If you put another proxy, a CDN or a load balancer in front, its logs are yours to decide on: most record addresses and full URLs by default.
+
 ## Adding archives by URL
 
 A curator can add an archive by its URL, and indice then fetches that URL from the server. On a server it refuses a URL that resolves to the machine itself or to your internal network, so the form cannot be used to probe services behind your firewall. If your WACZs really do live on an internal host, `--allow-internal-fetch` allows it. There is no way to add an archive by a path on the server's disk over the web; that is `indice index` at the command line.
@@ -107,7 +121,6 @@ A server serves reads to anyone. To keep an archive off the open web, gate reads
 
 These are filed and not yet fixed. The tracker is in the repository: `grep <id> .beads/issues.jsonl` shows the whole writeup.
 
-- Request logs record client addresses and full query strings (`rustyweb-open-web-hardening-u9y6.8`).
 - There is no crawler or scraper policy (`rustyweb-open-web-hardening-u9y6.7`).
 - A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume (`rustyweb-6vjz`).
 

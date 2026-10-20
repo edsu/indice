@@ -58,8 +58,6 @@ Filed, documented, and not news. The tracker is in this repo, so
   `uploads.max_total_gb` but appears nowhere in the workroom, so only someone
   with a shell can remove it. `rustyweb-failed-ingest-leaves-file-d1dw`
 - No crawler or scraper policy. `rustyweb-open-web-hardening-u9y6.7`
-- Request logs record client IP and full query strings.
-  `rustyweb-open-web-hardening-u9y6.8`
 
 A report that one of these is worse than I have described, or reachable from a
 principal I did not consider, is worth sending.
