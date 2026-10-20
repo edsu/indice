@@ -16,6 +16,7 @@ const REPLAY: &str = "https://replay.example.test";
 
 fn config() -> ServerConfig {
     let mut config = ServerConfig::new(Access::proxy("x-forwarded-email", "secret"));
+    config.set_site_url("https://archive.example.test").unwrap();
     config.replay_origin = Some(ReplayOrigin::parse(REPLAY).unwrap());
     config
 }
@@ -142,8 +143,8 @@ async fn forms_may_follow_logout_to_the_identity_provider() {
 }
 
 /// The replay origin sets no script policy, since running archived script is
-/// its job, and says who may frame it when it knows: itself, for ReplayWeb.page's
-/// own shell, and the site.
+/// its job, and says who may frame it: itself, for ReplayWeb.page's own shell,
+/// and the site.
 #[tokio::test]
 async fn the_replay_origin_says_only_who_may_frame_it() {
     let tmp = TempDir::new().unwrap();
@@ -170,13 +171,6 @@ async fn the_replay_origin_says_only_who_may_frame_it() {
         csp(&h),
         "frame-ancestors 'self' http://archive.internal:8080"
     );
-
-    // A server that does not know its own address says nothing about framing
-    // rather than guess, and still refuses sniffing.
-    let Routers { replay, .. } = routers(tmp.path(), config());
-    let h = headers(&replay, Method::GET, "/replay-frame", &[]).await;
-    assert_common(&h, "replay without --site-url");
-    assert!(csp(&h).is_empty(), "{}", csp(&h));
 }
 
 /// A workstation knows its own address, under both names a browser may use

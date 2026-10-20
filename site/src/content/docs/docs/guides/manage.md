@@ -61,10 +61,12 @@ indice serve \
   --bind 127.0.0.1:8080 \
   --auth-proxy-header X-Forwarded-Email \
   --auth-proxy-secret "$INDICE_AUTH_PROXY_SECRET" \
+  --site-url https://archive.example.org \
   --replay-url https://replay.archive.example.org
 ```
 
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
+- **`--site-url`** (or `INDICE_SITE_URL`) is the address readers use for the site. Writes are accepted only from pages at that address, and a server will not start without it; see [Cross-site protection](#cross-site-protection).
 - **`--replay-url`** (or `INDICE_REPLAY_URL`) is the hostname replay is served on, which your proxy sends to indice's replay listener (`127.0.0.1:8081` here). A server will not start without one; [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own) explains why, and how to choose it.
 - **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
@@ -119,11 +121,11 @@ One thing the roster does *not* hand out even when it is absent: moderation. Not
 
 A signed-in admin or curator gets the edit-in-place controls everywhere, including the public pages. That works as long as your proxy forwards the identity on **every** request rather than only on `/manage` and the write APIs, which is what the shipped `Caddyfile` does.
 
-If your proxy gates only the management routes, browsers will not send its credentials to the public pages, and the chrome would vanish there. For that case indice also sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) at login and reads it on those pages. The cookie only drives *rendering*. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login; after a redirect-based login you may come back to the homepage rather than the page you left). A **Log out** button clears the display cookie (a button rather than a link because logging out changes state, so it is a POST and covered by the same-origin check). If logging out returns *cross-site request blocked*, that is the same-origin check and the same fix applies: start indice with `--site-url` so it knows its own public URL. Logging out clears both indice's display cookie and the proxy's session when `INDICE_LOGOUT_REDIRECT` points at your provider's sign-out URL, which the [shipped stack](/docs/guides/deploy/) sets for you.
+If your proxy gates only the management routes, browsers will not send its credentials to the public pages, and the chrome would vanish there. For that case indice also sets a small **signed, display-only session cookie** (HMAC'd with the shared secret) at login and reads it on those pages. The cookie only drives *rendering*. Pages served without an identity show a **Log in** link (it points at the gated `/manage/login`, so following it trips the proxy's login; after a redirect-based login you may come back to the homepage rather than the page you left). A **Log out** button clears the display cookie (a button rather than a link because logging out changes state, so it is a POST and covered by the same-origin check). If logging out returns *cross-site request blocked*, that is the same-origin check: `--site-url` is not the address your browser is using. Logging out clears both indice's display cookie and the proxy's session when `INDICE_LOGOUT_REDIRECT` points at your provider's sign-out URL, which the [shipped stack](/docs/guides/deploy/) sets for you.
 
 ## Cross-site protection
 
-Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin`, which page script cannot set or change, against the site's own address (falling back to `Sec-Fetch-Site` when a request carries no `Origin`), so a form on some other website can't drive your signed-in browser into deleting a collection. This applies on a workstation too: a loopback bind is not a boundary a browser respects. While indice is running, any page you visit can reach `127.0.0.1`. [Securing a server](/docs/guides/security/#requests-from-other-websites) covers this, framing, and the rest of what a public server defends.
+Management writes are refused unless the request came from indice's own pages. indice compares the browser's `Origin`, which page script cannot set or change, against the site's own address: `--site-url` on a server, the loopback address on a workstation. It falls back to `Sec-Fetch-Site` when a request carries no `Origin`, so a form on some other website can't drive your signed-in browser into deleting a collection. This applies on a workstation too: a loopback bind is not a boundary a browser respects. While indice is running, any page you visit can reach `127.0.0.1`. [Securing a server](/docs/guides/security/#requests-from-other-websites) covers this, framing, and the rest of what a public server defends.
 
 :::note[Replay runs on an origin of its own]
 A replayed page runs its own archived JavaScript, which is replay's job. indice serves replay from a second listener, on its own origin, so that script is cross-site to indice like any other website's: a write it attempts is refused by this same check, and it cannot reach the page around it. On a workstation that listener is the next loopback port; a server gives it a hostname of its own (see [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own)).
@@ -133,20 +135,20 @@ What a capture's script can still do is read other captures replayed in the same
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.
 
-This needs no configuration for a direct bind or for a proxy that sets `X-Forwarded-Host` (Caddy does, and the shipped `Caddyfile` relies on it). The one case that needs help is a proxy that rewrites `Host` without setting `X-Forwarded-Host`, which is nginx's default (`proxy_set_header Host $proxy_host`). Then tell indice its public address:
+A workstation needs no configuration for this. A server is told its public address, and will not start without it:
 
 ```bash
 indice serve --site-url https://archive.example.org   # or INDICE_SITE_URL
 ```
 
-If you get a `403` mentioning a cross-site request when using the workroom normally, that's the symptom: the message names both the `Origin` it saw and the site address it compared against.
+If you get a `403` mentioning a cross-site request when using the workroom normally, that address is not the one your browser is using: the message names both the `Origin` it saw and the site address it compared against.
 
 ### Deploy checklist
 
 - Bind indice to loopback and have the proxy connect to it there, so nothing but the proxy can reach the port.
 - Configure the proxy to **strip any client-supplied** identity header on inbound requests before setting its own, so a client can't smuggle one in. (The shared secret is your backstop if this is ever missed.)
 - Set the static `X-Indice-Auth-Secret` header in the proxy, and terminate TLS there.
-- Make sure the proxy passes through `X-Forwarded-Host` (or pass `--site-url`), so the cross-site check knows what the browser sees.
+- Pass the site's public URL as `--site-url`, so the cross-site check compares with the address the browser sees.
 - Give replay its own hostname, proxied to the replay listener with no login and both identity headers stripped, and pass it as `--replay-url`.
 
 One more, easy to miss: **forward the identity on every request, including the ordinary pages.** indice draws the workroom chrome on the homepage for a signed-in curator, so it needs to know who you are there too.

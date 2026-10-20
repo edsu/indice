@@ -16,6 +16,7 @@ fn public_config() -> indice_lib::server::ServerConfig {
         "X-Forwarded-Email",
         "test-secret-not-sent",
     ));
+    config.set_site_url("http://indice.test").unwrap();
     config.replay_origin =
         Some(indice_lib::server::ReplayOrigin::parse("https://replay.example.test").unwrap());
     config

@@ -79,11 +79,10 @@ impl SecurityHeaders {
     /// `'self'` the shell is refused whenever the server rather than the service
     /// worker answers it, which is the first visit's race (see `replay_index`).
     ///
-    /// Empty when indice cannot know them (a server without `--site-url`), and
-    /// then replay says nothing about framing rather than guess. A stranger's
-    /// page may then embed the frame, but it replays only this server's own
-    /// archives (`static/replay/guard.js`), and nothing on this origin acts
-    /// for anyone.
+    /// Empty when indice cannot know them, which is only a workstation router
+    /// built without listeners, and then replay says nothing about framing
+    /// rather than guess. A server always knows, because it will not start
+    /// without `--site-url`.
     pub(super) fn replay(ancestors: &[String]) -> Self {
         let mut pairs = vec![
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),

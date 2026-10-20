@@ -112,6 +112,13 @@ async fn serve(
     let port = listener.local_addr().unwrap().port();
     let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = config;
+    // A server will not start without its public URL; this one's is the
+    // address it is about to listen on.
+    if config.site_url().is_none() {
+        config
+            .set_site_url(&format!("http://127.0.0.1:{port}"))
+            .unwrap();
+    }
     config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
         replay.local_addr().unwrap(),
     ));

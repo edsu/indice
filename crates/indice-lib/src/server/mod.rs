@@ -130,7 +130,7 @@ impl Access {
     }
 
     /// Whether this is the workstation shape. Public because the binary needs
-    /// it to decide whether `--site-url` applies.
+    /// it to decide whether `--site-url` is required or ignored.
     pub fn is_local(&self) -> bool {
         matches!(self.0, AccessKind::Local)
     }
@@ -166,19 +166,10 @@ pub struct ServerConfig {
     /// `None` → `/`. Behind a login service, set this to its sign-out URL (e.g.
     /// `/oauth2/sign_out?rd=/`) so one click ends both sessions.
     pub logout_redirect: Option<String>,
-    /// This site's public authority (`host[:port]`), for the cross-site (CSRF)
-    /// check on writes. `None` — the normal case — means "infer it from
-    /// `X-Forwarded-Host`/`Host`", which is correct for the shipped `Caddyfile`
-    /// and for a direct loopback bind. Set it (`--site-url`) only behind a proxy
-    /// that rewrites `Host` *without* setting `X-Forwarded-Host`, which is
-    /// nginx's and Apache's default.
-    pub site_authority: Option<String>,
-    /// This site's public origin (`scheme://host[:port]`), from the same
-    /// `--site-url`, for the replay origin's `frame-ancestors`. Kept whole
-    /// because a host without a scheme there matches only the replay origin's
-    /// own scheme, so a site on http with replay on https would be refused.
-    /// Set both with [`ServerConfig::set_site_url`].
-    pub site_origin: Option<String>,
+    /// This site's public URL. A server must be given one (the router refuses
+    /// to build without it); a workstation ignores it. Set with
+    /// [`ServerConfig::set_site_url`].
+    site: Option<SiteUrl>,
     /// Let a networked instance fetch a curator-supplied URL that resolves to
     /// this machine or this network.
     ///
@@ -209,23 +200,67 @@ pub struct ServerConfig {
     app_addr: Option<std::net::SocketAddr>,
 }
 
+/// A server's public URL, kept as the two things indice compares with it.
+#[derive(Clone, Debug)]
+struct SiteUrl {
+    /// `scheme://host[:port]`, exactly as a browser's `Origin` spells it: what
+    /// a write's `Origin` must equal, and who may frame replay. The scheme is
+    /// kept so a page on `http://` cannot write to a site on `https://`, and so
+    /// `frame-ancestors` matches a site on plain http while replay is on https.
+    origin: String,
+    /// The host alone, without brackets for IPv6, to check replay is elsewhere.
+    host: String,
+}
+
 impl ServerConfig {
-    /// Set this site's public URL (`--site-url`): the authority the CSRF check
+    /// Set this site's public URL (`--site-url`): the origin the CSRF check
     /// compares with, and the origin replay may be framed by. Refuses anything
-    /// without a host.
+    /// but an http(s) URL with a host.
     pub fn set_site_url(&mut self, raw: &str) -> Result<()> {
         let url = url::Url::parse(raw.trim())
             .map_err(|e| anyhow::anyhow!("{raw:?} is not an absolute URL ({e})"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            anyhow::bail!("{raw:?} is not an http(s) URL");
+        }
         let Some(host) = url.host_str() else {
             anyhow::bail!("{raw:?} has no host");
         };
-        // `Url::port()` elides the scheme's default port, as a browser's
-        // `Origin` does, so the two compare directly.
-        self.site_authority = Some(match url.port() {
-            Some(p) => format!("{host}:{p}"),
-            None => host.to_string(),
-        });
-        self.site_origin = Some(url.origin().ascii_serialization());
+        let host = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        // `ascii_serialization` elides the scheme's default port, as a
+        // browser's `Origin` does, so the two compare directly.
+        let origin = url.origin().ascii_serialization();
+        self.site = Some(SiteUrl { origin, host });
+        Ok(())
+    }
+
+    /// The site's public origin, if one has been set.
+    pub fn site_url(&self) -> Option<&str> {
+        self.site.as_ref().map(|s| s.origin.as_str())
+    }
+
+    /// Refuse replay on the site's own host. A different port is another
+    /// origin, but cookies ignore ports, so replay there would share the
+    /// site's cookies.
+    ///
+    /// `indice serve` calls this at startup. The router does not, because the
+    /// browser tests need exactly that arrangement: two loopback ports are how
+    /// a test gets the same-site pair that a subdomain gives a real server, and
+    /// Chrome shares the replay host's service worker between the replay frame
+    /// and the replay host opened directly only when they are same-site.
+    pub fn check_replay_host(&self) -> Result<()> {
+        if let (Some(site), Some(replay)) = (&self.site, &self.replay_origin) {
+            if site.host.eq_ignore_ascii_case(replay.host()) {
+                anyhow::bail!(
+                    "replay is on the site's own host ({}). A different port is not \
+                     enough, because cookies are shared across ports, so give replay a \
+                     hostname of its own.",
+                    site.host
+                );
+            }
+        }
         Ok(())
     }
 
@@ -234,8 +269,7 @@ impl ServerConfig {
         Self {
             access,
             logout_redirect: None,
-            site_authority: None,
-            site_origin: None,
+            site: None,
             allow_internal_fetch: false,
             replay_origin: None,
             app_addr: None,
@@ -457,9 +491,10 @@ pub struct Routers {
     pub replay: Router,
 }
 
-/// Build both routers without binding a socket. Like [`router`], this skips
-/// the checks [`serve_on_listeners`] makes against real sockets, including
-/// that a server has a replay origin.
+/// Build both routers without binding a socket. A server still needs its site
+/// URL. Like [`router`], this skips the checks
+/// [`serve_on_listeners`] makes against real sockets, including that a server
+/// has a replay origin.
 pub fn routers(home: &Path, config: ServerConfig) -> Result<Routers> {
     build_routers(home, None, config, Providers::default())
 }
@@ -491,6 +526,30 @@ fn build_routers(
     config: ServerConfig,
     providers: Providers,
 ) -> Result<Routers> {
+    // Configuration first, so a missing setting is reported before any I/O.
+    //
+    // What a write's `Origin` must match. A server compares with `--site-url`
+    // and will not start without it: working the address out from `Host` or
+    // `X-Forwarded-Host` is right behind one proxy and wrong behind another, and
+    // the check that replay is on another host has nothing to compare without it.
+    // A workstation compares with the request's own loopback `Host` and ignores
+    // `--site-url`, so one env file shared between a server and a laptop stays
+    // harmless.
+    let csrf = if config.access.is_local() {
+        CsrfPolicy::Loopback
+    } else {
+        match &config.site {
+            Some(site) => CsrfPolicy::Site(site.origin.clone()),
+            // The fact, not the flag, as for the replay origin: indice-bin
+            // names `--site-url` when it prints this.
+            None => anyhow::bail!(
+                "refusing to start: this indice is reachable over the network and does \
+                 not know its own public URL, so it cannot tell its own pages' writes \
+                 from another site's, or check that replay is on a different host."
+            ),
+        }
+    };
+
     let index_dir = crate::index::index_dir(home);
     // Read-only: the server never holds Tantivy's exclusive write lock, so
     // `indice index` (and, in management mode, an add-archive job in a separate
@@ -593,18 +652,6 @@ fn build_routers(
         archiveit: providers.archiveit,
         replay_origin: config.replay_origin.clone(),
     });
-
-    // `--site-url` exists to fix the Origin comparison behind a proxy that
-    // rewrites `Host`, which local mode cannot be behind. Honouring it there
-    // pins the expected authority to a public name, so every workroom write
-    // 403s with a message advising the very setting that caused it. Dropped
-    // rather than respected, so one env file shared between a server and a
-    // laptop stays harmless.
-    let site_authority = if access_is_local {
-        None
-    } else {
-        config.site_authority.clone()
-    };
 
     // Everything here answers from memory, the index, or an embedded asset, so
     // it has a time bound. `/files/{id}` does not and is merged in below.
@@ -771,24 +818,9 @@ fn build_routers(
     //
     // Cheap to apply broadly: for safe methods (GET/HEAD/OPTIONS/TRACE) the
     // cross-site half returns immediately, so a read request pays one `match`
-    // and, on a server, nothing else.
-    //
-    // In local mode `Host` is whatever the browser sends, so matching it
-    // against `Origin` can be satisfied by DNS rebinding; local mode is
-    // loopback-only anyway, so also require a loopback authority there, on
-    // every request rather than only the state-changing ones. Behind
-    // a proxy (or with an explicit --site-url) the authority comes from a
-    // trusted source and needs no such check.
-    let csrf = Arc::new(CsrfPolicy {
-        // Not `&& site_authority.is_none()`. `--site-url` exists to fix Origin
-        // comparison behind a proxy that rewrites `Host`, a situation local mode
-        // cannot be in, and letting it clear this turned a stray INDICE_SITE_URL
-        // in a shared .env into a silent kill switch for the whole loopback
-        // requirement. The two settings are now independent: the loopback check
-        // reads `Host` directly and ignores `site_authority` entirely.
-        require_loopback: access_is_local,
-        site_authority: site_authority.clone(),
-    });
+    // and nothing else. On a workstation a write's `Host` must also be a
+    // loopback name; see [`CsrfPolicy::Loopback`].
+    let csrf = Arc::new(csrf);
 
     // Replay alone, on its own listener and so its own origin. Everything here
     // is public, read-only and anonymous: the frame, ReplayWeb.page and its
@@ -816,10 +848,11 @@ fn build_routers(
         .route("/health", get(health));
 
     // Who may frame replay: wherever the viewer is served from. A workstation
-    // knows its own listener; a server knows only what `--site-url` says.
-    let ancestors = match (access_is_local, config.app_addr, &config.site_origin) {
+    // knows its own listener; a server, what `--site-url` says. Empty only for a
+    // workstation router built without listeners, as tests do.
+    let ancestors = match (access_is_local, config.app_addr, &config.site) {
         (true, Some(addr), _) => headers::loopback_origins(addr),
-        (false, _, Some(origin)) => vec![origin.clone()],
+        (false, _, Some(site)) => vec![site.origin.clone()],
         _ => Vec::new(),
     };
     let app_headers = headers::SecurityHeaders::app(config.replay_origin.as_ref());
@@ -828,8 +861,8 @@ fn build_routers(
     Ok(Routers {
         app: outer_layers(app, csrf.clone(), app_headers).with_state(state.clone()),
         // The CSRF guard has nothing to refuse here, since every route is a
-        // GET, but on a workstation it is also the loopback-Host check that
-        // stops DNS rebinding, and the replay listener needs that as much.
+        // GET and the guard checks only writes. It is applied anyway so the two
+        // listeners share one layer stack.
         replay: outer_layers(replay, csrf, replay_headers).with_state(state),
     })
 }

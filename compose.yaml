@@ -40,13 +40,17 @@
 #       session. A subdomain such as replay.archive.example.org works. A
 #       separate domain also keeps archived pages away from cookies your other
 #       services set on the parent domain. indice refuses to start without it.
+#   SITE_ADDRESS
+#       The site's hostname, e.g. archive.example.org.
+#   SITE_URL (optional)
+#       The site's public URL. Defaults to https://$SITE_ADDRESS. indice
+#       compares it with the Origin of every write, to refuse ones another
+#       site's page started, lets only this site frame replay, and checks that
+#       REPLAY_ADDRESS is a different host. Set it when SITE_ADDRESS is not the
+#       hostname browsers use over https, as on localhost. See the security
+#       guide.
 #   REPLAY_URL (optional)
 #       The URL indice frames replay from. Defaults to https://$REPLAY_ADDRESS.
-#   SITE_URL (recommended)
-#       The site's own URL, https://$SITE_ADDRESS. indice starts without it,
-#       but with it the replay host tells browsers that only this site may
-#       frame it, and indice checks that REPLAY_ADDRESS is a different host.
-#       See the security guide.
 #
 # ── Optional: import credentials ──
 #
@@ -90,8 +94,7 @@ services:
               "--home", "/data", "--auth-proxy-header", "X-Forwarded-Email"]
     environment:
       INDICE_REPLAY_URL: ${REPLAY_URL:-https://${REPLAY_ADDRESS:?set REPLAY_ADDRESS, a hostname for replay}}
-      # Empty means unset; see SITE_URL above.
-      INDICE_SITE_URL: ${SITE_URL:-}
+      INDICE_SITE_URL: ${SITE_URL:-https://${SITE_ADDRESS:?set SITE_ADDRESS, the site's hostname, or SITE_URL}}
       # indice reads the shared secret from the env, keeping it out of process args.
       INDICE_AUTH_PROXY_SECRET: ${INDICE_AUTH_PROXY_SECRET:?set INDICE_AUTH_PROXY_SECRET}
       # One click ends both sessions: indice clears its display cookie, then

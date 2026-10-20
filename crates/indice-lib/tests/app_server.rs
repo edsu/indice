@@ -38,6 +38,9 @@ async fn serve_on_listener_serves_over_a_real_socket_with_range_support() {
         "x-forwarded-email",
         "secret-the-test-never-sends",
     ));
+    config
+        .set_site_url(&format!("http://127.0.0.1:{port}"))
+        .unwrap();
     config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
         replay.local_addr().unwrap(),
     ));

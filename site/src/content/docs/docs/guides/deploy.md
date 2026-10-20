@@ -23,6 +23,7 @@ The stack below supplies the real command. To run the container yourself, behind
 ```sh
 docker run -p 127.0.0.1:8080:8080 -p 127.0.0.1:8081:8081 -v indice-data:/data \
   -e INDICE_AUTH_PROXY_SECRET=a-long-random-string \
+  -e INDICE_SITE_URL=https://archive.example.org \
   -e INDICE_REPLAY_URL=https://replay.archive.example.org \
   ghcr.io/edsu/indice:latest \
   serve --bind 0.0.0.0:8080 --home /data --auth-proxy-header X-Forwarded-Email
@@ -82,7 +83,7 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    OAUTH2_PROXY_COOKIE_SECRET=      # a 32-char secret from: openssl rand -hex 16
    INDICE_AUTH_PROXY_SECRET=a-long-random-string
    REPLAY_ADDRESS=replay.your-domain
-   SITE_URL=https://your-domain        # recommended; see Securing a server
+   # SITE_URL=https://your-domain   # defaults to https://$SITE_ADDRESS
    # OIDC_EMAIL_DOMAINS=example.edu    # who may sign in at all; defaults to anyone
    # OAUTH2_PROXY_COOKIE_SECURE=false  # only to run the stack on plain-HTTP localhost
    # BROWSERTRIX_USER=... BROWSERTRIX_PASSWORD=...  # optional: the accession desk's imports
@@ -206,7 +207,7 @@ Use a **lazy session**, so the SP runs on every request without forcing anyone t
 </Location>
 ```
 
-Replay gets a virtual host of its own, with no SP at all, since replay is the same for everyone and indice's replay listener reads no identity. Start indice with `--replay-url https://replay.archive.example.org`:
+Replay gets a virtual host of its own, with no SP at all, since replay is the same for everyone and indice's replay listener reads no identity. Start indice with `--site-url https://archive.example.org --replay-url https://replay.archive.example.org`:
 
 ```apache
 <VirtualHost *:443>
@@ -247,7 +248,7 @@ Caddy is doing six separable jobs here, and none of them is Caddy-specific. Anyt
 5. **Send the replay hostname to the replay listener**, port 8081 by default (`--replay-bind`), with no login and with both identity headers stripped, and pass that hostname to indice as `--replay-url`.
 6. **Set `Strict-Transport-Security`** on both hostnames, since the proxy is what terminates TLS. indice sets its other security headers itself (a `Content-Security-Policy` per origin, `X-Content-Type-Options` and `Referrer-Policy`), so pass them through rather than replacing them.
 
-Add one indice-side detail: if your proxy rewrites `Host` without setting `X-Forwarded-Host`, pass `--site-url` so the cross-site check knows the address the browser used. nginx and Apache both rewrite it by default. It is worth passing anyway, because it also lets the replay host refuse to be framed by any other site.
+On indice's side, pass the site's public URL as `--site-url`. A server will not start without it, and it means indice never relies on the proxy's `Host` or `X-Forwarded-Host`, which nginx and Apache rewrite by default. See [What `--site-url` does](/docs/guides/security/#what---site-url-does).
 
 **nginx** does this with `auth_request`, which is the same subrequest mechanism, plus `error_page 401 = @anonymous;` pointing at a named location that proxies to indice with no identity headers. That named location is the equivalent of the shipped `Caddyfile`'s `handle_errors` block. Check `proxy_buffering` against a large ranged read while you are there.
 
