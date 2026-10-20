@@ -93,6 +93,13 @@ async fn serve(
     let port = listener.local_addr().unwrap().port();
     let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = config;
+    // A server will not start without its public URL; this one's is the
+    // address it is about to listen on.
+    if config.site_url().is_none() {
+        config
+            .set_site_url(&format!("http://127.0.0.1:{port}"))
+            .unwrap();
+    }
     config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
         replay.local_addr().unwrap(),
     ));
@@ -461,10 +468,12 @@ async fn notes_are_author_gated_but_admins_moderate() {
 async fn a_server_without_a_roster_refuses_to_start() {
     let tmp = tempfile::TempDir::new().unwrap();
     let proxy = || {
-        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
             USER_HEADER,
             SECRET,
-        ))
+        ));
+        config.set_site_url("https://archive.example.test").unwrap();
+        config
     };
 
     let err = indice_lib::server::router(tmp.path(), proxy()).unwrap_err();
@@ -992,4 +1001,40 @@ async fn files_allows_anonymous_cross_origin_reads_only() {
         );
     }
     server.abort();
+}
+
+/// A server compares every write's `Origin` with its own public URL, frames
+/// replay only for it, and checks replay is on another host, so it will not
+/// start without one. Working the address out from `Host` or
+/// `X-Forwarded-Host` was right behind one proxy and wrong behind another.
+/// A workstation needs none of it: it compares with its own loopback `Host`.
+#[tokio::test]
+async fn a_server_without_its_site_url_refuses_to_start() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
+    let proxy = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
+
+    let err = indice_lib::server::router(tmp.path(), proxy.clone()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("refusing to start") && msg.contains("public URL"),
+        "the refusal must say what is missing, got: {msg}"
+    );
+
+    let mut with_site = proxy;
+    with_site
+        .set_site_url("https://archive.example.test")
+        .unwrap();
+    assert!(indice_lib::server::router(tmp.path(), with_site).is_ok());
+
+    let local = indice_lib::server::ServerConfig::new(
+        indice_lib::server::Access::local("127.0.0.1:0".parse().unwrap()).unwrap(),
+    );
+    assert!(
+        indice_lib::server::router(tmp.path(), local).is_ok(),
+        "a workstation must start without a site URL"
+    );
 }

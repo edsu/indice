@@ -21,14 +21,12 @@ fn public_router(home: &std::path::Path) -> axum::Router {
     if !roster.exists() {
         std::fs::write(&roster, "users: []\n").unwrap();
     }
-    indice_lib::server::router(
-        home,
-        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-            "X-Forwarded-Email",
-            "test-secret-not-sent",
-        )),
-    )
-    .unwrap()
+    let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "X-Forwarded-Email",
+        "test-secret-not-sent",
+    ));
+    config.set_site_url("http://indice.test").unwrap();
+    indice_lib::server::router(home, config).unwrap()
 }
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");

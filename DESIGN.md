@@ -188,7 +188,7 @@ document nobody rereads, which is the failure mode this section exists to avoid.
 |  | **Workstation** | **Server** |
 |---|---|---|
 | bind | loopback, enforced by `Access::local` | external, proxy in front |
-| requires | nothing | an identity provider and a roster |
+| requires | nothing | an identity provider, a roster, its own public URL (`--site-url`) and a replay hostname (`--replay-url`) |
 | who may read | whoever reaches the port | anyone |
 | who may write | whoever reaches the port | roster-listed users |
 | `users.yaml` | not consulted | authoritative |
@@ -309,8 +309,13 @@ mutates cannot be written without one and a forgotten gate is a compile error.
   `manage.rs::cross_site_post_is_rejected_on_every_management_write`,
   `manage.rs::local_manage_mode_is_csrf_protected_too`,
   `manage.rs::sec_fetch_site_cross_site_is_rejected_without_origin`
-- DNS rebinding against the loopback workroom is refused, which is the one thing
-  the loopback-authority check still does.
+- A server compares a write's `Origin` with its `--site-url`, never with `Host`
+  or `X-Forwarded-Host`, and will not start without one; a workstation compares
+  with its own loopback `Host`.
+  `server/tests.rs::a_server_compares_with_its_site_url_whatever_the_headers_say`,
+  `authz.rs::a_server_without_its_site_url_refuses_to_start`
+- A write to the loopback workroom by DNS rebinding is refused, which is the one
+  thing the loopback-authority check still does.
   `server/tests.rs::local_mode_refuses_a_rebound_non_loopback_authority`
 - The CSRF layer is outermost, so a cross-site request is refused before
   forward-auth looks at credentials and the caller learns nothing about whether
@@ -439,14 +444,10 @@ Saying so here is what stops these being re-litigated.
   session lifetime belong to the proxy. The gain is that one header contract
   covers Shibboleth, OIDC, and whatever an operator already runs; the cost is
   that indice cannot tell a compromised account from its owner.
-- **Two things the policies leave open.** The app origin allows inline
+- **What the policies leave open.** The app origin allows inline
   `style` attributes (`style-src-attr 'unsafe-inline'`), for two computed
   values with no class to hold them; inline style can restyle a page but not
-  run anything, and no visitor's markup reaches it unsanitized. And a server
-  without `--site-url` does not know its own address, so its replay origin says
-  nothing about who may frame it. That costs little: the frame and the shell
-  replay only this server's own archives (*Guarantees*), so a stranger framing
-  replay can show only what the site already shows.
+  run anything, and no visitor's markup reaches it unsanitized.
 - **Archived script runs, on the replay origin.** That is replay's job, and the
   origin is what contains it. Within that origin it is unconstrained: one
   capture's script can read every other capture this browser has replayed,

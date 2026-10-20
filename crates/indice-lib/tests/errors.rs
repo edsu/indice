@@ -67,6 +67,7 @@ async fn serve(
     let replay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let replay = format!("http://{}", replay_listener.local_addr().unwrap());
     let mut config = server::ServerConfig::new(server::Access::proxy("x-forwarded-email", SECRET));
+    config.set_site_url(&app).unwrap();
     config.replay_origin = Some(server::ReplayOrigin::for_listener(
         replay_listener.local_addr().unwrap(),
     ));

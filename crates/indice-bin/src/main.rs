@@ -142,12 +142,11 @@ enum Commands {
         #[arg(long, value_name = "SECRET", requires = "auth_proxy_header")]
         auth_proxy_secret: Option<String>,
 
-        /// This site's public URL (e.g. `https://archive.example.org`). The
-        /// cross-site (CSRF) check on writes compares against it, which is
-        /// needed behind a proxy that rewrites the Host header without setting
-        /// X-Forwarded-Host (nginx's and Apache's default); Caddy and a direct
-        /// bind are detected automatically. It also lets the replay host tell
-        /// browsers that only this site may frame it. May also be given via the
+        /// This site's public URL (e.g. `https://archive.example.org`).
+        /// Required for a server (with --auth-proxy-header); ignored on a
+        /// workstation. The cross-site (CSRF) check on writes compares against
+        /// it, the replay host lets only this site frame it, and --replay-url
+        /// must name a different host. May also be given via the
         /// INDICE_SITE_URL environment variable.
         #[arg(long, value_name = "URL")]
         site_url: Option<String>,
@@ -1201,22 +1200,32 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Optional CSRF escape hatch: pin the authority the cross-site check
-            // compares Origin against, for proxies that rewrite Host without
-            // setting X-Forwarded-Host. We keep only host[:port] — `Url::port()`
-            // elides the scheme's default port, exactly as a browser's Origin
-            // does, so the two are directly comparable.
+            // A server's public URL: what the cross-site check compares Origin
+            // with, who may frame replay, and what replay's host must differ
+            // from. Required, because none of those can be worked out from
+            // request headers that each proxy rewrites differently.
             let site_url = site_url.or_else(|| {
                 std::env::var("INDICE_SITE_URL")
                     .ok()
                     .filter(|s| !s.is_empty())
             });
-            // Skipped entirely in local mode: the setting has no effect there
-            // (build_routers drops it), and refusing to start over a typo in a
-            // value this shape never reads is the behaviour the old
-            // `filter(|_| manage.enabled)` guard existed to prevent. One env
-            // file is commonly shared between a server and a laptop.
-            if let Some(raw) = site_url.filter(|_| !access_is_local) {
+            // Not read at all in local mode, where the cross-site check uses
+            // the request's own loopback Host. Refusing to start over a typo in
+            // a value this shape never uses would be wrong: one env file is
+            // commonly shared between a server and a laptop.
+            if !access_is_local {
+                let Some(raw) = site_url else {
+                    eprintln!(
+                        "refusing to start: a server needs --site-url (or INDICE_SITE_URL), \
+                         the URL readers use to reach it, e.g. --site-url \
+                         https://archive.example.org.\n\
+                         indice compares it with the Origin of every write, to refuse ones \
+                         another site's page started, and checks that --replay-url is on a \
+                         different host.\n\
+                         See https://indice.page/docs/guides/security/"
+                    );
+                    std::process::exit(2);
+                };
                 if let Err(e) = config.set_site_url(&raw) {
                     eprintln!(
                         "--site-url must be an absolute URL with a host, e.g. \
@@ -1253,26 +1262,11 @@ async fn main() -> Result<()> {
                         std::process::exit(2);
                     }
                 };
-                // Same host on another port is another origin, but cookies
-                // ignore ports, so it would share the app's cookies.
-                let app_host =
-                    config
-                        .site_authority
-                        .as_deref()
-                        .map(|a| match a.strip_prefix('[') {
-                            Some(v6) => v6.split(']').next().unwrap_or(v6),
-                            None => a.rsplit_once(':').map_or(a, |(h, _)| h),
-                        });
-                if app_host.is_some_and(|h| h.eq_ignore_ascii_case(origin.host())) {
-                    eprintln!(
-                        "error: --replay-url must name a different host from --site-url \
-                         (both are {}). A different port is not enough: cookies are shared \
-                         across ports.",
-                        origin.host()
-                    );
+                config.replay_origin = Some(origin);
+                if let Err(e) = config.check_replay_host() {
+                    eprintln!("error: --replay-url and --site-url: {e}");
                     std::process::exit(2);
                 }
-                config.replay_origin = Some(origin);
             }
 
             let ctrl_c = async {

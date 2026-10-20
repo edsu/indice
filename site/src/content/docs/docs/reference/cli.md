@@ -90,7 +90,7 @@ indice serve [OPTIONS]
 | `-b`, `--bind <ADDR>` | Address to listen on (default `127.0.0.1:8080`) |
 | `--auth-proxy-header <HEADER>` | Read the authenticated user from this header (e.g. `X-Forwarded-Email`) behind a trusted proxy. Requires `--auth-proxy-secret` |
 | `--auth-proxy-secret <SECRET>` | Shared secret the proxy must send in `X-Indice-Auth-Secret`. Also `INDICE_AUTH_PROXY_SECRET` |
-| `--site-url <URL>` | This site's public URL, for the cross-site (CSRF) check on writes, and so the replay host can refuse to be framed by any other site. Also `INDICE_SITE_URL` |
+| `--site-url <URL>` | This site's public URL, e.g. `https://archive.example.org`, for the cross-site (CSRF) check on writes, and so the replay host can refuse to be framed by any other site. Required with `--auth-proxy-header`; ignored on a workstation. Also `INDICE_SITE_URL` |
 | `--allow-internal-fetch` | Let curators add archives by a URL resolving to this machine or network. Refused by default behind an auth proxy; no effect on a workstation |
 | `--replay-url <URL>` | Where replay is served from, e.g. `https://replay.archive.example.org`. Required with `--auth-proxy-header`; ignored on a workstation. Also `INDICE_REPLAY_URL` |
 | `--replay-bind <ADDR>` | Address for the replay listener (default: the `--bind` address with the next port, `127.0.0.1:8081`) |
@@ -119,8 +119,9 @@ port, with nothing to configure. A server needs `--replay-url`, a hostname of it
 proxy sends to the replay listener, and refuses to start without one. See
 [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own).
 
-`--site-url` is needed for the cross-site check only behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`
-(nginx's and Apache's default); Caddy and a direct bind are detected automatically. Set it anyway on a server and the replay host also says, in its `Content-Security-Policy`, that only this site may frame it, and indice checks that `--replay-url` is on a different host. [What `--site-url` does](/docs/guides/security/#what---site-url-does) has all three.
+A server also needs `--site-url`, the address readers use, and refuses to start without one. The cross-site check
+compares every write's `Origin` with it, the replay host lets only this site frame it, and indice checks that `--replay-url`
+is on a different host. [What `--site-url` does](/docs/guides/security/#what---site-url-does) has all three.
 
 On startup `serve` warns if the index is fragmented, meaning many segments, e.g. built by an older
 version or left by a killed run. It points you at `optimize`.

@@ -1,9 +1,9 @@
 # indice behind Caddy, with an identity provider in front.
 #
-# SITE_ADDRESS and REPLAY_ADDRESS come from compose. SITE_ADDRESS defaults to
-# :80 (plain HTTP, for local work); set it to your domain, say
-# archive.example.org, and Caddy obtains and renews a Let's Encrypt certificate
-# for you. REPLAY_ADDRESS is the hostname replay is served on, say
+# SITE_ADDRESS and REPLAY_ADDRESS come from compose. Set SITE_ADDRESS to your
+# domain, say archive.example.org, and Caddy obtains and renews a Let's Encrypt
+# certificate for you. Unset, it is :80 (plain HTTP, for local work), and
+# compose then needs SITE_URL to tell indice the address browsers use. REPLAY_ADDRESS is the hostname replay is served on, say
 # replay.archive.example.org, and gets a certificate the same way.
 #
 # ── Who decides what ──

@@ -85,12 +85,9 @@ pub(super) async fn forward_auth(
 /// types) there is no CORS preflight to stop it. The attacker can't *read* the
 /// reply, but by then the collection is already deleted.
 ///
-/// What this cannot reach is a write issued by a replayed page. ReplayWeb.page
-/// serves archived responses from indice's own origin, so archived script sends
-/// a genuinely same-origin request and `Origin` matches. The guard is answering
-/// the question it was asked. Fixing it means separating the replay origin;
-/// tracked as `rustyweb-replay-origin-isolation-5h67` and written up under
-/// *Threat Model* in `DESIGN.md`.
+/// A write from a replayed page is refused the same way: replay runs on an
+/// origin of its own, so archived script's requests carry that origin rather
+/// than the site's. See *Threat Model* in `DESIGN.md`.
 pub(super) async fn same_origin_guard(
     policy: &CsrfPolicy,
     req: axum::extract::Request,
@@ -99,31 +96,35 @@ pub(super) async fn same_origin_guard(
     if same_site_request(req.method(), req.headers(), req.uri(), policy) {
         return next.run(req).await;
     }
-    let trusted = policy.site_authority.as_deref();
     let origin = req
         .headers()
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("(none)")
         .to_string();
-    let site = expected_authority(req.headers(), req.uri(), trusted).unwrap_or("(unknown)");
-    (
-        StatusCode::FORBIDDEN,
-        format!(
+    let message = match policy {
+        CsrfPolicy::Site(site) => format!(
             "cross-site request blocked: Origin {origin} does not match this site ({site}). \
-             If indice is behind a proxy that rewrites the Host header, start it with \
-             --site-url <your public URL>."
+             If this is your site, check that --site-url is the address browsers use."
         ),
-    )
-        .into_response()
+        CsrfPolicy::Loopback => {
+            let host = request_authority(req.headers(), req.uri()).unwrap_or("(none)");
+            format!(
+                "cross-site request blocked: Origin {origin} does not match this \
+                 workstation's loopback address ({host})."
+            )
+        }
+    };
+    (StatusCode::FORBIDDEN, message).into_response()
 }
 
 /// Whether this state-changing request was initiated by this same site.
 ///
 /// Three rules, in order:
 /// 1. Safe methods (GET/HEAD/OPTIONS/TRACE) change nothing, so they're never gated.
-/// 2. If `Origin` is present, its authority must equal ours. `Origin: null`
-///    (a sandboxed or `data:` initiator) has no authority and is refused.
+/// 2. If `Origin` is present, it must be ours: on a server, the site's origin;
+///    on a workstation, the loopback authority the request was sent to.
+///    `Origin: null` (a sandboxed or `data:` initiator) is refused.
 /// 3. If `Origin` is absent, fall back to `Sec-Fetch-Site`.
 ///
 /// **Why an absent `Origin` is allowed**, which looks backwards but isn't: per
@@ -157,31 +158,32 @@ pub(super) fn same_site_request(
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
     {
-        Some(origin) => {
-            // Compare the authority (`host[:port]`) only, never the scheme: an
-            // http page attacking the https same-host site already requires a
-            // network MITM, and comparing schemes would break any deployment
-            // that terminates TLS without setting X-Forwarded-Proto. Both sides
-            // elide the default port for their scheme, so this is exact.
-            let Some(theirs) = origin.split_once("://").map(|(_, rest)| rest) else {
-                return false; // "null", or anything else without an authority
-            };
-            let Some(ours) = expected_authority(headers, uri, policy.site_authority.as_deref())
-            else {
-                return false;
-            };
-            // Matching Host against Origin is not enough on its own when the
-            // browser chose the Host: DNS rebinding defeats it. An attacker who
-            // controls evil.example can point it at 127.0.0.1, and the browser
-            // then sends a *self-consistent* pair (Host and Origin both
-            // evil.example) at the loopback workroom. Local mode is loopback-only
-            // anyway — the server refuses to start otherwise — so any authority
-            // that isn't a loopback name is bogus by definition.
-            if policy.require_loopback && !is_loopback_authority(ours) {
-                return false;
+        Some(origin) => match policy {
+            // The whole origin, scheme included, so a page on `http://` cannot
+            // write to a site on `https://`. Both sides elide the scheme's
+            // default port, so this is exact. `null`, sent by a sandboxed or
+            // `data:` initiator, never matches.
+            CsrfPolicy::Site(site) => origin.eq_ignore_ascii_case(site),
+            CsrfPolicy::Loopback => {
+                // A workstation is served over plain http on loopback, so its
+                // authority (`host[:port]`) is what identifies it.
+                let Some(theirs) = origin.split_once("://").map(|(_, rest)| rest) else {
+                    return false;
+                };
+                let Some(ours) = request_authority(headers, uri) else {
+                    return false;
+                };
+                // Matching Host against Origin is not enough on its own when
+                // the browser chose the Host: DNS rebinding defeats it. An
+                // attacker who controls evil.example can point it at
+                // 127.0.0.1, and the browser then sends a *self-consistent*
+                // pair (Host and Origin both evil.example) at the loopback
+                // workroom. A workstation is loopback-only anyway, since it
+                // refuses to start otherwise, so any authority that isn't a
+                // loopback name is bogus by definition.
+                is_loopback_authority(ours) && ours.eq_ignore_ascii_case(theirs)
             }
-            ours.eq_ignore_ascii_case(theirs)
-        }
+        },
         None => !headers
             .get("sec-fetch-site")
             .and_then(|v| v.to_str().ok())
@@ -189,38 +191,34 @@ pub(super) fn same_site_request(
     }
 }
 
-/// How this server decides whether a write was same-site.
-#[derive(Clone, Default)]
-pub(super) struct CsrfPolicy {
-    /// The operator-pinned public authority (`--site-url`), when set.
-    pub site_authority: Option<String>,
-    /// Whether a matching `Origin` must additionally be a loopback name. True
-    /// exactly in local mode, independent of `--site-url`: letting that clear it
-    /// turned a stray `INDICE_SITE_URL` in a shared `.env` into a silent kill
-    /// switch.
+/// What a write's `Origin` must match to count as this site's own.
+#[derive(Clone)]
+pub(super) enum CsrfPolicy {
+    /// A server: the origin (`scheme://host[:port]`) of `--site-url`. A server
+    /// will not start without it, so nothing here is worked out from request
+    /// headers, which proxies rewrite in ways indice cannot see. One origin
+    /// only: a site reachable under other names should redirect them to this
+    /// one.
+    Site(String),
+    /// A workstation: the request's own `Host`, which must also be a loopback
+    /// name.
     ///
-    /// This is the DNS-rebinding half of the CSRF guard and nothing more. An
-    /// attacker who points `evil.example` at 127.0.0.1 gets the browser to send
-    /// a self-consistent `Host` and `Origin` pair, which the equality check
-    /// above would accept; a loopback-only workroom has no legitimate reason to
-    /// see any other name in an `Origin`, so the pair is bogus by definition.
-    ///
-    /// It is not an access control, and indice does not try to make one out of
+    /// The loopback half is the DNS-rebinding defence and nothing more. It is
+    /// not an access control, and indice does not try to make one out of
     /// `Host`. Two versions of this guard refused a request whose authority was
     /// not a loopback name, meaning to stop a tunnelled caller from inheriting
     /// the operator's rights; both were bypassable with a header, because the
     /// workstation shape promises nothing against a caller who reaches the port.
     /// See the threat model in `DESIGN.md`.
-    pub require_loopback: bool,
+    Loopback,
 }
 
 /// Whether an authority names this machine. Accepts `localhost`, the IPv4
 /// loopback block (`127.0.0.0/8`), and IPv6 `::1` in its bracketed form.
 fn is_loopback_authority(authority: &str) -> bool {
     // Strip the port. An IPv6 literal is bracketed, so split after the bracket.
-    // Borrowed rather than owned: local mode runs this on every request, and
-    // replay issues many ranged reads per page, so there is no reason to
-    // allocate twice for a comparison.
+    // Borrowed rather than owned: there is no reason to allocate for a
+    // comparison.
     let host = match authority.rsplit_once(']') {
         Some((bracketed, _)) => bracketed.trim_start_matches('['),
         None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
@@ -232,32 +230,13 @@ fn is_loopback_authority(authority: &str) -> bool {
         .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// The authority (`host[:port]`) a browser would have used to reach us.
-///
-/// `--site-url` wins when set, then `X-Forwarded-Host` (which Caddy sets and the
-/// shipped Caddyfile relies on), then `Host`, then the URI's authority (HTTP/2,
-/// where the authority is a pseudo-header rather than `Host`). Trusting
-/// `X-Forwarded-Host` is safe *for this purpose*: a CSRF attacker drives a
-/// browser, and script cannot set `Host`, `Origin`, `Sec-*`, or `X-Forwarded-*`.
-fn expected_authority<'a>(
-    headers: &'a HeaderMap,
-    uri: &'a Uri,
-    trusted: Option<&'a str>,
-) -> Option<&'a str> {
-    if trusted.is_some() {
-        return trusted;
-    }
+/// The authority (`host[:port]`) this request was sent to: `Host`, or the
+/// URI's authority under HTTP/2, where it is a pseudo-header instead. Used only
+/// on a workstation, where nothing stands between the browser and indice.
+fn request_authority<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str> {
     headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get(axum::http::header::HOST))
+        .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
-        // Chained proxies (CDN in front of Caddy, or two reverse proxies) append
-        // rather than replace, so this can arrive as a list —
-        // `archive.example.org, indice:8080`. The client-facing hop is first,
-        // and that is the one the browser's Origin reflects. Without this a
-        // chained deployment 403s every management write with nothing
-        // misconfigured on the operator's side.
-        .map(|v| v.split(',').next().unwrap_or(v).trim())
         .filter(|v| !v.is_empty())
         .or_else(|| uri.authority().map(|a| a.as_str()))
 }

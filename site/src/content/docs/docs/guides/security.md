@@ -51,17 +51,17 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 
 ## Requests from other websites
 
-**Cross-site writes.** A web page on another site can make your browser send a request to indice, and your browser would attach your login to it. indice refuses any write whose `Origin` header is not the site's own. A page cannot forge that header: the browser sets it, and page script is not allowed to. A client outside a browser can send any `Origin` it likes, but it is then sending its own request with its own credentials, which a forged header does not improve. A write with no `Origin` at all is accepted, since browsers always send one, so its absence means a script or `curl` rather than someone's browser.
+**Cross-site writes.** A web page on another site can make your browser send a request to indice, and your browser would attach your login to it. indice refuses any write whose `Origin` header is not the site's own address, which on a server is `--site-url`. A page cannot forge that header: the browser sets it, and page script is not allowed to. A client outside a browser can send any `Origin` it likes, but it is then sending its own request with its own credentials, which a forged header does not improve. A write with no `Origin` at all is accepted, since browsers always send one, so its absence means a script or `curl` rather than someone's browser.
 
 **Clickjacking.** A hostile page can load indice's workroom in an invisible frame and line up a decoy over it, so that a curator's click lands on Delete. The cross-site check cannot help, because that click is on indice's own page. Instead indice tells browsers that nobody may frame its pages at all (`frame-ancestors 'none'`).
 
-**Framing replay.** The replay hostname may be framed by the site and by itself, and opened on its own it refuses to replay. That second part always holds; the first needs indice to know the site's address, from `--site-url`.
+**Framing replay.** The replay hostname may be framed only by the site and by itself, and opened on its own it refuses to replay.
 
 ## What indice tells the browser
 
 | Header | Site | Replay host |
 |---|---|---|
-| `Content-Security-Policy` | Script, style and images from the site only; may frame only the replay host; framed by nobody | Framed only by itself and the site (with `--site-url`); no script policy, since running archived script is replay's job |
+| `Content-Security-Policy` | Script, style and images from the site only; may frame only the replay host; framed by nobody | Framed only by itself and the site; no script policy, since running archived script is replay's job |
 | `X-Content-Type-Options: nosniff` | Yes | Yes |
 | `Referrer-Policy: same-origin` | Yes | Yes |
 | `Strict-Transport-Security` | Set by the proxy | Set by the proxy |
@@ -70,13 +70,13 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 
 ## What `--site-url` does
 
-The site's public URL, e.g. `https://archive.example.org`. A server starts without it, but set it on every server, because it does three things:
+The site's public URL, the one readers type, e.g. `https://archive.example.org`. A server will not start without it, because three protections depend on it:
 
-1. **The cross-site check compares against it.** Without it, indice works out its own address from `X-Forwarded-Host` or `Host`, which is right behind Caddy and wrong behind nginx's or Apache's defaults. There, every write is refused until you set it.
-2. **The replay host refuses to be framed by other sites.** Without it, replay cannot know which site is yours, so it says nothing about framing.
-3. **indice checks that replay is on a different host.** A different port on the same host is a different origin, but cookies ignore ports, so indice refuses to start with `--replay-url` on `--site-url`'s host. Without `--site-url` there is nothing to compare.
+1. **The cross-site check compares against it.** A write is accepted only when its `Origin` is this address. indice does not work its address out from `Host` or `X-Forwarded-Host`, because each proxy rewrites those differently and indice cannot tell which it is behind.
+2. **The replay host refuses to be framed by other sites.** Its `Content-Security-Policy` names this site as the only one that may embed it.
+3. **indice checks that replay is on a different host.** A different port on the same host is a different origin, but cookies ignore ports, so indice refuses to start with `--replay-url` on `--site-url`'s host.
 
-In the shipped stack it is `SITE_URL` in `.env`.
+Give the address browsers use, scheme and all; a port only if it is not the scheme's default. It is one address: if the site also answers to other names, such as `www.` or an internal hostname, have the proxy redirect them to this one, because a write from a page at any other name is refused. If a write is refused as cross-site while you use the workroom normally, the message names the `Origin` it saw and the site address it compared with, and the two will differ. In the shipped stack it is `https://$SITE_ADDRESS`, unless you set `SITE_URL`.
 
 ## Limits
 
@@ -114,7 +114,7 @@ These are filed and not yet fixed. The tracker is in the repository: `grep <id> 
 ## Checklist
 
 - [ ] A second hostname for replay, passed as `--replay-url` (`REPLAY_ADDRESS` in the shipped stack).
-- [ ] `--site-url` set to the site's public URL (`SITE_URL`).
+- [ ] `--site-url` set to the site's public URL (`SITE_URL`); indice will not start without it.
 - [ ] `users.yaml` lists the people who may change things, and no one else.
 - [ ] The proxy strips any client copy of the identity and secret headers, and forwards the identity on every request.
 - [ ] The shared secret is long, random, and only in the proxy's configuration and indice's environment.

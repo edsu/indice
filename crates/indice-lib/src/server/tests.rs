@@ -150,25 +150,17 @@ fn csrf_case(method: &str, hdrs: &[(&str, &str)]) -> (Method, HeaderMap, Uri) {
     )
 }
 
-/// Judge a request under the default (proxied / explicit-site) policy.
-fn same_site(method: &str, hdrs: &[(&str, &str)], trusted: Option<&str>) -> bool {
+/// Judge a request as a server whose `--site-url` has the origin `site`.
+fn same_site(method: &str, hdrs: &[(&str, &str)], site: &str) -> bool {
     let (m, h, u) = csrf_case(method, hdrs);
-    let policy = CsrfPolicy {
-        site_authority: trusted.map(str::to_string),
-        require_loopback: false,
-    };
-    same_site_request(&m, &h, &u, &policy)
+    same_site_request(&m, &h, &u, &CsrfPolicy::Site(site.to_string()))
 }
 
-/// Judge a request under the local (loopback-trust) policy, which additionally
-/// requires the authority to name this machine.
+/// Judge a request as a workstation, which compares with the request's own
+/// `Host` and requires it to name this machine.
 fn same_site_local(method: &str, hdrs: &[(&str, &str)]) -> bool {
     let (m, h, u) = csrf_case(method, hdrs);
-    let policy = CsrfPolicy {
-        site_authority: None,
-        require_loopback: true,
-    };
-    same_site_request(&m, &h, &u, &policy)
+    same_site_request(&m, &h, &u, &CsrfPolicy::Loopback)
 }
 
 #[test]
@@ -178,8 +170,8 @@ fn same_site_request_never_gates_safe_methods() {
         assert!(
             same_site(
                 method,
-                &[("host", "a.example"), ("origin", "https://evil.example")],
-                None
+                &[("origin", "https://evil.example")],
+                "https://a.example"
             ),
             "{method} should never be gated"
         );
@@ -191,120 +183,119 @@ fn same_site_request_allows_absent_origin_for_non_browsers() {
     // No Origin at all: curl, our own ureq tests, a health checker. Browsers
     // always send Origin on a cross-origin POST, so absence means "not a
     // browser" — and a non-browser has no ambient credentials to ride.
-    assert!(same_site("POST", &[("host", "a.example")], None));
+    assert!(same_site("POST", &[], "https://a.example"));
     // Sec-Fetch-Site present but benign still passes.
     assert!(same_site(
         "POST",
-        &[("host", "a.example"), ("sec-fetch-site", "same-origin")],
-        None
+        &[("sec-fetch-site", "same-origin")],
+        "https://a.example"
     ));
     assert!(same_site(
         "POST",
-        &[("host", "a.example"), ("sec-fetch-site", "none")],
-        None
+        &[("sec-fetch-site", "none")],
+        "https://a.example"
     ));
 }
 
 #[test]
 fn same_site_request_rejects_foreign_origin_and_null() {
+    let site = "https://a.example";
     assert!(!same_site(
         "POST",
-        &[("host", "a.example"), ("origin", "https://evil.example")],
-        None
+        &[("origin", "https://evil.example")],
+        site
     ));
     // A sandboxed or data: initiator sends "null" — no authority, so no match.
-    assert!(!same_site(
-        "POST",
-        &[("host", "a.example"), ("origin", "null")],
-        None
-    ));
+    assert!(!same_site("POST", &[("origin", "null")], site));
     // Same registrable domain but a different host is still a different origin.
     assert!(!same_site(
         "POST",
-        &[("host", "a.example"), ("origin", "https://b.a.example")],
-        None
+        &[("origin", "https://b.a.example")],
+        site
     ));
-    // A matching Origin passes, and the scheme is deliberately not compared.
-    assert!(same_site(
-        "POST",
-        &[("host", "a.example"), ("origin", "https://a.example")],
-        None
-    ));
-    assert!(same_site(
-        "POST",
-        &[("host", "a.example"), ("origin", "http://a.example")],
-        None
-    ));
+    // A matching Origin passes, the host compared without regard to case.
+    assert!(same_site("POST", &[("origin", "https://a.example")], site));
+    assert!(same_site("POST", &[("origin", "https://A.Example")], site));
+    // The scheme is part of the origin: a page on plain http, say one an
+    // on-path attacker served before HSTS took hold, may not write to the
+    // https site.
+    assert!(!same_site("POST", &[("origin", "http://a.example")], site));
 }
 
 #[test]
 fn same_site_request_falls_back_to_sec_fetch_site_without_origin() {
     // Origin absent but Fetch Metadata says another site started this.
-    for site in ["cross-site", "same-site"] {
+    for fetch_site in ["cross-site", "same-site"] {
         assert!(
             !same_site(
                 "POST",
-                &[("host", "a.example"), ("sec-fetch-site", site)],
-                None
+                &[("sec-fetch-site", fetch_site)],
+                "https://a.example"
             ),
-            "sec-fetch-site: {site} should be refused"
+            "sec-fetch-site: {fetch_site} should be refused"
         );
     }
 }
 
 #[test]
-fn same_site_request_matches_host_with_explicit_port() {
+fn the_port_is_part_of_the_match() {
     // The loopback workroom: Origin carries the port, so Host must too.
-    assert!(same_site(
+    assert!(same_site_local(
         "POST",
         &[
             ("host", "127.0.0.1:8080"),
             ("origin", "http://127.0.0.1:8080")
-        ],
-        None
+        ]
     ));
     // Port mismatch is a different origin — another service on the same host.
-    assert!(!same_site(
+    assert!(!same_site_local(
         "POST",
         &[
             ("host", "127.0.0.1:8080"),
             ("origin", "http://127.0.0.1:9999")
-        ],
-        None
+        ]
     ));
-    // Case is insensitive on the host.
+    // A server on a non-default port: its site URL says so, and so does Origin.
     assert!(same_site(
         "POST",
-        &[("host", "A.Example"), ("origin", "https://a.example")],
-        None
+        &[("origin", "http://archive.internal:8080")],
+        "http://archive.internal:8080"
+    ));
+    assert!(!same_site(
+        "POST",
+        &[("origin", "http://archive.internal")],
+        "http://archive.internal:8080"
     ));
 }
 
 #[test]
-fn same_site_request_prefers_forwarded_host_then_site_url() {
-    // Behind Caddy: Host is the internal upstream, X-Forwarded-Host is what the
-    // browser used — and the browser's Origin matches the latter.
-    let behind_proxy = &[
-        ("host", "indice:8080"),
-        ("x-forwarded-host", "archive.example.org"),
-        ("origin", "https://archive.example.org"),
-    ];
-    assert!(same_site("POST", behind_proxy, None));
-    // An explicit --site-url outranks both headers (the nginx case, where Host
-    // is rewritten and X-Forwarded-Host is absent).
+fn a_server_compares_with_its_site_url_whatever_the_headers_say() {
+    // Behind a proxy, Host is the internal upstream and may or may not come
+    // with X-Forwarded-Host. Neither is consulted: a browser on the site sends
+    // the site's Origin, and that is what matches.
     assert!(same_site(
         "POST",
         &[
             ("host", "indice:8080"),
             ("origin", "https://archive.example.org")
         ],
-        Some("archive.example.org")
+        "https://archive.example.org"
     ));
-    // ...and it is authoritative, so a mismatch against it still fails.
+    // A request whose headers agree with each other but not with the site is
+    // refused, however it got here.
+    assert!(!same_site(
+        "POST",
+        &[
+            ("host", "evil.example"),
+            ("x-forwarded-host", "evil.example"),
+            ("origin", "https://evil.example"),
+        ],
+        "https://archive.example.org"
+    ));
     assert!(!same_site(
         "POST",
         &[("host", "indice:8080"), ("origin", "https://indice:8080")],
-        Some("archive.example.org")
+        "https://archive.example.org"
     ));
 }
 
@@ -331,58 +322,14 @@ fn local_mode_refuses_a_rebound_non_loopback_authority() {
             "{host} is this machine"
         );
     }
-    // A proxied deployment sets the authority from a trusted source, so a
-    // non-loopback name is expected there and must still pass.
-    assert!(same_site(
-        "POST",
-        &[
-            ("host", "archive.example.org"),
-            ("origin", "https://archive.example.org")
-        ],
-        None
-    ));
 }
 
 #[test]
-fn forwarded_host_list_uses_the_client_facing_hop() {
-    // Chained proxies append rather than replace: "CDN-facing, internal". The
-    // browser's Origin reflects the first. Without taking it, a chained
-    // deployment 403s every management write with nothing misconfigured.
-    assert!(same_site(
-        "POST",
-        &[
-            ("host", "indice:8080"),
-            ("x-forwarded-host", "archive.example.org, indice:8080"),
-            ("origin", "https://archive.example.org"),
-        ],
-        None
-    ));
-    // The internal hop must not be what we compare against.
-    assert!(!same_site(
-        "POST",
-        &[
-            ("host", "indice:8080"),
-            ("x-forwarded-host", "archive.example.org, indice:8080"),
-            ("origin", "https://indice:8080"),
-        ],
-        None
-    ));
-}
-
-#[test]
-fn same_site_request_refuses_when_our_own_authority_is_unknown() {
+fn a_workstation_refuses_when_the_request_names_no_host() {
     // An Origin we can't compare against anything is not provably same-site.
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        axum::http::header::ORIGIN,
-        axum::http::HeaderValue::from_static("https://evil.example"),
-    );
-    let uri: Uri = "/api/collections/x/delete".parse().unwrap();
-    assert!(!same_site_request(
-        &Method::POST,
-        &headers,
-        &uri,
-        &CsrfPolicy::default()
+    assert!(!same_site_local(
+        "POST",
+        &[("origin", "http://127.0.0.1:8080")]
     ));
 }
 

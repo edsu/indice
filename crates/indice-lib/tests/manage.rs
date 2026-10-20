@@ -112,6 +112,13 @@ async fn serve(
     let port = listener.local_addr().unwrap().port();
     let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = config;
+    // A server will not start without its public URL; this one's is the
+    // address it is about to listen on.
+    if config.site_url().is_none() {
+        config
+            .set_site_url(&format!("http://127.0.0.1:{port}"))
+            .unwrap();
+    }
     config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
         replay.local_addr().unwrap(),
     ));
@@ -1174,8 +1181,7 @@ async fn anonymous_is_refused_from_every_management_route() {
 /// archive is the server shape.
 ///
 /// There were two attempts at a guard here and both were bypassable. The
-/// first read the authority through `expected_authority`, which prefers
-/// `X-Forwarded-Host`, so `X-Forwarded-Host: localhost` walked through a header
+/// first read the authority from `X-Forwarded-Host` in preference to `Host`, so `X-Forwarded-Host: localhost` walked through a header
 /// at a time. The second read `Host` only and held against a browser, because
 /// script cannot set `Host`, and fell to `curl -H 'Host: 127.0.0.1:8080'`
 /// through any Host-preserving proxy, which is what Go's

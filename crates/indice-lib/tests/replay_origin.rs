@@ -17,8 +17,17 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 const REPLAY: &str = "https://replay.example.test";
+const SITE: &str = "https://archive.example.test";
 const USER_HEADER: &str = "x-forwarded-email";
 const SECRET: &str = "replay-origin-secret";
+
+/// A server's config: proxied access and the site's public URL, which a server
+/// will not start without.
+fn proxy_config() -> ServerConfig {
+    let mut config = ServerConfig::new(Access::proxy(USER_HEADER, SECRET));
+    config.set_site_url(SITE).unwrap();
+    config
+}
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).join(name)
@@ -32,7 +41,7 @@ fn server(home: &Path) -> Routers {
         "users:\n  - id: curator@x.edu\n    role: curator\n",
     )
     .unwrap();
-    let mut config = ServerConfig::new(Access::proxy(USER_HEADER, SECRET));
+    let mut config = proxy_config();
     config.replay_origin = Some(ReplayOrigin::parse(REPLAY).unwrap());
     indice_lib::server::routers(home, config).unwrap()
 }
@@ -160,7 +169,7 @@ async fn the_viewers_etag_follows_the_replay_origin() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, .. } = server(tmp.path());
     let (_, a, _) = call(&app, Method::GET, "/replay/viewer", &[]).await;
-    let mut config = ServerConfig::new(Access::proxy(USER_HEADER, SECRET));
+    let mut config = proxy_config();
     config.replay_origin = Some(ReplayOrigin::parse("https://elsewhere.example.test").unwrap());
     let other = indice_lib::server::routers(tmp.path(), config).unwrap().app;
     let (_, b, _) = call(&other, Method::GET, "/replay/viewer", &[]).await;
@@ -173,11 +182,7 @@ async fn the_viewers_etag_follows_the_replay_origin() {
 async fn a_viewer_without_a_replay_origin_says_so() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
-    let app = indice_lib::server::router(
-        tmp.path(),
-        ServerConfig::new(Access::proxy(USER_HEADER, SECRET)),
-    )
-    .unwrap();
+    let app = indice_lib::server::router(tmp.path(), proxy_config()).unwrap();
     let (status, body) = get(&app, "/replay/viewer").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body.contains("replay"), "{body}");
@@ -329,7 +334,7 @@ async fn a_server_without_a_replay_origin_refuses_to_start() {
         replay,
         tmp.path(),
         None,
-        ServerConfig::new(Access::proxy(USER_HEADER, SECRET)),
+        proxy_config(),
         indice_lib::server::Providers::default(),
     )
     .await
@@ -410,4 +415,51 @@ fn a_replay_url_must_be_an_origin() {
         ReplayOrigin::for_listener("[::1]:8081".parse().unwrap()).as_str(),
         "http://[::1]:8081"
     );
+}
+
+/// Replay on the site's own host shares the site's cookies, since cookies
+/// ignore ports, so `indice serve` refuses it. A different host is fine.
+#[test]
+fn replay_on_the_sites_own_host_is_refused() {
+    let mut config = proxy_config();
+    config.replay_origin = Some(ReplayOrigin::parse("https://archive.example.test:8443").unwrap());
+    let err = config.check_replay_host().unwrap_err();
+    assert!(err.to_string().contains("archive.example.test"), "{err}");
+
+    config.replay_origin = Some(ReplayOrigin::parse(REPLAY).unwrap());
+    assert!(config.check_replay_host().is_ok());
+}
+
+/// A site URL is a bare origin, by the same rules as a replay URL. Keeping
+/// only the origin of anything longer would start a server whose every write
+/// is refused: `https://http://archive.internal`, which compose builds from a
+/// SITE_ADDRESS written with a scheme, is a valid URL whose origin is
+/// `https://http`.
+#[test]
+fn a_site_url_must_be_a_bare_origin() {
+    let mut config = proxy_config();
+    for bad in [
+        "https://http://archive.internal",
+        "https://archive.example.test/indice",
+        "https://archive.example.test/?a=b",
+        "https://user@archive.example.test",
+        "ftp://archive.example.test",
+        "archive.example.test",
+    ] {
+        assert!(config.set_site_url(bad).is_err(), "{bad} should be refused");
+    }
+    // A trailing slash and a default port are what an origin already is.
+    config
+        .set_site_url("https://archive.example.test:443/")
+        .unwrap();
+    assert_eq!(config.site_url(), Some("https://archive.example.test"));
+}
+
+/// The same-host check sees through IPv6 brackets on both sides.
+#[test]
+fn replay_on_the_sites_own_ipv6_host_is_refused() {
+    let mut config = proxy_config();
+    config.set_site_url("http://[::1]:8080").unwrap();
+    config.replay_origin = Some(ReplayOrigin::parse("http://[::1]:8081").unwrap());
+    assert!(config.check_replay_host().is_err());
 }
