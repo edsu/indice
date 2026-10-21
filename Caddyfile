@@ -27,6 +27,11 @@
 # work through the proxy. Do not add `encode`: indice compresses in process, and
 # gzipping a byte-range response breaks replay.
 {$SITE_ADDRESS} {
+	# No `log` directive, on purpose. Caddy then keeps no access log, and one
+	# would record every reader's address and full URL, search terms included.
+	# indice's own log keeps the path alone. See "What is recorded" in the
+	# security guide before adding one.
+	#
 	# HSTS is the proxy's to set, because the proxy is what terminates TLS;
 	# indice sets the rest of its security headers itself. A year, and not
 	# `includeSubDomains`: an institution's other subdomains are not this

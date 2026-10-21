@@ -1,4 +1,4 @@
-//! What a failed request tells the client.
+//! What a failed request tells the client, and what the log keeps.
 //!
 //! Errors carry context naming files (`parsing /srv/indice/index/waczs.json`),
 //! so a public route answers with a reference instead, and the log keeps the
@@ -235,4 +235,31 @@ async fn an_unreachable_browsertrix_is_named_but_not_described() {
         "the upstream's error escaped: {body}"
     );
     logged(&reference(&body), "login refused");
+}
+
+/// The request log keeps the path and drops the query string, which is where
+/// a reader's searches and replayed pages travel, and records no address.
+#[tokio::test]
+async fn the_log_keeps_no_search_terms_and_no_addresses() {
+    let s = serve(broken_home(), None).await;
+    let url = format!("{}/search?q=a-private-search", s.app);
+    let (status, body) = call("GET", url, None).await;
+    assert_eq!(status, 200, "{body}");
+
+    let log = String::from_utf8(log().lock().unwrap().clone()).unwrap();
+    assert!(
+        log.lines()
+            .any(|l| l.contains("request{") && l.contains("path=/search")),
+        "the search was not logged by path:\n{log}"
+    );
+    assert!(
+        !log.contains("a-private-search"),
+        "the query reached the log:\n{log}"
+    );
+    for line in log.lines().filter(|l| l.contains("request{")) {
+        assert!(
+            !line.contains("127.0.0.1"),
+            "a request line has an address: {line}"
+        );
+    }
 }

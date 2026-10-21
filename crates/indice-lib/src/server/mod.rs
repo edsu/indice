@@ -881,19 +881,21 @@ fn outer_layers(
         .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
+                // The path, never the query string, and no address. A reader's
+                // searches and the pages they replay travel in the query
+                // (`/search?q=…`, `/replay/viewer?url=…`), and a log of them is
+                // a record of what people read, kept as long as the logs are.
+                // The address would be the proxy's on a server anyway. The id is
+                // what finds a failure, whose error is logged in full; the one
+                // address indice logs is a client a limit refused
+                // (`limits::Reporter`).
                 .make_span_with(|req: &axum::http::Request<Body>| {
-                    let ip = req
-                        .extensions()
-                        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                        .map(|ci| ci.0.ip().to_string())
-                        .unwrap_or_else(|| "-".to_string());
                     let id = req.extensions().get::<RequestId>().copied();
                     tracing::info_span!(
                         "request",
                         id = id.map(tracing::field::display),
                         method = %req.method(),
-                        uri = %req.uri(),
-                        client_ip = %ip,
+                        path = %req.uri().path(),
                     )
                 })
                 .on_response(

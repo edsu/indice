@@ -297,9 +297,9 @@ fn drain_ended(r: &mut Reporter, now: Instant) -> Vec<String> {
 fn report(reporter: &Arc<Mutex<Reporter>>, subject: Subject, reason: Reason) {
     let mut r = reporter.lock().unwrap();
     if let Some(line) = note_refusal(&mut r, subject, reason, Instant::now()) {
-        // Outside the request's span, whose `client_ip` is the TCP peer: behind
-        // a proxy that is the proxy, and printing it beside the address the
-        // limit charged is the confusion this report exists to remove.
+        // Outside the request's span, so the line stands on its own: this is the
+        // one place indice logs a client's address, and only once it has been
+        // refused.
         tracing::warn!(parent: None, "{line}");
     }
     if !r.sweeping && !r.windows.is_empty() {

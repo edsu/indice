@@ -290,6 +290,8 @@ mutates cannot be written without one and a forgotten gate is a compile error.
 - An empty roster means nobody, and a malformed one is an error rather than a
   shrug. `identity.rs::an_empty_roster_is_not_the_same_as_no_roster`,
   `identity.rs::a_malformed_roster_is_an_error_not_a_shrug`
+- The request log keeps a request's path, never its query string or the
+  client's address. `errors.rs::the_log_keeps_no_search_terms_and_no_addresses`
 - A failure tells a public caller only that something went wrong, with a request
   id, and logs the whole error under that id. The helper that answers with the
   detail is reachable only through `Curator::error_response` and
@@ -429,7 +431,7 @@ where hostile input would otherwise matter most, isolates every capture alike; s
 | ~~Error text is read by the operator~~ | Closed: a public route answers a failure with a request id and logs the cause under it; only a curator or admin is told what went wrong | `u9y6.5` |
 | ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
 | The reader is a person | No crawler or scraper policy, and the replay surface is expensive to crawl | `u9y6.7` |
-| Logs are not a privacy artefact | Client IP and full query strings are recorded | `u9y6.8` |
+| ~~Logs are not a privacy artefact~~ | Closed: indice logs a request's path, never its query string or the client's address; the one address it logs is a client a limit refused. The shipped stack turns off oauth2-proxy's per-request log and rotates container logs | `u9y6.8` |
 | ~~Curators supply well-formed WACZs~~ | Closed for memory: no WACZ member is inflated past `index.max_member_mb`, and a remote range is read no further than was asked. Open for disk: a deflated WARC or inner WACZ extracted to a temp file is not yet bounded (`rustyweb-6vjz`) | `rustyweb-wacz-read-caps-q39p` |
 | ~~Archived captures do not script their host~~ | Closed: replay runs on an origin of its own, with no write route and no identity, and a server will not start without one. A capture's script still runs there and can forge the frame's messages to the viewer, which move the banner or pre-fill a note the reader must still save | `rustyweb-replay-origin-isolation-5h67` |
 

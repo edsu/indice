@@ -84,6 +84,15 @@
 # you can commit and diff, instead of reconfiguring your identity provider and
 # restarting it. To narrow who may authenticate at all, set OIDC_EMAIL_DOMAINS,
 # or restrict the client's audience at the issuer.
+# Every container's log is rotated: Docker otherwise keeps it forever. 20 MB
+# five times over is days of a busy archive. To send logs somewhere central
+# instead (journald, syslog), override `logging` in a compose.override.yaml.
+x-logging: &logging
+  driver: local
+  options:
+    max-size: 20m
+    max-file: "5"
+
 services:
   indice:
     build: .
@@ -113,6 +122,7 @@ services:
       # use a directory you can see instead, bind-mount it from an override.
       - indice-data:/data
     restart: unless-stopped
+    logging: *logging
     # The image already declares a HEALTHCHECK (via `indice health`), so Caddy
     # can wait for indice to be healthy before it starts (below).
 
@@ -160,7 +170,13 @@ services:
       OAUTH2_PROXY_REVERSE_PROXY: "true"
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+
+      # No log line per request. Caddy asks oauth2-proxy about every page, so
+      # its request log would record every reader's address and when they
+      # came. Sign-ins are still logged.
+      OAUTH2_PROXY_REQUEST_LOGGING: "false"
     restart: unless-stopped
+    logging: *logging
 
   caddy:
     image: caddy:2
@@ -184,6 +200,7 @@ services:
       - caddy-data:/data # ACME account + issued certs; persist to avoid re-issuing
       - caddy-config:/config
     restart: unless-stopped
+    logging: *logging
 
 volumes:
   indice-data:
