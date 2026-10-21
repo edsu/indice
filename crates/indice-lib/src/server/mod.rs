@@ -658,6 +658,7 @@ fn build_routers(
     // it has a time bound. `/files/{id}` does not and is merged in below.
     let mut app = Router::new()
         .route("/", get(homepage))
+        .route("/robots.txt", get(|| async { headers::app_robots() }))
         .route("/search", get(search_page))
         .route("/collection/{id}", get(collection_page))
         .route("/collection/{id}/replay.json", get(collection_replay_json))
@@ -830,6 +831,7 @@ fn build_routers(
     // identity. That is a property of this list rather than of a check, so it
     // cannot be undone by a route mounted somewhere else.
     let replay = Router::new()
+        .route("/robots.txt", get(|| async { headers::REPLAY_ROBOTS }))
         .route("/replay-frame", get(replay_frame))
         .route("/replay/", get(replay_index))
         .route("/replay/{*path}", get(replay_asset))

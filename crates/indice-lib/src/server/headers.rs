@@ -13,6 +13,9 @@
 //! script away from indice is the origin itself (see [`super::ReplayOrigin`]),
 //! not a header on it.
 //!
+//! What search engines may index is decided here too, for the same two
+//! origins: see [`KEPT_OUT`].
+//!
 //! Both get `nosniff` and a referrer policy. `nosniff` because `/files/{id}`
 //! serves archived bytes as `application/octet-stream`, and sniffing is how a
 //! stored file becomes a page. The referrer policy because an archive's URLs
@@ -26,9 +29,81 @@ use axum::response::Response;
 
 use super::ReplayOrigin;
 
+/// The app paths kept out of search engines, as `robots.txt` patterns (a
+/// prefix, with `*` for any run of characters). One list, so `robots.txt` and
+/// `X-Robots-Tag` cannot disagree.
+///
+/// The rule is simple: every crawler may index indice's own pages, the
+/// homepage, collections, crawls and notes, which are finding aids and exist
+/// to be found; no crawler may index the rest. That is replay and the bytes and
+/// images it serves, which are other people's pages captured by someone else
+/// and would otherwise appear in search results under this site's name; search
+/// results, where every facet makes a new URL for a crawler to fall into; and
+/// the workroom and API. The replay origin is kept out entirely.
+pub(super) const KEPT_OUT: &[&str] = &[
+    "/replay/",
+    "/files/",
+    "/thumb/",
+    "/collection-thumb/",
+    "/collection/*/replay.json",
+    "/collection/*/pages",
+    "/search",
+    "/api/",
+    "/manage/",
+];
+
+/// Whether `path` matches a `robots.txt` pattern: a prefix in which `*`
+/// stands for any run of characters.
+fn robots_match(pattern: &str, path: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let Some(first) = parts.next() else {
+        return true;
+    };
+    let Some(mut rest) = path.strip_prefix(first) else {
+        return false;
+    };
+    for part in parts {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The app origin's `robots.txt`.
+pub(super) fn app_robots() -> String {
+    let mut out = String::from(
+        "# Replay, archived bytes, search results and the workroom are kept out of\n\
+         # search engines; indice's own pages are open to every crawler.\n\
+         User-agent: *\n",
+    );
+    for path in KEPT_OUT {
+        out.push_str(&format!("Disallow: {path}\n"));
+    }
+    out
+}
+
+/// The replay origin's `robots.txt`: nothing here is to be indexed.
+pub(super) const REPLAY_ROBOTS: &str =
+    "# Replay serves archived pages; none of it is to be indexed.\nUser-agent: *\nDisallow: /\n";
+
+/// Which responses a router marks `X-Robots-Tag: noindex`, for the crawlers
+/// that do not read `robots.txt`.
+#[derive(Clone, Copy)]
+enum Noindex {
+    /// The app: the paths in [`KEPT_OUT`].
+    KeptOut,
+    /// The replay origin: everything.
+    All,
+}
+
 /// The headers one router adds to every response.
 #[derive(Clone)]
-pub(super) struct SecurityHeaders(Arc<Vec<(HeaderName, HeaderValue)>>);
+pub(super) struct SecurityHeaders {
+    pairs: Arc<Vec<(HeaderName, HeaderValue)>>,
+    noindex: Noindex,
+}
 
 /// `same-origin`: indice's own navigations keep their `Referer`, which
 /// `/manage/login` reads to send you back where you were, and nothing else gets
@@ -65,11 +140,14 @@ impl SecurityHeaders {
         // timeline bar's height (views/mod.rs, views/search.rs). Inline style
         // attributes can restyle a page but not run anything, and no markup
         // a visitor supplies reaches the page unsanitized.
-        Self::from_pairs(vec![
-            (header::CONTENT_SECURITY_POLICY, csp),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
-            (header::REFERRER_POLICY, REFERRER_POLICY.into()),
-        ])
+        Self::from_pairs(
+            vec![
+                (header::CONTENT_SECURITY_POLICY, csp),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+                (header::REFERRER_POLICY, REFERRER_POLICY.into()),
+            ],
+            Noindex::KeptOut,
+        )
     }
 
     /// For the replay origin. `ancestors` are the origins the viewer is
@@ -94,18 +172,22 @@ impl SecurityHeaders {
                 format!("frame-ancestors 'self' {}", ancestors.join(" ")),
             ));
         }
-        Self::from_pairs(pairs)
+        Self::from_pairs(pairs, Noindex::All)
     }
 
-    fn from_pairs(pairs: Vec<(HeaderName, String)>) -> Self {
-        Self(Arc::new(
-            pairs
-                .into_iter()
-                // Every value is built here from validated origins and fixed
-                // text, so one that is not a header value is a bug in this file.
-                .map(|(k, v)| (k, HeaderValue::from_str(&v).expect("a header value")))
-                .collect(),
-        ))
+    fn from_pairs(pairs: Vec<(HeaderName, String)>, noindex: Noindex) -> Self {
+        Self {
+            pairs: Arc::new(
+                pairs
+                    .into_iter()
+                    // Every value is built here from validated origins and fixed
+                    // text, so one that is not a header value is a bug in this
+                    // file.
+                    .map(|(k, v)| (k, HeaderValue::from_str(&v).expect("a header value")))
+                    .collect(),
+            ),
+            noindex,
+        }
     }
 
     pub(super) async fn apply(
@@ -113,9 +195,21 @@ impl SecurityHeaders {
         req: axum::extract::Request,
         next: axum::middleware::Next,
     ) -> Response {
+        let noindex = match self.noindex {
+            Noindex::All => true,
+            Noindex::KeptOut => KEPT_OUT
+                .iter()
+                .any(|pattern| robots_match(pattern, req.uri().path())),
+        };
         let mut res = next.run(req).await;
-        for (name, value) in self.0.iter() {
+        for (name, value) in self.pairs.iter() {
             res.headers_mut().insert(name.clone(), value.clone());
+        }
+        if noindex {
+            res.headers_mut().insert(
+                HeaderName::from_static("x-robots-tag"),
+                HeaderValue::from_static("noindex"),
+            );
         }
         res
     }
@@ -129,4 +223,22 @@ pub(super) fn loopback_origins(addr: std::net::SocketAddr) -> Vec<String> {
         format!("http://{addr}"),
         format!("http://localhost:{}", addr.port()),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::robots_match;
+
+    #[test]
+    fn a_pattern_is_a_prefix_with_wildcards() {
+        assert!(robots_match("/replay/", "/replay/viewer"));
+        assert!(robots_match("/search", "/search"));
+        assert!(robots_match(
+            "/collection/*/pages",
+            "/collection/demo/pages"
+        ));
+        assert!(!robots_match("/collection/*/pages", "/collection/demo"));
+        assert!(!robots_match("/replay/", "/collection/replay/x"));
+        assert!(!robots_match("/files/", "/"));
+    }
 }

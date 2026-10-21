@@ -214,3 +214,82 @@ async fn a_workstations_replay_may_be_framed_only_by_its_viewer() {
     );
     server.abort();
 }
+
+/// GET `path` and return the body.
+async fn body(router: &axum::Router, path: &str) -> String {
+    let res = router
+        .clone()
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn noindex(h: &HeaderMap) -> bool {
+    h.get("x-robots-tag").is_some_and(|v| v == "noindex")
+}
+
+/// Every crawler may index indice's own pages and none may index the rest:
+/// replay, the bytes and images it serves, search results, the workroom and
+/// the API. `robots.txt` says so to crawlers that read it, and `X-Robots-Tag`
+/// to those that don't. The replay origin is kept out entirely.
+#[tokio::test]
+async fn crawlers_may_index_only_indices_own_pages() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, replay } = routers(tmp.path(), config());
+
+    let robots = body(&app, "/robots.txt").await;
+    assert!(robots.contains("User-agent: *\n"), "{robots}");
+    let kept_out = [
+        "/replay/viewer",
+        "/files/x",
+        "/thumb/x",
+        "/collection-thumb/x",
+        "/collection/x/replay.json",
+        "/collection/x/pages",
+        "/search?q=a",
+        "/api/search?q=a",
+        "/manage/add",
+    ];
+    for path in kept_out {
+        assert!(
+            noindex(&headers(&app, Method::GET, path, &[]).await),
+            "{path} should carry noindex"
+        );
+    }
+    for prefix in ["/replay/", "/files/", "/search", "/api/", "/manage/"] {
+        assert!(
+            robots.contains(&format!("Disallow: {prefix}\n")),
+            "{prefix} missing from {robots}"
+        );
+    }
+    for path in [
+        "/",
+        "/collection/x",
+        "/crawl/x",
+        "/collection/x/annotations",
+    ] {
+        assert!(
+            !noindex(&headers(&app, Method::GET, path, &[]).await),
+            "{path} should be indexable"
+        );
+        assert!(!robots.contains(&format!("Disallow: {path}\n")), "{robots}");
+    }
+
+    let robots = body(&replay, "/robots.txt").await;
+    assert!(robots.contains("User-agent: *\nDisallow: /\n"), "{robots}");
+    for path in [
+        "/replay-frame",
+        "/replay/",
+        "/files/x",
+        "/collection/x/pages",
+    ] {
+        assert!(
+            noindex(&headers(&replay, Method::GET, path, &[]).await),
+            "{path} on the replay origin should carry noindex"
+        );
+    }
+}
