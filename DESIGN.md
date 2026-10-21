@@ -290,9 +290,9 @@ mutates cannot be written without one and a forgotten gate is a compile error.
 - An empty roster means nobody, and a malformed one is an error rather than a
   shrug. `identity.rs::an_empty_roster_is_not_the_same_as_no_roster`,
   `identity.rs::a_malformed_roster_is_an_error_not_a_shrug`
-- Every crawler may index indice's own pages and none may index replay,
-  archived bytes, search results, the workroom or the API; the replay origin is
-  kept out entirely. `security_headers.rs::crawlers_may_index_only_indices_own_pages`
+- Crawlers may list only indice's own pages, and may fetch all but what is
+  expensive to serve; the replay origin lists nothing.
+  `security_headers.rs::crawlers_list_only_indices_own_pages_and_skip_what_is_costly`
 - The request log keeps a request's path, never its query string or the
   client's address. `errors.rs::the_log_keeps_no_search_terms_and_no_addresses`
 - A failure tells a public caller only that something went wrong, with a request
@@ -433,7 +433,7 @@ where hostile input would otherwise matter most, isolates every capture alike; s
 | Readers are not hostile to availability | Closed for one client, bounded for many. A query is capped at 2 KiB, index reads run on the blocking pool, quick routes time out at 30s, and a server caps quick requests in flight (256), each client's rate (a burst of 100, then 20/s), and open `/files` streams (64 per client, 512 in all). Many clients together are bounded by the global caps, not refused one by one, so a large enough crowd degrades the site to `503` for everyone | `u9y6.1` |
 | ~~Error text is read by the operator~~ | Closed: a public route answers a failure with a request id and logs the cause under it; only a curator or admin is told what went wrong | `u9y6.5` |
 | ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
-| ~~The reader is a person~~ | Closed: every crawler may index indice's own pages and none may index replay, archived bytes, search results, the workroom or the API, said in `robots.txt` and `X-Robots-Tag` from one list (`server::headers::KEPT_OUT`); the replay origin is kept out entirely. A crawler that ignores both is bounded by the rate limits | `u9y6.7` |
+| ~~The reader is a person~~ | Closed: crawlers may list only indice's own pages (`X-Robots-Tag: noindex` on the rest) and may fetch all but `/files/`, `/search`, `/api/` and `/manage/` (`robots.txt`), per origin in `server::headers::CrawlPolicy`. A crawler that ignores both is bounded by the rate limits, which never refuse `/robots.txt` | `u9y6.7` |
 | ~~Logs are not a privacy artefact~~ | Closed: indice logs a request's path, never its query string or the client's address; the one address it logs is a client a limit refused. The shipped stack turns off oauth2-proxy's per-request log and rotates container logs | `u9y6.8` |
 | ~~Curators supply well-formed WACZs~~ | Closed for memory: no WACZ member is inflated past `index.max_member_mb`, and a remote range is read no further than was asked. Open for disk: a deflated WARC or inner WACZ extracted to a temp file is not yet bounded (`rustyweb-6vjz`) | `rustyweb-wacz-read-caps-q39p` |
 | ~~Archived captures do not script their host~~ | Closed: replay runs on an origin of its own, with no write route and no identity, and a server will not start without one. A capture's script still runs there and can forge the frame's messages to the viewer, which move the banner or pre-fill a note the reader must still save | `rustyweb-replay-origin-isolation-5h67` |

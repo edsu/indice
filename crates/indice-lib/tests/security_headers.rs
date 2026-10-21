@@ -232,55 +232,86 @@ fn noindex(h: &HeaderMap) -> bool {
     h.get("x-robots-tag").is_some_and(|v| v == "noindex")
 }
 
-/// Every crawler may index indice's own pages and none may index the rest:
-/// replay, the bytes and images it serves, search results, the workroom and
-/// the API. `robots.txt` says so to crawlers that read it, and `X-Robots-Tag`
-/// to those that don't. The replay origin is kept out entirely.
+/// The paths a `robots.txt` disallows for every crawler.
+fn disallowed(robots: &str) -> Vec<String> {
+    robots
+        .lines()
+        .filter_map(|l| l.strip_prefix("Disallow: "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether a crawler reading these `Disallow` patterns would fetch `path`: a
+/// pattern is a prefix in which `*` stands for any run of characters.
+fn fetchable(patterns: &[String], path: &str) -> bool {
+    !patterns.iter().any(|pattern| {
+        let mut parts = pattern.split('*');
+        let Some(mut rest) = path.strip_prefix(parts.next().unwrap_or_default()) else {
+            return false;
+        };
+        parts.all(|part| match rest.find(part) {
+            Some(i) => {
+                rest = &rest[i + part.len()..];
+                true
+            }
+            None => false,
+        })
+    })
+}
+
+/// Crawlers may list only indice's own pages, and may fetch anything but what
+/// is expensive to serve. The two are different lists because a crawler that
+/// obeys `robots.txt` never fetches a disallowed URL and so never sees its
+/// `noindex`: what should stay out of results is left fetchable and marked
+/// `noindex`, and only what should not be fetched at all is disallowed.
 #[tokio::test]
-async fn crawlers_may_index_only_indices_own_pages() {
+async fn crawlers_list_only_indices_own_pages_and_skip_what_is_costly() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, replay } = routers(tmp.path(), config());
 
     let robots = body(&app, "/robots.txt").await;
-    assert!(robots.contains("User-agent: *\n"), "{robots}");
-    let kept_out = [
+    assert!(robots.starts_with("User-agent: *\n"), "{robots}");
+    let patterns = disallowed(&robots);
+
+    // Expensive to serve: not fetched, and not listed either.
+    for path in ["/files/x", "/search", "/api/search", "/manage/add"] {
+        assert!(!fetchable(&patterns, path), "{path} should be disallowed");
+        assert!(
+            noindex(&headers(&app, Method::GET, path, &[]).await),
+            "{path}"
+        );
+    }
+    // Not indice's own: fetchable, so the crawler sees that it is not to be listed.
+    for path in [
         "/replay/viewer",
-        "/files/x",
         "/thumb/x",
         "/collection-thumb/x",
         "/collection/x/replay.json",
         "/collection/x/pages",
-        "/search?q=a",
-        "/api/search?q=a",
-        "/manage/add",
-    ];
-    for path in kept_out {
+    ] {
+        assert!(fetchable(&patterns, path), "{path} should be fetchable");
         assert!(
             noindex(&headers(&app, Method::GET, path, &[]).await),
             "{path} should carry noindex"
         );
     }
-    for prefix in ["/replay/", "/files/", "/search", "/api/", "/manage/"] {
-        assert!(
-            robots.contains(&format!("Disallow: {prefix}\n")),
-            "{prefix} missing from {robots}"
-        );
-    }
+    // indice's own pages: fetched and listed.
     for path in [
         "/",
         "/collection/x",
         "/crawl/x",
         "/collection/x/annotations",
     ] {
+        assert!(fetchable(&patterns, path), "{path} should be fetchable");
         assert!(
             !noindex(&headers(&app, Method::GET, path, &[]).await),
             "{path} should be indexable"
         );
-        assert!(!robots.contains(&format!("Disallow: {path}\n")), "{robots}");
     }
 
+    // The replay origin: nothing listed, and no WACZ fetched.
     let robots = body(&replay, "/robots.txt").await;
-    assert!(robots.contains("User-agent: *\nDisallow: /\n"), "{robots}");
+    assert_eq!(robots, "User-agent: *\nDisallow: /files/\n");
     for path in [
         "/replay-frame",
         "/replay/",

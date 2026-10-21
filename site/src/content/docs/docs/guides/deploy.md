@@ -247,7 +247,7 @@ Caddy is doing six separable jobs here, and none of them is Caddy-specific. Anyt
 3. **Inject the identity and the shared secret together**, only on a request your proxy authenticated, replacing any copy the client sent.
 4. **Leave byte ranges alone.** No gzip on a ranged response, no buffering of large bodies, or WACZ replay breaks.
 5. **Send the replay hostname to the replay listener**, port 8081 by default (`--replay-bind`), with no login and with both identity headers stripped, and pass that hostname to indice as `--replay-url`.
-6. **Set `Strict-Transport-Security`** on both hostnames, since the proxy is what terminates TLS. indice sets its other security headers itself (a `Content-Security-Policy` per origin, `X-Content-Type-Options` and `Referrer-Policy`), so pass them through rather than replacing them.
+6. **Set `Strict-Transport-Security`** on both hostnames, since the proxy is what terminates TLS. indice sets its other headers itself (a `Content-Security-Policy` per origin, `X-Content-Type-Options`, `Referrer-Policy` and `X-Robots-Tag`), so pass them through rather than replacing them. Send `/robots.txt` to indice on both hostnames too: each has its own.
 
 On indice's side, pass the site's public URL as `--site-url`. A server will not start without it, and it means indice never relies on the proxy's `Host` or `X-Forwarded-Host`, which nginx and Apache rewrite by default. See [What `--site-url` does](/docs/guides/security/#what---site-url-does).
 

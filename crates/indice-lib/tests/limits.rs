@@ -121,7 +121,8 @@ async fn hammer(
 }
 
 /// Past its burst, a client is told to wait, with `Retry-After`; another client
-/// behind the same proxy is not; and `/health` answers throughout.
+/// behind the same proxy is not; and `/health` and `/robots.txt` answer
+/// throughout.
 ///
 /// The test client is on 127.0.0.1, which is where a reverse proxy sits, so
 /// indice believes the `X-Forwarded-For` it sends. That is how two clients
@@ -152,8 +153,10 @@ async fn a_client_past_its_burst_is_told_to_wait_and_others_are_not() {
     let bob = vec![("x-forwarded-for", "8.8.8.8".to_string())];
     assert_eq!(hammer(&base, "/assets/app.css", 1, bob).await, vec![200]);
 
-    // And the orchestrator's probe is never limited.
-    assert_eq!(hammer(&base, "/health", 1, alice).await, vec![200]);
+    // And neither the orchestrator's probe nor robots.txt is ever limited: a
+    // crawler refused robots.txt treats the whole site as disallowed.
+    assert_eq!(hammer(&base, "/health", 1, alice.clone()).await, vec![200]);
+    assert_eq!(hammer(&base, "/robots.txt", 1, alice).await, vec![200]);
     server.abort();
 }
 

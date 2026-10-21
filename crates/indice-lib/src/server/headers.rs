@@ -13,8 +13,8 @@
 //! script away from indice is the origin itself (see [`super::ReplayOrigin`]),
 //! not a header on it.
 //!
-//! What search engines may index is decided here too, for the same two
-//! origins: see [`KEPT_OUT`].
+//! What crawlers may list and fetch is decided here too, for the same two
+//! origins: see [`CrawlPolicy`].
 //!
 //! Both get `nosniff` and a referrer policy. `nosniff` because `/files/{id}`
 //! serves archived bytes as `application/octet-stream`, and sniffing is how a
@@ -29,36 +29,82 @@ use axum::response::Response;
 
 use super::ReplayOrigin;
 
-/// The app paths kept out of search engines, as `robots.txt` patterns (a
-/// prefix, with `*` for any run of characters). One list, so `robots.txt` and
-/// `X-Robots-Tag` cannot disagree.
+/// What crawlers may do on one origin, in two halves:
 ///
-/// The rule is simple: every crawler may index indice's own pages, the
-/// homepage, collections, crawls and notes, which are finding aids and exist
-/// to be found; no crawler may index the rest. That is replay and the bytes and
-/// images it serves, which are other people's pages captured by someone else
-/// and would otherwise appear in search results under this site's name; search
-/// results, where every facet makes a new URL for a crawler to fall into; and
-/// the workroom and API. The replay origin is kept out entirely.
-pub(super) const KEPT_OUT: &[&str] = &[
-    "/replay/",
-    "/files/",
-    "/thumb/",
-    "/collection-thumb/",
-    "/collection/*/replay.json",
-    "/collection/*/pages",
-    "/search",
-    "/api/",
-    "/manage/",
-];
+/// - **List** only indice's own pages: the homepage, collections, crawls and
+///   notes, which are finding aids and exist to be found. Everything else is
+///   marked `X-Robots-Tag: noindex`: replay and the images it serves, which are
+///   other people's pages captured by someone else, search results, the
+///   workroom and the API.
+/// - **Fetch** anything except what is expensive to serve: whole WACZs, search
+///   results (every facet makes a new URL), the workroom and the API. Those are
+///   `Disallow`ed in `robots.txt`.
+///
+/// The halves differ because a crawler that obeys `robots.txt` never fetches a
+/// disallowed URL, so it never sees that URL's `noindex`, and may still list
+/// the bare address it found in a link. So what should stay out of results is
+/// left fetchable and marked `noindex`, and only what should not be fetched at
+/// all is disallowed.
+///
+/// Patterns are `robots.txt` prefixes, with `*` for any run of characters.
+pub(super) struct CrawlPolicy {
+    disallow: &'static [&'static str],
+    noindex: &'static [&'static str],
+}
+
+const APP_CRAWL: CrawlPolicy = CrawlPolicy {
+    disallow: &["/files/", "/search", "/api/", "/manage/"],
+    noindex: &[
+        "/replay/",
+        "/files/",
+        "/thumb/",
+        "/collection-thumb/",
+        "/collection/*/replay.json",
+        "/collection/*/pages",
+        "/search",
+        "/api/",
+        "/manage/",
+    ],
+};
+
+/// The replay origin serves nothing to list, and its WACZs are not to be
+/// fetched.
+const REPLAY_CRAWL: CrawlPolicy = CrawlPolicy {
+    disallow: &["/files/"],
+    noindex: &["/"],
+};
+
+impl CrawlPolicy {
+    fn robots(&self) -> String {
+        let mut out = String::from("User-agent: *\n");
+        for path in self.disallow {
+            out.push_str(&format!("Disallow: {path}\n"));
+        }
+        out
+    }
+
+    fn noindex(&self, path: &str) -> bool {
+        self.noindex.iter().any(|p| robots_match(p, path))
+    }
+}
+
+/// The app origin's `robots.txt`, built once.
+pub(super) fn app_robots() -> &'static str {
+    static ROBOTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| APP_CRAWL.robots());
+    &ROBOTS
+}
+
+/// The replay origin's `robots.txt`, built once.
+pub(super) fn replay_robots() -> &'static str {
+    static ROBOTS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| REPLAY_CRAWL.robots());
+    &ROBOTS
+}
 
 /// Whether `path` matches a `robots.txt` pattern: a prefix in which `*`
 /// stands for any run of characters.
 fn robots_match(pattern: &str, path: &str) -> bool {
     let mut parts = pattern.split('*');
-    let Some(first) = parts.next() else {
-        return true;
-    };
+    let first = parts.next().unwrap_or_default();
     let Some(mut rest) = path.strip_prefix(first) else {
         return false;
     };
@@ -71,38 +117,11 @@ fn robots_match(pattern: &str, path: &str) -> bool {
     true
 }
 
-/// The app origin's `robots.txt`.
-pub(super) fn app_robots() -> String {
-    let mut out = String::from(
-        "# Replay, archived bytes, search results and the workroom are kept out of\n\
-         # search engines; indice's own pages are open to every crawler.\n\
-         User-agent: *\n",
-    );
-    for path in KEPT_OUT {
-        out.push_str(&format!("Disallow: {path}\n"));
-    }
-    out
-}
-
-/// The replay origin's `robots.txt`: nothing here is to be indexed.
-pub(super) const REPLAY_ROBOTS: &str =
-    "# Replay serves archived pages; none of it is to be indexed.\nUser-agent: *\nDisallow: /\n";
-
-/// Which responses a router marks `X-Robots-Tag: noindex`, for the crawlers
-/// that do not read `robots.txt`.
-#[derive(Clone, Copy)]
-enum Noindex {
-    /// The app: the paths in [`KEPT_OUT`].
-    KeptOut,
-    /// The replay origin: everything.
-    All,
-}
-
 /// The headers one router adds to every response.
 #[derive(Clone)]
 pub(super) struct SecurityHeaders {
     pairs: Arc<Vec<(HeaderName, HeaderValue)>>,
-    noindex: Noindex,
+    crawl: &'static CrawlPolicy,
 }
 
 /// `same-origin`: indice's own navigations keep their `Referer`, which
@@ -146,7 +165,7 @@ impl SecurityHeaders {
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
                 (header::REFERRER_POLICY, REFERRER_POLICY.into()),
             ],
-            Noindex::KeptOut,
+            &APP_CRAWL,
         )
     }
 
@@ -172,10 +191,10 @@ impl SecurityHeaders {
                 format!("frame-ancestors 'self' {}", ancestors.join(" ")),
             ));
         }
-        Self::from_pairs(pairs, Noindex::All)
+        Self::from_pairs(pairs, &REPLAY_CRAWL)
     }
 
-    fn from_pairs(pairs: Vec<(HeaderName, String)>, noindex: Noindex) -> Self {
+    fn from_pairs(pairs: Vec<(HeaderName, String)>, crawl: &'static CrawlPolicy) -> Self {
         Self {
             pairs: Arc::new(
                 pairs
@@ -186,7 +205,7 @@ impl SecurityHeaders {
                     .map(|(k, v)| (k, HeaderValue::from_str(&v).expect("a header value")))
                     .collect(),
             ),
-            noindex,
+            crawl,
         }
     }
 
@@ -195,12 +214,7 @@ impl SecurityHeaders {
         req: axum::extract::Request,
         next: axum::middleware::Next,
     ) -> Response {
-        let noindex = match self.noindex {
-            Noindex::All => true,
-            Noindex::KeptOut => KEPT_OUT
-                .iter()
-                .any(|pattern| robots_match(pattern, req.uri().path())),
-        };
+        let noindex = self.crawl.noindex(req.uri().path());
         let mut res = next.run(req).await;
         for (name, value) in self.pairs.iter() {
             res.headers_mut().insert(name.clone(), value.clone());
@@ -231,6 +245,8 @@ mod tests {
 
     #[test]
     fn a_pattern_is_a_prefix_with_wildcards() {
+        assert!(robots_match("/a/*/b/*/c", "/a/1/2/b/3/c"));
+        assert!(!robots_match("/a/*/b/*/c", "/a/1/c/b"));
         assert!(robots_match("/replay/", "/replay/viewer"));
         assert!(robots_match("/search", "/search"));
         assert!(robots_match(

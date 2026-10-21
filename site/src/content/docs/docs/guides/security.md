@@ -65,7 +65,7 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 |---|---|---|
 | `Content-Security-Policy` | Script, style and images from the site only; may frame only the replay host; framed by nobody | Framed only by itself and the site; no script policy, since running archived script is replay's job |
 | `X-Content-Type-Options: nosniff` | Yes | Yes |
-| `X-Robots-Tag: noindex` | On the paths kept out of search engines (below) | Yes |
+| `X-Robots-Tag: noindex` | On everything but indice's own pages (below) | Yes |
 | `Referrer-Policy: same-origin` | Yes | Yes |
 | `Strict-Transport-Security` | Set by the proxy | Set by the proxy |
 
@@ -100,15 +100,14 @@ The cause stays out of the answer because it usually names a file, such as `pars
 
 ## Search engines and crawlers
 
-The rule is simple: every crawler may index indice's own pages, and no crawler may index the rest. indice's own pages are the homepage and the collection, crawl and notes pages, which are finding aids and exist to be found. The rest is:
+The rule has two halves, and it is the same for every crawler, search engine or AI scraper:
 
-- **Replay, and the bytes and images it serves** (`/replay/`, `/files/`, `/thumb/`, `/collection-thumb/`, a collection's `replay.json` and `pages`). These are other people's pages, captured by someone else. Indexed, they would turn up in search results under your site's name, and could outrank the live site.
-- **Search results** (`/search`). Every facet makes a new URL, so a crawler following them never runs out of pages.
-- **The workroom and the API** (`/manage/`, `/api/`).
+- **Crawlers may list only indice's own pages:** the homepage and the collection, crawl and notes pages, which are finding aids and exist to be found. Everything else carries `X-Robots-Tag: noindex`: replay and the images it serves, which are other people's pages captured by someone else and would otherwise turn up in search results under your site's name; search results; the workroom; and the API.
+- **Crawlers may fetch anything except what is expensive to serve:** whole WACZs (`/files/`), search results (`/search`, where every facet makes a new URL), the workroom (`/manage/`) and the API (`/api/`). `/robots.txt` disallows those.
 
-indice says so twice: in `/robots.txt`, to crawlers that read it, and with `X-Robots-Tag: noindex` on those responses, to crawlers that do not. The replay hostname's `/robots.txt` disallows everything, and every response there carries `noindex`. The rule is the same for every crawler, search engine or AI scraper alike, and there is no list of names to keep up to date.
+The halves are different lists because a crawler that obeys `robots.txt` never fetches a page it disallows, so it never sees that page's `noindex`, and can still list the bare address it found in a link. So what should stay out of search results is left fetchable and marked `noindex`, and only what should not be fetched at all is disallowed. On the replay hostname every response carries `noindex`, and its `/robots.txt` disallows `/files/`.
 
-Both are requests a crawler may ignore. What a crawler cannot ignore is the [rate limit](#limits): past its share it is told to wait, whatever it calls itself, so an aggressive one is slowed rather than allowed to take the site down. To refuse a particular crawler outright, by its address or its user agent, do it at your proxy.
+Both are requests a crawler may ignore. What a crawler cannot ignore is the [rate limit](#limits): past its share it is told to wait, whatever it calls itself, so an aggressive one is slowed rather than allowed to take the site down. `/robots.txt` itself is never limited, because a crawler refused it treats the whole site as off limits for a while. To refuse a particular crawler outright, by its address or its user agent, do it at your proxy.
 
 ## What is recorded
 
