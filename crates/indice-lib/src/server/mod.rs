@@ -699,10 +699,13 @@ fn build_routers(
         axum::middleware::from_fn_with_state(state.clone(), limits::limit_streams),
     );
 
-    // Outside every limit, on purpose: an orchestrator reads a busy server's
+    // Outside every limit, on purpose. An orchestrator reads a busy server's
     // 503 on `/health` as a dead one and restarts it, which turns load into an
-    // outage. It answers as long as the process does.
-    let health_route = Router::new().route("/health", get(health));
+    // outage, and a crawler refused its `robots.txt` treats the whole site as
+    // disallowed for a while. Both answer as long as the process does.
+    let unlimited = Router::new()
+        .route("/health", get(health))
+        .route("/robots.txt", get(|| async { headers::app_robots() }));
 
     // The write surface: the browser management UI plus its endpoints — add a
     // crawl (`index_location`, streaming progress over SSE), upload a WACZ, and
@@ -794,10 +797,7 @@ fn build_routers(
         ));
     }
 
-    app = app
-        .merge(streaming)
-        .merge(health_route)
-        .merge(manage_routes);
+    app = app.merge(streaming).merge(unlimited).merge(manage_routes);
 
     // Outside `manage_routes` on purpose: logout must NOT be
     // forward-auth-gated, because that middleware re-sets the display
@@ -846,7 +846,8 @@ fn build_routers(
         .merge(Router::new().route("/files/{id}", get(serve_file)).layer(
             axum::middleware::from_fn_with_state(state.clone(), limits::limit_streams),
         ))
-        .route("/health", get(health));
+        .route("/health", get(health))
+        .route("/robots.txt", get(|| async { headers::replay_robots() }));
 
     // Who may frame replay: wherever the viewer is served from. A workstation
     // knows its own listener; a server, what `--site-url` says. Empty only for a

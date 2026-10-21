@@ -214,3 +214,113 @@ async fn a_workstations_replay_may_be_framed_only_by_its_viewer() {
     );
     server.abort();
 }
+
+/// GET `path` and return the body.
+async fn body(router: &axum::Router, path: &str) -> String {
+    let res = router
+        .clone()
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn noindex(h: &HeaderMap) -> bool {
+    h.get("x-robots-tag").is_some_and(|v| v == "noindex")
+}
+
+/// The paths a `robots.txt` disallows for every crawler.
+fn disallowed(robots: &str) -> Vec<String> {
+    robots
+        .lines()
+        .filter_map(|l| l.strip_prefix("Disallow: "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether a crawler reading these `Disallow` patterns would fetch `path`: a
+/// pattern is a prefix in which `*` stands for any run of characters.
+fn fetchable(patterns: &[String], path: &str) -> bool {
+    !patterns.iter().any(|pattern| {
+        let mut parts = pattern.split('*');
+        let Some(mut rest) = path.strip_prefix(parts.next().unwrap_or_default()) else {
+            return false;
+        };
+        parts.all(|part| match rest.find(part) {
+            Some(i) => {
+                rest = &rest[i + part.len()..];
+                true
+            }
+            None => false,
+        })
+    })
+}
+
+/// Crawlers may list only indice's own pages, and may fetch anything but what
+/// is expensive to serve. The two are different lists because a crawler that
+/// obeys `robots.txt` never fetches a disallowed URL and so never sees its
+/// `noindex`: what should stay out of results is left fetchable and marked
+/// `noindex`, and only what should not be fetched at all is disallowed.
+#[tokio::test]
+async fn crawlers_list_only_indices_own_pages_and_skip_what_is_costly() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, replay } = routers(tmp.path(), config());
+
+    let robots = body(&app, "/robots.txt").await;
+    assert!(robots.starts_with("User-agent: *\n"), "{robots}");
+    let patterns = disallowed(&robots);
+
+    // Expensive to serve: not fetched, and not listed either.
+    for path in ["/files/x", "/search", "/api/search", "/manage/add"] {
+        assert!(!fetchable(&patterns, path), "{path} should be disallowed");
+        assert!(
+            noindex(&headers(&app, Method::GET, path, &[]).await),
+            "{path}"
+        );
+    }
+    // Not indice's own: fetchable, so the crawler sees that it is not to be listed.
+    for path in [
+        "/replay/viewer",
+        "/thumb/x",
+        "/collection-thumb/x",
+        "/collection/x/replay.json",
+        "/collection/x/pages",
+    ] {
+        assert!(fetchable(&patterns, path), "{path} should be fetchable");
+        assert!(
+            noindex(&headers(&app, Method::GET, path, &[]).await),
+            "{path} should carry noindex"
+        );
+    }
+    // indice's own pages: fetched and listed.
+    for path in [
+        "/",
+        "/collection/x",
+        "/crawl/x",
+        "/collection/x/annotations",
+    ] {
+        assert!(fetchable(&patterns, path), "{path} should be fetchable");
+        assert!(
+            !noindex(&headers(&app, Method::GET, path, &[]).await),
+            "{path} should be indexable"
+        );
+    }
+
+    // The replay origin: nothing listed, and no WACZ fetched.
+    let robots = body(&replay, "/robots.txt").await;
+    assert_eq!(robots, "User-agent: *\nDisallow: /files/\n");
+    for path in [
+        "/replay-frame",
+        "/replay/",
+        "/files/x",
+        "/collection/x/pages",
+    ] {
+        assert!(
+            noindex(&headers(&replay, Method::GET, path, &[]).await),
+            "{path} on the replay origin should carry noindex"
+        );
+    }
+}

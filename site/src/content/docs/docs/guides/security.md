@@ -15,6 +15,7 @@ A workstation is a different promise. `indice serve` on loopback keeps indice of
 - **Your replay hostname shows only your archive.** It replays only this server's own WACZs, and only in indice's replay frame, never as a page of its own.
 - **Other websites cannot drive a signed-in curator's browser.** Writes started by another site's page are refused, and no other site may frame indice's pages.
 - **A failure does not describe the server.** A visitor whose request fails is told so, with a reference to quote; the cause, which can name files on the server, goes to the log under that reference.
+- **Archived pages stay out of search engines.** Crawlers may index your collections and finding aids, not the pages you captured or your search results.
 - **What readers read is not logged.** indice's log keeps the path of each request, not the search terms or the address of the reader.
 - **One client cannot take the site down for everyone.** Requests are rate-limited per client and capped in total, and slow work has a time limit.
 
@@ -64,6 +65,7 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 |---|---|---|
 | `Content-Security-Policy` | Script, style and images from the site only; may frame only the replay host; framed by nobody | Framed only by itself and the site; no script policy, since running archived script is replay's job |
 | `X-Content-Type-Options: nosniff` | Yes | Yes |
+| `X-Robots-Tag: noindex` | On everything but indice's own pages (below) | Yes |
 | `Referrer-Policy: same-origin` | Yes | Yes |
 | `Strict-Transport-Security` | Set by the proxy | Set by the proxy |
 
@@ -96,6 +98,17 @@ docker compose logs indice | grep id=3f9a1c2e07d4b6a1
 
 The cause stays out of the answer because it usually names a file, such as `parsing /data/index/waczs.json`, and that tells a stranger how the server is laid out. Curators and admins are the exception: when something they started fails, such as an upload, an import or an edit, the answer says what went wrong, since they are the ones who can act on it, and still gives the reference to pass on.
 
+## Search engines and crawlers
+
+The rule has two halves, and it is the same for every crawler, search engine or AI scraper:
+
+- **Crawlers may list only indice's own pages:** the homepage and the collection, crawl and notes pages, which are finding aids and exist to be found. Everything else carries `X-Robots-Tag: noindex`: replay and the images it serves, which are other people's pages captured by someone else and would otherwise turn up in search results under your site's name; search results; the workroom; and the API.
+- **Crawlers may fetch anything except what is expensive to serve:** whole WACZs (`/files/`), search results (`/search`, where every facet makes a new URL), the workroom (`/manage/`) and the API (`/api/`). `/robots.txt` disallows those.
+
+The halves are different lists because a crawler that obeys `robots.txt` never fetches a page it disallows, so it never sees that page's `noindex`, and can still list the bare address it found in a link. So what should stay out of search results is left fetchable and marked `noindex`, and only what should not be fetched at all is disallowed. On the replay hostname every response carries `noindex`, and its `/robots.txt` disallows `/files/`.
+
+Both are requests a crawler may ignore. What a crawler cannot ignore is the [rate limit](#limits): past its share it is told to wait, whatever it calls itself, so an aggressive one is slowed rather than allowed to take the site down. `/robots.txt` itself is never limited, because a crawler refused it treats the whole site as off limits for a while. To refuse a particular crawler outright, by its address or its user agent, do it at your proxy.
+
 ## What is recorded
 
 A reader's searches and the pages they replay are a record of what they read, and indice does not keep one. Here is everything the shipped stack records, and where:
@@ -121,7 +134,6 @@ A server serves reads to anyone. To keep an archive off the open web, gate reads
 
 These are filed and not yet fixed. The tracker is in the repository: `grep <id> .beads/issues.jsonl` shows the whole writeup.
 
-- There is no crawler or scraper policy (`rustyweb-open-web-hardening-u9y6.7`).
 - A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume (`rustyweb-6vjz`).
 
 ## Checklist
