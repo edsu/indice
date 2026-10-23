@@ -41,6 +41,13 @@ body { display: flex; flex-direction: column; font-family: var(--sans); }
 }
 #banner a#collection:hover,
 #banner a#collection-name:hover { text-decoration: underline; }
+/* The banner's main fact: when the page in view was captured. */
+#captured {
+  margin-left: var(--s-3);
+  font-weight: var(--w-bold);
+  white-space: nowrap;
+}
+#captured:empty { display: none; }
 #current-url {
   color: var(--muted);
   font-family: var(--mono);
