@@ -32,6 +32,37 @@ fn http_status_label(code: u16) -> String {
     }
 }
 
+/// How many values of a facet show before "Show all".
+const FACET_SHOWN: usize = 8;
+
+/// A facet group's values split into those shown and those behind "Show all":
+/// the first [`FACET_SHOWN`], plus any applied one wherever it falls, so a
+/// filter in use is never hidden.
+fn split_facet_items(items: &[FacetItem]) -> (Vec<&FacetItem>, Vec<&FacetItem>) {
+    let mut shown = Vec::new();
+    let mut rest = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        if i < FACET_SHOWN || it.active {
+            shown.push(it);
+        } else {
+            rest.push(it);
+        }
+    }
+    (shown, rest)
+}
+
+/// One facet value in the sidebar.
+fn facet_item(it: &FacetItem) -> Markup {
+    html! {
+        li.facet-item.active[it.active] {
+            a href=(it.href) {
+                span.facet-value { (it.value) }
+                span.facet-count { (it.count) }
+            }
+        }
+    }
+}
+
 /// One row of the search results table. The handler computes the replay `href`,
 /// display strings, and the (pre-escaped) snippet HTML; the view just lays it out.
 pub struct SearchResultRow {
@@ -155,34 +186,17 @@ pub fn search_results(
         }
         @if timeline.len() >= 2 {
             div.timeline title="Results by crawl month — click a bar to filter" {
-                @for b in timeline {
-                    a.tl-bar.active[b.active] href=(b.href) title=(format!("{}: {} result{}", b.label, b.count, if b.count == 1 { "" } else { "s" })) {
+                @for (i, b) in timeline.iter().enumerate() {
+                    @let new_year = i == 0 || timeline[i - 1].label.get(..4) != b.label.get(..4);
+                    a.tl-bar.active[b.active].tl-year[new_year] href=(b.href) title=(format!("{}: {} result{}", b.label, b.count, if b.count == 1 { "" } else { "s" })) {
                         span.tl-fill style=(format!("height:{}%", b.pct.max(3))) {}
                         span.tl-label { (b.label) }
+                        @if new_year { span.tl-yr { (b.label.get(..4).unwrap_or(&b.label)) } }
                     }
                 }
             }
         }
         div.results-layout {
-            @if !sidebar.groups.is_empty() {
-                aside.facets {
-                    @for g in &sidebar.groups {
-                        div.facet-group {
-                            h3 { (g.label) }
-                            ul {
-                                @for it in &g.items {
-                                    li.facet-item.active[it.active] {
-                                        a href=(it.href) {
-                                            span.facet-value { (it.value) }
-                                            span.facet-count { (it.count) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             div.results-main {
                 @if !rows.is_empty() {
                     table.results {
@@ -248,6 +262,32 @@ pub fn search_results(
                     }
                 }
             }
+            // After the results, so they come first on a phone and for a
+            // keyboard; beside them on a wide screen. Each group shows its first
+            // FACET_SHOWN values plus any applied one, and the rest behind a
+            // disclosure: a site facet can run to hundreds of hosts.
+            @if !sidebar.groups.is_empty() {
+                aside.facets aria-label="Refine" {
+                    h2.facets-title { "Refine" }
+                    @for g in &sidebar.groups {
+                        @let (shown, rest) = split_facet_items(&g.items);
+                        div.facet-group {
+                            h3 { (g.label) }
+                            ul {
+                                @for it in &shown { (facet_item(it)) }
+                            }
+                            @if !rest.is_empty() {
+                                details.facet-more {
+                                    summary { "Show all " (g.items.len()) }
+                                    ul {
+                                        @for it in &rest { (facet_item(it)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     };
     // Header search prefilled with the current query (the results box).
@@ -263,4 +303,30 @@ pub fn search_results(
         Some(&search),
         body,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(n: usize, active: bool) -> FacetItem {
+        FacetItem {
+            value: format!("v{n}"),
+            count: 1,
+            href: String::new(),
+            active,
+        }
+    }
+
+    #[test]
+    fn a_facet_shows_its_first_values_and_any_applied_one() {
+        let items: Vec<FacetItem> = (0..12).map(|n| item(n, n == 10)).collect();
+        let (shown, rest) = split_facet_items(&items);
+        let names = |v: &[&FacetItem]| v.iter().map(|i| i.value.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            names(&shown),
+            ["v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v10"]
+        );
+        assert_eq!(names(&rest), ["v8", "v9", "v11"]);
+    }
 }

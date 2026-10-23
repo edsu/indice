@@ -41,7 +41,7 @@
   background: none;
   font-size: 1.15rem;
   line-height: 1;
-  color: #8f8b83;
+  color: #6b6b6b;
   cursor: pointer;
 }
 
@@ -117,7 +117,7 @@
   justify-content: space-between;
   gap: 0.5rem;
   font-size: 0.72rem;
-  color: #8f8b83;
+  color: #6b6b6b;
   margin-bottom: 0.3rem;
 }
 .anno-author {
@@ -227,7 +227,7 @@
 .anno-public-note {
   margin: 0.35rem 0 0;
   font-size: 0.72rem;
-  color: #8f8b83;
+  color: #6b6b6b;
 }
 .anno-composer-row {
   display: flex;

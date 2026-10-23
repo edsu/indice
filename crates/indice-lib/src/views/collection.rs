@@ -125,28 +125,6 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 a.btn href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
             }
         }
-        @if p.can_delete {
-            details.danger-zone {
-                summary { "Delete this collection" }
-                form.confirm-delete method="post" action=(format!("/api/collections/{}/delete", p.id)) {
-                    @if p.members.is_empty() {
-                        p.muted { "Removes this empty collection's finding aid. This can't be undone." }
-                    } @else {
-                        p.muted {
-                            "This collection has " (p.members.len()) " crawl(s). Deleting the "
-                            "grouping alone is refused; tick the box to delete its crawls too "
-                            "(their pages, WACZ files, and thumbnails). This can't be undone."
-                        }
-                        label.confirm-with-crawls {
-                            input type="checkbox" name="with_crawls" value="true";
-                            span { "also delete all " (p.members.len()) " member crawl(s)" }
-                        }
-                    }
-                    button.btn.danger type="submit" { "Delete permanently" }
-                }
-            }
-        }
-
         section.about {
             h2 { "About this collection" }
             @if p.has_curatorial() {
@@ -215,22 +193,48 @@ pub fn collection(p: &CollectionPage) -> Markup {
                         a.card-thumb href=(format!("/crawl/{}", m.id)) {
                             (thumb_area(m.thumb.as_deref(), &m.name))
                         }
-                        div.card-header {
-                            span.card-title-wrap {
-                                (source_badge(m.remote))
-                                a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
+                        div.card-body {
+                            div.card-header {
+                                span.card-title-wrap {
+                                    (source_badge(m.remote))
+                                    a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
+                                }
+                                @if m.present {
+                                    span.status.ok { "✓" }
+                                } @else {
+                                    span.status.missing { "✗" }
+                                }
                             }
-                            @if m.present {
-                                span.status.ok { "✓" }
-                            } @else {
-                                span.status.missing { "✗" }
-                            }
+                            @if let Some(pr) = &m.provenance { div.prov { (pr) } }
                         }
-                        @if let Some(pr) = &m.provenance { div.prov { (pr) } }
                     }
                 }
             }
         }
+        // Last on the page, as on a crawl page: deleting is the rarest thing
+        // anyone comes here to do, and it should never sit beside the actions.
+        @if p.can_delete {
+            details.danger-zone {
+                summary { "Delete this collection" }
+                form.confirm-delete method="post" action=(format!("/api/collections/{}/delete", p.id)) {
+                    @if p.members.is_empty() {
+                        p.muted { "Removes this empty collection's finding aid. This can't be undone." }
+                    } @else {
+                        p.muted {
+                            "This collection has " (p.members.len()) " crawl(s). Deleting the "
+                            "grouping alone is refused; tick the box to delete its crawls too "
+                            "(their pages, WACZ files, and thumbnails). This can't be undone."
+                        }
+                        label.confirm-with-crawls {
+                            input type="checkbox" name="with_crawls" value="true";
+                            span { "also delete all " (p.members.len()) " member crawl(s)" }
+                        }
+                    }
+                    button.btn.danger type="submit" { "Delete permanently" }
+                }
+            }
+        }
+
     };
     // Header search scoped to this collection (broaden via the results chip).
     let search = SearchBox {

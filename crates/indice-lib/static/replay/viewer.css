@@ -42,7 +42,7 @@ body { display: flex; flex-direction: column; font-family: sans-serif; }
 #banner a#collection:hover,
 #banner a#collection-name:hover { text-decoration: underline; }
 #current-url {
-  color: #8f8b83;
+  color: #6b6b6b;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.78rem;
   overflow: hidden;
