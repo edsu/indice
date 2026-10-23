@@ -117,8 +117,8 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 a.btn href=(p.replay_href) { "Replay collection →" }
             }
             @if p.chrome.manage {
-                a.btn href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
-                a.btn href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
+                a.btn.edit href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
+                a.btn.edit href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
             }
         }
         section.about {

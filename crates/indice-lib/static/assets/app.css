@@ -1,12 +1,10 @@
 /* indice — shared stylesheet for the server-rendered pages. Every value comes
  * from /assets/tokens.css, which every page links first.
  *
- * One design system, two accent modes. Everything is neutral + one --accent:
- *   reading room  → blue          (public, read-only)
- *   workroom      → clay/red-tape (a caller who may write; body gets .mode-manage)
- * The archive's own materials drive the palette (kraft/manila neutrals); the
- * finding-aid vernacular drives the type (small-caps eyebrow labels). No
- * webfonts — indice ships self-contained and runs offline. */
+ * One design system, two modes. Reading content is always in the reading
+ * accent; the workroom (body.mode-manage, for a caller who may write) changes
+ * only the header band and the things that edit. See tokens.css. No webfonts:
+ * indice ships self-contained and runs offline. */
 
 * { box-sizing: border-box; }
 body {
@@ -46,7 +44,7 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.
 .appbar .wordmark:hover { text-decoration: none; }
 .appbar .chip {
   font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 800;
-  color: #fff; background: var(--work); padding: 0.15rem 0.5rem; border-radius: 999px;
+  color: var(--page); background: var(--work); padding: 0.15rem 0.5rem; border-radius: 999px;
 }
 .appbar .search-form { flex: 1; max-width: 420px; }
 .appbar .search-form input { padding: 0.4rem 0.65rem; font-size: 0.9rem; }
@@ -67,6 +65,12 @@ h2 { font-size: 1.2rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.
 /* Workroom: same bar, clay-tinted with a top rule (the accent itself flips via
    the .mode-manage body class). */
 .mode-manage .appbar { background: var(--work-wash); border-top: 3px solid var(--work); }
+/* The things that edit, in the workroom accent: a collection's Edit and Add
+   crawls, New collection, and every button on a workroom form. Reading actions
+   (Replay, Search) stay in the reading accent beside them. */
+.btn.edit, .manage-form .btn { color: var(--work-dk); border-color: var(--work); }
+.btn.edit:hover, .manage-form .btn:hover { background: var(--work-wash); }
+.manage-form :focus-visible { outline-color: var(--work-dk); }
 
 
 /* Search form */
@@ -267,9 +271,8 @@ nav.pagination .page-info { color: var(--muted); }
 .card .card-edit {
   position: absolute; top: 0.55rem; right: 0.55rem; font-size: 0.75rem; font-weight: 650;
   background: var(--page); color: var(--work-dk); border: 1px solid var(--rule);
-  border-radius: 999px; padding: 0.12rem 0.55rem; text-decoration: none; opacity: 0; transition: opacity 0.12s;
+  border-radius: 999px; padding: 0.12rem 0.55rem; text-decoration: none;
 }
-.card:hover .card-edit, .card:focus-within .card-edit { opacity: 1; }
 .card-edit:hover { background: var(--page); text-decoration: none; }
 
 /* Empty state */

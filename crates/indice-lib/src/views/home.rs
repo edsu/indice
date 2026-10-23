@@ -82,14 +82,14 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
             // Edit-in-place: the "new collection" action lives right on the list
             // it affects, only in workroom mode.
             @if management {
-                a.btn href="/manage/collections/new" { "+ New collection" }
+                a.btn.edit href="/manage/collections/new" { "+ New collection" }
             }
         }
         @if cards.is_empty() {
             @if management {
                 div.empty-cta {
                     p { "No collections yet — create one, or add an archive to start." }
-                    a.btn href="/manage/add" { "Add your first archive →" }
+                    a.btn.edit href="/manage/add" { "Add your first archive →" }
                 }
             } @else {
                 p.muted {
