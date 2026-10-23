@@ -41,7 +41,25 @@
   --work-dk: #5c3f0b;
   --work-wash: #f4e6c4;  /* the workroom's header band */
 
+  /* Faces. The sans is for the chrome (header, labels, facets, buttons,
+     forms); the serif for the archive's own words (finding aids, curator's
+     notes, annotations, result titles and snippets). Both are what the
+     system already has, so they cost nothing to load and work offline. */
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --serif: ui-serif, "Iowan Old Style", Charter, "Bitstream Charter", Georgia, serif;
+
+  /* One type scale (Bringhurst's classic steps: 12 14 16 18 21 28 36 px),
+     two weights, and a measure for reading prose. */
+  --t-xs: 0.75rem;
+  --t-sm: 0.875rem;
+  --t-md: 1rem;
+  --t-lg: 1.125rem;
+  --t-xl: 1.3125rem;
+  --t-2xl: 1.75rem;
+  --t-3xl: 2.25rem;
+  --w-regular: 400;
+  --w-bold: 600;
+  --measure: 66ch;
   --radius: 6px;
   --col: 960px;
 

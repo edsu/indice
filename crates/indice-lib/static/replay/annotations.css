@@ -9,7 +9,7 @@
   border-left: 1px solid var(--rule);
   font-family: var(--sans);
   color: var(--ink);
-  font-size: 0.9rem;
+  font-size: var(--t-sm);
 }
 #anno-panel[hidden] {
   display: none;
@@ -26,8 +26,8 @@
   background: var(--panel);
 }
 .anno-count {
-  font-size: 0.72rem;
-  font-weight: 700;
+  font-size: var(--t-xs);
+  font-weight: var(--w-bold);
   color: var(--muted);
   background: var(--panel-2);
   border: 1px solid var(--rule);
@@ -38,7 +38,7 @@
   margin-left: auto;
   border: none;
   background: none;
-  font-size: 1.15rem;
+  font-size: var(--t-lg);
   line-height: 1;
   color: var(--muted);
   cursor: pointer;
@@ -52,7 +52,7 @@
 }
 .anno-tools button {
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--t-sm);
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--rule);
   border-radius: 6px;
@@ -79,7 +79,7 @@
 .anno-empty,
 .anno-hint {
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: var(--t-sm);
 }
 .anno-empty {
   padding: 0.6rem 0.2rem;
@@ -116,16 +116,17 @@
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  font-size: 0.72rem;
+  font-size: var(--t-xs);
   color: var(--muted);
   margin-bottom: 0.3rem;
 }
 .anno-author {
-  font-weight: 650;
+  font-weight: var(--w-bold);
   color: var(--muted);
 }
 .anno-body {
-  line-height: 1.5;
+  font-family: var(--serif);
+  line-height: 1.55;
   word-wrap: break-word;
   overflow-wrap: anywhere;
 }
@@ -146,8 +147,8 @@
 .anno-body h4,
 .anno-body h5,
 .anno-body h6 {
-  font-size: 0.95rem;
-  font-weight: 650;
+  font-size: var(--t-md);
+  font-weight: var(--w-bold);
   margin: 0.7rem 0 0.3rem;
   line-height: 1.3;
 }
@@ -195,7 +196,7 @@
 }
 .anno-actions button {
   font: inherit;
-  font-size: 0.74rem;
+  font-size: var(--t-xs);
   padding: 0.2rem 0.5rem;
   border: 1px solid var(--rule);
   border-radius: 6px;
@@ -217,7 +218,7 @@
 }
 .anno-composer textarea {
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--t-sm);
   width: 100%;
   padding: 0.4rem;
   border: 1px solid var(--rule);
@@ -226,7 +227,7 @@
 }
 .anno-public-note {
   margin: 0.35rem 0 0;
-  font-size: 0.72rem;
+  font-size: var(--t-xs);
   color: var(--muted);
 }
 .anno-composer-row {
@@ -235,7 +236,7 @@
 }
 .anno-composer button {
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--t-xs);
   padding: 0.35rem 0.7rem;
   border: 1px solid var(--rule);
   border-radius: 6px;
@@ -255,7 +256,7 @@
 /* Banner toggle button (lives in #banner). */
 #anno-toggle {
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--t-xs);
   padding: 0.25rem 0.6rem;
   border: 1px solid var(--rule);
   border-radius: 6px;

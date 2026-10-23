@@ -16,7 +16,7 @@ body { display: flex; flex-direction: column; font-family: var(--sans); }
   padding: 0.55rem 1rem;
   background: var(--page);
   color: var(--ink);
-  font-size: 0.85rem;
+  font-size: var(--t-sm);
   border-bottom: 1px solid var(--rule);
   /* Sit above the replayed page (isolated in its iframe below) with a soft
      shadow, so the banner always reads as indice's chrome regardless of the
@@ -27,8 +27,8 @@ body { display: flex; flex-direction: column; font-family: var(--sans); }
 }
 #banner a.home {
   color: var(--ink);
-  font-weight: 800;
-  font-size: 1.15rem;
+  font-weight: var(--w-bold);
+  font-size: var(--t-lg);
   letter-spacing: -0.01em;
   text-decoration: none;
 }
@@ -44,7 +44,7 @@ body { display: flex; flex-direction: column; font-family: var(--sans); }
 #current-url {
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.78rem;
+  font-size: var(--t-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
