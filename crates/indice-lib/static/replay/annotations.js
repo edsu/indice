@@ -96,6 +96,10 @@
   function render() {
     const forUrl = state.items.filter((a) => a.url === state.url);
     els.count.textContent = String(forUrl.length);
+    // The banner's toggle says how many notes there are, since on a phone the
+    // panel starts closed and would otherwise give no sign of them.
+    const toggle = document.getElementById("anno-toggle");
+    if (toggle) toggle.textContent = forUrl.length ? "Notes (" + forUrl.length + ")" : "Notes";
     els.list.innerHTML = "";
     if (!forUrl.length) {
       const empty = document.createElement("p");
@@ -364,6 +368,10 @@
       return;
     }
     buildPanel();
+    // Where the panel would cover the page rather than sit beside it (see the
+    // max-width rule in annotations.css), start with the page in view; the
+    // banner's Notes button opens it.
+    if (window.matchMedia("(max-width: 720px)").matches) togglePanel(false);
     reload();
     window.addEventListener("indice-replay", (e) => {
       const d = /** @type {any} */ (e).detail;
