@@ -19,7 +19,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.6rem 0.8rem;
+  padding: var(--s-3) var(--s-4);
   border-bottom: 1px solid var(--rule);
   position: sticky;
   top: 0;
@@ -47,13 +47,13 @@
 .anno-tools {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.7rem 0.8rem 0;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-4) 0;
 }
 .anno-tools button {
   font: inherit;
   font-size: var(--t-sm);
-  padding: 0.4rem 0.6rem;
+  padding: var(--s-2) var(--s-3);
   border: 1px solid var(--rule);
   border-radius: 6px;
   background: var(--page);
@@ -74,7 +74,7 @@
 .anno-list {
   list-style: none;
   margin: 0;
-  padding: 0.4rem 0.8rem 1rem;
+  padding: var(--s-2) var(--s-4) var(--s-5);
 }
 .anno-empty,
 .anno-hint {
@@ -82,17 +82,17 @@
   font-size: var(--t-sm);
 }
 .anno-empty {
-  padding: 0.6rem 0.2rem;
+  padding: var(--s-3) 0;
 }
 .anno-hint {
-  padding: 0.5rem 0.8rem 0;
+  padding: var(--s-3) var(--s-4) 0;
 }
 .anno-hint p {
   overflow-wrap: anywhere;
 }
 .anno-quote {
-  margin: 0.3rem 0 0;
-  padding-left: 0.6rem;
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-3);
   border-left: 3px solid var(--mark);
   max-height: 8rem;
   overflow-y: auto;
@@ -103,8 +103,8 @@
   border: 1px solid var(--rule);
   border-radius: 8px;
   background: var(--page);
-  padding: 0.55rem 0.65rem;
-  margin-top: 0.6rem;
+  padding: var(--s-3) var(--s-4) var(--s-4);
+  margin-top: var(--s-3);
 }
 .anno-item.has-region {
   cursor: pointer;
@@ -118,7 +118,7 @@
   gap: 0.5rem;
   font-size: var(--t-xs);
   color: var(--muted);
-  margin-bottom: 0.3rem;
+  margin-bottom: var(--s-2);
 }
 .anno-author {
   font-weight: var(--w-bold);
@@ -191,13 +191,13 @@
 }
 .anno-actions {
   display: flex;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
 }
 .anno-actions button {
   font: inherit;
   font-size: var(--t-xs);
-  padding: 0.2rem 0.5rem;
+  padding: var(--s-1) var(--s-3);
   border: 1px solid var(--rule);
   border-radius: 6px;
   background: var(--panel);
@@ -220,7 +220,7 @@
   font: inherit;
   font-size: var(--t-sm);
   width: 100%;
-  padding: 0.4rem;
+  padding: var(--s-2);
   border: 1px solid var(--rule);
   border-radius: 6px;
   resize: vertical;
@@ -237,7 +237,7 @@
 .anno-composer button {
   font: inherit;
   font-size: var(--t-xs);
-  padding: 0.35rem 0.7rem;
+  padding: var(--s-2) var(--s-3);
   border: 1px solid var(--rule);
   border-radius: 6px;
   background: var(--page);

@@ -57,6 +57,14 @@
   --t-xl: 1.3125rem;
   --t-2xl: 1.75rem;
   --t-3xl: 2.25rem;
+  /* One spacing scale: 4 8 12 16 24 32 px. Anything with a border keeps at
+     least --s-4 between the border and what is inside it. */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
   --w-regular: 400;
   --w-bold: 600;
   --measure: 66ch;
