@@ -146,18 +146,13 @@ pub struct TimelineBar {
 /// The search results page: top bar, tips, a count line, an active-filter row,
 /// a month timeline, then a facet sidebar beside the results table with
 /// prev/next pagination.
-// The trailing (management, signed_in, can_login) are the shared header-chrome
-// flags every page threads; bundling them isn't worth a struct here.
-#[allow(clippy::too_many_arguments)]
 pub fn search_results(
     query: &str,
     nav: &PageNav,
     sidebar: &FacetSidebar,
     timeline: &[TimelineBar],
     rows: &[SearchResultRow],
-    management: bool,
-    signed_in: Option<&str>,
-    can_login: bool,
+    chrome: &Chrome,
 ) -> Markup {
     // Preserve the query when linking to another page.
     let page_href = |p: usize| format!("/search?q={}&page={}", nav.query_encoded, p);
@@ -295,14 +290,7 @@ pub fn search_results(
         query: query.to_string(),
         ..Default::default()
     };
-    layout(
-        &format!("{query} - indice"),
-        management,
-        signed_in,
-        can_login,
-        Some(&search),
-        body,
-    )
+    layout(&format!("{query} - indice"), chrome, Some(&search), body)
 }
 
 #[cfg(test)]

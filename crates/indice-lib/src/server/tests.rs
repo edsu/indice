@@ -337,7 +337,16 @@ fn a_workstation_refuses_when_the_request_names_no_host() {
 fn appbar_offers_login_when_anonymous_under_forward_auth() {
     use maud::html;
     // Forward-auth configured, request anonymous → a "Log in" link, no name.
-    let anon = views::layout("t", false, None, true, None, html! {}).into_string();
+    let anon = views::layout(
+        "t",
+        &views::Chrome {
+            can_login: true,
+            ..Default::default()
+        },
+        None,
+        html! {},
+    )
+    .into_string();
     assert!(
         anon.contains(r#"href="/manage/login""#) && anon.contains("Log in"),
         "anonymous + can_login should show a login link: {anon}"
@@ -345,7 +354,17 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     assert!(!anon.contains("signed in as"));
 
     // Signed in → the identity + a logout control, and no login link.
-    let authed = views::layout("t", true, Some("ed"), false, None, html! {}).into_string();
+    let authed = views::layout(
+        "t",
+        &views::Chrome {
+            manage: true,
+            signed_in: Some("ed".into()),
+            can_login: false,
+        },
+        None,
+        html! {},
+    )
+    .into_string();
     assert!(authed.contains("signed in as") && authed.contains("ed"));
     assert!(authed.contains("Log out"));
     assert!(!authed.contains("/manage/login"));
@@ -363,7 +382,7 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     );
 
     // Nobody signed in and no login to offer: neither affordance.
-    let plain = views::layout("t", false, None, false, None, html! {}).into_string();
+    let plain = views::layout("t", &views::Chrome::default(), None, html! {}).into_string();
     assert!(!plain.contains("/manage/login") && !plain.contains("signed in as"));
 }
 

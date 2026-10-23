@@ -27,7 +27,7 @@ pub struct CollectionFormData {
 /// The finding-aid form (`/manage/collections/new` and `/manage/edit/{id}`):
 /// create or edit a collection's curatorial description. POSTs to
 /// `/api/collections`.
-pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Markup {
+pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
     let back = if form.editing {
         format!("/collection/{}", form.id)
     } else {
@@ -83,14 +83,7 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
     } else {
         SearchBox::default()
     };
-    layout(
-        "Manage - indice",
-        true,
-        signed_in,
-        false,
-        Some(&search),
-        body,
-    )
+    layout("Manage - indice", chrome, Some(&search), body)
 }
 
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
@@ -100,7 +93,7 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
 pub fn accession_desk(
     collection_id: &str,
     collection_name: &str,
-    signed_in: Option<&str>,
+    chrome: &Chrome,
     // How much room an accession has, as a sentence; `None` when no limit is
     // configured, so an unlimited archive shows nothing rather than "∞".
     room: Option<&str>,
@@ -230,12 +223,5 @@ pub fn accession_desk(
             ..Default::default()
         }
     };
-    layout(
-        "Add crawls - indice",
-        true,
-        signed_in,
-        false,
-        Some(&search),
-        body,
-    )
+    layout("Add crawls - indice", chrome, Some(&search), body)
 }

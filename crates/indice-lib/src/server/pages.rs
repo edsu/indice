@@ -73,9 +73,8 @@ pub(super) async fn homepage(
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
-    views::home(&cards, &browse, manage, who.as_deref(), can_login).into_response()
+    let chrome = chrome(&state, &headers);
+    views::home(&cards, &browse, &chrome).into_response()
 }
 
 /// Build homepage browse links from one facet dimension: `field` is the facet
@@ -432,17 +431,6 @@ pub(super) async fn search_page(
         })
         .collect();
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
-    views::search_results(
-        &q,
-        &page_nav,
-        &sidebar,
-        &timeline,
-        &rows,
-        manage,
-        who.as_deref(),
-        can_login,
-    )
-    .into_response()
+    let chrome = chrome(&state, &headers);
+    views::search_results(&q, &page_nav, &sidebar, &timeline, &rows, &chrome).into_response()
 }

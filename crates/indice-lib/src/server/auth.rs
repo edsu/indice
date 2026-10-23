@@ -518,6 +518,19 @@ pub(super) fn login_available(state: &AppState, who: &Option<String>) -> bool {
     state.forward_auth.is_some() && who.is_none()
 }
 
+/// Who is looking at a page, for its shared header: whether the workroom
+/// affordances show, the signed-in name, and whether to offer a login.
+/// Rendering only, like [`admin_ctx`].
+pub(super) fn chrome(state: &AppState, headers: &HeaderMap) -> crate::views::Chrome {
+    let (manage, signed_in) = admin_ctx(state, headers);
+    let can_login = login_available(state, &signed_in);
+    crate::views::Chrome {
+        manage,
+        signed_in,
+        can_login,
+    }
+}
+
 /// Constant-time byte comparison, to avoid leaking the secret via timing. The
 /// length check can leak length, which is fine for a shared secret.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

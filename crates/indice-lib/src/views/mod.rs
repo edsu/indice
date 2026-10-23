@@ -33,21 +33,27 @@ pub struct SearchBox {
     pub scope_label: String,
 }
 
+/// Who is looking at a page, as far as the shared header needs to know. Every
+/// view takes one and hands it to [`layout`].
+#[derive(Clone, Debug, Default)]
+pub struct Chrome {
+    /// The caller may change the archive: the page is in "workroom" mode, with
+    /// the `.mode-manage` accent, the Manage chip and the edit-in-place
+    /// affordances.
+    pub manage: bool,
+    /// The signed-in user's display name, behind an authenticating proxy.
+    pub signed_in: Option<String>,
+    /// Forward-auth is configured but this request is anonymous: show a
+    /// "Log in" link in place of the signed-in name.
+    pub can_login: bool,
+}
+
 /// The shared page shell. Renders one full-bleed app header (`.appbar`) on every
 /// page — wordmark + (optional) search — then the page `body` centered in
-/// `.wrap`. `manage` puts the page in "workroom" mode: the `.mode-manage` accent
-/// flip plus the header's clay treatment, Manage chip, and signed-in name.
-/// `can_login` (forward-auth configured but this request anonymous) shows a
-/// "Log in" link in place of the signed-in name. `search` is the header search
-/// box (`None` omits it — the homepage, whose hero carries the search instead).
-pub fn layout(
-    title: &str,
-    manage: bool,
-    signed_in: Option<&str>,
-    can_login: bool,
-    search: Option<&SearchBox>,
-    body: Markup,
-) -> Markup {
+/// `.wrap`, dressed for `chrome`. `search` is the header search box (`None`
+/// omits it — the homepage, whose hero carries the search instead).
+pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Markup) -> Markup {
+    let manage = chrome.manage;
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -75,13 +81,13 @@ pub fn layout(
                             button type="submit" { "Search" }
                         }
                     }
-                    @if let Some(u) = signed_in {
+                    @if let Some(u) = &chrome.signed_in {
                         span.who { "signed in as " b { (u) } }
                         // A form, not a link: see `server::auth::logout`.
                         form.logout-form method="post" action="/logout" {
                             button.logout type="submit" { "Log out" }
                         }
-                    } @else if can_login {
+                    } @else if chrome.can_login {
                         // Forward-auth is configured but this request is anonymous:
                         // offer a login. /manage/login is gated, so following it
                         // trips the proxy's login and bounces back to the

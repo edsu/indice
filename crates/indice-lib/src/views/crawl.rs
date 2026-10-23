@@ -40,14 +40,10 @@ pub struct CrawlPage {
     /// Scoped facet overview of what this crawl captured (sites/years/types/…).
     pub facets: Vec<FacetSection>,
     pub pages: Vec<PageItem>,
-    /// Whether management mode is on (workroom chrome).
-    pub management: bool,
     /// Whether to render the danger zone (admins only — see CollectionPage).
     pub can_delete: bool,
-    /// Signed-in user (forward-auth), shown in the workroom strip.
-    pub signed_in: Option<String>,
-    /// Forward-auth configured but this request anonymous — show a "Log in" link.
-    pub can_login: bool,
+    /// Who is looking, for the shared header.
+    pub chrome: Chrome,
 }
 
 /// The crawl detail page: provenance panel, file metadata, and seed-page list.
@@ -128,9 +124,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
     };
     layout(
         &format!("{} - indice", p.name),
-        p.management,
-        p.signed_in.as_deref(),
-        p.can_login,
+        &p.chrome,
         Some(&search),
         body,
     )

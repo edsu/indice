@@ -38,13 +38,8 @@ pub struct HomeBrowse {
 
 /// The homepage: search box, tips, browse-by entry points, and a card per
 /// collection.
-pub fn home(
-    cards: &[CollectionCard],
-    browse: &HomeBrowse,
-    management: bool,
-    signed_in: Option<&str>,
-    can_login: bool,
-) -> Markup {
+pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> Markup {
+    let management = chrome.manage;
     let body = html! {
         // The brand "indice" lives in the header now; the hero leads with what
         // the tool does + the search, rather than repeating the name.
@@ -143,5 +138,5 @@ pub fn home(
         }
     };
     // No header search on the homepage — the hero below carries it.
-    layout("indice", management, signed_in, can_login, None, body)
+    layout("indice", chrome, None, body)
 }

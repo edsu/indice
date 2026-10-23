@@ -171,8 +171,7 @@ pub(super) async fn crawl_page(
         provenance.push(views::MetaRow::new("Added by", name));
     }
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
+    let chrome = chrome(&state, &headers);
     // Match the handler's rule exactly: an admin may remove any crawl, a
     // curator only one they accessioned.
     let scope_id = id.clone();
@@ -211,10 +210,8 @@ pub(super) async fn crawl_page(
         present: c.is_present(&state.home),
         facets: scoped_facet_sections(&crawl_overview, &format!("crawl:{id}")),
         pages,
-        management: manage,
         can_delete,
-        signed_in: who,
-        can_login,
+        chrome,
     };
 
     views::crawl(&page).into_response()

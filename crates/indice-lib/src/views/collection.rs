@@ -42,15 +42,11 @@ pub struct CollectionPage {
     pub replay_href: String,
     /// Collection id (slug) — for the edit / add-crawls links.
     pub id: String,
-    /// Whether management mode is on — gates the edit-in-place affordances.
-    pub management: bool,
     /// Whether to render the danger zone. Deaccession is an admin act, so a
     /// curator must not be shown a button that would 403.
     pub can_delete: bool,
-    /// Signed-in user (forward-auth), shown in the workroom strip.
-    pub signed_in: Option<String>,
-    /// Forward-auth configured but this request anonymous — show a "Log in" link.
-    pub can_login: bool,
+    /// Who is looking, for the shared header.
+    pub chrome: Chrome,
     /// How many page annotations this collection has (drives the summary link).
     pub annotation_count: usize,
 }
@@ -120,7 +116,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
             @if !p.members.is_empty() {
                 a.btn href=(p.replay_href) { "Replay collection →" }
             }
-            @if p.management {
+            @if p.chrome.manage {
                 a.btn href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
                 a.btn href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
             }
@@ -137,7 +133,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                     p.muted.nudge {
                         "Still needed: " (missing.join(", "))
                         " (the finding-aid minimum). "
-                        @if p.management {
+                        @if p.chrome.manage {
                             a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
                             " to add them."
                         } @else {
@@ -156,7 +152,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                     "No finding-aid description yet. Add the essentials a reader needs — "
                     "who gathered it (Creator), why it was archived (Scope & Content), and "
                     "who may use it (Access). "
-                    @if p.management {
+                    @if p.chrome.manage {
                         a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
                         " to describe it."
                     } @else {
@@ -244,9 +240,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
     };
     layout(
         &format!("{} - indice", p.name),
-        p.management,
-        p.signed_in.as_deref(),
-        p.can_login,
+        &p.chrome,
         Some(&search),
         body,
     )
@@ -268,9 +262,8 @@ pub struct AnnotationsIndexPage {
     pub collection_name: String,
     pub collection_id: String,
     pub items: Vec<AnnoLink>,
-    pub management: bool,
-    pub signed_in: Option<String>,
-    pub can_login: bool,
+    /// Who is looking, for the shared header.
+    pub chrome: Chrome,
 }
 
 /// A public browse of every annotation in a collection.
@@ -307,9 +300,7 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
     };
     layout(
         &format!("Annotations - {} - indice", p.collection_name),
-        p.management,
-        p.signed_in.as_deref(),
-        p.can_login,
+        &p.chrome,
         None,
         body,
     )

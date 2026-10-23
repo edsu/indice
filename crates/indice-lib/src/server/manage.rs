@@ -771,8 +771,8 @@ pub(super) async fn new_collection_form(
     _curator: Curator,
     headers: HeaderMap,
 ) -> Response {
-    let (_, who) = admin_ctx(&state, &headers);
-    views::collection_form(&views::CollectionFormData::default(), who.as_deref()).into_response()
+    let chrome = chrome(&state, &headers);
+    views::collection_form(&views::CollectionFormData::default(), &chrome).into_response()
 }
 
 /// `GET /manage/edit/{id}` — the finding-aid form pre-filled for an existing
@@ -805,8 +805,8 @@ pub(super) async fn edit_collection_form(
         narrative: c.narrative.clone().unwrap_or_default(),
         editing: true,
     };
-    let (_, who) = admin_ctx(&state, &headers);
-    views::collection_form(&form, who.as_deref()).into_response()
+    let chrome = chrome(&state, &headers);
+    views::collection_form(&form, &chrome).into_response()
 }
 
 /// Query for the accession desk: which collection to add to (prefilled).
@@ -839,7 +839,7 @@ pub(super) async fn accession_desk_page(
                 .map(|c| c.name.clone())
         })
         .unwrap_or_else(|| id.clone());
-    let (_, who) = admin_ctx(&state, &headers);
+    let chrome = chrome(&state, &headers);
     let room = room_note(&state);
     // The same refusal text the server would send, so the page and the server
     // say the same thing whichever one catches it.
@@ -856,7 +856,7 @@ pub(super) async fn accession_desk_page(
     views::accession_desk(
         &id,
         &name,
-        who.as_deref(),
+        &chrome,
         room.as_deref(),
         max_upload.as_ref(),
         room_left.as_ref(),
