@@ -88,13 +88,13 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
         @if cards.is_empty() {
             @if management {
                 div.empty-cta {
-                    p { "No collections yet — create one, or add an archive to start." }
-                    a.btn.edit href="/manage/add" { "Add your first archive →" }
+                    p { "Add a crawl to start your first collection." }
+                    a.btn.edit href="/manage/add" { "Add a crawl" }
                 }
             } @else {
                 p.muted {
-                    "No collections indexed yet. Run "
-                    code { "indice index archive/*.wacz" } " to get started."
+                    "There are no collections yet. Add a crawl with "
+                    code { "indice index archive/*.wacz" } "."
                 }
             }
         }

@@ -383,6 +383,7 @@ pub(super) async fn search_page(
                 v.clone()
             };
             views::ActiveFilter {
+                field: f.clone(),
                 label: crate::search::filter_label(f).to_string(),
                 value: display,
                 remove_href: search_href(&query_without_filter(&q, f, v)),

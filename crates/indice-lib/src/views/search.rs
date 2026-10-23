@@ -115,6 +115,8 @@ pub struct FacetSidebar {
 
 /// A `field:value` filter currently applied, with a link that removes it.
 pub struct ActiveFilter {
+    /// The query field, e.g. `collection`.
+    pub field: String,
     pub label: String,
     pub value: String,
     pub remove_href: String,
@@ -162,7 +164,7 @@ pub fn search_results(
         (search_tips())
         div.count {
             @if nav.total_hits == 0 {
-                "No results for " em { (query) }
+                "Nothing matched " em { (query) } "."
             } @else {
                 (nav.total_hits) @if nav.capped { "+" } " result" @if nav.total_hits != 1 { "s" } " for " em { (query) }
                 @if nav.total_pages > 1 {
@@ -191,6 +193,26 @@ pub fn search_results(
                         @if new_year { span.tl-yr { (b.label.get(..4).unwrap_or(&b.label)) } }
                     }
                 }
+            }
+        }
+        // An empty result says what to try next: each applied filter can be
+        // dropped (a collection filter is how a scoped search arrives), then
+        // the query itself, then browsing.
+        @if nav.total_hits == 0 {
+            ul.next-steps {
+                @for f in &sidebar.active {
+                    li {
+                        a href=(f.remove_href) {
+                            @if f.field == "collection" {
+                                "Search all collections"
+                            } @else {
+                                "Search without " (f.label) ": " (f.value)
+                            }
+                        }
+                    }
+                }
+                li { "Try fewer words, or check the spelling." }
+                li { a href="/" { "Browse the collections by year or by site" } }
             }
         }
         div.results-layout {

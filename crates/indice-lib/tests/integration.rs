@@ -1085,7 +1085,7 @@ async fn homepage_empty_collections() {
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(
-        text.contains("No collections"),
+        text.contains("There are no collections yet"),
         "empty index should show placeholder: {text}"
     );
 }

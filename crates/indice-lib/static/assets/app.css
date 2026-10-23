@@ -218,6 +218,10 @@ table.results td { padding: 0.8rem 0.4rem; vertical-align: top; }
 .snippet b { background: var(--highlight); font-weight: var(--w-bold); }
 .replay-col { width: 100px; text-align: right; white-space: nowrap; }
 
+/* What to try when nothing matched. */
+.next-steps { margin: 0 0 var(--s-5); padding-left: var(--s-5); color: var(--text-2); }
+.next-steps li { margin: var(--s-1) 0; }
+
 /* Active filter chips */
 .active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 1rem; font-size: var(--t-sm); }
 .active-filters .active-label { color: var(--muted); }

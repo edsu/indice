@@ -344,7 +344,10 @@ async fn manage_page_gated_on_management_mode() {
     }
     // Empty homepage shows the management CTA, not the CLI hint.
     let (_, home) = get(format!("{base}/")).await;
-    assert!(home.contains("Add your first archive"), "empty-state CTA");
+    assert!(
+        home.contains("Add a crawl to start your first collection"),
+        "empty-state CTA"
+    );
     server.abort();
 
     // Refused for an anonymous visitor. The route is mounted — who may use it is
