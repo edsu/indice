@@ -1,0 +1,65 @@
+/* indice: design tokens, shared by the app pages and the replay viewer.
+ *
+ * Every colour, face and radius the stylesheets use is named here by its role,
+ * never by its hue, so a rule says what it means ("the accent", "a rule
+ * between rows") and a theme can change the look without hunting through
+ * selectors.
+ *
+ * Two layers:
+ *
+ *   THEMEABLE. An operator's theme may override these: the neutrals, and the
+ *   two mode accents. It must keep text at 4.5:1 or better against --page and
+ *   --panel, and keep both accents clearly apart from --danger.
+ *
+ *   FIXED. Meaning, not branding: the semantic colours, the monospace face for
+ *   identifiers, the focus rule. A theme leaves these alone, so an error looks
+ *   like an error and a keyboard user can always see where they are.
+ *
+ * Two modes, one accent at a time. The reading room uses --read-*; a caller
+ * who may change the archive gets .mode-manage on <body> and --work-*. Rules
+ * use --accent-*, which resolves to whichever mode is in force; only things
+ * that exist solely in the workroom (its header band, form focus, the
+ * accession tabs) name --work-* directly. */
+
+:root {
+  /* ── Themeable ── */
+  --ink: #1a1a1a;          /* text */
+  --text-2: #444444;       /* secondary body text: descriptions, snippets */
+  --muted: #6b6b6b;        /* labels, counts, dates: 5.3:1 on --page */
+  --rule: #e7e3db;         /* hairlines between things */
+  --rule-soft: #f1eee8;    /* hairlines between rows of one thing */
+  --input-line: #d9d3c8;   /* the edge of a field */
+  --page: #ffffff;         /* the page */
+  --panel: #faf8f3;        /* a quiet panel on the page */
+  --panel-2: #f4f0e8;      /* a panel within a panel; code */
+
+  --read: #0066cc;         /* reading-room accent */
+  --read-dk: #0053a6;
+  --read-wash: #e6effb;
+  --work: #a85644;         /* workroom accent */
+  --work-dk: #834234;
+  --work-wash: #f6e7e1;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius: 6px;
+  --col: 960px;
+
+  /* ── Fixed ── */
+  --danger: #c5221f;
+  --danger-wash: #fdeceb;
+  --danger-line: #f5c6c2;
+  --ok: #2a7f5f;
+  --highlight: #fff3cd;    /* matched search terms */
+  --mark: rgba(255, 171, 0, 0.85); /* a passage a note is attached to */
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ── Resolved for the current mode ── */
+  --accent: var(--read);
+  --accent-dk: var(--read-dk);
+  --accent-wash: var(--read-wash);
+}
+.mode-manage {
+  --accent: var(--work);
+  --accent-dk: var(--work-dk);
+  --accent-wash: var(--work-wash);
+}

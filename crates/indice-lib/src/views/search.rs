@@ -234,7 +234,7 @@ pub fn search_results(
                                         }
                                     }
                                     td.replay-col {
-                                        a.result-replay href=(r.href) { "Replay →" }
+                                        a.btn.small href=(r.href) { "Replay →" }
                                     }
                                 }
                             }

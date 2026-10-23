@@ -46,7 +46,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
         h1.home-hero { "Web archive search and replay" }
         form.search-form.home action="/search" method="get" {
             input type="search" name="q" placeholder="Search archived pages…" autofocus;
-            button type="submit" { "Search" }
+            button.btn type="submit" { "Search" }
         }
         (search_tips())
         @if !browse.years.is_empty() || !browse.sites.is_empty() {
@@ -128,7 +128,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                                     div.prov { (r) }
                                 }
                                 @if c.count > 0 {
-                                    a.replay-btn href=(c.replay_href) { "Replay →" }
+                                    a.btn href=(c.replay_href) { "Replay →" }
                                 }
                             }
                         }

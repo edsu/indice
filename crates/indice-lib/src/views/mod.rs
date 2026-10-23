@@ -61,6 +61,7 @@ pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Ma
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
                 title { (title) }
+                link rel="stylesheet" href="/assets/tokens.css";
                 link rel="stylesheet" href="/assets/app.css";
             }
             body class=[manage.then_some("mode-manage")] {
@@ -78,7 +79,7 @@ pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Ma
                                 input type="hidden" name="scope" value=(s.scope_query);
                             }
                             input type="search" name="q" value=(s.query) placeholder=(placeholder);
-                            button type="submit" { "Search" }
+                            button.btn type="submit" { "Search" }
                         }
                     }
                     @if let Some(u) = &chrome.signed_in {

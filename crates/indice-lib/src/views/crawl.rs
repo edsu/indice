@@ -58,7 +58,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
             h1.page-title { (p.name) }
         }
         @if let Some(d) = &p.description { p.desc { (d) } }
-        a.replay-btn href=(p.replay_href) { "Replay →" }
+        div.actions { a.btn href=(p.replay_href) { "Replay →" } }
 
         @if let Some(n) = &p.note {
             section.about {
