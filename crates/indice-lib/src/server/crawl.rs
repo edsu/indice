@@ -25,7 +25,8 @@ pub(super) async fn crawl_page(
     };
 
     let source_enc = url_encode(&viewer_source(c));
-    let name_enc = url_encode(&c.display_name());
+    let display_name = c.display_name();
+    let name_enc = url_encode(&display_name);
     // Breadcrumb + replay params for the containing collection (name + id).
     let col = manifest.collection_by_id(&c.collection);
     let crumb = col.map(|col| (col.id.to_string(), col.name.clone()));
@@ -185,8 +186,8 @@ pub(super) async fn crawl_page(
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,
-        name: c.display_name(),
-        original_name: (c.display_name() != c.name).then(|| c.name.clone()),
+        original_name: (display_name != c.name).then(|| c.name.clone()),
+        name: display_name,
         description: c.description.clone(),
         note: crate::collections::read_crawl_note(&state.home, &c.collection, &id)
             .map(|n| crate::markdown::render(&n)),
@@ -209,7 +210,7 @@ pub(super) async fn crawl_page(
             .unwrap_or(&c.date_indexed)
             .to_string(),
         present: c.is_present(&state.home),
-        facets: scoped_facet_sections(&crawl_overview, &format!("crawl:{id}")),
+        facets: scoped_facet_sections(&crawl_overview.facets, &format!("crawl:{id}")),
         pages,
         can_delete,
         chrome,

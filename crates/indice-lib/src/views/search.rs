@@ -218,7 +218,7 @@ pub fn search_results(
                                                 div.result-ts {
                                                     (r.timestamp_display)
                                                     @if r.capture_count > 1 {
-                                                        span.capture-count { " (captured " (r.capture_count) " times" }
+                                                        span.capture-count { " (captured " (r.capture_count) " times)" }
                                                     }
                                                 }
                                             }
@@ -276,7 +276,8 @@ pub fn search_results(
                             }
                             @if !rest.is_empty() {
                                 details.facet-more {
-                                    summary { "Show all " (g.items.len()) }
+                                    // "More", not "all": the index returns at most 50 values a facet.
+                                    summary { "Show " (rest.len()) " more" }
                                     ul {
                                         @for it in &rest { (facet_item(it)) }
                                     }

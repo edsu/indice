@@ -312,7 +312,15 @@ pub(super) fn month_axis(
     };
     let index = |ym: u64| (ym / 100) * 12 + (ym % 100 - 1);
     let start = index(first).max(index(last).saturating_sub(119));
-    let max = by_month.values().copied().max().unwrap_or(1).max(1);
+    // Scaled to the busiest month shown, not one the window cut off.
+    let in_view = |ym: u64| index(ym) >= start;
+    let max = by_month
+        .iter()
+        .filter(|(ym, _)| in_view(**ym))
+        .map(|(_, n)| *n)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     (start..=index(last))
         .map(|i| {
             let ym = (i / 12) * 100 + i % 12 + 1;

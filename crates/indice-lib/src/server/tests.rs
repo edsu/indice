@@ -578,3 +578,20 @@ fn a_time_axis_keeps_empty_months_and_marks_years() {
     assert!(bars[14].active);
     assert!(month_axis(&[], |_| String::new(), |_| false).is_empty());
 }
+
+/// The axis shows at most ten years, and its heights are scaled to the busiest
+/// month it shows: one huge month the window cuts off must not flatten the rest.
+#[test]
+fn a_time_axis_is_scaled_to_the_months_it_shows() {
+    let bars = month_axis(
+        &[(200801, 10_000), (202501, 50), (202502, 25)],
+        |ym| ym.to_string(),
+        |_| false,
+    );
+    assert_eq!(bars.len(), 120, "ten years, ending at the last month");
+    assert!(bars.iter().all(|b| !b.label.contains("2008")));
+    let jan = bars.iter().find(|b| b.label == "January 2025").unwrap();
+    let feb = bars.iter().find(|b| b.label == "February 2025").unwrap();
+    assert_eq!(jan.step, 10);
+    assert_eq!(feb.step, 5);
+}

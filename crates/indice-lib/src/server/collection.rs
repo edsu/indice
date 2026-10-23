@@ -90,7 +90,7 @@ pub(super) async fn collection_page(
         })
         .await
         .unwrap_or_default();
-    let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
+    let facets = scoped_facet_sections(&overview.facets, &format!("collection:{id}"));
 
     let chrome = chrome(&state, &headers);
     // Deaccession is an admin act; don't offer a curator a button that 403s.
@@ -107,13 +107,13 @@ pub(super) async fn collection_page(
         meta,
         facets,
         members: member_items,
+        // From the index, like the search timeline, so each bar counts what
+        // its `month:` link finds.
         crawl_months: month_axis(
-            &members
+            &overview
+                .months
                 .iter()
-                .filter_map(|w| {
-                    let ym: u64 = w.capture_start.as_deref()?.get(..6)?.parse().ok()?;
-                    Some((ym, w.page_count.unwrap_or(0)))
-                })
+                .map(|t| (t.ym, t.count))
                 .collect::<Vec<_>>(),
             |ym| {
                 format!(

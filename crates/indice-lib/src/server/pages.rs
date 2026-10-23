@@ -228,15 +228,15 @@ pub(super) async fn search_page(
                 .collect()
         })
         .unwrap_or_default();
-    let crawl_names: std::collections::HashMap<String, String> = manifest
-        .as_ref()
-        .map(|m| {
-            m.waczs
-                .iter()
-                .map(|w| (w.id.clone(), w.display_name()))
-                .collect()
-        })
-        .unwrap_or_default();
+    // A crawl's name for a reader, looked up for the rows shown, not built for
+    // every crawl in the archive.
+    let crawl_name = |r: &crate::search::SearchResult| {
+        manifest
+            .as_ref()
+            .and_then(|m| m.wacz_by_id(&r.crawl_id))
+            .map(|w| w.display_name())
+            .unwrap_or_else(|| r.crawl_name.clone())
+    };
 
     let rows: Vec<views::SearchResultRow> = results
         .iter()
@@ -262,7 +262,7 @@ pub(super) async fn search_page(
                 }
             } else if r.title.is_empty() {
                 if is_collection {
-                    r.crawl_name.clone()
+                    crawl_name(r)
                 } else {
                     r.url.clone()
                 }
@@ -279,7 +279,7 @@ pub(super) async fn search_page(
                     Some((r.url.clone(), r.timestamp.clone())),
                 )
             } else {
-                let name_enc = url_encode(crawl_names.get(&r.crawl_id).unwrap_or(&r.crawl_name));
+                let name_enc = url_encode(&crawl_name(r));
                 let source_enc = url_encode(&source_for(&r.crawl_id));
                 // Carry the breadcrumb into the replay viewer: the collection
                 // (name + id) and the crawl id (so its crumb links to the crawl).

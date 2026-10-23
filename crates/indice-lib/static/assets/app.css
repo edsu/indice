@@ -29,13 +29,12 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
 .ok { color: var(--ok); }
 .missing { color: var(--danger); }
 
-/* Finding-aid vernacular: small-caps eyebrow/label used across the app. */
 /* The one label style: what a group of values is, above the values. */
 .eyebrow, .browse-group h3, .facet-group h3, .manage-form label > span:first-child, .bx-mode legend { font-size: var(--t-sm); color: var(--muted); font-weight: var(--w-bold); }
 
 /* ── Unified app header (full-bleed). One bar on every page; in the workroom
-   it flips to the clay accent + a top rule and gains the Manage chip + signed-in
-   name — the same header, not a separate stacked strip. ── */
+   it becomes a manila band with a top rule and gains the Manage chip and the
+   signed-in name: the same header, not a separate stacked strip. ── */
 .appbar {
   display: flex; align-items: center; gap: 0.9rem;
   padding: 0.6rem 1.25rem; border-bottom: 1px solid var(--rule); background: var(--page);
@@ -62,8 +61,7 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
 .appbar .logout-form { display: contents; }
 .appbar .logout { margin-left: 0.75rem; font: inherit; font-size: var(--t-sm); color: var(--muted); white-space: nowrap; background: none; border: 0; padding: 0; cursor: pointer; }
 .appbar .logout:hover { color: var(--ink); text-decoration: underline; }
-/* Workroom: same bar, clay-tinted with a top rule (the accent itself flips via
-   the .mode-manage body class). */
+/* Workroom: the same bar as a manila band with a top rule. */
 .mode-manage .appbar { background: var(--work-wash); border-top: 3px solid var(--work); }
 /* The things that edit, in the workroom accent: a collection's Edit and Add
    crawls, New collection, and every button on a workroom form. Reading actions
@@ -86,8 +84,9 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
 .search-form input:focus { border-color: var(--accent); }
 .search-form .btn { padding: 0.6rem 1.2rem; font-size: var(--t-md); font-weight: var(--w-regular); }
 
-/* Shared buttons — outline treatment: accent border + text, faint hover fill.
-   Color follows the mode (blue reading room / clay workroom) via --accent. */
+/* Shared buttons: an outline in the reading accent. Buttons that edit
+   (.btn.edit, and every button on a workroom form) take the workroom accent;
+   see the workroom rules near the top. */
 .btn {
   font: inherit; font-weight: var(--w-bold); font-size: var(--t-sm); cursor: pointer; text-decoration: none;
   display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap;
@@ -234,7 +233,8 @@ table.results td { padding: 0.8rem 0.4rem; vertical-align: top; }
 /* The time axis: a bar per month across the span, empty months included,
    years marked by a rule and a label. The one bold element on a page. */
 .timeline { display: flex; align-items: flex-end; gap: 1px; height: 96px; margin: 0 0 var(--s-6); padding-bottom: var(--s-5); border-bottom: 1px solid var(--rule); }
-.tl-bar { flex: 1 1 0; min-width: 2px; height: 100%; position: relative; display: flex; align-items: flex-end; text-decoration: none; }
+/* No minimum width: a decade is 120 bars, which must fit a phone too. */
+.tl-bar { flex: 1 1 0; min-width: 0; height: 100%; position: relative; display: flex; align-items: flex-end; text-decoration: none; }
 .tl-bar.tl-year { border-left: 1px solid var(--rule); }
 .tl-fill { width: 100%; background: var(--accent); }
 .tl-fill.h0 { height: 0; } .tl-fill.h1 { height: 10%; } .tl-fill.h2 { height: 20%; } .tl-fill.h3 { height: 30%; }
@@ -407,6 +407,7 @@ nav.pagination .page-info { color: var(--muted); }
   .results-layout { flex-direction: column; }
   aside.facets { flex-basis: auto; width: 100%; }
   .crawl-thumb { flex-basis: 96px; }
+  .timeline { gap: 0; }
   /* The header search takes a line of its own rather than pushing the page
      wider than the screen. */
   .appbar { flex-wrap: wrap; }

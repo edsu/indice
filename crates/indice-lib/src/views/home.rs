@@ -117,11 +117,13 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                                 (c.count) " crawl" @if c.count != 1 { "s" }
                             }
                         }
-                        p.card-source {
-                            @match (c.has_local, c.has_remote) {
-                                (true, true) => "Stored here and streamed",
-                                (false, true) => "Streamed",
-                                _ => "Stored here",
+                        @if c.has_local || c.has_remote {
+                            p.card-source {
+                                @match (c.has_local, c.has_remote) {
+                                    (true, true) => "Stored here and streamed",
+                                    (false, true) => "Streamed",
+                                    _ => "Stored here",
+                                }
                             }
                         }
                         @if let Some(d) = &c.description {
