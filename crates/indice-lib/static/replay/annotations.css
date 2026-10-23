@@ -210,6 +210,15 @@
   background: var(--danger-wash);
 }
 
+/* A new note's form sits in the panel itself, so it takes the panel's inset;
+   an edited note's form sits inside its card, which already has one. */
+#anno-composer-host:not(:empty) {
+  padding: 0 var(--s-4) var(--s-4);
+}
+#anno-composer-host .anno-hint {
+  padding-left: 0;
+  padding-right: 0;
+}
 .anno-composer {
   display: flex;
   flex-direction: column;
