@@ -55,7 +55,9 @@ fn split_facet_items(items: &[FacetItem]) -> (Vec<&FacetItem>, Vec<&FacetItem>) 
 fn facet_item(it: &FacetItem) -> Markup {
     html! {
         li.facet-item.active[it.active] {
-            a href=(it.href) {
+            // aria-current says which value is applied; the checkmark beside it
+            // is drawn by CSS, which a screen reader does not announce.
+            a href=(it.href) aria-current=[it.active.then_some("true")] {
                 span.facet-value { (it.value) }
                 span.facet-count { (it.count) }
             }

@@ -66,7 +66,7 @@ pub(super) async fn collection_page(
         .iter()
         .map(|w| views::MemberItem {
             id: w.id.clone(),
-            name: w.name.clone(),
+            name: w.display_name(),
             present: w.is_present(&state.home),
             remote: w.source.is_remote(),
             provenance: provenance_summary(w),

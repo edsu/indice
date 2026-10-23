@@ -221,16 +221,27 @@ pub(super) async fn search_page(
             .map(viewer_source)
             .unwrap_or_else(|| format!("/files/{wacz_id}"))
     };
-    // Curated collection id -> display name, for the "in <collection>" link.
-    let collection_names: std::collections::HashMap<String, String> =
-        Manifest::open(&state.index_dir)
-            .map(|m| {
-                m.collections
-                    .iter()
-                    .map(|c| (c.id.to_string(), c.name.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+    // Ids -> the names a reader sees: collections for the "in <collection>"
+    // link and the collection facet, crawls for the replay banner.
+    let manifest = Manifest::open(&state.index_dir).ok();
+    let collection_names: std::collections::HashMap<String, String> = manifest
+        .as_ref()
+        .map(|m| {
+            m.collections
+                .iter()
+                .map(|c| (c.id.to_string(), c.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let crawl_names: std::collections::HashMap<String, String> = manifest
+        .as_ref()
+        .map(|m| {
+            m.waczs
+                .iter()
+                .map(|w| (w.id.clone(), w.display_name()))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let rows: Vec<views::SearchResultRow> = results
         .iter()
@@ -273,7 +284,7 @@ pub(super) async fn search_page(
                     Some((r.url.clone(), r.timestamp.clone())),
                 )
             } else {
-                let name_enc = url_encode(&r.crawl_name);
+                let name_enc = url_encode(crawl_names.get(&r.crawl_id).unwrap_or(&r.crawl_name));
                 let source_enc = url_encode(&source_for(&r.crawl_id));
                 // Carry the breadcrumb into the replay viewer: the collection
                 // (name + id) and the crawl id (so its crumb links to the crawl).
@@ -354,7 +365,6 @@ pub(super) async fn search_page(
     // The `crawl:` filter's value is an opaque WACZ id (from a crawl-page facet
     // link); show the crawl's name in the chip instead. Other filters show their
     // value as-is. The removal token still uses the raw id.
-    let manifest = Manifest::open(&state.index_dir).ok();
     let active: Vec<views::ActiveFilter> = filters
         .iter()
         .map(|(f, v)| {
@@ -362,7 +372,12 @@ pub(super) async fn search_page(
                 manifest
                     .as_ref()
                     .and_then(|m| m.wacz_by_id(v))
-                    .map(|w| w.name.clone())
+                    .map(|w| w.display_name())
+                    .unwrap_or_else(|| v.clone())
+            } else if f == "collection" {
+                collection_names
+                    .get(v)
+                    .cloned()
                     .unwrap_or_else(|| v.clone())
             } else {
                 v.clone()
@@ -389,8 +404,17 @@ pub(super) async fn search_page(
                     } else {
                         query_with_filter(&q, &g.field, &b.value)
                     };
+                    // The collection facet's values are ids; show names.
+                    let value = if g.field == "collection" {
+                        collection_names
+                            .get(&b.value)
+                            .cloned()
+                            .unwrap_or_else(|| b.value.clone())
+                    } else {
+                        b.value.clone()
+                    };
                     views::FacetItem {
-                        value: b.value.clone(),
+                        value,
                         count: b.count,
                         href: search_href(&new_q),
                         active: is_active,

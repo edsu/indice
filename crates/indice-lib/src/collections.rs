@@ -124,6 +124,27 @@ impl Source {
         }
     }
 
+    /// Where the WACZ lives, said for a reader rather than as the stored
+    /// location string (`browsertrix-public|host|org|…`, which [`location`]
+    /// gives and the manifest keeps).
+    ///
+    /// [`location`]: Source::location
+    pub fn describe(&self) -> String {
+        match self {
+            Source::File(p) => format!("Stored in this archive: {}", p.to_string_lossy()),
+            Source::Url(u) => format!("Read from {u}"),
+            Source::Browsertrix { host, resource, .. } => {
+                format!("Browsertrix ({}), file {resource}", host_of(host))
+            }
+            Source::BrowsertrixPublic { host, resource, .. } => {
+                format!(
+                    "Browsertrix public collection ({}), file {resource}",
+                    host_of(host)
+                )
+            }
+        }
+    }
+
     /// Build a File source for an absolute path, stored relative to `home` when
     /// the path is under it (so the home folder is portable), else absolute.
     pub fn for_file(abs: &Path, home: &Path) -> Source {
@@ -155,6 +176,41 @@ impl From<Source> for String {
     fn from(s: Source) -> Self {
         s.location()
     }
+}
+
+/// A date written out, "7 January 2025", from a timestamp that starts with
+/// `YYYYMMDD` or `YYYY-MM-DD`.
+pub fn long_date(ts: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let digits: String = ts.chars().filter(|c| c.is_ascii_digit()).take(8).collect();
+    if digits.len() < 8 {
+        return None;
+    }
+    let month: usize = digits[4..6].parse().ok()?;
+    let day: u32 = digits[6..8].parse().ok()?;
+    let name = MONTHS.get(month.checked_sub(1)?)?;
+    (1..=31)
+        .contains(&day)
+        .then(|| format!("{day} {name} {}", &digits[..4]))
+}
+
+/// The host part of a URL, or the string as given if it has none.
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
 }
 
 impl std::fmt::Display for Source {
@@ -277,6 +333,34 @@ pub struct Wacz {
 }
 
 impl Wacz {
+    /// The name to show a reader. Most crawls are named by whoever made them;
+    /// a crawl named only by its tool's identifier, such as Browsertrix's
+    /// `20250107171404015-af3df7fa-3fc-0`, is called by when it was made,
+    /// "Crawl of 7 January 2025, 17:14", and keeps its identifier in the File
+    /// details. The time is there because several crawls often run on one day.
+    /// An identifier here is a name with no space that is at least half digits.
+    pub fn display_name(&self) -> String {
+        let digits = self.name.chars().filter(|c| c.is_ascii_digit()).count();
+        let machine = !self.name.contains(' ') && digits * 2 >= self.name.chars().count();
+        let when = self
+            .capture_start
+            .as_deref()
+            .or(self.crawl_date.as_deref())
+            .and_then(|ts| {
+                let date = long_date(ts)?;
+                // A 14-digit timestamp's hours and minutes, when it has them.
+                let d: String = ts.chars().filter(|c| c.is_ascii_digit()).collect();
+                Some(match d.get(8..12) {
+                    Some(hm) => format!("{date}, {}:{}", &hm[..2], &hm[2..]),
+                    None => date,
+                })
+            });
+        match (machine, when) {
+            (true, Some(d)) => format!("Crawl of {d}"),
+            _ => self.name.clone(),
+        }
+    }
+
     /// Whether the WACZ is available, resolving file paths against `home`.
     /// Local files must exist on disk; remote URLs are assumed present.
     pub fn is_present(&self, home: &Path) -> bool {
@@ -1450,6 +1534,64 @@ mod tests {
     }
 
     use super::*;
+
+    fn named(name: &str, capture_start: Option<&str>) -> Wacz {
+        serde_json::from_value(serde_json::json!({
+            "id": "abc", "collection": "c", "source": "archive/c/a.wacz",
+            "name": name, "date_indexed": "2026-01-01T00:00:00Z",
+            "file_size": 1, "sha256": "0", "capture_start": capture_start,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_crawl_named_by_its_tool_is_called_by_its_date() {
+        let w = named("20250107171404015-af3df7fa-3fc-0", Some("20250107171404"));
+        assert_eq!(w.display_name(), "Crawl of 7 January 2025, 17:14");
+        // A date alone, when that is all the record holds.
+        assert_eq!(
+            named("20250107171404015-af3df7fa-3fc-0", Some("2025-01-07")).display_name(),
+            "Crawl of 7 January 2025"
+        );
+        // A person's name for a crawl stays, even with digits in it.
+        assert_eq!(
+            named("Lawfare January 6 archive", Some("20260603")).display_name(),
+            "Lawfare January 6 archive"
+        );
+        assert_eq!(named("sul", Some("20260803")).display_name(), "sul");
+        // With no date to go on, the identifier is all there is.
+        assert_eq!(
+            named("20250201040308712-f358c0c4", None).display_name(),
+            "20250201040308712-f358c0c4"
+        );
+    }
+
+    #[test]
+    fn a_date_is_written_out() {
+        assert_eq!(
+            long_date("20250201010253").as_deref(),
+            Some("1 February 2025")
+        );
+        assert_eq!(
+            long_date("2021-05-25T00:00:00Z").as_deref(),
+            Some("25 May 2021")
+        );
+        assert_eq!(long_date("2025"), None);
+        assert_eq!(long_date("20251301"), None);
+    }
+
+    #[test]
+    fn a_source_is_described_for_a_reader() {
+        let s = Source::parse("browsertrix-public|https://app.browsertrix.com|org|coll|2025.wacz");
+        assert_eq!(
+            s.describe(),
+            "Browsertrix public collection (app.browsertrix.com), file 2025.wacz"
+        );
+        assert_eq!(
+            Source::parse("archive/c/a.wacz").describe(),
+            "Stored in this archive: archive/c/a.wacz"
+        );
+    }
     use tempfile::TempDir;
 
     #[test]

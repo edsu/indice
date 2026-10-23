@@ -19,6 +19,9 @@ pub struct CrawlPage {
     /// `(collection_id, collection_name)` breadcrumb, if the crawl has one.
     pub crumb: Option<(String, String)>,
     pub name: String,
+    /// The crawl's own name, when [`name`](Self::name) is the date-based one
+    /// shown in its place.
+    pub original_name: Option<String>,
     pub description: Option<String>,
     /// The rendered (safe-HTML) Markdown curator note from
     /// `collections/<slug>/crawls/<id>.md`.
@@ -74,9 +77,16 @@ pub fn crawl(p: &CrawlPage) -> Markup {
 
         h2 { "File" }
         table.meta {
-            tr { th { "Source" } td.mono { (p.source) } }
+            tr { th { "Source" } td { (p.source) } }
+            @if let Some(n) = &p.original_name {
+                tr { th { "Named" } td.mono { (n) } }
+            }
             tr { th { "Size" } td { (p.size) } }
-            tr { th { "SHA-256" } td.mono title=(p.sha_full) { (p.sha_short) "…" } }
+            // Not every source records a hash; a missing one is left out, not
+            // shown as an empty value.
+            @if !p.sha_full.is_empty() {
+                tr { th { "SHA-256" } td.mono title=(p.sha_full) { (p.sha_short) "…" } }
+            }
             @if let Some(c) = &p.crawled { tr { th { "Crawled" } td { (c) } } }
             tr { th { "Indexed" } td { (p.indexed) } }
             tr {

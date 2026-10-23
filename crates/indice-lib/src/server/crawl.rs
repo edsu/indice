@@ -25,7 +25,7 @@ pub(super) async fn crawl_page(
     };
 
     let source_enc = url_encode(&viewer_source(c));
-    let name_enc = url_encode(&c.name);
+    let name_enc = url_encode(&c.display_name());
     // Breadcrumb + replay params for the containing collection (name + id).
     let col = manifest.collection_by_id(&c.collection);
     let crumb = col.map(|col| (col.id.to_string(), col.name.clone()));
@@ -185,7 +185,8 @@ pub(super) async fn crawl_page(
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,
-        name: c.name.clone(),
+        name: c.display_name(),
+        original_name: (c.display_name() != c.name).then(|| c.name.clone()),
         description: c.description.clone(),
         note: crate::collections::read_crawl_note(&state.home, &c.collection, &id)
             .map(|n| crate::markdown::render(&n)),
@@ -194,7 +195,7 @@ pub(super) async fn crawl_page(
         // Fetched from a remote host at replay time, not stored in <home>/archive.
         remote: c.source.is_remote(),
         provenance,
-        source: c.source.location(),
+        source: c.source.describe(),
         size: human_size(c.file_size),
         sha_short: c.sha256.get(..16).unwrap_or(&c.sha256).to_string(),
         sha_full: c.sha256.clone(),
