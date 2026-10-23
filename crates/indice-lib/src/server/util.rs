@@ -279,22 +279,28 @@ fn ymd(ts: &str) -> String {
     }
 }
 
-/// The capture date range of a collection as a display string (`start → end`, or
-/// a single date when they coincide), or `None` when no range was recorded.
-pub(super) fn capture_range(c: &Wacz) -> Option<String> {
-    match (c.capture_start.as_deref(), c.capture_end.as_deref()) {
+/// Two timestamps as a span of dates in words: "7 January 2025 to 3 August
+/// 2026", or one date when they fall on the same day. A timestamp that is not
+/// a date is shown as it is.
+fn date_span(start: Option<&str>, end: Option<&str>) -> Option<String> {
+    let words = |ts: &str| crate::collections::long_date(ts).unwrap_or_else(|| ymd(ts));
+    match (start, end) {
         (Some(s), Some(e)) => {
-            let (sd, ed) = (ymd(s), ymd(e));
+            let (sd, ed) = (words(s), words(e));
             Some(if sd == ed {
                 sd
             } else {
-                format!("{sd} → {ed}")
+                format!("{sd} to {ed}")
             })
         }
-        (Some(s), None) => Some(ymd(s)),
-        (None, Some(e)) => Some(ymd(e)),
+        (Some(t), None) | (None, Some(t)) => Some(words(t)),
         (None, None) => None,
     }
+}
+
+/// When a crawl's captures were made, or `None` when none were recorded.
+pub(super) fn capture_range(c: &Wacz) -> Option<String> {
+    date_span(c.capture_start.as_deref(), c.capture_end.as_deref())
 }
 
 /// A compact "capture quality" summary of an HTTP status histogram: total
@@ -374,40 +380,28 @@ pub(super) fn collection_software(members: &[&Wacz]) -> Vec<String> {
 pub(super) fn members_capture_range(members: &[&Wacz]) -> Option<String> {
     let start = members.iter().filter_map(|w| w.capture_start.clone()).min();
     let end = members.iter().filter_map(|w| w.capture_end.clone()).max();
-    match (start, end) {
-        (Some(s), Some(e)) => {
-            let (sd, ed) = (ymd(&s), ymd(&e));
-            Some(if sd == ed {
-                sd
-            } else {
-                format!("{sd} → {ed}")
-            })
-        }
-        (Some(s), None) => Some(ymd(&s)),
-        (None, Some(e)) => Some(ymd(&e)),
-        (None, None) => None,
-    }
+    date_span(start.as_deref(), end.as_deref())
 }
 
-/// A compact one-line provenance summary (`Software: X · N pages · dates`) as
-/// plain text for collection member listings. `None` when nothing is known.
-/// The view wraps it in a `.prov` element and handles escaping.
+/// A one-sentence provenance summary for collection member listings: "38
+/// pages, captured 7 January 2025, by Browsertrix-Crawler 1.4.2." `None` when
+/// nothing is known. The view escapes it.
 pub(super) fn provenance_summary(c: &Wacz) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
-    if !c.software.is_empty() {
-        parts.push(format!("Software: {}", c.software.join(", ")));
-    }
     if let Some(n) = c.page_count {
         parts.push(format!("{n} page{}", if n == 1 { "" } else { "s" }));
     }
     if let Some(range) = capture_range(c) {
-        parts.push(range);
+        parts.push(format!("captured {range}"));
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" · "))
+    if !c.software.is_empty() {
+        parts.push(format!("by {}", c.software.join(" and ")));
     }
+    let mut sentence = parts.join(", ");
+    let first = sentence.chars().next()?;
+    sentence.replace_range(..first.len_utf8(), &first.to_uppercase().to_string());
+    sentence.push('.');
+    Some(sentence)
 }
 
 pub(super) fn html_escape(s: &str) -> String {

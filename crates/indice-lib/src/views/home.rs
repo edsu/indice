@@ -102,7 +102,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
             @for c in cards {
                 div.card {
                     a.card-thumb href=(format!("/collection/{}", c.id)) {
-                        (thumb_area(c.thumb.as_deref(), &c.name))
+                        (thumb_area(c.thumb.as_deref()))
                     }
                     // Per-card edit affordance (hover-revealed) — workroom only.
                     @if management {
@@ -111,12 +111,17 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                     div.card-body {
                         div.card-header {
                             span.card-title-wrap {
-                                @if c.has_local { (source_badge(false)) }
-                                @if c.has_remote { (source_badge(true)) }
                                 a.card-title href=(format!("/collection/{}", c.id)) { (c.name) }
                             }
                             span.status.muted {
                                 (c.count) " crawl" @if c.count != 1 { "s" }
+                            }
+                        }
+                        p.card-source {
+                            @match (c.has_local, c.has_remote) {
+                                (true, true) => "Stored here and streamed",
+                                (false, true) => "Streamed",
+                                _ => "Stored here",
                             }
                         }
                         @if let Some(d) = &c.description {
@@ -128,7 +133,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                                     div.prov { (r) }
                                 }
                                 @if c.count > 0 {
-                                    a.btn href=(c.replay_href) { "Replay →" }
+                                    a.btn href=(c.replay_href) { "Replay" }
                                 }
                             }
                         }

@@ -114,7 +114,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
         // curation actions — all the same button treatment.
         div.actions {
             @if !p.members.is_empty() {
-                a.btn href=(p.replay_href) { "Replay collection →" }
+                a.btn href=(p.replay_href) { "Replay collection" }
             }
             @if p.chrome.manage {
                 a.btn.edit href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
@@ -172,7 +172,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 h2 { "Annotations" }
                 p.muted {
                     (p.annotation_count) " page " (plural) " in this collection. "
-                    a href=(format!("/collection/{}/annotations", p.id)) { "Browse annotations →" }
+                    a href=(format!("/collection/{}/annotations", p.id)) { "Browse annotations" }
                 }
             }
         }
@@ -187,12 +187,11 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 @for m in &p.members {
                     div.card {
                         a.card-thumb href=(format!("/crawl/{}", m.id)) {
-                            (thumb_area(m.thumb.as_deref(), &m.name))
+                            (thumb_area(m.thumb.as_deref()))
                         }
                         div.card-body {
                             div.card-header {
                                 span.card-title-wrap {
-                                    (source_badge(m.remote))
                                     a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
                                 }
                                 @if m.present {
@@ -201,6 +200,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
                                     span.status.missing { "✗" }
                                 }
                             }
+                            p.card-source { @if m.remote { "Streamed" } @else { "Stored here" } }
                             @if let Some(pr) = &m.provenance { div.prov { (pr) } }
                         }
                     }
@@ -283,14 +283,14 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
                 @for a in &p.items {
                     li.anno-index-item {
                         div.anno-index-meta {
-                            span.anno-author { (a.author) } " · " (a.date)
+                            span.anno-author { (a.author) } ", " (a.date)
                         }
                         @if let Some(q) = &a.region {
                             p.anno-quote { "“" (q) "”" }
                         }
                         div.anno-index-body { (a.note_html) }
                         p.anno-index-loc {
-                            a href=(a.replay_href) { "Open page →" }
+                            a href=(a.replay_href) { "Open page" }
                             " " span.muted { (a.page_url) }
                         }
                     }

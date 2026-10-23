@@ -55,13 +55,16 @@ pub fn crawl(p: &CrawlPage) -> Markup {
         @if let Some((id, cname)) = &p.crumb {
             div.crumb { "in " a href=(format!("/collection/{}", id)) { (cname) } }
         }
-        div.detail-thumb { (thumb_area(p.thumb.as_deref(), &p.name)) }
+        // A crawl's own page shows its thumbnail only when it has one.
+        @if let Some(t) = &p.thumb {
+            div.detail-thumb { (thumb_area(Some(t))) }
+        }
         div.crawl-title {
             (source_badge(p.remote))
             h1.page-title { (p.name) }
         }
         @if let Some(d) = &p.description { p.desc { (d) } }
-        div.actions { a.btn href=(p.replay_href) { "Replay →" } }
+        div.actions { a.btn href=(p.replay_href) { "Replay" } }
 
         @if let Some(n) = &p.note {
             section.about {

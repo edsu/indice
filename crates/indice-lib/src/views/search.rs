@@ -168,7 +168,7 @@ pub fn search_results(
             } @else {
                 (nav.total_hits) @if nav.capped { "+" } " result" @if nav.total_hits != 1 { "s" } " for " em { (query) }
                 @if nav.total_pages > 1 {
-                    " · page " (nav.page) " of " (nav.total_pages)
+                    ". Page " (nav.page) " of " (nav.total_pages)
                 }
             }
         }
@@ -239,7 +239,7 @@ pub fn search_results(
                                                 div.result-ts {
                                                     (r.timestamp_display)
                                                     @if r.capture_count > 1 {
-                                                        span.capture-count { " · captured " (r.capture_count) " times" }
+                                                        span.capture-count { " (captured " (r.capture_count) " times" }
                                                     }
                                                 }
                                             }
@@ -258,7 +258,7 @@ pub fn search_results(
                                         }
                                     }
                                     td.replay-col {
-                                        a.btn.small href=(r.href) { "Replay →" }
+                                        a.btn.small href=(r.href) { "Replay" }
                                     }
                                 }
                             }
@@ -268,15 +268,15 @@ pub fn search_results(
                 @if nav.total_pages > 1 {
                     nav.pagination {
                         @if nav.page > 1 {
-                            a.page-prev href=(page_href(nav.page - 1)) { "← Previous" }
+                            a.page-prev href=(page_href(nav.page - 1)) { "Previous" }
                         } @else {
-                            span.page-prev.disabled { "← Previous" }
+                            span.page-prev.disabled { "Previous" }
                         }
                         span.page-info { "Page " (nav.page) " of " (nav.total_pages) }
                         @if nav.page < nav.total_pages {
-                            a.page-next href=(page_href(nav.page + 1)) { "Next →" }
+                            a.page-next href=(page_href(nav.page + 1)) { "Next" }
                         } @else {
-                            span.page-next.disabled { "Next →" }
+                            span.page-next.disabled { "Next" }
                         }
                     }
                 }

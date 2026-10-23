@@ -50,7 +50,7 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
                 input type="text" name="name" required value=(form.name) readonly[form.editing];
             }
             label {
-                span { "Description " span.hint { "· a one-line summary, shown on cards and under the title" } }
+                span { "Description " span.hint { "a one-line summary, shown on cards and under the title" } }
                 input type="text" name="description" value=(form.description);
             }
             div.grid-2 {
@@ -60,11 +60,11 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
                 label { span { "Rights" } input type="text" name="rights" value=(form.rights); }
             }
             label {
-                span { "Subjects " span.hint { "· comma-separated" } }
+                span { "Subjects " span.hint { "comma-separated" } }
                 input type="text" name="subjects" value=(form.subjects);
             }
             label {
-                span { "Narrative " span.hint { "· the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
+                span { "Narrative " span.hint { "the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
                 textarea name="narrative" rows="8" { (form.narrative) }
             }
             div.form-actions {
@@ -131,7 +131,7 @@ pub fn accession_desk(
                     placeholder="which collection this belongs to";
             }
             label {
-                span { "Display name " span.hint { "· optional" } }
+                span { "Display name " span.hint { "optional" } }
                 input type="text" name="name" placeholder="override the collection's display name";
             }
 
@@ -149,7 +149,7 @@ pub fn accession_desk(
             }
             div.src-panel #src-url {
                 label {
-                    span { "Location " span.hint { "· an http(s):// URL" } }
+                    span { "Location " span.hint { "an http(s):// URL" } }
                     input type="text" name="location"
                         placeholder="https://example.org/crawl.wacz";
                 }
@@ -160,7 +160,7 @@ pub fn accession_desk(
                     div.grid-2 {
                         label { span { "Organization" } select #bx-org {} }
                         label {
-                            span { "Browsertrix collection " span.hint { "· optional filter" } }
+                            span { "Browsertrix collection " span.hint { "optional filter" } }
                             select #bx-collection { option value="" { "All crawls" } }
                         }
                     }
@@ -183,8 +183,8 @@ pub fn accession_desk(
                 div #bx-items.bx-items {}
                 fieldset.bx-mode {
                     legend { "On import" }
-                    label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "· stored locally, replays offline" } } }
-                    label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "· no local copy; replay re-resolves via this server's credentials" } } }
+                    label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "stored locally, replays offline" } } }
+                    label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "no local copy; replay re-resolves via this server's credentials" } } }
                 }
             }
             div.src-panel #src-ait {

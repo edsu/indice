@@ -68,7 +68,7 @@
   --w-regular: 400;
   --w-bold: 600;
   --measure: 66ch;
-  --radius: 6px;
+  --radius: 3px;            /* rectangles; pills only for removable filters */
   --col: 960px;
 
   /* ── Fixed ── */

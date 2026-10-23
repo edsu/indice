@@ -126,7 +126,7 @@
     who.textContent = a.author || "anonymous";
     const when = document.createElement("span");
     when.className = "anno-date";
-    when.textContent = fmtDate(a.modified || a.created) + (a.modified ? " · edited" : "");
+    when.textContent = fmtDate(a.modified || a.created) + (a.modified ? ", edited" : "");
     meta.append(who, when);
 
     const body = document.createElement("div");

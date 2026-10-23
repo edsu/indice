@@ -474,8 +474,8 @@ async fn homepage_shows_collection_name() {
         "homepage should show the collection name {cname:?}: {text}"
     );
     assert!(
-        text.contains("aria-label=\"Local\""),
-        "a local collection card should show the Local pill"
+        text.contains("Stored here"),
+        "a local collection card should say it is stored here"
     );
 }
 
@@ -520,8 +520,8 @@ async fn crawl_page_shows_metadata_and_pages() {
     assert!(html.contains("Replay"), "should have a replay button");
     assert!(html.contains("Pages"), "should have a pages section");
     assert!(
-        html.contains("aria-label=\"Local\""),
-        "a local crawl should show the Local source badge"
+        html.contains("Stored here"),
+        "a local crawl should say it is stored here"
     );
     assert!(
         html.contains(&format!("crawl={id}")),
@@ -712,8 +712,8 @@ async fn browsertrix_crawl_page_flags_remote_hosting() {
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
     assert!(
-        html.contains("source-badge") && html.contains("aria-label=\"Remote\""),
-        "a remotely-hosted crawl should show the remote badge"
+        html.contains("source-badge") && html.contains("Streamed"),
+        "a remotely-hosted crawl should say it is streamed"
     );
 }
 
@@ -764,8 +764,8 @@ async fn collection_page_lists_members() {
         "collection page should link to its member crawl"
     );
     assert!(
-        html.contains("aria-label=\"Local\""),
-        "member cards should show a source pill"
+        html.contains("Stored here"),
+        "member cards should say where the crawl lives"
     );
 }
 
@@ -1010,8 +1010,8 @@ async fn collection_card_shows_placeholder_without_image() {
         "card should have an image area"
     );
     assert!(
-        html.contains("thumb placeholder"),
-        "no thumbnail should fall back to a CSS placeholder"
+        html.contains("thumb blank"),
+        "no thumbnail should keep a plain image area"
     );
 }
 

@@ -144,25 +144,16 @@ pub fn search_tips() -> Markup {
     }
 }
 
-/// A card/detail representative image. Shows the cached thumbnail if present,
-/// otherwise a CSS placeholder tinted by a hash of `seed` (so cards vary a bit).
-fn thumb_area(thumb: Option<&str>, seed: &str) -> Markup {
+/// A card's representative image: the cached thumbnail, or a plain panel the
+/// same size, so a card without one still lines up with its neighbours. Not a
+/// coloured placeholder: a colour that means nothing reads as if it did.
+fn thumb_area(thumb: Option<&str>) -> Markup {
     html! {
         @match thumb {
             Some(src) => div.thumb { img src=(src) alt="" loading="lazy"; },
-            None => div.thumb.placeholder style=(placeholder_style(seed)) {},
+            None => div.thumb.blank {},
         }
     }
-}
-
-/// A deterministic gradient for a placeholder, its hue derived from `seed` so
-/// each collection/crawl gets a stable, distinct tint.
-fn placeholder_style(seed: &str) -> String {
-    let hue = seed
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
-        % 360;
-    format!("background:linear-gradient(135deg,hsl({hue},45%,72%),hsl({hue},38%,55%))")
 }
 
 /// One labeled group of browse-links in a detail page's scoped facet overview
@@ -233,25 +224,19 @@ fn meta_table(rows: &[MetaRow]) -> Markup {
     }
 }
 
-/// A pill labelling where a crawl's WACZ lives: `💾 Local` (stored in this
-/// home's `archive/`) or `🌐 Remote` (fetched from a remote host at replay time).
+/// Where a crawl's WACZ lives, in words: stored in this archive's own
+/// folder, or streamed from a remote host at replay time.
 fn source_badge(remote: bool) -> Markup {
-    // Icon only, but with role="img" + aria-label so a screen reader announces
-    // "Local"/"Remote" (not the emoji's Unicode name); `title` is the mouse
-    // tooltip. `title` alone would not be accessible.
     if remote {
         html! {
-            span.source-badge.remote role="img" aria-label="Remote"
-                title="Hosted remotely — indice streams this at replay time and doesn't keep a local copy" {
-                "🌐"
+            span.source-badge
+                title="Hosted remotely: indice streams this at replay time and keeps no copy" {
+                "Streamed"
             }
         }
     } else {
         html! {
-            span.source-badge.local role="img" aria-label="Local"
-                title="Stored locally in this home's archive folder" {
-                "💾"
-            }
+            span.source-badge title="Stored in this archive's own folder" { "Stored here" }
         }
     }
 }
