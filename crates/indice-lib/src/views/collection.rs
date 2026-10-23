@@ -9,6 +9,8 @@ use super::*;
 pub struct MemberItem {
     pub id: String,
     pub name: String,
+    /// When the crawl ran, in words, if known.
+    pub when: Option<String>,
     pub present: bool,
     /// Whether this crawl is hosted remotely (streamed) rather than local.
     pub remote: bool,
@@ -37,7 +39,10 @@ pub struct CollectionPage {
     /// Created).
     pub meta: Vec<MetaRow>,
     pub facets: Vec<FacetSection>,
+    /// The member crawls, newest first.
     pub members: Vec<MemberItem>,
+    /// Pages crawled per month across the collection's span.
+    pub crawl_months: Vec<TimelineBar>,
     /// Viewer URL that replays the whole collection (multi-WACZ).
     pub replay_href: String,
     /// Collection id (slug) — for the edit / add-crawls links.
@@ -180,28 +185,26 @@ pub fn collection(p: &CollectionPage) -> Markup {
         @if !p.meta.is_empty() { (meta_table(&p.meta)) }
         (facet_browse(&p.facets))
         h2 { "Crawls" }
+        // When this collection was crawled, then its crawls, newest first: a
+        // collection grows over time, and the list reads as that history.
+        (time_axis(&p.crawl_months, "Pages crawled by month", ("page", "pages")))
         @if p.members.is_empty() {
             p.muted { "No crawls in this collection." }
         } @else {
-            div.cards {
+            ol.crawl-list {
                 @for m in &p.members {
-                    div.card {
-                        a.card-thumb href=(format!("/crawl/{}", m.id)) {
+                    li.crawl-item {
+                        a.crawl-thumb href=(format!("/crawl/{}", m.id)) tabindex="-1" aria-hidden="true" {
                             (thumb_area(m.thumb.as_deref()))
                         }
-                        div.card-body {
-                            div.card-header {
-                                span.card-title-wrap {
-                                    a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
-                                }
-                                @if m.present {
-                                    span.status.ok { "✓" }
-                                } @else {
-                                    span.status.missing { "✗" }
-                                }
+                        div.crawl-text {
+                            @if let Some(w) = &m.when { div.crawl-when { (w) } }
+                            a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
+                            p.card-source {
+                                @if m.remote { "Streamed" } @else { "Stored here" }
+                                @if !m.present { span.missing { ". The file is missing" } }
                             }
-                            p.card-source { @if m.remote { "Streamed" } @else { "Stored here" } }
-                            @if let Some(pr) = &m.provenance { div.prov { (pr) } }
+                            @if let Some(pr) = &m.provenance { p.crawl-prov { (pr) } }
                         }
                     }
                 }

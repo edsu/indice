@@ -231,15 +231,29 @@ table.results td { padding: 0.8rem 0.4rem; vertical-align: top; }
 .filter-chip:hover { background: var(--accent-wash); text-decoration: none; }
 .filter-chip .chip-label { color: var(--muted); }
 
-/* Results timeline (month histogram) */
-.timeline { display: flex; align-items: flex-end; gap: 3px; height: 90px; margin: 0 0 1.75rem; padding-bottom: 1.1rem; border-bottom: 1px solid var(--rule); }
-.tl-bar { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; text-decoration: none; min-width: 0; position: relative; }
-.tl-fill { width: 70%; min-height: 2px; background: color-mix(in srgb, var(--accent) 45%, #fff); border-radius: 2px 2px 0 0; }
-.tl-bar:hover .tl-fill { background: var(--accent); }
-.tl-bar.active .tl-fill { background: var(--accent-dk); }
-.tl-label { position: absolute; bottom: -1rem; font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
-.tl-bar:hover .tl-label, .tl-bar.active .tl-label { color: var(--accent); }
-.tl-yr { display: none; position: absolute; bottom: -1rem; font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
+/* The time axis: a bar per month across the span, empty months included,
+   years marked by a rule and a label. The one bold element on a page. */
+.timeline { display: flex; align-items: flex-end; gap: 1px; height: 96px; margin: 0 0 var(--s-6); padding-bottom: var(--s-5); border-bottom: 1px solid var(--rule); }
+.tl-bar { flex: 1 1 0; min-width: 2px; height: 100%; position: relative; display: flex; align-items: flex-end; text-decoration: none; }
+.tl-bar.tl-year { border-left: 1px solid var(--rule); }
+.tl-fill { width: 100%; background: var(--accent); }
+.tl-fill.h0 { height: 0; } .tl-fill.h1 { height: 10%; } .tl-fill.h2 { height: 20%; } .tl-fill.h3 { height: 30%; }
+.tl-fill.h4 { height: 40%; } .tl-fill.h5 { height: 50%; } .tl-fill.h6 { height: 60%; } .tl-fill.h7 { height: 70%; }
+.tl-fill.h8 { height: 80%; } .tl-fill.h9 { height: 90%; } .tl-fill.h10 { height: 100%; }
+a.tl-bar:hover .tl-fill, a.tl-bar:focus-visible .tl-fill, .tl-bar.active .tl-fill { background: var(--accent-dk); }
+.tl-yr { position: absolute; left: 3px; bottom: calc(-1 * var(--s-5)); font-size: var(--t-xs); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* A month's count, on hover and on keyboard focus. */
+.tl-tip { display: none; position: absolute; bottom: calc(100% + var(--s-1)); left: 50%; transform: translateX(-50%); z-index: 1; background: var(--ink); color: var(--page); font-size: var(--t-xs); padding: var(--s-1) var(--s-2); border-radius: var(--radius); white-space: nowrap; }
+a.tl-bar:hover .tl-tip, a.tl-bar:focus-visible .tl-tip { display: block; }
+
+/* A collection's crawls as a dated list, newest first. */
+.crawl-list { list-style: none; margin: 0; padding: 0; }
+.crawl-item { display: flex; gap: var(--s-4); align-items: flex-start; padding: var(--s-4) 0; border-bottom: 1px solid var(--rule-soft); }
+.crawl-thumb { flex: 0 0 160px; }
+.crawl-thumb .thumb { border: 1px solid var(--rule); border-radius: var(--radius); }
+.crawl-text { flex: 1; min-width: 0; }
+.crawl-when { font-size: var(--t-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.crawl-prov { font-size: var(--t-sm); color: var(--text-2); margin: 0; max-width: var(--measure); }
 
 /* Faceted results layout: sidebar + results */
 .results-layout { display: flex; gap: 1.75rem; align-items: flex-start; }
@@ -392,9 +406,7 @@ nav.pagination .page-info { color: var(--muted); }
      facets, which follow as a "Refine" section. */
   .results-layout { flex-direction: column; }
   aside.facets { flex-basis: auto; width: 100%; }
-  /* Too narrow for a label per month: label each year once, at its first bar. */
-  .tl-label { display: none; }
-  .tl-yr { display: block; }
+  .crawl-thumb { flex-basis: 96px; }
   /* The header search takes a line of its own rather than pushing the page
      wider than the screen. */
   .appbar { flex-wrap: wrap; }

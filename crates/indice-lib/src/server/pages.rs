@@ -112,11 +112,6 @@ fn browse_links(
 /// Search results per page.
 const PAGE_SIZE: usize = 20;
 
-/// Format a `YYYYMM` month as `YYYY-MM` for display.
-fn format_ym(ym: u64) -> String {
-    format!("{:04}-{:02}", ym / 100, ym % 100)
-}
-
 /// The active `field:value` facet filters present in a query, in order. Only
 /// single-token filters are recognized: a range like `month:[202101 TO 202106]`
 /// is a valid query but splits into several whitespace tokens, so it does not
@@ -426,35 +421,26 @@ pub(super) async fn search_page(
         .collect();
     let sidebar = views::FacetSidebar { active, groups };
 
-    // Timeline: one clickable bar per crawl month, oldest first, height scaled
-    // to the busiest month. Clicking toggles a `month:YYYYMM` filter.
-    let max_count = response
-        .timeline
-        .iter()
-        .map(|t| t.count)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let timeline: Vec<views::TimelineBar> = response
-        .timeline
-        .iter()
-        .map(|t| {
-            let month = t.ym.to_string();
-            let is_active = filters.iter().any(|(f, v)| f == "month" && v == &month);
-            let new_q = if is_active {
+    // Timeline: every crawl month in the results' span, oldest first, height
+    // scaled to the busiest. Clicking a month toggles a `month:YYYYMM` filter.
+    let in_force = |ym: u64| {
+        filters
+            .iter()
+            .any(|(f, v)| f == "month" && v == &ym.to_string())
+    };
+    let counts: Vec<(u64, u64)> = response.timeline.iter().map(|t| (t.ym, t.count)).collect();
+    let timeline = month_axis(
+        &counts,
+        |ym| {
+            let month = ym.to_string();
+            search_href(&if in_force(ym) {
                 query_without_filter(&q, "month", &month)
             } else {
                 query_with_filter(&q, "month", &month)
-            };
-            views::TimelineBar {
-                label: format_ym(t.ym),
-                count: t.count,
-                pct: (t.count as f64 / max_count as f64 * 100.0).round() as u32,
-                href: search_href(&new_q),
-                active: is_active,
-            }
-        })
-        .collect();
+            })
+        },
+        in_force,
+    );
 
     let chrome = chrome(&state, &headers);
     views::search_results(&q, &page_nav, &sidebar, &timeline, &rows, &chrome).into_response()

@@ -550,3 +550,31 @@ fn every_crawl_replays_through_its_own_files_path() {
     assert_eq!(viewer_source(&file), "/files/abc123");
     assert_eq!(viewer_source(&remote), "/files/abc123");
 }
+
+/// A time axis covers every month in its span, so the gaps in an archive show:
+/// empty months get a slot and no link, years are marked where they start, and
+/// a small month is never too short to see.
+#[test]
+fn a_time_axis_keeps_empty_months_and_marks_years() {
+    let bars = month_axis(
+        &[(202105, 200), (202207, 1)],
+        |ym| format!("/m/{ym}"),
+        |ym| ym == 202207,
+    );
+    assert_eq!(bars.len(), 15, "May 2021 to July 2022 inclusive");
+    assert_eq!(bars[0].label, "May 2021");
+    assert_eq!(bars[0].year.as_deref(), Some("2021"));
+    assert_eq!(bars[0].step, 10);
+    assert_eq!(bars[0].href.as_deref(), Some("/m/202105"));
+    // June 2021 to June 2022: nothing crawled, so a slot with no link.
+    assert!(bars[1..14]
+        .iter()
+        .all(|b| b.count == 0 && b.href.is_none() && b.step == 0));
+    assert_eq!(bars[8].label, "January 2022");
+    assert_eq!(bars[8].year.as_deref(), Some("2022"));
+    assert!(bars[1].year.is_none());
+    // One page against two hundred still shows.
+    assert_eq!(bars[14].step, 1);
+    assert!(bars[14].active);
+    assert!(month_axis(&[], |_| String::new(), |_| false).is_empty());
+}

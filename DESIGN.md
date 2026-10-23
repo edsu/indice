@@ -449,10 +449,6 @@ Saying so here is what stops these being re-litigated.
   session lifetime belong to the proxy. The gain is that one header contract
   covers Shibboleth, OIDC, and whatever an operator already runs; the cost is
   that indice cannot tell a compromised account from its owner.
-- **What the policies leave open.** The app origin allows inline
-  `style` attributes (`style-src-attr 'unsafe-inline'`), for two computed
-  values with no class to hold them; inline style can restyle a page but not
-  run anything, and no visitor's markup reaches it unsanitized.
 - **Archived script runs, on the replay origin.** That is replay's job, and the
   origin is what contains it. Within that origin it is unconstrained: one
   capture's script can read every other capture this browser has replayed,

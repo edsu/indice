@@ -137,16 +137,6 @@ pub struct FacetItem {
     pub active: bool,
 }
 
-/// One bar of the results timeline: a crawl month, its count, a height
-/// percentage (0–100), a toggle link, and whether that month is filtered.
-pub struct TimelineBar {
-    pub label: String,
-    pub count: u64,
-    pub pct: u32,
-    pub href: String,
-    pub active: bool,
-}
-
 /// The search results page: top bar, tips, a count line, an active-filter row,
 /// a month timeline, then a facet sidebar beside the results table with
 /// prev/next pagination.
@@ -183,18 +173,7 @@ pub fn search_results(
                 }
             }
         }
-        @if timeline.len() >= 2 {
-            div.timeline title="Results by crawl month — click a bar to filter" {
-                @for (i, b) in timeline.iter().enumerate() {
-                    @let new_year = i == 0 || timeline[i - 1].label.get(..4) != b.label.get(..4);
-                    a.tl-bar.active[b.active].tl-year[new_year] href=(b.href) title=(format!("{}: {} result{}", b.label, b.count, if b.count == 1 { "" } else { "s" })) {
-                        span.tl-fill style=(format!("height:{}%", b.pct.max(3))) {}
-                        span.tl-label { (b.label) }
-                        @if new_year { span.tl-yr { (b.label.get(..4).unwrap_or(&b.label)) } }
-                    }
-                }
-            }
-        }
+        (time_axis(timeline, "Results by month captured", ("result", "results")))
         // An empty result says what to try next: each applied filter can be
         // dropped (a collection filter is how a scoped search arrives), then
         // the query itself, then browsing.

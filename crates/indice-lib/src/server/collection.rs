@@ -62,11 +62,18 @@ pub(super) async fn collection_page(
         meta.push(views::MetaRow::new("Created by", name));
     }
 
-    let member_items: Vec<views::MemberItem> = members
+    // Newest first. A crawl with no recorded date sorts last.
+    let mut newest_first = members.clone();
+    newest_first.sort_by(|a, b| b.capture_start.cmp(&a.capture_start));
+    let member_items: Vec<views::MemberItem> = newest_first
         .iter()
         .map(|w| views::MemberItem {
             id: w.id.clone(),
             name: w.display_name(),
+            when: w
+                .capture_start
+                .as_deref()
+                .and_then(crate::collections::long_date),
             present: w.is_present(&state.home),
             remote: w.source.is_remote(),
             provenance: provenance_summary(w),
@@ -100,6 +107,22 @@ pub(super) async fn collection_page(
         meta,
         facets,
         members: member_items,
+        crawl_months: month_axis(
+            &members
+                .iter()
+                .filter_map(|w| {
+                    let ym: u64 = w.capture_start.as_deref()?.get(..6)?.parse().ok()?;
+                    Some((ym, w.page_count.unwrap_or(0)))
+                })
+                .collect::<Vec<_>>(),
+            |ym| {
+                format!(
+                    "/search?q={}",
+                    url_encode(&format!("collection:{id} month:{ym}"))
+                )
+            },
+            |_| false,
+        ),
         replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
         id: id.clone(),
         can_delete,

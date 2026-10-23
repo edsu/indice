@@ -156,6 +156,60 @@ fn thumb_area(thumb: Option<&str>) -> Markup {
     }
 }
 
+/// One month on a time axis: the results, or the pages crawled, in that month.
+/// An axis has a bar for every month in its span, empty ones included, so the
+/// gaps in an archive show as gaps.
+pub struct TimelineBar {
+    /// The month in words, "May 2021".
+    pub label: String,
+    /// The year, on the first month shown of each year: where the axis marks it.
+    pub year: Option<String>,
+    pub count: u64,
+    /// Height in tenths of the busiest month, 0 to 10; at least 1 when the
+    /// month has anything, so a small month is never invisible.
+    pub step: u8,
+    /// Where clicking the month goes (a filter toggle); `None` for an empty month.
+    pub href: Option<String>,
+    /// Whether the page is already filtered to this month.
+    pub active: bool,
+}
+
+/// A time axis: one bar per month, proportional across the span, with years
+/// marked. Each bar says its month and count to a screen reader, and shows
+/// them on hover and on keyboard focus. Nothing renders for fewer than two
+/// months, where an axis says nothing a sentence wouldn't.
+/// `unit` names what is counted, singular and plural.
+fn time_axis(bars: &[TimelineBar], label: &str, unit: (&str, &str)) -> Markup {
+    html! {
+        @if bars.len() >= 2 {
+            div.timeline role="group" aria-label=(label) {
+                @for b in bars {
+                    @let said = format!(
+                        "{}: {} {}",
+                        b.label,
+                        b.count,
+                        if b.count == 1 { unit.0 } else { unit.1 }
+                    );
+                    @match &b.href {
+                        Some(h) => {
+                            a.tl-bar.active[b.active].tl-year[b.year.is_some()] href=(h) aria-label=(said) aria-current=[b.active.then_some("true")] {
+                                span class=(format!("tl-fill h{}", b.step)) {}
+                                span.tl-tip aria-hidden="true" { (said) }
+                                @if let Some(y) = &b.year { span.tl-yr aria-hidden="true" { (y) } }
+                            }
+                        }
+                        None => {
+                            span.tl-bar.empty.tl-year[b.year.is_some()] aria-hidden="true" {
+                                @if let Some(y) = &b.year { span.tl-yr { (y) } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One labeled group of browse-links in a detail page's scoped facet overview
 /// (e.g. "Top sites" on a collection page), each link a search within that scope.
 pub struct FacetSection {
