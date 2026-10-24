@@ -372,9 +372,10 @@ struct AppState {
     /// in-flight add at a time is plenty for a workstation, and for the handful
     /// of curators a server has.
     write_lock: std::sync::Mutex<()>,
-    /// Progress channels for in-flight add-archive jobs, drained once by the SSE
-    /// endpoint. Keyed by an incrementing job id ([`AppState::job_counter`]).
-    jobs: std::sync::Mutex<HashMap<u64, mpsc::UnboundedReceiver<ProgressEvent>>>,
+    /// Progress channels for in-flight add-archive and import jobs, drained
+    /// once by the SSE endpoint. Keyed by an incrementing job id
+    /// ([`AppState::job_counter`]); see [`AppState::start_job`].
+    jobs: std::sync::Mutex<HashMap<u64, Job>>,
     job_counter: AtomicU64,
     /// Who may do what, from `<home>/users.yaml`, re-read when the file
     /// changes so approving a colleague does not mean restarting the service.
@@ -421,7 +422,31 @@ pub struct Providers {
     pub archiveit: Option<Arc<dyn crate::archiveit::ArchiveItProvider>>,
 }
 
+/// An in-flight job's progress, and who started it: only they may read it.
+struct Job {
+    owner: crate::identity::SubjectId,
+    rx: mpsc::UnboundedReceiver<ProgressEvent>,
+}
+
 impl AppState {
+    /// Register a job started by `owner`: mint its id and keep its progress
+    /// receiver for the SSE endpoint, which hands it only to the owner.
+    fn start_job(
+        &self,
+        owner: &crate::identity::Principal,
+    ) -> (u64, mpsc::UnboundedSender<ProgressEvent>) {
+        let id = self
+            .job_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
+        let job = Job {
+            owner: owner.id().clone(),
+            rx,
+        };
+        self.jobs.lock().unwrap().insert(id, job);
+        (id, tx)
+    }
+
     /// Run a read against the search index on a blocking thread.
     ///
     /// Tantivy is synchronous and CPU-bound, and every handler here used to

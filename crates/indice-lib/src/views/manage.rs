@@ -86,10 +86,18 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
     layout(Some("Manage"), chrome, Some(&search), body)
 }
 
+/// Which import wizards the accession desk offers.
+#[derive(Default)]
+pub struct ImportTabs {
+    pub browsertrix: bool,
+    pub archive_it: bool,
+}
+
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
-/// `collection` prefills the target when arriving from a collection page. All
-/// four sources are live: Upload, Path/URL, and the Browsertrix and Archive-It
-/// browse-and-import wizards (each uses the server's configured credentials).
+/// `collection` prefills the target when arriving from a collection page. The
+/// sources are Upload and URL, plus whichever of the Browsertrix and Archive-It
+/// browse-and-import wizards `imports` allows: they act through the server's
+/// configured credentials, so the caller decides by role and configuration.
 pub fn accession_desk(
     collection_id: &str,
     collection_name: &str,
@@ -101,6 +109,7 @@ pub fn accession_desk(
     // refuse a file too large *before sending it*. See `manage.js`.
     max_upload: Option<&(u64, String)>,
     room_left: Option<&(u64, String)>,
+    imports: ImportTabs,
 ) -> Markup {
     let body = html! {
         div.crumbs {
@@ -138,8 +147,12 @@ pub fn accession_desk(
             div.sources role="tablist" {
                 button.src-tab type="button" role="tab" aria-selected="true" data-src="upload" { "Upload" }
                 button.src-tab type="button" role="tab" aria-selected="false" data-src="url" { "URL" }
-                button.src-tab type="button" role="tab" aria-selected="false" data-src="bx" { "Browsertrix" }
-                button.src-tab type="button" role="tab" aria-selected="false" data-src="ait" { "Archive-It" }
+                @if imports.browsertrix {
+                    button.src-tab type="button" role="tab" aria-selected="false" data-src="bx" { "Browsertrix" }
+                }
+                @if imports.archive_it {
+                    button.src-tab type="button" role="tab" aria-selected="false" data-src="ait" { "Archive-It" }
+                }
             }
             div.src-panel.active #src-upload {
                 label {
@@ -154,52 +167,56 @@ pub fn accession_desk(
                         placeholder="https://example.org/crawl.wacz";
                 }
             }
-            div.src-panel #src-bx {
-                p.muted { "Pick crawls to import into the collection above, from the Browsertrix instance this server is configured for (its credentials + host)." }
-                div #bx-browse.bx-browse hidden {
-                    div.grid-2 {
-                        label { span { "Organization" } select #bx-org {} }
-                        label {
-                            span { "Browsertrix collection " span.hint { "optional filter" } }
-                            select #bx-collection { option value="" { "All crawls" } }
-                        }
-                    }
-                    div.bx-toolbar {
-                        label.bx-filter {
-                            span { "Show" }
-                            select #bx-qa-filter {
-                                option value="all" { "All crawls" }
-                                option value="reviewed" { "QA’d only" }
-                                option value="unreviewed" { "Not QA’d" }
+            @if imports.browsertrix {
+                div.src-panel #src-bx {
+                    p.muted { "Pick crawls to import into the collection above, from the Browsertrix instance this server is configured for (its credentials + host)." }
+                    div #bx-browse.bx-browse hidden {
+                        div.grid-2 {
+                            label { span { "Organization" } select #bx-org {} }
+                            label {
+                                span { "Browsertrix collection " span.hint { "optional filter" } }
+                                select #bx-collection { option value="" { "All crawls" } }
                             }
                         }
-                        label.bx-check {
-                            input type="checkbox" #bx-hide-imported;
-                            span { "Hide already-imported" }
+                        div.bx-toolbar {
+                            label.bx-filter {
+                                span { "Show" }
+                                select #bx-qa-filter {
+                                    option value="all" { "All crawls" }
+                                    option value="reviewed" { "QA’d only" }
+                                    option value="unreviewed" { "Not QA’d" }
+                                }
+                            }
+                            label.bx-check {
+                                input type="checkbox" #bx-hide-imported;
+                                span { "Hide already-imported" }
+                            }
+                            button.btn.ghost type="button" #bx-refresh { "Refresh list" }
                         }
-                        button.btn.ghost type="button" #bx-refresh { "Refresh list" }
                     }
-                }
-                div #bx-items.bx-items {}
-                fieldset.bx-mode {
-                    legend { "On import" }
-                    label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "stored locally, replays offline" } } }
-                    label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "no local copy; replay re-resolves via this server's credentials" } } }
+                    div #bx-items.bx-items {}
+                    fieldset.bx-mode {
+                        legend { "On import" }
+                        label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "stored locally, replays offline" } } }
+                        label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "no local copy; replay re-resolves via this server's credentials" } } }
+                    }
                 }
             }
-            div.src-panel #src-ait {
-                p.muted { "Pick crawls to import into the collection above, from the Archive-It account this server is configured for. Each selected crawl is downloaded and packaged into a WACZ." }
-                div #ait-browse.bx-browse hidden {
-                    label { span { "Archive-It collection" } select #ait-collection {} }
-                    div.bx-toolbar {
-                        label.bx-check {
-                            input type="checkbox" #ait-hide-imported;
-                            span { "Hide already-imported" }
+            @if imports.archive_it {
+                div.src-panel #src-ait {
+                    p.muted { "Pick crawls to import into the collection above, from the Archive-It account this server is configured for. Each selected crawl is downloaded and packaged into a WACZ." }
+                    div #ait-browse.bx-browse hidden {
+                        label { span { "Archive-It collection" } select #ait-collection {} }
+                        div.bx-toolbar {
+                            label.bx-check {
+                                input type="checkbox" #ait-hide-imported;
+                                span { "Hide already-imported" }
+                            }
+                            button.btn.ghost type="button" #ait-refresh { "Refresh list" }
                         }
-                        button.btn.ghost type="button" #ait-refresh { "Refresh list" }
                     }
+                    div #ait-crawls.bx-items {}
                 }
-                div #ait-crawls.bx-items {}
             }
 
             div.form-actions {

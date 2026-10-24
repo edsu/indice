@@ -60,27 +60,41 @@ existence testifies that something was established. It costs nothing at runtime,
 since it wraps a `Principal` the handler needed anyway, and it moves "remember to
 check" out of human discipline and into the type system.
 
-## The parameter nobody reads
+## A proof as a precondition
 
 ```rust
-fn new_import_job(_curator: &Curator, state: &Arc<AppState>) -> u64 {
-    state.job_counter.fetch_add(1, Ordering::Relaxed)
+fn new_import_job(
+    admin: &Admin,
+    state: &Arc<AppState>,
+) -> (u64, mpsc::UnboundedSender<ProgressEvent>) {
+    state.start_job(admin.principal())
 }
 ```
 
-The underscore says it: this function never reads the `Curator`. Taking one
-still earns its place, because the function cannot be *called* without one.
 Starting an import spends the operator's own Browsertrix or Archive-It
 credentials, so it should not be reachable from a handler where someone forgot an
-extractor. The parameter carries no data. It is a precondition, and the compiler
-enforces it.
+extractor. Because this function takes an `&Admin`, it cannot be *called* without
+one. The compiler enforces the precondition.
 
-`start_index_job` has the same shape, with one difference: it does read its
-`Curator`, for `principal().id()`, because a crawl records who accessioned it.
-Same argument, two jobs: the proof, and the identity.
+The proof does a second job here. It names who started the import, and only that
+person may read its progress. `start_index_job` has the same shape with a
+`&Curator`, and also reads it for `principal().id()`, because a crawl records who
+accessioned it. Same argument, two jobs: the proof, and the identity.
 
-When an argument exists only to constrain who may call a function, `_name` plus a
-comment saying so is the honest way to write it.
+Sometimes the proof is all there is:
+
+```rust
+pub(super) async fn new_collection_form(
+    State(state): State<Arc<AppState>>,
+    _curator: Curator,
+    headers: HeaderMap,
+) -> Response {
+```
+
+This handler never reads its `Curator`. It asks for one so that a reader isn't
+shown a form whose every control would refuse them. When an argument exists only
+to constrain who may call a function, `_name` plus a comment saying so is the
+honest way to write it.
 
 ## Roles, ordered
 
@@ -94,8 +108,8 @@ contains the one below it. Two witness types rather than one
 per role puts the privilege in the signature instead of in an argument you have
 to read.
 
-The rule it encodes is one sentence: *curators add and can undo their own
-additions; only admins remove a collection.*
+The rule it encodes is one sentence: *curators add and describe; admins
+remove, moderate, and act as the instance.*
 
 ## A third type, for a different question
 

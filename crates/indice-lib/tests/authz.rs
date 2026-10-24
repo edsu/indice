@@ -89,6 +89,30 @@ async fn serve(
     home: std::path::PathBuf,
     config: indice_lib::server::ServerConfig,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    serve_with(home, config, indice_lib::server::Providers::default()).await
+}
+
+/// Stand-ins for configured Browsertrix and Archive-It credentials, for tests
+/// that need a server to believe it has them but never call out.
+struct StubBx;
+impl indice_lib::browsertrix::BrowsertrixProvider for StubBx {
+    fn client(&self) -> anyhow::Result<indice_lib::browsertrix::Client> {
+        anyhow::bail!("a stub: these tests never reach Browsertrix")
+    }
+}
+struct StubAit;
+impl indice_lib::archiveit::ArchiveItProvider for StubAit {
+    fn client(&self) -> anyhow::Result<indice_lib::archiveit::Client> {
+        anyhow::bail!("a stub: these tests never reach Archive-It")
+    }
+}
+
+/// As [`serve`], with these import providers configured.
+async fn serve_with(
+    home: std::path::PathBuf,
+    config: indice_lib::server::ServerConfig,
+    providers: indice_lib::server::Providers,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -104,18 +128,28 @@ async fn serve(
         replay.local_addr().unwrap(),
     ));
     let handle = tokio::spawn(async move {
-        indice_lib::server::serve_on_listeners(
-            listener,
-            replay,
-            &home,
-            None,
-            config,
-            indice_lib::server::Providers::default(),
-        )
-        .await
-        .unwrap();
+        indice_lib::server::serve_on_listeners(listener, replay, &home, None, config, providers)
+            .await
+            .unwrap();
     });
     (format!("http://127.0.0.1:{port}"), handle)
+}
+
+/// GET a page as `who` (vouched for by the proxy secret) and return its body.
+async fn get_page(url: String, who: &'static str) -> String {
+    tokio::task::spawn_blocking(move || {
+        agent()
+            .get(&url)
+            .header("x-indice-auth-secret", SECRET)
+            .header(USER_HEADER, who)
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_to_string()
+            .unwrap()
+    })
+    .await
+    .unwrap()
 }
 
 /// Issue a request as `who` (or anonymously when `None`), returning the status.
@@ -208,31 +242,34 @@ fn routes() -> Vec<Route> {
             Some((json, r#"{"path":"/nope.wacz","collection":"t"}"#.into())),
         ),
         route("GET", "/api/archives/0/events", Needs::Curator, None),
+        // Imports act through the instance's Browsertrix and Archive-It
+        // credentials, so they are an admin's, browsing included. A curator
+        // adds material of their own by URL or upload, above.
         route(
             "POST",
             "/api/browsertrix/import",
-            Needs::Curator,
+            Needs::Admin,
             Some((json, r#"{"org":"o","collection":"c","items":[]}"#.into())),
         ),
-        route("GET", "/api/browsertrix/orgs", Needs::Curator, None),
+        route("GET", "/api/browsertrix/orgs", Needs::Admin, None),
         route(
             "GET",
             "/api/browsertrix/collections?org=o",
-            Needs::Curator,
+            Needs::Admin,
             None,
         ),
-        route("GET", "/api/browsertrix/items?org=o", Needs::Curator, None),
-        route("GET", "/api/archiveit/collections", Needs::Curator, None),
+        route("GET", "/api/browsertrix/items?org=o", Needs::Admin, None),
+        route("GET", "/api/archiveit/collections", Needs::Admin, None),
         route(
             "GET",
             "/api/archiveit/crawls?collection=1",
-            Needs::Curator,
+            Needs::Admin,
             None,
         ),
         route(
             "POST",
             "/api/archiveit/import",
-            Needs::Curator,
+            Needs::Admin,
             Some((
                 json,
                 r#"{"collection_id":"1","collection":"c","crawls":[]}"#.into(),
@@ -303,7 +340,7 @@ async fn every_management_route_demands_the_right_privilege() {
             "{method} {path} must refuse an authenticated non-member"
         );
 
-        // A curator: allowed everywhere except deaccession.
+        // A curator: allowed except where the route is an admin's.
         let curator = request(method, url.clone(), Some("curator@x.edu"), body.clone()).await;
         match needs {
             Needs::Curator => assert_ne!(
@@ -312,7 +349,7 @@ async fn every_management_route_demands_the_right_privilege() {
             ),
             Needs::Admin => assert_eq!(
                 curator, 403,
-                "{method} {path} is deaccession — a curator must NOT be allowed"
+                "{method} {path} is admin-only — a curator must NOT be allowed"
             ),
         }
 
@@ -321,6 +358,82 @@ async fn every_management_route_demands_the_right_privilege() {
         assert_ne!(admin, 403, "{method} {path} should be allowed for an admin");
     }
 
+    server.abort();
+}
+
+/// A job's progress goes only to whoever started it. Job ids count up, so a
+/// curator could otherwise guess an admin's import and take its progress, and
+/// the upstream errors in it, before the admin's own page connects.
+#[tokio::test]
+async fn only_a_jobs_owner_may_read_its_progress() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    assert_eq!(accession_fixture(&base, "boss@x.edu", "mine").await, 202);
+    let events = format!("{base}/api/archives/0/events");
+
+    let peer = request("GET", events.clone(), Some("curator@x.edu"), None).await;
+    assert_eq!(peer, 404, "someone else's job must look like no job");
+    // Left in place: the owner still gets it after the peer's attempt.
+    let owner = request("GET", events, Some("boss@x.edu"), None).await;
+    assert_eq!(owner, 200, "the owner must still get their job's progress");
+    server.abort();
+}
+
+/// The accession desk offers an import tab only to an admin, since a curator
+/// would get 403 from every request it makes, and only for a service the
+/// server has credentials for, since otherwise every request fails.
+#[tokio::test]
+async fn only_an_admin_is_offered_the_import_tabs() {
+    let proxy = || {
+        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+            USER_HEADER,
+            SECRET,
+        ))
+    };
+    let bx = [r#"data-src="bx""#, r#"id="src-bx""#];
+    let ait = [r#"data-src="ait""#, r#"id="src-ait""#];
+
+    let tmp = home_with_roster();
+    let both = indice_lib::server::Providers {
+        browsertrix: Some(std::sync::Arc::new(StubBx)),
+        archiveit: Some(std::sync::Arc::new(StubAit)),
+    };
+    let (base, server) = serve_with(tmp.path().to_path_buf(), proxy(), both).await;
+    let curator = get_page(format!("{base}/manage/add"), "curator@x.edu").await;
+    assert!(
+        curator.contains(r#"data-src="url""#),
+        "the desk rendered: {curator}"
+    );
+    for t in bx.iter().chain(&ait) {
+        assert!(!curator.contains(t), "a curator must not be offered {t}");
+    }
+    let admin = get_page(format!("{base}/manage/add"), "boss@x.edu").await;
+    for t in bx.iter().chain(&ait) {
+        assert!(admin.contains(t), "an admin should be offered {t}");
+    }
+    server.abort();
+
+    // Only Browsertrix configured: no Archive-It tab, even for an admin.
+    let tmp = home_with_roster();
+    let bx_only = indice_lib::server::Providers {
+        browsertrix: Some(std::sync::Arc::new(StubBx)),
+        archiveit: None,
+    };
+    let (base, server) = serve_with(tmp.path().to_path_buf(), proxy(), bx_only).await;
+    let admin = get_page(format!("{base}/manage/add"), "boss@x.edu").await;
+    for t in bx {
+        assert!(admin.contains(t), "Browsertrix is configured, so offer {t}");
+    }
+    for t in ait {
+        assert!(
+            !admin.contains(t),
+            "Archive-It is not configured, so not {t}"
+        );
+    }
     server.abort();
 }
 

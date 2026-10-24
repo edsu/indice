@@ -156,7 +156,8 @@ impl std::fmt::Display for SubjectId {
 /// Deliberately **ordered** — `derive(Ord)` on a fieldless enum orders by
 /// declaration order, so the whole permission check is `role >= Role::Curator`.
 /// Each role contains the one below it, which is what makes the model
-/// explainable in a sentence: *curators add, admins remove.*
+/// explainable in a sentence: *curators add and describe; admins remove,
+/// moderate, and act as the instance.*
 ///
 /// There is no annotate-only tier yet. If a deployment ever wants one (invite
 /// researchers to annotate without letting them accession), it slots in between
@@ -167,11 +168,14 @@ impl std::fmt::Display for SubjectId {
 pub enum Role {
     /// Anonymous, or authenticated but on nobody's roster: public read only.
     Reader,
-    /// Accession and describe: create collections, add and upload crawls, edit
-    /// finding aids, run imports, annotate. May edit and delete their own notes.
+    /// Accession and describe: create collections, add crawls by URL and
+    /// upload them, edit finding aids, annotate. May edit and
+    /// delete their own notes.
     Curator,
-    /// Everything a curator may do, plus the irreversible and shared acts:
-    /// delete a crawl, delete a collection, and moderate anyone's notes.
+    /// Everything a curator may do, plus the irreversible and shared acts, and
+    /// acting as the instance: delete a crawl, delete a collection, moderate
+    /// anyone's notes, and import through the instance's Browsertrix and
+    /// Archive-It credentials.
     Admin,
 }
 
@@ -184,7 +188,8 @@ impl Role {
     pub fn can_annotate(self) -> bool {
         self >= Role::Curator
     }
-    /// May deaccession, and moderate other people's notes.
+    /// May deaccession, moderate other people's notes, and import through the
+    /// instance's credentials.
     pub fn can_administer(self) -> bool {
         self >= Role::Admin
     }
@@ -278,8 +283,8 @@ impl Principal {
     /// Whether this principal may deaccession a crawl accessioned by
     /// `added_by`: an admin may remove any, a curator only their own.
     ///
-    /// This completes the model's sentence — *curators add and can undo their
-    /// own additions; only admins remove a collection.* Ownership governs
+    /// This is the "remove" in the model's sentence — *curators add and
+    /// describe; admins remove, moderate, and act as the instance* — with one exception for a curator's own crawls. Ownership governs
     /// crawls because they are leaves; a collection is a shared container, so
     /// deleting one stays an admin act however it was created.
     ///

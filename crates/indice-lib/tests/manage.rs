@@ -325,14 +325,18 @@ async fn manage_page_gated_on_management_mode() {
     let (status, body) = get(format!("{base}/manage/add")).await;
     assert_eq!(status, 200);
     assert!(body.contains("Add crawls"), "accession desk renders");
-    // All four import-source tabs, including the Archive-It browse wizard.
+    // Upload and URL. This server has no Browsertrix or Archive-It
+    // credentials, so neither import tab is offered; with them, they are
+    // (`a_workstation_operator_is_offered_the_import_tabs`).
     for needle in [
-        r#"data-src="bx""#,
-        r#"data-src="ait""#,
-        "ait-collection",
+        r#"data-src="upload""#,
+        r#"data-src="url""#,
         r#"src="/assets/manage.js""#,
     ] {
         assert!(body.contains(needle), "accession desk wires up: {needle}");
+    }
+    for absent in [r#"data-src="bx""#, r#"data-src="ait""#] {
+        assert!(!body.contains(absent), "no credentials, so no {absent}");
     }
     // The browse wizards are driven by that script (they used to be inline JS,
     // so this assertion used to read off the page itself). Check it's actually
@@ -1981,6 +1985,54 @@ async fn concurrent_uploads_never_take_the_archive_past_its_limit() {
         indice_lib::index::archive_bytes(tmp.path()).unwrap() <= GIB,
         "the archive must not go past its limit"
     );
+    server.abort();
+}
+
+/// On a workstation the operator is the admin, so the accession desk offers
+/// both import wizards when both services are configured. The forward-auth
+/// side, where a curator is not offered them, is
+/// `authz.rs::only_an_admin_is_offered_the_import_tabs`.
+#[tokio::test]
+async fn a_workstation_operator_is_offered_the_import_tabs() {
+    struct StubBx;
+    impl indice_lib::browsertrix::BrowsertrixProvider for StubBx {
+        fn client(&self) -> anyhow::Result<indice_lib::browsertrix::Client> {
+            anyhow::bail!("a stub: this test never reaches Browsertrix")
+        }
+    }
+    struct StubAit;
+    impl indice_lib::archiveit::ArchiveItProvider for StubAit {
+        fn client(&self) -> anyhow::Result<indice_lib::archiveit::Client> {
+            anyhow::bail!("a stub: this test never reaches Archive-It")
+        }
+    }
+    let tmp = tempfile::TempDir::new().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let home = tmp.path().to_path_buf();
+    let server = tokio::spawn(async move {
+        indice_lib::server::serve_on_listeners(
+            listener,
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(),
+            &home,
+            None,
+            local_access(),
+            indice_lib::server::Providers {
+                browsertrix: Some(std::sync::Arc::new(StubBx)),
+                archiveit: Some(std::sync::Arc::new(StubAit)),
+            },
+        )
+        .await
+        .unwrap();
+    });
+    let (status, desk) = get(format!("http://127.0.0.1:{port}/manage/add")).await;
+    assert_eq!(status, 200, "{desk}");
+    for t in [r#"data-src="bx""#, r#"data-src="ait""#] {
+        assert!(
+            desk.contains(t),
+            "the workstation operator should be offered {t}"
+        );
+    }
     server.abort();
 }
 
