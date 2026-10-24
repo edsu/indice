@@ -136,6 +136,7 @@ impl SearchIndex {
         let url_tokens_f = schema.get_field(FIELD_URL_TOKENS).unwrap();
         let collection_f = schema.get_field(FIELD_COLLECTION).unwrap();
         let status_f = schema.get_field(FIELD_STATUS).unwrap();
+        let annotation_f = schema.get_field(FIELD_ANNOTATION_ID).unwrap();
 
         // Bare words search the title, headings, body, description, keywords,
         // author, and URL words. Other fields (domain:, url:, title:, author:)
@@ -219,6 +220,7 @@ impl SearchIndex {
             let body_snip = get_text(&doc, body_snip_f);
             let snippet = snippet_gen.snippet(&body_snip);
             results.push(SearchResult {
+                annotation_id: get_text(&doc, annotation_f),
                 doc_type: get_text(&doc, doc_type_f),
                 crawl_id: get_text(&doc, coll_id_f),
                 crawl_name: get_text(&doc, coll_name_f),

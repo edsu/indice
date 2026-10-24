@@ -692,6 +692,16 @@ async fn annotation_note_html_cannot_carry_executable_markup() {
         );
     }
 
+    // The notes list links each note's page with the note named, so the page
+    // opens on its passage.
+    let id = created["id"].as_str().unwrap();
+    let (_, index) = get(format!("{base}/collection/test/annotations")).await;
+    let named = format!("note={}", id.replace(':', "%3A"));
+    assert!(
+        index.contains(&named),
+        "the notes list should link to {named}: {index}"
+    );
+
     server.abort();
 }
 

@@ -1067,7 +1067,10 @@ Two placement rules keep replay working, and the multi-WACZ browser test
 The two pages talk only by `postMessage`, each checking the other's origin and window. From
 the frame: `ready`, `url {url, ts}` (from ReplayWeb.page's `rwp-url-change` event, which
 drives the banner), and `selection {selector}`. From the viewer: `highlight {notes}`,
-`focus {id}`, and `clear-selection`. Everything the frame sends is untrusted, since archived
+`focus {id}`, and `clear-selection`. A `note=<id>` parameter on the viewer URL, which the
+annotations index and note search results add, makes the viewer send `focus` for that note
+once the frame is `ready` and the note is on the page; the agent keeps the focused note
+across redraws. Everything the frame sends is untrusted, since archived
 script shares its origin and can forge any of it. A message can move the banner or pre-fill
 the note composer; saving a note takes a click in the viewer, whose composer names the page
 URL and the quoted passage.

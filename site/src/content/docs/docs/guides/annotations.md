@@ -44,9 +44,9 @@ Notes are written in Markdown and saved immediately, which requires no rebuild o
 
 A note you write is surfaced in several places:
 
-- **The replay panel** includes every note on the current capture, with passage notes highlighted in the page.
-- **The collection annotations index** includes a per-collection browse at `/collection/<id>/annotations`, linked from the collection page, listing every note with its author, quoted passage, and a link back into replay.
-- **Full-text search** each note is indexed as its own result (a "Note by …" row) so a search over the archive turns up relevant notes alongside pages. See [Searching](/docs/guides/searching/).
+- **The replay panel** includes every note on the current capture, with passage notes highlighted in the page. Click a passage note to scroll to its passage and mark it more strongly.
+- **The collection annotations index** includes a per-collection browse at `/collection/<id>/annotations`, linked from the collection page, listing every note with its author, quoted passage, and a link that opens the page at that note.
+- **Full-text search** each note is indexed as its own result (a "Note by …" row) so a search over the archive turns up relevant notes alongside pages, and a note's result opens the page at that note. See [Searching](/docs/guides/searching/).
 
 ![The per-collection annotations index: a page titled "Annotations" with a count of 2 notes on pages in this collection, listing each note with its author and date, the quoted passage for a passage note, the rendered Markdown body, and an "Open page" link back into replay](../../../../assets/docs/annotations-index.png)
 
