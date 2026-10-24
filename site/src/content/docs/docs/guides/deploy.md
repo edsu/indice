@@ -101,7 +101,17 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    docker compose cp users.yaml indice:/data/users.yaml
    ```
    Editing it later needs no restart: indice notices the file has changed and re-reads it on the next request, so approving a colleague is `docker compose cp` again.
-4. `SITE_ADDRESS=your-domain docker compose up -d`.
+4. Optionally, name the archive. Without this, the header and homepage say "indice". A [`config.yaml`](/docs/reference/configuration/#site-name-tagline-and-banner) beside `users.yaml` sets the name, a line saying what the archive holds, and a notice for the top of every page:
+   ```sh
+   cat > config.yaml <<'YAML'
+   site:
+     name: Riverside Library Web Archive
+     tagline: Local news and community sites since 2019
+   YAML
+   docker compose cp config.yaml indice:/data/config.yaml
+   ```
+   Unlike `users.yaml`, this file is read only at startup, so after editing it later, run `docker compose restart indice`.
+5. `SITE_ADDRESS=your-domain docker compose up -d`.
 
 Clicking **Log in** sends you to your issuer. After you authenticate you come back signed in, with the workroom chrome if `users.yaml` lists you as a curator or an admin. You may land on the homepage rather than the page you left, because the final hop carries the issuer's address as its referrer and indice will not redirect to an off-site one.
 
