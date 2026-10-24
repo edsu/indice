@@ -407,6 +407,9 @@ struct AppState {
     /// Where the viewer frames replay. `None` only for a router built without
     /// a replay listener, whose viewer then says replay is not configured.
     replay_origin: Option<ReplayOrigin>,
+    /// The archive's name, tagline and banner from `site:` in config.yaml,
+    /// resolved at startup and shared by every page's chrome.
+    site: Arc<crate::views::Site>,
 }
 
 /// Import providers wired in by the binary (used only by the management UI).
@@ -652,6 +655,7 @@ fn build_routers(
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
         replay_origin: config.replay_origin.clone(),
+        site: Arc::new(crate::views::Site::new(&home_config.site)),
     });
 
     // Everything here answers from memory, the index, or an embedded asset, so

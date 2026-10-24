@@ -294,7 +294,7 @@ pub fn search_results(
         query: query.to_string(),
         ..Default::default()
     };
-    layout(&format!("{query} - indice"), chrome, Some(&search), body)
+    layout(Some(query), chrome, Some(&search), body)
 }
 
 #[cfg(test)]

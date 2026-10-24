@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Filled in by the server: where replay runs. See `replay_viewer`. -->
   <meta name="indice-replay-origin" content="{{replay_origin}}">
-  <title>Replay</title>
+  <title>Replay - {{site_name}}</title>
   <!--
     The replay viewer: indice's chrome and the notes panel, around a frame that
     holds the replay itself (/replay-frame). Every API call happens on this
@@ -20,7 +20,7 @@
 </head>
 <body>
   <div id="banner">
-    <a class="home" href="/">indice</a>
+    <a class="home" href="/">{{site_name}}</a>
     <span class="sep" id="collection-sep">/</span>
     <a id="collection"></a>
     <span class="sep" id="crawl-sep">/</span>

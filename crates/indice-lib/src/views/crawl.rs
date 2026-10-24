@@ -135,12 +135,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
         },
         None => SearchBox::default(),
     };
-    layout(
-        &format!("{} - indice", p.name),
-        &p.chrome,
-        Some(&search),
-        body,
-    )
+    layout(Some(&p.name), &p.chrome, Some(&search), body)
 }
 
 // ── Management UI ───────────────────────────────────────────

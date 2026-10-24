@@ -338,7 +338,7 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     use maud::html;
     // Forward-auth configured, request anonymous → a "Log in" link, no name.
     let anon = views::layout(
-        "t",
+        Some("t"),
         &views::Chrome {
             can_login: true,
             ..Default::default()
@@ -355,11 +355,12 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
 
     // Signed in → the identity + a logout control, and no login link.
     let authed = views::layout(
-        "t",
+        Some("t"),
         &views::Chrome {
             manage: true,
             signed_in: Some("ed".into()),
             can_login: false,
+            ..Default::default()
         },
         None,
         html! {},
@@ -382,7 +383,7 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     );
 
     // Nobody signed in and no login to offer: neither affordance.
-    let plain = views::layout("t", &views::Chrome::default(), None, html! {}).into_string();
+    let plain = views::layout(Some("t"), &views::Chrome::default(), None, html! {}).into_string();
     assert!(!plain.contains("/manage/login") && !plain.contains("signed in as"));
 }
 
@@ -594,4 +595,25 @@ fn a_time_axis_is_scaled_to_the_months_it_shows() {
     let feb = bars.iter().find(|b| b.label == "February 2025").unwrap();
     assert_eq!(jan.step, 10);
     assert_eq!(feb.step, 5);
+}
+
+/// A blank `site:` value is unset, so the header always has a name to link home
+/// with; a blank banner is no banner.
+#[test]
+fn blank_site_text_falls_back_to_the_defaults() {
+    let cfg = crate::config::SiteConfig {
+        name: Some("  ".into()),
+        tagline: Some(String::new()),
+        banner: Some("\n".into()),
+    };
+    let site = views::Site::new(&cfg);
+    assert_eq!(site.name, "indice");
+    assert_eq!(site.tagline, views::Site::default().tagline);
+    assert!(site.banner.is_none());
+
+    let named = views::Site::new(&crate::config::SiteConfig {
+        name: Some(" Ada's archive ".into()),
+        ..Default::default()
+    });
+    assert_eq!(named.name, "Ada's archive", "surrounding space is trimmed");
 }

@@ -23,7 +23,9 @@ h1 { font-size: var(--t-3xl); margin: 0.3rem 0 0.25rem; letter-spacing: -0.01em;
 .page-title { font-size: var(--t-2xl); }
 h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-bottom: 0.4rem; }
 /* Homepage hero title (the tool's one-line purpose; the brand is in the header) */
-.home-hero { font-size: var(--t-2xl); font-weight: var(--w-bold); margin: 0.6rem 0 1.3rem; }
+.home-hero { font-size: var(--t-2xl); font-weight: var(--w-bold); margin: 0.6rem 0 var(--s-1); }
+/* What the archive holds, in its own words: the serif, as for curators' text. */
+.home-tagline { font-family: var(--serif); font-size: var(--t-lg); color: var(--text-2); max-width: var(--measure); margin: 0 0 var(--s-5); }
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); font-size: var(--t-sm); word-break: break-all; }
 .ok { color: var(--ok); }
@@ -63,6 +65,11 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
 .appbar .logout:hover { color: var(--ink); text-decoration: underline; }
 /* Workroom: the same bar as a manila band with a top rule. */
 .mode-manage .appbar { background: var(--work-wash); border-top: 3px solid var(--work); }
+/* The operator's notice under the header (`site.banner`), e.g. "This is a
+   demo". A quiet panel, not an alert: it is standing information. */
+.site-banner { background: var(--panel); border-bottom: 1px solid var(--rule); padding: var(--s-2) 1.25rem; font-size: var(--t-sm); color: var(--text-2); }
+.site-banner > * { margin: 0; max-width: var(--measure); }
+.site-banner > * + * { margin-top: var(--s-1); }
 /* The things that edit, in the workroom accent: a collection's Edit and Add
    crawls, New collection, and every button on a workroom form. Reading actions
    (Replay, Search) stay in the reading accent beside them. */

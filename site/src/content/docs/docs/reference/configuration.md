@@ -1,6 +1,6 @@
 ---
 title: Operator configuration
-description: "The optional home-level config.yaml: index footprint, how much of a WACZ indice will unpack, and upload limits."
+description: "The optional home-level config.yaml: index footprint, how much of a WACZ indice will unpack, upload limits, and what the site calls itself."
 ---
 
 An optional `<home>/config.yaml` holds home-level settings. The file is optional and every field has a default, so you only write the knobs you want to change; unknown keys are ignored (the file can grow over time). Run `indice config` to print the resolved values (your file merged over the defaults).
@@ -52,6 +52,23 @@ Both are unset by default, which means no limit. No default suits everyone, sinc
 The accession desk shows both numbers, and refuses a file that won't fit before sending it.
 
 These limits apply to the browser only. `indice index` on the command line is you at the machine, and isn't limited. When the server starts it refuses an `uploads:` section that would quietly mean "no limit": a key it doesn't recognise, a key with no value, or `0`. Leave the key out if you want no limit. The file is read at startup, so a change needs a restart.
+
+## Site name, tagline and banner
+
+```yaml
+site:
+  # The archive's name: the header, the homepage heading, the replay viewer's
+  # link home, and the end of every page title. Omit for "indice".
+  name: Riverside Library Web Archive
+  # One line under the homepage heading saying what the archive holds. Omit
+  # for "Web archive search and replay".
+  tagline: Local news and community sites since 2019
+  # A notice under the header on every page, in Markdown. Omit for none.
+  banner: |
+    This is a **demo**. Read about it on [indice.page](https://indice.page).
+```
+
+The banner uses the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
 ## `users.yaml`
 

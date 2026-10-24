@@ -528,6 +528,7 @@ pub(super) fn chrome(state: &AppState, headers: &HeaderMap) -> crate::views::Chr
         manage,
         signed_in,
         can_login,
+        site: state.site.clone(),
     }
 }
 
