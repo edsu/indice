@@ -109,6 +109,11 @@
 .anno-item.has-region {
   cursor: pointer;
 }
+/* The note whose passage is emphasised in the page. */
+.anno-item.focused {
+  border-color: var(--mark);
+  box-shadow: inset 3px 0 0 var(--mark);
+}
 .anno-item.has-region:hover {
   border-color: var(--rule);
 }

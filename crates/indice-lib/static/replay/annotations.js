@@ -36,6 +36,11 @@
     /** @type {Anno[]} */ items: [],
     /** The reader's selection, as the frame last reported it. */
     lastSelection: /** @type {Selector|null} */ (null),
+    /** The note a link asked to open on, until it has been brought into view. */
+    openOn: "",
+    /** Whether the frame's agent has said it is listening. Until then a
+     *  message to the frame can be lost, as it may still be loading. */
+    frameReady: false,
   };
 
   // ── The frame ─────────────────────────────────────────────────────────────
@@ -304,9 +309,27 @@
       .filter((a) => a.url === state.url && a.selector)
       .map((a) => ({ id: a.id, selector: a.selector }));
     toFrame("highlight", { notes });
+    // Open on the note the link named, once, and only if it is on this page,
+    // and only once the frame is listening: this is sent a single time, so it
+    // must not be posted to a frame that is still loading. (The highlights are
+    // safe to send early, since they are sent again whenever the frame reports.)
+    if (state.frameReady && state.openOn && notes.some((n) => n.id === state.openOn)) {
+      const id = state.openOn;
+      state.openOn = "";
+      focusRange(id);
+    }
   }
 
   function focusRange(id) {
+    // Mark the note in the panel too, so the reader can see which one the
+    // emphasised passage belongs to.
+    if (els.list) {
+      for (const li of els.list.querySelectorAll(".anno-item")) {
+        li.classList.toggle("focused", /** @type {HTMLElement} */ (li).dataset.id === id);
+      }
+      const card = els.list.querySelector('.anno-item[data-id="' + CSS.escape(id) + '"]');
+      if (card) card.scrollIntoView({ block: "nearest" });
+    }
     toFrame("focus", { id });
   }
 
@@ -358,6 +381,8 @@
     state.collection = p.get("collection_id") || p.get("collection") || "";
     state.url = p.get("url") || "";
     state.ts = p.get("ts") || "";
+    // A link from the notes list names the note it is for: open on it.
+    state.openOn = p.get("note") || "";
     if (!state.collection) {
       // No collection context to scope notes to: hide the panel + toggle so a
       // plain replay isn't left with an empty 340px strip and an inert button.
@@ -376,13 +401,19 @@
     window.addEventListener("indice-replay", (e) => {
       const d = /** @type {any} */ (e).detail;
       if (d.type === "ready") {
+        state.frameReady = true;
         applyHighlights();
       } else if (d.type === "url" && typeof d.url === "string" && d.url) {
         // ReplayWeb.page reports a change of title or view as well, with the
         // same URL; only a new URL is a new page. An event without a
         // timestamp keeps the one we have, since a note needs one.
         if (typeof d.ts === "string" && d.ts) state.ts = d.ts;
-        if (d.url === state.url) return;
+        if (d.url === state.url) {
+          // Same page, which may have just finished loading: send its notes
+          // again rather than trust that the first send survived.
+          applyHighlights();
+          return;
+        }
         state.url = d.url;
         state.lastSelection = null;
         /** @type {HTMLButtonElement} */ (els.selBtn).disabled = true;

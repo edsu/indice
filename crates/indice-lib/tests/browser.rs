@@ -519,12 +519,61 @@ async fn annotate_through_viewer(
     }
 
     // And the viewer had the frame draw it.
+    wait_for_highlight(driver, "indice-anno", "the new note was never drawn").await?;
+
+    // Opened afresh, the page draws the note it already has. This is the case
+    // that failed: the frame dropped the notes the viewer sent when the page
+    // first reported its URL, and nothing sent them again.
+    driver.goto(&viewer).await.map_err(|e| e.to_string())?;
+    wait_for_highlight(
+        driver,
+        "indice-anno",
+        "an existing note was not drawn on arrival",
+    )
+    .await?;
+
+    // Clicking the note in the panel emphasises its passage.
     let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(card) = driver.find(By::Css(".anno-item.has-region")).await {
+            card.click().await.map_err(|e| e.to_string())?;
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err("the note never appeared in the panel".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    wait_for_highlight(
+        driver,
+        "indice-anno-active",
+        "clicking the note did not emphasise it",
+    )
+    .await?;
+
+    // A link that names the note, as the notes list's does, opens on it.
+    let note_id = saved["id"].as_str().unwrap_or_default();
+    driver
+        .goto(&format!("{viewer}&note={}", note_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    wait_for_highlight(
+        driver,
+        "indice-anno-active",
+        "a link to the note did not open on it",
+    )
+    .await
+}
+
+/// Wait for the replayed page to carry the named Custom Highlight, entering
+/// the replay frame to look and returning to the viewer each time.
+async fn wait_for_highlight(driver: &WebDriver, name: &str, failure: &str) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
     let check = format!(
         "{FIND_REPLAY_DOC}
         const doc = findReplayDoc(document, 0);
         const w = doc && doc.defaultView;
-        return !!(w && w.CSS && w.CSS.highlights && w.CSS.highlights.has('indice-anno'));"
+        return !!(w && w.CSS && w.CSS.highlights && w.CSS.highlights.has('{name}'));"
     );
     loop {
         enter_replay_frame(driver).await?;
@@ -543,7 +592,7 @@ async fn annotate_through_viewer(
             return Ok(());
         }
         if Instant::now() > deadline {
-            return Err("the note was saved but never highlighted in the replay".into());
+            return Err(failure.to_string());
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
