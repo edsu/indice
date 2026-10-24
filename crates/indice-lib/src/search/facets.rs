@@ -78,8 +78,9 @@ pub fn filter_label(field: &str) -> &'static str {
 /// terms result's `sum_other_doc_count` (the rest) is discarded.
 const FACET_SIZE: u32 = 50;
 
-/// Max month buckets for the timeline (~10 years); older months beyond this are
-/// dropped from the histogram.
+/// Max month buckets for the timeline (~10 years). The most recent months with
+/// captures are kept, not the busiest, so every month inside the span drawn is
+/// present: a quiet month is never mistaken for an empty one.
 const TIMELINE_SIZE: u32 = 120;
 
 /// Build the terms-aggregation request: one bucket set per facet dimension plus
@@ -96,7 +97,9 @@ pub(super) fn facet_aggregations() -> Aggregations {
     }
     req.insert(
         FIELD_MONTH.to_string(),
-        serde_json::json!({ "terms": { "field": FIELD_MONTH, "size": TIMELINE_SIZE } }),
+        serde_json::json!({
+            "terms": { "field": FIELD_MONTH, "size": TIMELINE_SIZE, "order": { "_key": "desc" } }
+        }),
     );
     // The request is well-formed by construction, so this never fails.
     serde_json::from_value(serde_json::Value::Object(req))
@@ -104,7 +107,7 @@ pub(super) fn facet_aggregations() -> Aggregations {
 }
 
 /// Extract the month buckets from the aggregation results as a timeline sorted
-/// oldest-first. Terms aggregations sort by count, so we re-sort chronologically.
+/// oldest-first. The aggregation returns newest first, so this re-sorts.
 pub(super) fn timeline_from_aggregations(value: &serde_json::Value) -> Vec<TimelineBucket> {
     let Some(buckets) = value
         .get(FIELD_MONTH)

@@ -279,22 +279,91 @@ fn ymd(ts: &str) -> String {
     }
 }
 
-/// The capture date range of a collection as a display string (`start → end`, or
-/// a single date when they coincide), or `None` when no range was recorded.
-pub(super) fn capture_range(c: &Wacz) -> Option<String> {
-    match (c.capture_start.as_deref(), c.capture_end.as_deref()) {
+/// A time axis from `(YYYYMM, count)` pairs in any order: every month from the
+/// first to the last, empty months included, so gaps show. `href` gives a
+/// month's link and `active` whether it is the filter in force. At most the
+/// last ten years, so a stray old capture cannot squeeze the rest to nothing.
+pub(super) fn month_axis(
+    counts: &[(u64, u64)],
+    href: impl Fn(u64) -> String,
+    active: impl Fn(u64) -> bool,
+) -> Vec<crate::views::TimelineBar> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let valid = |ym: u64| (1..=12).contains(&(ym % 100));
+    let mut by_month: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+    for &(ym, n) in counts.iter().filter(|(ym, _)| valid(*ym)) {
+        *by_month.entry(ym).or_default() += n;
+    }
+    let (Some(&first), Some(&last)) = (by_month.keys().next(), by_month.keys().next_back()) else {
+        return Vec::new();
+    };
+    let index = |ym: u64| (ym / 100) * 12 + (ym % 100 - 1);
+    let start = index(first).max(index(last).saturating_sub(119));
+    // Scaled to the busiest month shown, not one the window cut off.
+    let in_view = |ym: u64| index(ym) >= start;
+    let max = by_month
+        .iter()
+        .filter(|(ym, _)| in_view(**ym))
+        .map(|(_, n)| *n)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    (start..=index(last))
+        .map(|i| {
+            let ym = (i / 12) * 100 + i % 12 + 1;
+            let count = by_month.get(&ym).copied().unwrap_or(0);
+            let month = (ym % 100) as usize;
+            crate::views::TimelineBar {
+                label: format!("{} {}", MONTHS[month - 1], ym / 100),
+                year: (i == start || month == 1).then(|| (ym / 100).to_string()),
+                count,
+                step: if count == 0 {
+                    0
+                } else {
+                    (count * 10).div_ceil(max).clamp(1, 10) as u8
+                },
+                href: (count > 0).then(|| href(ym)),
+                active: active(ym),
+            }
+        })
+        .collect()
+}
+
+/// Two timestamps as a span of dates in words: "7 January 2025 to 3 August
+/// 2026", or one date when they fall on the same day. A timestamp that is not
+/// a date is shown as it is.
+fn date_span(start: Option<&str>, end: Option<&str>) -> Option<String> {
+    let words = |ts: &str| crate::collections::long_date(ts).unwrap_or_else(|| ymd(ts));
+    match (start, end) {
         (Some(s), Some(e)) => {
-            let (sd, ed) = (ymd(s), ymd(e));
+            let (sd, ed) = (words(s), words(e));
             Some(if sd == ed {
                 sd
             } else {
-                format!("{sd} → {ed}")
+                format!("{sd} to {ed}")
             })
         }
-        (Some(s), None) => Some(ymd(s)),
-        (None, Some(e)) => Some(ymd(e)),
+        (Some(t), None) | (None, Some(t)) => Some(words(t)),
         (None, None) => None,
     }
+}
+
+/// When a crawl's captures were made, or `None` when none were recorded.
+pub(super) fn capture_range(c: &Wacz) -> Option<String> {
+    date_span(c.capture_start.as_deref(), c.capture_end.as_deref())
 }
 
 /// A compact "capture quality" summary of an HTTP status histogram: total
@@ -374,40 +443,26 @@ pub(super) fn collection_software(members: &[&Wacz]) -> Vec<String> {
 pub(super) fn members_capture_range(members: &[&Wacz]) -> Option<String> {
     let start = members.iter().filter_map(|w| w.capture_start.clone()).min();
     let end = members.iter().filter_map(|w| w.capture_end.clone()).max();
-    match (start, end) {
-        (Some(s), Some(e)) => {
-            let (sd, ed) = (ymd(&s), ymd(&e));
-            Some(if sd == ed {
-                sd
-            } else {
-                format!("{sd} → {ed}")
-            })
-        }
-        (Some(s), None) => Some(ymd(&s)),
-        (None, Some(e)) => Some(ymd(&e)),
-        (None, None) => None,
-    }
+    date_span(start.as_deref(), end.as_deref())
 }
 
-/// A compact one-line provenance summary (`Software: X · N pages · dates`) as
-/// plain text for collection member listings. `None` when nothing is known.
-/// The view wraps it in a `.prov` element and handles escaping.
+/// A one-sentence provenance summary for a collection's list of crawls: "38
+/// pages, by Browsertrix-Crawler 1.4.2." The list shows each crawl's date
+/// above it, so the sentence leaves it out. `None` when nothing is known. The
+/// view escapes it.
 pub(super) fn provenance_summary(c: &Wacz) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
-    if !c.software.is_empty() {
-        parts.push(format!("Software: {}", c.software.join(", ")));
-    }
     if let Some(n) = c.page_count {
         parts.push(format!("{n} page{}", if n == 1 { "" } else { "s" }));
     }
-    if let Some(range) = capture_range(c) {
-        parts.push(range);
+    if !c.software.is_empty() {
+        parts.push(format!("by {}", c.software.join(" and ")));
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" · "))
-    }
+    let mut sentence = parts.join(", ");
+    let first = sentence.chars().next()?;
+    sentence.replace_range(..first.len_utf8(), &first.to_uppercase().to_string());
+    sentence.push('.');
+    Some(sentence)
 }
 
 pub(super) fn html_escape(s: &str) -> String {

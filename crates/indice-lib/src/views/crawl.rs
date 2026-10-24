@@ -19,6 +19,9 @@ pub struct CrawlPage {
     /// `(collection_id, collection_name)` breadcrumb, if the crawl has one.
     pub crumb: Option<(String, String)>,
     pub name: String,
+    /// The crawl's own name, when [`name`](Self::name) is the date-based one
+    /// shown in its place.
+    pub original_name: Option<String>,
     pub description: Option<String>,
     /// The rendered (safe-HTML) Markdown curator note from
     /// `collections/<slug>/crawls/<id>.md`.
@@ -40,14 +43,10 @@ pub struct CrawlPage {
     /// Scoped facet overview of what this crawl captured (sites/years/types/…).
     pub facets: Vec<FacetSection>,
     pub pages: Vec<PageItem>,
-    /// Whether management mode is on (workroom chrome).
-    pub management: bool,
     /// Whether to render the danger zone (admins only — see CollectionPage).
     pub can_delete: bool,
-    /// Signed-in user (forward-auth), shown in the workroom strip.
-    pub signed_in: Option<String>,
-    /// Forward-auth configured but this request anonymous — show a "Log in" link.
-    pub can_login: bool,
+    /// Who is looking, for the shared header.
+    pub chrome: Chrome,
 }
 
 /// The crawl detail page: provenance panel, file metadata, and seed-page list.
@@ -56,13 +55,16 @@ pub fn crawl(p: &CrawlPage) -> Markup {
         @if let Some((id, cname)) = &p.crumb {
             div.crumb { "in " a href=(format!("/collection/{}", id)) { (cname) } }
         }
-        div.detail-thumb { (thumb_area(p.thumb.as_deref(), &p.name)) }
+        // A crawl's own page shows its thumbnail only when it has one.
+        @if let Some(t) = &p.thumb {
+            div.detail-thumb { (thumb_area(Some(t))) }
+        }
         div.crawl-title {
             (source_badge(p.remote))
             h1.page-title { (p.name) }
         }
         @if let Some(d) = &p.description { p.desc { (d) } }
-        a.replay-btn href=(p.replay_href) { "Replay →" }
+        div.actions { a.btn href=(p.replay_href) { "Replay" } }
 
         @if let Some(n) = &p.note {
             section.about {
@@ -78,9 +80,16 @@ pub fn crawl(p: &CrawlPage) -> Markup {
 
         h2 { "File" }
         table.meta {
-            tr { th { "Source" } td.mono { (p.source) } }
+            tr { th { "Source" } td { (p.source) } }
+            @if let Some(n) = &p.original_name {
+                tr { th { "Named" } td.mono { (n) } }
+            }
             tr { th { "Size" } td { (p.size) } }
-            tr { th { "SHA-256" } td.mono title=(p.sha_full) { (p.sha_short) "…" } }
+            // Not every source records a hash; a missing one is left out, not
+            // shown as an empty value.
+            @if !p.sha_full.is_empty() {
+                tr { th { "SHA-256" } td.mono title=(p.sha_full) { (p.sha_short) "…" } }
+            }
             @if let Some(c) = &p.crawled { tr { th { "Crawled" } td { (c) } } }
             tr { th { "Indexed" } td { (p.indexed) } }
             tr {
@@ -128,9 +137,7 @@ pub fn crawl(p: &CrawlPage) -> Markup {
     };
     layout(
         &format!("{} - indice", p.name),
-        p.management,
-        p.signed_in.as_deref(),
-        p.can_login,
+        &p.chrome,
         Some(&search),
         body,
     )

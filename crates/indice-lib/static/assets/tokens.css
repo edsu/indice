@@ -1,0 +1,87 @@
+/* indice: design tokens, shared by the app pages and the replay viewer.
+ *
+ * Every colour, face and radius the stylesheets use is named here by its role,
+ * never by its hue, so a rule says what it means ("the accent", "a rule
+ * between rows") and a theme can change the look without hunting through
+ * selectors.
+ *
+ * Two layers:
+ *
+ *   THEMEABLE. An operator's theme may override these: the neutrals, and the
+ *   two mode accents. It must keep text at 4.5:1 or better against --page and
+ *   --panel, and keep both accents clearly apart from --danger.
+ *
+ *   FIXED. Meaning, not branding: the semantic colours, the monospace face for
+ *   identifiers, the focus rule. A theme leaves these alone, so an error looks
+ *   like an error and a keyboard user can always see where they are.
+ *
+ * Two modes, and the mode lives in the chrome. Reading content (links,
+ * results, facets, the timeline) is in the reading accent, --accent-*, for a
+ * reader and a curator alike. A caller who may change the archive gets
+ * .mode-manage on <body>, which changes only the header band and the things
+ * that edit, in --work-*. So reading never looks like editing, and the
+ * workroom accent, manila, stays well away from --danger. */
+
+:root {
+  /* ── Themeable ── */
+  --ink: #222222;          /* text */
+  --text-2: #3d3d3d;       /* secondary body text: descriptions, snippets */
+  --muted: #595959;        /* labels, counts, dates: 7:1 on --page */
+  --rule: #d4d4d4;         /* hairlines between things */
+  --rule-soft: #e8e8e8;    /* hairlines between rows of one thing */
+  --input-line: #8c8c8c;   /* the edge of a field: 3.4:1, so it can be seen */
+  --page: #ffffff;         /* the page */
+  --panel: #f3f4f5;        /* a quiet panel on the page */
+  --panel-2: #e9ebed;      /* a panel within a panel; code */
+
+  --read: #2e5a7d;         /* reading accent: an archive box's blue-grey, 7.3:1 */
+  --read-dk: #1f4260;
+  --read-wash: #e8eef3;
+  --work: #7a5410;         /* workroom accent: a manila folder, 6.8:1, 35deg from --danger */
+  --work-dk: #5c3f0b;
+  --work-wash: #f4e6c4;  /* the workroom's header band */
+
+  /* Faces. The sans is for the chrome (header, labels, facets, buttons,
+     forms); the serif for the archive's own words (finding aids, curator's
+     notes, annotations, result titles and snippets). Both are what the
+     system already has, so they cost nothing to load and work offline. */
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --serif: ui-serif, "Iowan Old Style", Charter, "Bitstream Charter", Georgia, serif;
+
+  /* One type scale (Bringhurst's classic steps: 12 14 16 18 21 28 36 px),
+     two weights, and a measure for reading prose. */
+  --t-xs: 0.75rem;
+  --t-sm: 0.875rem;
+  --t-md: 1rem;
+  --t-lg: 1.125rem;
+  --t-xl: 1.3125rem;
+  --t-2xl: 1.75rem;
+  --t-3xl: 2.25rem;
+  /* One spacing scale: 4 8 12 16 24 32 px. Anything with a border keeps at
+     least --s-4 between the border and what is inside it. */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
+  --w-regular: 400;
+  --w-bold: 600;
+  --measure: 66ch;
+  --radius: 3px;            /* rectangles; pills only for removable filters */
+  --col: 960px;
+
+  /* ── Fixed ── */
+  --danger: #b3261e;
+  --danger-wash: #fbeceb;
+  --danger-line: #f1c4c0;
+  --ok: #2a6e4e;
+  --highlight: #fff3cd;    /* matched search terms */
+  --mark: rgba(255, 171, 0, 0.85); /* a passage a note is attached to */
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ── What reading content uses, in both modes ── */
+  --accent: var(--read);
+  --accent-dk: var(--read-dk);
+  --accent-wash: var(--read-wash);
+}

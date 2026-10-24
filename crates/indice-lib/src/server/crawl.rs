@@ -25,7 +25,8 @@ pub(super) async fn crawl_page(
     };
 
     let source_enc = url_encode(&viewer_source(c));
-    let name_enc = url_encode(&c.name);
+    let display_name = c.display_name();
+    let name_enc = url_encode(&display_name);
     // Breadcrumb + replay params for the containing collection (name + id).
     let col = manifest.collection_by_id(&c.collection);
     let crumb = col.map(|col| (col.id.to_string(), col.name.clone()));
@@ -171,8 +172,7 @@ pub(super) async fn crawl_page(
         provenance.push(views::MetaRow::new("Added by", name));
     }
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
+    let chrome = chrome(&state, &headers);
     // Match the handler's rule exactly: an admin may remove any crawl, a
     // curator only one they accessioned.
     let scope_id = id.clone();
@@ -186,7 +186,8 @@ pub(super) async fn crawl_page(
     let page = views::CrawlPage {
         id: id.clone(),
         crumb,
-        name: c.name.clone(),
+        original_name: (display_name != c.name).then(|| c.name.clone()),
+        name: display_name,
         description: c.description.clone(),
         note: crate::collections::read_crawl_note(&state.home, &c.collection, &id)
             .map(|n| crate::markdown::render(&n)),
@@ -195,7 +196,7 @@ pub(super) async fn crawl_page(
         // Fetched from a remote host at replay time, not stored in <home>/archive.
         remote: c.source.is_remote(),
         provenance,
-        source: c.source.location(),
+        source: c.source.describe(),
         size: human_size(c.file_size),
         sha_short: c.sha256.get(..16).unwrap_or(&c.sha256).to_string(),
         sha_full: c.sha256.clone(),
@@ -209,12 +210,10 @@ pub(super) async fn crawl_page(
             .unwrap_or(&c.date_indexed)
             .to_string(),
         present: c.is_present(&state.home),
-        facets: scoped_facet_sections(&crawl_overview, &format!("crawl:{id}")),
+        facets: scoped_facet_sections(&crawl_overview.facets, &format!("crawl:{id}")),
         pages,
-        management: manage,
         can_delete,
-        signed_in: who,
-        can_login,
+        chrome,
     };
 
     views::crawl(&page).into_response()

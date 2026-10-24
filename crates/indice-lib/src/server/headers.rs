@@ -146,7 +146,6 @@ impl SecurityHeaders {
             "default-src 'self'; \
              script-src 'self'; \
              style-src 'self'; \
-             style-src-attr 'unsafe-inline'; \
              img-src 'self'; \
              connect-src 'self'; \
              frame-src {frame_src}; \
@@ -154,11 +153,9 @@ impl SecurityHeaders {
              base-uri 'none'; \
              object-src 'none'"
         );
-        // `style-src-attr 'unsafe-inline'` is for two computed values that
-        // have no class to live in: a thumbnail placeholder's hue and a
-        // timeline bar's height (views/mod.rs, views/search.rs). Inline style
-        // attributes can restyle a page but not run anything, and no markup
-        // a visitor supplies reaches the page unsanitized.
+        // No inline style attributes either: a timeline bar's height is one
+        // of ten classes (views/mod.rs, time_axis) rather than a style value,
+        // so nothing on the app origin needs `style-src-attr 'unsafe-inline'`.
         Self::from_pairs(
             vec![
                 (header::CONTENT_SECURITY_POLICY, csp),

@@ -33,21 +33,27 @@ pub struct SearchBox {
     pub scope_label: String,
 }
 
+/// Who is looking at a page, as far as the shared header needs to know. Every
+/// view takes one and hands it to [`layout`].
+#[derive(Clone, Debug, Default)]
+pub struct Chrome {
+    /// The caller may change the archive: the page is in "workroom" mode, with
+    /// the `.mode-manage` accent, the Manage chip and the edit-in-place
+    /// affordances.
+    pub manage: bool,
+    /// The signed-in user's display name, behind an authenticating proxy.
+    pub signed_in: Option<String>,
+    /// Forward-auth is configured but this request is anonymous: show a
+    /// "Log in" link in place of the signed-in name.
+    pub can_login: bool,
+}
+
 /// The shared page shell. Renders one full-bleed app header (`.appbar`) on every
 /// page — wordmark + (optional) search — then the page `body` centered in
-/// `.wrap`. `manage` puts the page in "workroom" mode: the `.mode-manage` accent
-/// flip plus the header's clay treatment, Manage chip, and signed-in name.
-/// `can_login` (forward-auth configured but this request anonymous) shows a
-/// "Log in" link in place of the signed-in name. `search` is the header search
-/// box (`None` omits it — the homepage, whose hero carries the search instead).
-pub fn layout(
-    title: &str,
-    manage: bool,
-    signed_in: Option<&str>,
-    can_login: bool,
-    search: Option<&SearchBox>,
-    body: Markup,
-) -> Markup {
+/// `.wrap`, dressed for `chrome`. `search` is the header search box (`None`
+/// omits it — the homepage, whose hero carries the search instead).
+pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Markup) -> Markup {
+    let manage = chrome.manage;
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -55,6 +61,7 @@ pub fn layout(
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
                 title { (title) }
+                link rel="stylesheet" href="/assets/tokens.css";
                 link rel="stylesheet" href="/assets/app.css";
             }
             body class=[manage.then_some("mode-manage")] {
@@ -72,16 +79,16 @@ pub fn layout(
                                 input type="hidden" name="scope" value=(s.scope_query);
                             }
                             input type="search" name="q" value=(s.query) placeholder=(placeholder);
-                            button type="submit" { "Search" }
+                            button.btn type="submit" { "Search" }
                         }
                     }
-                    @if let Some(u) = signed_in {
+                    @if let Some(u) = &chrome.signed_in {
                         span.who { "signed in as " b { (u) } }
                         // A form, not a link: see `server::auth::logout`.
                         form.logout-form method="post" action="/logout" {
                             button.logout type="submit" { "Log out" }
                         }
-                    } @else if can_login {
+                    } @else if chrome.can_login {
                         // Forward-auth is configured but this request is anonymous:
                         // offer a login. /manage/login is gated, so following it
                         // trips the proxy's login and bounces back to the
@@ -137,25 +144,70 @@ pub fn search_tips() -> Markup {
     }
 }
 
-/// A card/detail representative image. Shows the cached thumbnail if present,
-/// otherwise a CSS placeholder tinted by a hash of `seed` (so cards vary a bit).
-fn thumb_area(thumb: Option<&str>, seed: &str) -> Markup {
+/// A card's representative image: the cached thumbnail, or a plain panel the
+/// same size, so a card without one still lines up with its neighbours. Not a
+/// coloured placeholder: a colour that means nothing reads as if it did.
+fn thumb_area(thumb: Option<&str>) -> Markup {
     html! {
         @match thumb {
             Some(src) => div.thumb { img src=(src) alt="" loading="lazy"; },
-            None => div.thumb.placeholder style=(placeholder_style(seed)) {},
+            None => div.thumb.blank {},
         }
     }
 }
 
-/// A deterministic gradient for a placeholder, its hue derived from `seed` so
-/// each collection/crawl gets a stable, distinct tint.
-fn placeholder_style(seed: &str) -> String {
-    let hue = seed
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
-        % 360;
-    format!("background:linear-gradient(135deg,hsl({hue},45%,72%),hsl({hue},38%,55%))")
+/// One month on a time axis: the results, or the pages crawled, in that month.
+/// An axis has a bar for every month in its span, empty ones included, so the
+/// gaps in an archive show as gaps.
+pub struct TimelineBar {
+    /// The month in words, "May 2021".
+    pub label: String,
+    /// The year, on the first month shown of each year: where the axis marks it.
+    pub year: Option<String>,
+    pub count: u64,
+    /// Height in tenths of the busiest month, 0 to 10; at least 1 when the
+    /// month has anything, so a small month is never invisible.
+    pub step: u8,
+    /// Where clicking the month goes (a filter toggle); `None` for an empty month.
+    pub href: Option<String>,
+    /// Whether the page is already filtered to this month.
+    pub active: bool,
+}
+
+/// A time axis: one bar per month, proportional across the span, with years
+/// marked. Each bar says its month and count to a screen reader, and shows
+/// them on hover and on keyboard focus. Nothing renders for fewer than two
+/// months, where an axis says nothing a sentence wouldn't.
+/// `unit` names what is counted, singular and plural.
+fn time_axis(bars: &[TimelineBar], label: &str, unit: (&str, &str)) -> Markup {
+    html! {
+        @if bars.len() >= 2 {
+            div.timeline role="group" aria-label=(label) {
+                @for b in bars {
+                    @let said = format!(
+                        "{}: {} {}",
+                        b.label,
+                        b.count,
+                        if b.count == 1 { unit.0 } else { unit.1 }
+                    );
+                    @match &b.href {
+                        Some(h) => {
+                            a.tl-bar.active[b.active].tl-year[b.year.is_some()] href=(h) aria-label=(said) aria-current=[b.active.then_some("true")] {
+                                span class=(format!("tl-fill h{}", b.step)) {}
+                                span.tl-tip aria-hidden="true" { (said) }
+                                @if let Some(y) = &b.year { span.tl-yr aria-hidden="true" { (y) } }
+                            }
+                        }
+                        None => {
+                            span.tl-bar.empty.tl-year[b.year.is_some()] aria-hidden="true" {
+                                @if let Some(y) = &b.year { span.tl-yr { (y) } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// One labeled group of browse-links in a detail page's scoped facet overview
@@ -226,25 +278,19 @@ fn meta_table(rows: &[MetaRow]) -> Markup {
     }
 }
 
-/// A pill labelling where a crawl's WACZ lives: `💾 Local` (stored in this
-/// home's `archive/`) or `🌐 Remote` (fetched from a remote host at replay time).
+/// Where a crawl's WACZ lives, in words: stored in this archive's own
+/// folder, or streamed from a remote host at replay time.
 fn source_badge(remote: bool) -> Markup {
-    // Icon only, but with role="img" + aria-label so a screen reader announces
-    // "Local"/"Remote" (not the emoji's Unicode name); `title` is the mouse
-    // tooltip. `title` alone would not be accessible.
     if remote {
         html! {
-            span.source-badge.remote role="img" aria-label="Remote"
-                title="Hosted remotely — indice streams this at replay time and doesn't keep a local copy" {
-                "🌐"
+            span.source-badge
+                title="Hosted remotely: indice streams this at replay time and keeps no copy" {
+                "Streamed"
             }
         }
     } else {
         html! {
-            span.source-badge.local role="img" aria-label="Local"
-                title="Stored locally in this home's archive folder" {
-                "💾"
-            }
+            span.source-badge title="Stored in this archive's own folder" { "Stored here" }
         }
     }
 }

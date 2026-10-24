@@ -73,9 +73,8 @@ pub(super) async fn homepage(
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
-    views::home(&cards, &browse, manage, who.as_deref(), can_login).into_response()
+    let chrome = chrome(&state, &headers);
+    views::home(&cards, &browse, &chrome).into_response()
 }
 
 /// Build homepage browse links from one facet dimension: `field` is the facet
@@ -112,11 +111,6 @@ fn browse_links(
 
 /// Search results per page.
 const PAGE_SIZE: usize = 20;
-
-/// Format a `YYYYMM` month as `YYYY-MM` for display.
-fn format_ym(ym: u64) -> String {
-    format!("{:04}-{:02}", ym / 100, ym % 100)
-}
 
 /// The active `field:value` facet filters present in a query, in order. Only
 /// single-token filters are recognized: a range like `month:[202101 TO 202106]`
@@ -222,16 +216,27 @@ pub(super) async fn search_page(
             .map(viewer_source)
             .unwrap_or_else(|| format!("/files/{wacz_id}"))
     };
-    // Curated collection id -> display name, for the "in <collection>" link.
-    let collection_names: std::collections::HashMap<String, String> =
-        Manifest::open(&state.index_dir)
-            .map(|m| {
-                m.collections
-                    .iter()
-                    .map(|c| (c.id.to_string(), c.name.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+    // Ids -> the names a reader sees: collections for the "in <collection>"
+    // link and the collection facet, crawls for the replay banner.
+    let manifest = Manifest::open(&state.index_dir).ok();
+    let collection_names: std::collections::HashMap<String, String> = manifest
+        .as_ref()
+        .map(|m| {
+            m.collections
+                .iter()
+                .map(|c| (c.id.to_string(), c.name.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    // A crawl's name for a reader, looked up for the rows shown, not built for
+    // every crawl in the archive.
+    let crawl_name = |r: &crate::search::SearchResult| {
+        manifest
+            .as_ref()
+            .and_then(|m| m.wacz_by_id(&r.crawl_id))
+            .map(|w| w.display_name())
+            .unwrap_or_else(|| r.crawl_name.clone())
+    };
 
     let rows: Vec<views::SearchResultRow> = results
         .iter()
@@ -257,7 +262,7 @@ pub(super) async fn search_page(
                 }
             } else if r.title.is_empty() {
                 if is_collection {
-                    r.crawl_name.clone()
+                    crawl_name(r)
                 } else {
                     r.url.clone()
                 }
@@ -274,7 +279,7 @@ pub(super) async fn search_page(
                     Some((r.url.clone(), r.timestamp.clone())),
                 )
             } else {
-                let name_enc = url_encode(&r.crawl_name);
+                let name_enc = url_encode(&crawl_name(r));
                 let source_enc = url_encode(&source_for(&r.crawl_id));
                 // Carry the breadcrumb into the replay viewer: the collection
                 // (name + id) and the crawl id (so its crumb links to the crawl).
@@ -355,7 +360,6 @@ pub(super) async fn search_page(
     // The `crawl:` filter's value is an opaque WACZ id (from a crawl-page facet
     // link); show the crawl's name in the chip instead. Other filters show their
     // value as-is. The removal token still uses the raw id.
-    let manifest = Manifest::open(&state.index_dir).ok();
     let active: Vec<views::ActiveFilter> = filters
         .iter()
         .map(|(f, v)| {
@@ -363,12 +367,18 @@ pub(super) async fn search_page(
                 manifest
                     .as_ref()
                     .and_then(|m| m.wacz_by_id(v))
-                    .map(|w| w.name.clone())
+                    .map(|w| w.display_name())
+                    .unwrap_or_else(|| v.clone())
+            } else if f == "collection" {
+                collection_names
+                    .get(v)
+                    .cloned()
                     .unwrap_or_else(|| v.clone())
             } else {
                 v.clone()
             };
             views::ActiveFilter {
+                field: f.clone(),
                 label: crate::search::filter_label(f).to_string(),
                 value: display,
                 remove_href: search_href(&query_without_filter(&q, f, v)),
@@ -390,8 +400,17 @@ pub(super) async fn search_page(
                     } else {
                         query_with_filter(&q, &g.field, &b.value)
                     };
+                    // The collection facet's values are ids; show names.
+                    let value = if g.field == "collection" {
+                        collection_names
+                            .get(&b.value)
+                            .cloned()
+                            .unwrap_or_else(|| b.value.clone())
+                    } else {
+                        b.value.clone()
+                    };
                     views::FacetItem {
-                        value: b.value.clone(),
+                        value,
                         count: b.count,
                         href: search_href(&new_q),
                         active: is_active,
@@ -402,47 +421,27 @@ pub(super) async fn search_page(
         .collect();
     let sidebar = views::FacetSidebar { active, groups };
 
-    // Timeline: one clickable bar per crawl month, oldest first, height scaled
-    // to the busiest month. Clicking toggles a `month:YYYYMM` filter.
-    let max_count = response
-        .timeline
-        .iter()
-        .map(|t| t.count)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let timeline: Vec<views::TimelineBar> = response
-        .timeline
-        .iter()
-        .map(|t| {
-            let month = t.ym.to_string();
-            let is_active = filters.iter().any(|(f, v)| f == "month" && v == &month);
-            let new_q = if is_active {
+    // Timeline: every crawl month in the results' span, oldest first, height
+    // scaled to the busiest. Clicking a month toggles a `month:YYYYMM` filter.
+    let in_force = |ym: u64| {
+        filters
+            .iter()
+            .any(|(f, v)| f == "month" && v == &ym.to_string())
+    };
+    let counts: Vec<(u64, u64)> = response.timeline.iter().map(|t| (t.ym, t.count)).collect();
+    let timeline = month_axis(
+        &counts,
+        |ym| {
+            let month = ym.to_string();
+            search_href(&if in_force(ym) {
                 query_without_filter(&q, "month", &month)
             } else {
                 query_with_filter(&q, "month", &month)
-            };
-            views::TimelineBar {
-                label: format_ym(t.ym),
-                count: t.count,
-                pct: (t.count as f64 / max_count as f64 * 100.0).round() as u32,
-                href: search_href(&new_q),
-                active: is_active,
-            }
-        })
-        .collect();
+            })
+        },
+        in_force,
+    );
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
-    views::search_results(
-        &q,
-        &page_nav,
-        &sidebar,
-        &timeline,
-        &rows,
-        manage,
-        who.as_deref(),
-        can_login,
-    )
-    .into_response()
+    let chrome = chrome(&state, &headers);
+    views::search_results(&q, &page_nav, &sidebar, &timeline, &rows, &chrome).into_response()
 }

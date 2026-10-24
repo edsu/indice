@@ -38,8 +38,33 @@
   const fromPath = source.match(/^\/(?:files|collection)\/([^/]+)/);
   nameEl.textContent = name || (fromPath ? fromPath[1] : source);
   if (crawlId) nameEl.href = '/crawl/' + encodeURIComponent(crawlId);
+  // A collection's replay has no one crawl to name, and is given the
+  // collection's own name; saying it twice tells the reader nothing.
+  if (!crawlId && collection && nameEl.textContent === collection) {
+    nameEl.style.display = 'none';
+    document.getElementById('crawl-sep').style.display = 'none';
+  }
   const currentUrl = document.getElementById('current-url');
   currentUrl.textContent = url;
+
+  // When the page in view was captured: the provenance a reader most needs
+  // while reading it, so the banner leads with it. From the link's `ts`, then
+  // from the frame as the reader moves between pages.
+  const captured = document.getElementById('captured');
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+  function showCaptured(ts) {
+    const d = String(ts || '').replace(/\D/g, '');
+    const month = MONTHS[Number(d.slice(4, 6)) - 1];
+    if (d.length < 8 || !month) {
+      captured.textContent = '';
+      return;
+    }
+    let text = 'Captured ' + Number(d.slice(6, 8)) + ' ' + month + ' ' + d.slice(0, 4);
+    if (d.length >= 12) text += ', ' + d.slice(8, 10) + ':' + d.slice(10, 12) + ' UTC';
+    captured.textContent = text;
+  }
+  showCaptured(params.get('ts'));
 
   // The frame's origin, from the server's configuration and never from a
   // message, because the check below is what everything trusting a
@@ -85,6 +110,7 @@
     const d = e.detail;
     if (d.type === 'url' && typeof d.url === 'string' && d.url) {
       currentUrl.textContent = d.url;
+      if (typeof d.ts === 'string') showCaptured(d.ts);
     }
   });
 })();

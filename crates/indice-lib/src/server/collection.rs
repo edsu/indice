@@ -62,11 +62,18 @@ pub(super) async fn collection_page(
         meta.push(views::MetaRow::new("Created by", name));
     }
 
-    let member_items: Vec<views::MemberItem> = members
+    // Newest first. A crawl with no recorded date sorts last.
+    let mut newest_first = members.clone();
+    newest_first.sort_by(|a, b| b.capture_start.cmp(&a.capture_start));
+    let member_items: Vec<views::MemberItem> = newest_first
         .iter()
         .map(|w| views::MemberItem {
             id: w.id.clone(),
-            name: w.name.clone(),
+            name: w.display_name(),
+            when: w
+                .capture_start
+                .as_deref()
+                .and_then(crate::collections::long_date),
             present: w.is_present(&state.home),
             remote: w.source.is_remote(),
             provenance: provenance_summary(w),
@@ -83,10 +90,9 @@ pub(super) async fn collection_page(
         })
         .await
         .unwrap_or_default();
-    let facets = scoped_facet_sections(&overview, &format!("collection:{id}"));
+    let facets = scoped_facet_sections(&overview.facets, &format!("collection:{id}"));
 
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
+    let chrome = chrome(&state, &headers);
     // Deaccession is an admin act; don't offer a curator a button that 403s.
     let can_delete =
         resolve_caller(&state, &headers).is_some_and(|(p, _)| p.role().can_administer());
@@ -101,12 +107,26 @@ pub(super) async fn collection_page(
         meta,
         facets,
         members: member_items,
+        // From the index, like the search timeline, so each bar counts what
+        // its `month:` link finds.
+        crawl_months: month_axis(
+            &overview
+                .months
+                .iter()
+                .map(|t| (t.ym, t.count))
+                .collect::<Vec<_>>(),
+            |ym| {
+                format!(
+                    "/search?q={}",
+                    url_encode(&format!("collection:{id} month:{ym}"))
+                )
+            },
+            |_| false,
+        ),
         replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
         id: id.clone(),
-        management: manage,
         can_delete,
-        signed_in: who,
-        can_login,
+        chrome,
         annotation_count: annotations::load(&state.home, &c.id)
             .map(|v| v.len())
             .unwrap_or(0),
@@ -128,8 +148,7 @@ pub(super) async fn collection_annotations(
     let Some(c) = manifest.collection_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
     };
-    let (manage, who) = admin_ctx(&state, &headers);
-    let can_login = login_available(&state, &who);
+    let chrome = chrome(&state, &headers);
     let anns = annotations::load(&state.home, &c.id).unwrap_or_default();
     let items = anns
         .iter()
@@ -163,9 +182,7 @@ pub(super) async fn collection_annotations(
         collection_name: c.name.clone(),
         collection_id: id.clone(),
         items,
-        management: manage,
-        signed_in: who,
-        can_login,
+        chrome,
     };
     views::annotations_index(&page).into_response()
 }

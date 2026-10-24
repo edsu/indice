@@ -9,6 +9,8 @@ use super::*;
 pub struct MemberItem {
     pub id: String,
     pub name: String,
+    /// When the crawl ran, in words, if known.
+    pub when: Option<String>,
     pub present: bool,
     /// Whether this crawl is hosted remotely (streamed) rather than local.
     pub remote: bool,
@@ -37,20 +39,19 @@ pub struct CollectionPage {
     /// Created).
     pub meta: Vec<MetaRow>,
     pub facets: Vec<FacetSection>,
+    /// The member crawls, newest first.
     pub members: Vec<MemberItem>,
+    /// Pages crawled per month across the collection's span.
+    pub crawl_months: Vec<TimelineBar>,
     /// Viewer URL that replays the whole collection (multi-WACZ).
     pub replay_href: String,
     /// Collection id (slug) — for the edit / add-crawls links.
     pub id: String,
-    /// Whether management mode is on — gates the edit-in-place affordances.
-    pub management: bool,
     /// Whether to render the danger zone. Deaccession is an admin act, so a
     /// curator must not be shown a button that would 403.
     pub can_delete: bool,
-    /// Signed-in user (forward-auth), shown in the workroom strip.
-    pub signed_in: Option<String>,
-    /// Forward-auth configured but this request anonymous — show a "Log in" link.
-    pub can_login: bool,
+    /// Who is looking, for the shared header.
+    pub chrome: Chrome,
     /// How many page annotations this collection has (drives the summary link).
     pub annotation_count: usize,
 }
@@ -118,13 +119,99 @@ pub fn collection(p: &CollectionPage) -> Markup {
         // curation actions — all the same button treatment.
         div.actions {
             @if !p.members.is_empty() {
-                a.btn href=(p.replay_href) { "Replay collection →" }
+                a.btn href=(p.replay_href) { "Replay collection" }
             }
-            @if p.management {
-                a.btn href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
-                a.btn href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
+            @if p.chrome.manage {
+                a.btn.edit href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
+                a.btn.edit href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
             }
         }
+        section.about {
+            h2 { "About this collection" }
+            @if p.has_curatorial() {
+                @if let Some(n) = &p.narrative { div.narrative { (n) } }
+                @if !curatorial.is_empty() { (meta_table(&curatorial)) }
+                // Even partly-filled, name the DACS-minimum elements still
+                // missing — the fields ingest can't supply reliably (a real
+                // creator, the scope rationale, use conditions).
+                @if !missing.is_empty() {
+                    p.muted.nudge {
+                        "Still needed: " (missing.join(", "))
+                        " (the finding-aid minimum). "
+                        @if p.chrome.manage {
+                            a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
+                            " to add them."
+                        } @else {
+                            "Add with "
+                            code { "indice collection set \"" (p.name) "\" …" }
+                            " or edit "
+                            code { "collections/" (p.id) "/README.md" }
+                            "."
+                        }
+                    }
+                }
+            } @else {
+                // Empty-state nudge: name the DACS single-level minimum
+                // curatorial elements that are missing, with archival authority.
+                p.muted.nudge {
+                    "No finding-aid description yet. Add the essentials a reader needs — "
+                    "who gathered it (Creator), why it was archived (Scope & Content), and "
+                    "who may use it (Access). "
+                    @if p.chrome.manage {
+                        a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
+                        " to describe it."
+                    } @else {
+                        "Add with "
+                        code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
+                        " — or edit "
+                        code { "collections/" (p.id) "/README.md" }
+                        "."
+                    }
+                }
+            }
+        }
+
+        @if p.annotation_count > 0 {
+            @let plural = if p.annotation_count == 1 { "note" } else { "notes" };
+            section.annotations-summary {
+                h2 { "Annotations" }
+                p.muted {
+                    (p.annotation_count) " page " (plural) " in this collection. "
+                    a href=(format!("/collection/{}/annotations", p.id)) { "Browse annotations" }
+                }
+            }
+        }
+
+        @if !p.meta.is_empty() { (meta_table(&p.meta)) }
+        (facet_browse(&p.facets))
+        h2 { "Crawls" }
+        // When this collection was crawled, then its crawls, newest first: a
+        // collection grows over time, and the list reads as that history.
+        (time_axis(&p.crawl_months, "Pages crawled by month", ("page", "pages")))
+        @if p.members.is_empty() {
+            p.muted { "No crawls in this collection." }
+        } @else {
+            ol.crawl-list {
+                @for m in &p.members {
+                    li.crawl-item {
+                        a.crawl-thumb href=(format!("/crawl/{}", m.id)) tabindex="-1" aria-hidden="true" {
+                            (thumb_area(m.thumb.as_deref()))
+                        }
+                        div.crawl-text {
+                            @if let Some(w) = &m.when { div.crawl-when { (w) } }
+                            a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
+                            p.card-source {
+                                @if m.remote { "Streamed" } @else { "Stored here" }
+                                @if !m.present { span.missing { ". The file is missing" } }
+                            }
+                            @if let Some(pr) = &m.provenance { p.crawl-prov { (pr) } }
+                        }
+                    }
+                }
+            }
+        }
+        // Last on the page, as on a crawl page: deleting is the rarest thing
+        // anyone comes here to do, and it should never sit beside the actions.
         @if p.can_delete {
             details.danger-zone {
                 summary { "Delete this collection" }
@@ -147,90 +234,6 @@ pub fn collection(p: &CollectionPage) -> Markup {
             }
         }
 
-        section.about {
-            h2 { "About this collection" }
-            @if p.has_curatorial() {
-                @if let Some(n) = &p.narrative { div.narrative { (n) } }
-                @if !curatorial.is_empty() { (meta_table(&curatorial)) }
-                // Even partly-filled, name the DACS-minimum elements still
-                // missing — the fields ingest can't supply reliably (a real
-                // creator, the scope rationale, use conditions).
-                @if !missing.is_empty() {
-                    p.muted.nudge {
-                        "Still needed: " (missing.join(", "))
-                        " (the finding-aid minimum). "
-                        @if p.management {
-                            a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
-                            " to add them."
-                        } @else {
-                            "Add with "
-                            code { "indice collection set \"" (p.name) "\" …" }
-                            " or edit "
-                            code { "collections/" (p.id) "/README.md" }
-                            "."
-                        }
-                    }
-                }
-            } @else {
-                // Empty-state nudge: name the DACS single-level minimum
-                // curatorial elements that are missing, with archival authority.
-                p.muted.nudge {
-                    "No finding-aid description yet. Add the essentials a reader needs — "
-                    "who gathered it (Creator), why it was archived (Scope & Content), and "
-                    "who may use it (Access). "
-                    @if p.management {
-                        a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
-                        " to describe it."
-                    } @else {
-                        "Add with "
-                        code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
-                        " — or edit "
-                        code { "collections/" (p.id) "/README.md" }
-                        "."
-                    }
-                }
-            }
-        }
-
-        @if p.annotation_count > 0 {
-            @let plural = if p.annotation_count == 1 { "note" } else { "notes" };
-            section.annotations-summary {
-                h2 { "Annotations" }
-                p.muted {
-                    (p.annotation_count) " page " (plural) " in this collection. "
-                    a href=(format!("/collection/{}/annotations", p.id)) { "Browse annotations →" }
-                }
-            }
-        }
-
-        @if !p.meta.is_empty() { (meta_table(&p.meta)) }
-        (facet_browse(&p.facets))
-        h2 { "Crawls" }
-        @if p.members.is_empty() {
-            p.muted { "No crawls in this collection." }
-        } @else {
-            div.cards {
-                @for m in &p.members {
-                    div.card {
-                        a.card-thumb href=(format!("/crawl/{}", m.id)) {
-                            (thumb_area(m.thumb.as_deref(), &m.name))
-                        }
-                        div.card-header {
-                            span.card-title-wrap {
-                                (source_badge(m.remote))
-                                a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
-                            }
-                            @if m.present {
-                                span.status.ok { "✓" }
-                            } @else {
-                                span.status.missing { "✗" }
-                            }
-                        }
-                        @if let Some(pr) = &m.provenance { div.prov { (pr) } }
-                    }
-                }
-            }
-        }
     };
     // Header search scoped to this collection (broaden via the results chip).
     let search = SearchBox {
@@ -240,9 +243,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
     };
     layout(
         &format!("{} - indice", p.name),
-        p.management,
-        p.signed_in.as_deref(),
-        p.can_login,
+        &p.chrome,
         Some(&search),
         body,
     )
@@ -264,9 +265,8 @@ pub struct AnnotationsIndexPage {
     pub collection_name: String,
     pub collection_id: String,
     pub items: Vec<AnnoLink>,
-    pub management: bool,
-    pub signed_in: Option<String>,
-    pub can_login: bool,
+    /// Who is looking, for the shared header.
+    pub chrome: Chrome,
 }
 
 /// A public browse of every annotation in a collection.
@@ -286,14 +286,14 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
                 @for a in &p.items {
                     li.anno-index-item {
                         div.anno-index-meta {
-                            span.anno-author { (a.author) } " · " (a.date)
+                            span.anno-author { (a.author) } ", " (a.date)
                         }
                         @if let Some(q) = &a.region {
                             p.anno-quote { "“" (q) "”" }
                         }
                         div.anno-index-body { (a.note_html) }
                         p.anno-index-loc {
-                            a href=(a.replay_href) { "Open page →" }
+                            a href=(a.replay_href) { "Open page" }
                             " " span.muted { (a.page_url) }
                         }
                     }
@@ -303,9 +303,7 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
     };
     layout(
         &format!("Annotations - {} - indice", p.collection_name),
-        p.management,
-        p.signed_in.as_deref(),
-        p.can_login,
+        &p.chrome,
         None,
         body,
     )

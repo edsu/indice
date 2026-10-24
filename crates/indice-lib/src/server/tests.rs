@@ -337,7 +337,16 @@ fn a_workstation_refuses_when_the_request_names_no_host() {
 fn appbar_offers_login_when_anonymous_under_forward_auth() {
     use maud::html;
     // Forward-auth configured, request anonymous → a "Log in" link, no name.
-    let anon = views::layout("t", false, None, true, None, html! {}).into_string();
+    let anon = views::layout(
+        "t",
+        &views::Chrome {
+            can_login: true,
+            ..Default::default()
+        },
+        None,
+        html! {},
+    )
+    .into_string();
     assert!(
         anon.contains(r#"href="/manage/login""#) && anon.contains("Log in"),
         "anonymous + can_login should show a login link: {anon}"
@@ -345,7 +354,17 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     assert!(!anon.contains("signed in as"));
 
     // Signed in → the identity + a logout control, and no login link.
-    let authed = views::layout("t", true, Some("ed"), false, None, html! {}).into_string();
+    let authed = views::layout(
+        "t",
+        &views::Chrome {
+            manage: true,
+            signed_in: Some("ed".into()),
+            can_login: false,
+        },
+        None,
+        html! {},
+    )
+    .into_string();
     assert!(authed.contains("signed in as") && authed.contains("ed"));
     assert!(authed.contains("Log out"));
     assert!(!authed.contains("/manage/login"));
@@ -363,7 +382,7 @@ fn appbar_offers_login_when_anonymous_under_forward_auth() {
     );
 
     // Nobody signed in and no login to offer: neither affordance.
-    let plain = views::layout("t", false, None, false, None, html! {}).into_string();
+    let plain = views::layout("t", &views::Chrome::default(), None, html! {}).into_string();
     assert!(!plain.contains("/manage/login") && !plain.contains("signed in as"));
 }
 
@@ -530,4 +549,49 @@ fn every_crawl_replays_through_its_own_files_path() {
     assert!(matches!(remote.source, crate::collections::Source::Url(_)));
     assert_eq!(viewer_source(&file), "/files/abc123");
     assert_eq!(viewer_source(&remote), "/files/abc123");
+}
+
+/// A time axis covers every month in its span, so the gaps in an archive show:
+/// empty months get a slot and no link, years are marked where they start, and
+/// a small month is never too short to see.
+#[test]
+fn a_time_axis_keeps_empty_months_and_marks_years() {
+    let bars = month_axis(
+        &[(202105, 200), (202207, 1)],
+        |ym| format!("/m/{ym}"),
+        |ym| ym == 202207,
+    );
+    assert_eq!(bars.len(), 15, "May 2021 to July 2022 inclusive");
+    assert_eq!(bars[0].label, "May 2021");
+    assert_eq!(bars[0].year.as_deref(), Some("2021"));
+    assert_eq!(bars[0].step, 10);
+    assert_eq!(bars[0].href.as_deref(), Some("/m/202105"));
+    // June 2021 to June 2022: nothing crawled, so a slot with no link.
+    assert!(bars[1..14]
+        .iter()
+        .all(|b| b.count == 0 && b.href.is_none() && b.step == 0));
+    assert_eq!(bars[8].label, "January 2022");
+    assert_eq!(bars[8].year.as_deref(), Some("2022"));
+    assert!(bars[1].year.is_none());
+    // One page against two hundred still shows.
+    assert_eq!(bars[14].step, 1);
+    assert!(bars[14].active);
+    assert!(month_axis(&[], |_| String::new(), |_| false).is_empty());
+}
+
+/// The axis shows at most ten years, and its heights are scaled to the busiest
+/// month it shows: one huge month the window cuts off must not flatten the rest.
+#[test]
+fn a_time_axis_is_scaled_to_the_months_it_shows() {
+    let bars = month_axis(
+        &[(200801, 10_000), (202501, 50), (202502, 25)],
+        |ym| ym.to_string(),
+        |_| false,
+    );
+    assert_eq!(bars.len(), 120, "ten years, ending at the last month");
+    assert!(bars.iter().all(|b| !b.label.contains("2008")));
+    let jan = bars.iter().find(|b| b.label == "January 2025").unwrap();
+    let feb = bars.iter().find(|b| b.label == "February 2025").unwrap();
+    assert_eq!(jan.step, 10);
+    assert_eq!(feb.step, 5);
 }

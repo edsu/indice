@@ -27,7 +27,7 @@ pub struct CollectionFormData {
 /// The finding-aid form (`/manage/collections/new` and `/manage/edit/{id}`):
 /// create or edit a collection's curatorial description. POSTs to
 /// `/api/collections`.
-pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Markup {
+pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
     let back = if form.editing {
         format!("/collection/{}", form.id)
     } else {
@@ -50,7 +50,7 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
                 input type="text" name="name" required value=(form.name) readonly[form.editing];
             }
             label {
-                span { "Description " span.hint { "· a one-line summary, shown on cards and under the title" } }
+                span { "Description " span.hint { "a one-line summary, shown on cards and under the title" } }
                 input type="text" name="description" value=(form.description);
             }
             div.grid-2 {
@@ -60,11 +60,11 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
                 label { span { "Rights" } input type="text" name="rights" value=(form.rights); }
             }
             label {
-                span { "Subjects " span.hint { "· comma-separated" } }
+                span { "Subjects " span.hint { "comma-separated" } }
                 input type="text" name="subjects" value=(form.subjects);
             }
             label {
-                span { "Narrative " span.hint { "· the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
+                span { "Narrative " span.hint { "the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
                 textarea name="narrative" rows="8" { (form.narrative) }
             }
             div.form-actions {
@@ -83,14 +83,7 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
     } else {
         SearchBox::default()
     };
-    layout(
-        "Manage - indice",
-        true,
-        signed_in,
-        false,
-        Some(&search),
-        body,
-    )
+    layout("Manage - indice", chrome, Some(&search), body)
 }
 
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
@@ -100,7 +93,7 @@ pub fn collection_form(form: &CollectionFormData, signed_in: Option<&str>) -> Ma
 pub fn accession_desk(
     collection_id: &str,
     collection_name: &str,
-    signed_in: Option<&str>,
+    chrome: &Chrome,
     // How much room an accession has, as a sentence; `None` when no limit is
     // configured, so an unlimited archive shows nothing rather than "∞".
     room: Option<&str>,
@@ -138,7 +131,7 @@ pub fn accession_desk(
                     placeholder="which collection this belongs to";
             }
             label {
-                span { "Display name " span.hint { "· optional" } }
+                span { "Display name " span.hint { "optional" } }
                 input type="text" name="name" placeholder="override the collection's display name";
             }
 
@@ -156,7 +149,7 @@ pub fn accession_desk(
             }
             div.src-panel #src-url {
                 label {
-                    span { "Location " span.hint { "· an http(s):// URL" } }
+                    span { "Location " span.hint { "an http(s):// URL" } }
                     input type="text" name="location"
                         placeholder="https://example.org/crawl.wacz";
                 }
@@ -167,7 +160,7 @@ pub fn accession_desk(
                     div.grid-2 {
                         label { span { "Organization" } select #bx-org {} }
                         label {
-                            span { "Browsertrix collection " span.hint { "· optional filter" } }
+                            span { "Browsertrix collection " span.hint { "optional filter" } }
                             select #bx-collection { option value="" { "All crawls" } }
                         }
                     }
@@ -190,8 +183,8 @@ pub fn accession_desk(
                 div #bx-items.bx-items {}
                 fieldset.bx-mode {
                     legend { "On import" }
-                    label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "· stored locally, replays offline" } } }
-                    label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "· no local copy; replay re-resolves via this server's credentials" } } }
+                    label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "stored locally, replays offline" } } }
+                    label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "no local copy; replay re-resolves via this server's credentials" } } }
                 }
             }
             div.src-panel #src-ait {
@@ -230,12 +223,5 @@ pub fn accession_desk(
             ..Default::default()
         }
     };
-    layout(
-        "Add crawls - indice",
-        true,
-        signed_in,
-        false,
-        Some(&search),
-        body,
-    )
+    layout("Add crawls - indice", chrome, Some(&search), body)
 }

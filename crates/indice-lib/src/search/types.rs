@@ -91,6 +91,15 @@ pub struct SearchResponse {
     pub timeline: Vec<TimelineBucket>,
 }
 
+/// A scoped facet overview: the facet counts, and pages per crawl month, both
+/// from one aggregation over the scope.
+#[derive(Debug, Clone, Default)]
+pub struct ScopedOverview {
+    pub facets: Vec<FacetGroup>,
+    /// Pages per crawl month, oldest first.
+    pub months: Vec<TimelineBucket>,
+}
+
 /// One month's slice of the results timeline.
 #[derive(Debug, Clone)]
 pub struct TimelineBucket {

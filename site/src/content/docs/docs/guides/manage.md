@@ -3,7 +3,7 @@ title: Manage & curate
 description: Curate an archive in the browser, on a workstation or behind an authenticating proxy, with users.yaml deciding who may change what.
 ---
 
-The ordinary site doubles as an editable **workroom**. For anyone allowed to change the archive, the same pages gain curation controls, marked by a warm clay "red-tape" accent, so you can add archives and curate collections in place without the command line:
+The ordinary site doubles as an editable **workroom**. For anyone allowed to change the archive, the same pages gain curation controls, marked by a manila band across the top of the page and manila edit buttons, so you can add archives and curate collections in place without the command line:
 
 ```bash
 indice serve        # http://127.0.0.1:8080

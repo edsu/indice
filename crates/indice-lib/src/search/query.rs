@@ -75,7 +75,7 @@ impl SearchIndex {
     /// facet overview on detail pages. Same aggregation as [`facet_overview`], but
     /// run over a term query on the scope field instead of match-all — still just
     /// the aggregation (no result fetch), so still cheap.
-    pub fn facet_overview_scoped(&self, scope: FacetScope) -> Result<Vec<FacetGroup>> {
+    pub fn facet_overview_scoped(&self, scope: FacetScope) -> Result<ScopedOverview> {
         let schema = self.index.schema();
         let (field, value) = match scope {
             FacetScope::Collection(v) => (schema.get_field(FIELD_COLLECTION).unwrap(), v),
@@ -91,7 +91,10 @@ impl SearchIndex {
             AggregationCollector::from_aggs(facet_aggregations(), AggContextParams::default());
         let agg_results = searcher.search(&query, &agg_collector)?;
         let agg_json = serde_json::to_value(&agg_results).unwrap_or_default();
-        Ok(facets_from_aggregations(&agg_json))
+        Ok(ScopedOverview {
+            facets: facets_from_aggregations(&agg_json),
+            months: timeline_from_aggregations(&agg_json),
+        })
     }
 
     /// Search the top `limit` results by relevance. A thin wrapper over

@@ -38,20 +38,15 @@ pub struct HomeBrowse {
 
 /// The homepage: search box, tips, browse-by entry points, and a card per
 /// collection.
-pub fn home(
-    cards: &[CollectionCard],
-    browse: &HomeBrowse,
-    management: bool,
-    signed_in: Option<&str>,
-    can_login: bool,
-) -> Markup {
+pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> Markup {
+    let management = chrome.manage;
     let body = html! {
         // The brand "indice" lives in the header now; the hero leads with what
         // the tool does + the search, rather than repeating the name.
         h1.home-hero { "Web archive search and replay" }
         form.search-form.home action="/search" method="get" {
             input type="search" name="q" placeholder="Search archived pages…" autofocus;
-            button type="submit" { "Search" }
+            button.btn type="submit" { "Search" }
         }
         (search_tips())
         @if !browse.years.is_empty() || !browse.sites.is_empty() {
@@ -87,19 +82,19 @@ pub fn home(
             // Edit-in-place: the "new collection" action lives right on the list
             // it affects, only in workroom mode.
             @if management {
-                a.btn href="/manage/collections/new" { "+ New collection" }
+                a.btn.edit href="/manage/collections/new" { "+ New collection" }
             }
         }
         @if cards.is_empty() {
             @if management {
                 div.empty-cta {
-                    p { "No collections yet — create one, or add an archive to start." }
-                    a.btn href="/manage/add" { "Add your first archive →" }
+                    p { "Add a crawl to start your first collection." }
+                    a.btn.edit href="/manage/add" { "Add a crawl" }
                 }
             } @else {
                 p.muted {
-                    "No collections indexed yet. Run "
-                    code { "indice index archive/*.wacz" } " to get started."
+                    "There are no collections yet. Add a crawl with "
+                    code { "indice index archive/*.wacz" } "."
                 }
             }
         }
@@ -107,7 +102,7 @@ pub fn home(
             @for c in cards {
                 div.card {
                     a.card-thumb href=(format!("/collection/{}", c.id)) {
-                        (thumb_area(c.thumb.as_deref(), &c.name))
+                        (thumb_area(c.thumb.as_deref()))
                     }
                     // Per-card edit affordance (hover-revealed) — workroom only.
                     @if management {
@@ -116,12 +111,19 @@ pub fn home(
                     div.card-body {
                         div.card-header {
                             span.card-title-wrap {
-                                @if c.has_local { (source_badge(false)) }
-                                @if c.has_remote { (source_badge(true)) }
                                 a.card-title href=(format!("/collection/{}", c.id)) { (c.name) }
                             }
                             span.status.muted {
                                 (c.count) " crawl" @if c.count != 1 { "s" }
+                            }
+                        }
+                        @if c.has_local || c.has_remote {
+                            p.card-source {
+                                @match (c.has_local, c.has_remote) {
+                                    (true, true) => "Stored here and streamed",
+                                    (false, true) => "Streamed",
+                                    _ => "Stored here",
+                                }
                             }
                         }
                         @if let Some(d) = &c.description {
@@ -133,7 +135,7 @@ pub fn home(
                                     div.prov { (r) }
                                 }
                                 @if c.count > 0 {
-                                    a.replay-btn href=(c.replay_href) { "Replay →" }
+                                    a.btn href=(c.replay_href) { "Replay" }
                                 }
                             }
                         }
@@ -143,5 +145,5 @@ pub fn home(
         }
     };
     // No header search on the homepage — the hero below carries it.
-    layout("indice", management, signed_in, can_login, None, body)
+    layout("indice", chrome, None, body)
 }
