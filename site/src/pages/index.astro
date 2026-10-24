@@ -136,7 +136,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <p>
                 Replayed pages run their own JavaScript, so indice replays them on an origin
                 of their own, where that script can't act as the person reading. Changes need
-                a sign-in and a role you grant.
+                a sign-in and a role you grant.{' '}
                 <a href="https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model">The threat model →</a>
               </p>
             </div>
@@ -144,8 +144,16 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <h3>Annotations on the record</h3>
               <p>
                 Signed-in users attach Markdown notes to a whole page or a selected passage;
-                they're public to read, highlight in place on replay, and turn up in search.
+                they're public to read, highlight in place on replay, and turn up in search.{' '}
                 <a href={`${base}/docs/guides/annotations/`}>How annotations work →</a>
+              </p>
+            </div>
+            <div class="feature">
+              <h3>Named for your archive</h3>
+              <p>
+                Give the archive its own name, a line saying what it holds, and a notice for
+                the top of every page, in one small config file.{' '}
+                <a href={`${base}/docs/reference/configuration/#site-name-tagline-and-banner`}>Site settings →</a>
               </p>
             </div>
           </div>
