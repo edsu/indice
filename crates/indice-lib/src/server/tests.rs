@@ -605,11 +605,13 @@ fn blank_site_text_falls_back_to_the_defaults() {
         name: Some("  ".into()),
         tagline: Some(String::new()),
         banner: Some("\n".into()),
+        request_access: Some(" ".into()),
     };
     let site = views::Site::new(&cfg);
     assert_eq!(site.name, "indice");
     assert_eq!(site.tagline, views::Site::default().tagline);
     assert!(site.banner.is_none());
+    assert!(site.request_access.is_none());
 
     let named = views::Site::new(&crate::config::SiteConfig {
         name: Some(" Ada's archive ".into()),

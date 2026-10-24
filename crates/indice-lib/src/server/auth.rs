@@ -447,6 +447,32 @@ pub(super) enum Denied {
     Unauthenticated,
     StaleEvidence,
     Insufficient(&'static str),
+    /// [`Denied::Insufficient`] for someone opening a page in a browser: the
+    /// same 403, as a page with the site's chrome and its request-access text.
+    Page(maud::Markup),
+}
+
+impl Denied {
+    /// Turn a role refusal of a browser page load into a page that explains
+    /// it. An API call, or any other refusal, stays plain text, which is what
+    /// `manage.js` shows.
+    fn for_page(self, state: &AppState, parts: &axum::http::request::Parts) -> Denied {
+        let Denied::Insufficient(what) = self else {
+            return self;
+        };
+        let wants_html = parts
+            .headers
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/html"));
+        if parts.method != axum::http::Method::GET || !wants_html {
+            return self;
+        }
+        Denied::Page(crate::views::access_denied(
+            &chrome(state, &parts.headers),
+            what,
+        ))
+    }
 }
 
 impl IntoResponse for Denied {
@@ -461,6 +487,7 @@ impl IntoResponse for Denied {
             Denied::Insufficient(what) => {
                 format!("forbidden: your account is not authorized for {what}")
             }
+            Denied::Page(page) => return (StatusCode::FORBIDDEN, page).into_response(),
         };
         (StatusCode::FORBIDDEN, msg).into_response()
     }
@@ -501,6 +528,7 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for Curator {
             "curating this archive",
         )
         .map(Curator)
+        .map_err(|d| d.for_page(state, parts))
     }
 }
 
@@ -517,6 +545,7 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for Admin {
             "administering this archive",
         )
         .map(Admin)
+        .map_err(|d| d.for_page(state, parts))
     }
 }
 

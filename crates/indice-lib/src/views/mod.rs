@@ -58,6 +58,8 @@ pub struct Site {
     pub tagline: String,
     /// The banner, already rendered from Markdown.
     pub banner: Option<maud::PreEscaped<String>>,
+    /// How to ask for more access, already rendered from Markdown.
+    pub request_access: Option<maud::PreEscaped<String>>,
 }
 
 impl Site {
@@ -75,6 +77,7 @@ impl Site {
             name: given(&cfg.name).unwrap_or(default.name),
             tagline: given(&cfg.tagline).unwrap_or(default.tagline),
             banner: given(&cfg.banner).map(|md| crate::markdown::render(&md)),
+            request_access: given(&cfg.request_access).map(|md| crate::markdown::render(&md)),
         }
     }
 }
@@ -85,6 +88,7 @@ impl Default for Site {
             name: "indice".to_string(),
             tagline: "Web archive search and replay".to_string(),
             banner: None,
+            request_access: None,
         }
     }
 }
@@ -152,10 +156,31 @@ pub fn layout(
                 @if let Some(b) = &site.banner {
                     div.site-banner { (b) }
                 }
+                // Signed in but on nobody's roster: say what that means, and
+                // how to ask for more, rather than leaving them to wonder why
+                // nothing can be changed.
+                @if chrome.signed_in.is_some() && !manage {
+                    div.site-banner.access-note {
+                        p { "You're signed in, and can read this archive. Changing it takes a curator or admin role." }
+                        @if let Some(r) = &site.request_access { (r) }
+                    }
+                }
                 main.wrap { (body) }
             }
         }
     }
+}
+
+/// The page a signed-in reader gets when they open a workroom page: a 403
+/// that explains itself. `what` is what the page needed, e.g. "curating this
+/// archive". The notice under the header carries `site.request_access`.
+pub fn access_denied(chrome: &Chrome, what: &str) -> Markup {
+    let body = html! {
+        h1.page-title { "You can't change this archive" }
+        p { "Your account isn't authorized for " (what) "." }
+        p { a href="/" { "Back to the archive" } }
+    };
+    layout(Some("Not authorized"), chrome, None, body)
 }
 
 /// The "Search tips" disclosure shown on the homepage and results page. The
