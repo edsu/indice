@@ -45,6 +45,9 @@ pub struct Page<'a> {
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub doc_type: String,
+    /// The note's id, for an `annotation` hit (empty otherwise), so a result
+    /// can open its page on that note.
+    pub annotation_id: String,
     /// The WACZ this result came from (id and display name).
     pub crawl_id: String,
     pub crawl_name: String,

@@ -273,10 +273,14 @@ pub(super) async fn search_page(
             let href = if is_annotation {
                 // Notes carry no crawl; open the annotated page in the collection
                 // replay (where the note re-anchors + highlights via the panel).
-                collection_replay_href(
-                    &r.collection,
-                    &coll_display,
-                    Some((r.url.clone(), r.timestamp.clone())),
+                format!(
+                    "{}&note={}",
+                    collection_replay_href(
+                        &r.collection,
+                        &coll_display,
+                        Some((r.url.clone(), r.timestamp.clone())),
+                    ),
+                    url_encode(&r.annotation_id)
                 )
             } else {
                 let name_enc = url_encode(&crawl_name(r));

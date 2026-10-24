@@ -40,6 +40,13 @@
     styleInjected: false,
     /** @type {Note[]} */ notes: [],
     /** @type {Map<string, Range>} */ ranges: new Map(),
+    // A note to bring into view once its passage is found: the viewer may ask
+    // before the replayed document has loaded, or before the notes arrive.
+    /** @type {string|null} */ pendingFocus: null,
+    // The note whose passage is emphasised, kept across redraws: the viewer
+    // sends its notes again whenever the page reports in, and each redraw
+    // would otherwise wipe the emphasis.
+    /** @type {string|null} */ focused: null,
   };
 
   // ── Messages ──────────────────────────────────────────────────────────────
@@ -98,21 +105,34 @@
       }
     }
     try {
-      // Also clear any focused (click-emphasised) highlight, so a stale one
-      // from the previous page doesn't linger over unrelated content.
       w.CSS.highlights.delete(HL_ACTIVE);
       w.CSS.highlights.delete(HL);
       if (ranges.length) w.CSS.highlights.set(HL, new w.Highlight(...ranges));
+      // Keep the emphasised note emphasised; one that is no longer among the
+      // notes (another page, or deleted) is dropped.
+      const kept = state.focused && state.ranges.get(state.focused);
+      if (kept) w.CSS.highlights.set(HL_ACTIVE, new w.Highlight(kept.cloneRange()));
+      else state.focused = null;
     } catch (e) {
       /* ignore */
+    }
+    if (state.pendingFocus && state.ranges.has(state.pendingFocus)) {
+      const id = state.pendingFocus;
+      state.pendingFocus = null;
+      focusRange(id);
     }
   }
 
   function focusRange(id) {
     const doc = state.doc;
     const r = state.ranges.get(id);
-    if (!doc || !r || !highlightSupported(doc)) return;
+    if (!doc || !r || !highlightSupported(doc)) {
+      // Not drawn yet: do it when the passage is found.
+      state.pendingFocus = id;
+      return;
+    }
     const w = /** @type {any} */ (doc.defaultView);
+    state.focused = id;
     try {
       w.CSS.highlights.delete(HL_ACTIVE);
       w.CSS.highlights.set(HL_ACTIVE, new w.Highlight(r.cloneRange()));
@@ -273,13 +293,17 @@
       rp.addEventListener("rwp-url-change", (e) => {
         const d = /** @type {any} */ (e).detail || {};
         if (typeof d.url !== "string" || !d.url) return;
-        // The event also fires when only the title or view changes. The
-        // notes the viewer sent are for this URL, so only a new one drops them.
-        if (d.url !== lastUrl) {
-          lastUrl = d.url;
+        // The event also fires when only the title or view changes, and once
+        // when the first page loads, which is the page the viewer's notes are
+        // for. Only moving to another page drops them; dropping them on that
+        // first event lost every note the page opened with.
+        if (lastUrl && d.url !== lastUrl) {
           state.notes = [];
+          state.pendingFocus = null;
+          state.focused = null;
           applyHighlights();
         }
+        lastUrl = d.url;
         send("url", { url: d.url, ts: typeof d.ts === "string" ? d.ts : "" });
       });
     }
