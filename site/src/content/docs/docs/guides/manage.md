@@ -17,7 +17,7 @@ What the controls are:
 
 - **The homepage.** Its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance shows "add your first archive."
 - **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
-- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or give indice an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded files are copied into `<home>/archive/`; a URL is streamed in place. Browsertrix and Archive-It are additional source tabs: browse the configured account and pick crawls to import, with the same live progress.
+- **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or give indice an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded files are copied into `<home>/archive/`; a URL is streamed in place. Admins also get a Browsertrix or Archive-It source tab when the server has that service's credentials: browse the configured account and pick crawls to import, with the same live progress. These act through the server's own credentials, so curators don't see them.
 - **The replay viewer** gains a **Notes** panel for [annotating](/docs/guides/annotations/) a page or a selected passage. Notes are public to read but only signed-in users can write them.
 
 ![The Edit collection finding-aid form: name (fixed), description, creator, dates, curator, rights, comma-separated subjects, and a Markdown narrative field, with a Save changes button](../../../../assets/docs/edit-collection.png)
@@ -79,10 +79,10 @@ Your proxy decides **who gets in**. indice decides **what they can do**, using t
 | Role | Can |
 |---|---|
 | **Reader** | Read everything public. This is anonymous visitors, and anyone signed in who isn't on the roster. |
-| **Curator** | Accession and describe: create collections, add and upload crawls, edit finding aids, run imports, and annotate. Delete **crawls they added** and **their own** notes. |
-| **Admin** | Everything a curator can, plus the irreversible things: delete a crawl, delete a collection, and moderate anyone's notes. |
+| **Curator** | Accession and describe: create collections, add crawls by URL or upload, edit finding aids, and annotate. Delete **crawls they added** and **their own** notes. |
+| **Admin** | Everything a curator can, plus the irreversible things and acting as the instance: delete a crawl, delete a collection, moderate anyone's notes, and import from Browsertrix or Archive-It using the server's credentials. |
 
-In short: **curators add and can undo their own additions; only admins remove a collection.**
+In short: **curators add and describe; admins remove, moderate, and act as the instance.**
 
 The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made, then deleting "yours" destroys their work. So ownership governs **crawls**, which belong to whoever accessioned them, while removing a whole **collection** stays an admin act.
 

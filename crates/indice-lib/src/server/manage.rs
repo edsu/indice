@@ -2,7 +2,6 @@
 //! progress, the finding-aid form, the accession desk, and deletes.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
@@ -205,14 +204,6 @@ pub(super) fn acquire_write_lock<'a>(
     }
 }
 
-/// Start a background ingest job.
-///
-/// Takes a `&Curator` for two reasons. It is read, for
-/// `principal().id()` — the actor credited with accessioning whatever this
-/// ingest records. And its field is private to `auth.rs`, so one cannot be
-/// fabricated: a caller must have obtained it from the extractor, i.e. must
-/// have passed the check. That makes "I added a handler and forgot to gate it"
-/// a compile error rather than a silent exposure.
 /// An uploaded file staged for indexing, and how many bytes it is.
 ///
 /// Together because the job needs both: the directory, to keep the file alive
@@ -226,6 +217,14 @@ pub(super) struct StagedUpload {
     pub bytes: u64,
 }
 
+/// Start a background ingest job.
+///
+/// Takes a `&Curator` for two reasons. It is read, for
+/// `principal().id()` — the actor credited with accessioning whatever this
+/// ingest records. And its field is private to `auth.rs`, so one cannot be
+/// fabricated: a caller must have obtained it from the extractor, i.e. must
+/// have passed the check. That makes "I added a handler and forgot to gate it"
+/// a compile error rather than a silent exposure.
 fn start_index_job(
     curator: &Curator,
     state: &Arc<AppState>,
@@ -243,9 +242,7 @@ fn start_index_job(
     } else {
         crate::http_range::FetchPolicy::Unrestricted
     };
-    let id = state.job_counter.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = mpsc::unbounded_channel::<ProgressEvent>();
-    state.jobs.lock().unwrap().insert(id, rx);
+    let (id, tx) = state.start_job(curator.principal());
 
     let job_state = state.clone();
     // Who to credit for whatever this ingest creates.
@@ -737,12 +734,25 @@ fn multipart_refusal(
 /// `GET /api/archives/{id}/events` — stream one job's progress as SSE. The
 /// receiver is taken from the registry on first connect (a job's progress is
 /// consumed once); reconnecting after that yields 404.
+///
+/// Only to whoever started the job. Ids count up from zero, so without this
+/// any curator could guess the next one, take an admin's import progress
+/// before the admin's page connects, and read its upstream errors, which name
+/// the instance's Browsertrix or Archive-It account. Someone else's job is a
+/// 404, the same as no job, and is left in place for its owner.
 pub(super) async fn add_archive_events(
     State(state): State<Arc<AppState>>,
-    _curator: Curator,
+    curator: Curator,
     axum::extract::Path(id): axum::extract::Path<u64>,
 ) -> Response {
-    let Some(rx) = state.jobs.lock().unwrap().remove(&id) else {
+    let rx = {
+        let mut jobs = state.jobs.lock().unwrap();
+        match jobs.get(&id) {
+            Some(job) if job.owner == *curator.principal().id() => jobs.remove(&id).map(|j| j.rx),
+            _ => None,
+        }
+    };
+    let Some(rx) = rx else {
         return (StatusCode::NOT_FOUND, "unknown or already-consumed job").into_response();
     };
 
@@ -823,7 +833,7 @@ pub(super) async fn accession_desk_page(
     // Same rule as the danger zone: don't render a form whose every
     // control would 403. Without this an authenticated Reader reaches
     // the upload form and the pre-filled finding-aid editor.
-    _curator: Curator,
+    curator: Curator,
     headers: HeaderMap,
     Query(q): Query<AddQuery>,
 ) -> Response {
@@ -860,6 +870,16 @@ pub(super) async fn accession_desk_page(
         room.as_deref(),
         max_upload.as_ref(),
         room_left.as_ref(),
+        // Same rule as above: offer an import only to someone its routes
+        // would admit (an `Admin`), and only for a service this server has
+        // credentials for, since otherwise every request it makes fails.
+        {
+            let admin = curator.as_admin().is_some();
+            views::ImportTabs {
+                browsertrix: admin && state.browsertrix.is_some(),
+                archive_it: admin && state.archiveit.is_some(),
+            }
+        },
     )
     .into_response()
 }

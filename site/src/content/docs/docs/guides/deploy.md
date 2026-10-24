@@ -160,7 +160,7 @@ An override file is the way to keep any local change out of the shipped file, on
 Two questions, and two places to answer them.
 
 **Your identity provider decides who may sign in.** Anyone it authenticates may, and signing in on its own grants nothing beyond public read. To narrow it, set `OIDC_EMAIL_DOMAINS` to your domain, or restrict who may use the client at the issuer.
-**`users.yaml` decides who may write.** List someone as a `curator` and they can accession and describe; list them as an `admin` and they can also deaccession. Everyone else, signed in or not, is a reader. See [Who can do what](/docs/guides/manage/#who-can-do-what).
+**`users.yaml` decides who may write.** List someone as a `curator` and they can accession and describe; list them as an `admin` and they can also deaccession and import through the server's Browsertrix and Archive-It credentials. Everyone else, signed in or not, is a reader. See [Who can do what](/docs/guides/manage/#who-can-do-what).
 
 We split them so you approve a colleague by editing one line in a file you can commit and diff, instead of reconfiguring your identity provider.
 

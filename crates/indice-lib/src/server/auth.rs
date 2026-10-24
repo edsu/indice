@@ -341,17 +341,26 @@ pub(super) fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<
 // `CollectionId`'s private field + `parse()`, applied to a permission instead
 // of a path component.
 
-/// Proof that this request may accession and describe: create collections, add
-/// and upload crawls, edit finding aids, run imports, annotate.
+/// Proof that this request may accession and describe: create collections,
+/// add crawls by URL and upload them, edit finding aids, annotate.
 pub(super) struct Curator(Principal);
 
-/// Proof that this request may do the irreversible, shared things: delete a
-/// crawl, delete a collection, moderate anyone's notes.
+/// Proof that this request may do the irreversible, shared things, and act as
+/// the instance: delete a crawl, delete a collection, moderate anyone's notes,
+/// and import through the instance's Browsertrix and Archive-It credentials.
 pub(super) struct Admin(Principal);
 
 impl Curator {
     pub(super) fn principal(&self) -> &Principal {
         &self.0
+    }
+
+    /// This caller's `Admin` proof, if they are one: the same role check the
+    /// `Admin` extractor makes, so a page deciding whether to offer an admin's
+    /// controls agrees with the routes those controls call. The evidence was
+    /// already checked when this `Curator` was made.
+    pub(super) fn as_admin(&self) -> Option<Admin> {
+        (self.0.role() >= Role::Admin).then(|| Admin(self.0.clone()))
     }
 
     /// A `500` that says what went wrong. A method, so only a handler that
@@ -505,7 +514,7 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for Admin {
             state,
             &parts.headers,
             Role::Admin,
-            "deleting from this archive",
+            "administering this archive",
         )
         .map(Admin)
     }
