@@ -241,12 +241,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
         scope_label: p.name.clone(),
         ..Default::default()
     };
-    layout(
-        &format!("{} - indice", p.name),
-        &p.chrome,
-        Some(&search),
-        body,
-    )
+    layout(Some(&p.name), &p.chrome, Some(&search), body)
 }
 
 /// One annotation as shown on the per-collection index, with a deep link that
@@ -302,7 +297,7 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
         }
     };
     layout(
-        &format!("Annotations - {} - indice", p.collection_name),
+        Some(&format!("Annotations - {}", p.collection_name)),
         &p.chrome,
         None,
         body,

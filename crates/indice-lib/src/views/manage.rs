@@ -83,7 +83,7 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
     } else {
         SearchBox::default()
     };
-    layout("Manage - indice", chrome, Some(&search), body)
+    layout(Some("Manage"), chrome, Some(&search), body)
 }
 
 /// The accession desk (`/manage/add`): add crawls to a collection from a source.
@@ -223,5 +223,5 @@ pub fn accession_desk(
             ..Default::default()
         }
     };
-    layout("Add crawls - indice", chrome, Some(&search), body)
+    layout(Some("Add crawls"), chrome, Some(&search), body)
 }

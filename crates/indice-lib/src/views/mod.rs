@@ -46,14 +46,67 @@ pub struct Chrome {
     /// Forward-auth is configured but this request is anonymous: show a
     /// "Log in" link in place of the signed-in name.
     pub can_login: bool,
+    /// The archive's name, tagline and banner, the same on every page.
+    pub site: std::sync::Arc<Site>,
+}
+
+/// What the archive calls itself, resolved once at startup from `site:` in
+/// `config.yaml`.
+#[derive(Debug)]
+pub struct Site {
+    pub name: String,
+    pub tagline: String,
+    /// The banner, already rendered from Markdown.
+    pub banner: Option<maud::PreEscaped<String>>,
+}
+
+impl Site {
+    /// Fill in the defaults and render the banner. A blank value counts as
+    /// unset, so `name: ""` can't leave the header with no way home.
+    pub fn new(cfg: &crate::config::SiteConfig) -> Site {
+        let given = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let default = Site::default();
+        Site {
+            name: given(&cfg.name).unwrap_or(default.name),
+            tagline: given(&cfg.tagline).unwrap_or(default.tagline),
+            banner: given(&cfg.banner).map(|md| crate::markdown::render(&md)),
+        }
+    }
+}
+
+impl Default for Site {
+    fn default() -> Site {
+        Site {
+            name: "indice".to_string(),
+            tagline: "Web archive search and replay".to_string(),
+            banner: None,
+        }
+    }
 }
 
 /// The shared page shell. Renders one full-bleed app header (`.appbar`) on every
-/// page — wordmark + (optional) search — then the page `body` centered in
-/// `.wrap`, dressed for `chrome`. `search` is the header search box (`None`
-/// omits it — the homepage, whose hero carries the search instead).
-pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Markup) -> Markup {
+/// page — wordmark + (optional) search — then the site banner, if any, then the
+/// page `body` centered in `.wrap`, dressed for `chrome`. `title` is the page's
+/// own title, which gets the site name appended (`None` is the homepage, titled
+/// by the name alone). `search` is the header search box (`None` omits it — the
+/// homepage, whose hero carries the search instead).
+pub fn layout(
+    title: Option<&str>,
+    chrome: &Chrome,
+    search: Option<&SearchBox>,
+    body: Markup,
+) -> Markup {
     let manage = chrome.manage;
+    let site = &chrome.site;
+    let title = match title {
+        Some(t) => format!("{t} - {}", site.name),
+        None => site.name.clone(),
+    };
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -66,7 +119,7 @@ pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Ma
             }
             body class=[manage.then_some("mode-manage")] {
                 header.appbar {
-                    a.wordmark href="/" { "indice" }
+                    a.wordmark href="/" { (site.name) }
                     @if manage { span.chip { "Manage" } }
                     @if let Some(s) = search {
                         @let placeholder = if s.scope_label.is_empty() {
@@ -95,6 +148,9 @@ pub fn layout(title: &str, chrome: &Chrome, search: Option<&SearchBox>, body: Ma
                         // current page.
                         a.login href="/manage/login" { "Log in" }
                     }
+                }
+                @if let Some(b) = &site.banner {
+                    div.site-banner { (b) }
                 }
                 main.wrap { (body) }
             }

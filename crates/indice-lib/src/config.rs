@@ -3,12 +3,13 @@
 //! This is indice's first optional, hand-editable operator config — committable
 //! alongside the archive, like the finding aids (and using the same YAML). It is
 //! deliberately small and forgiving: the file is optional, every field has a
-//! default, and unknown/missing keys are ignored, so it can grow (site name,
-//! branding, CSS override, theming, …) without breaking older or newer homes.
+//! default, and unknown/missing keys are ignored, so it can grow (CSS
+//! override, theming, …) without breaking older or newer homes.
 //!
 //! It carries index tuning — the stored-body cap that trades snippet depth for
 //! on-disk size (the "frugality" knob), see the size/scale model in DESIGN.md —
-//! and the limits on what the browser write surface may add to the archive.
+//! the limits on what the browser write surface may add to the archive, and
+//! the site's name, tagline and banner.
 
 use std::path::{Path, PathBuf};
 
@@ -40,8 +41,27 @@ pub struct Config {
     pub index: IndexConfig,
     /// How much a curator may add to the archive through the browser.
     pub uploads: UploadsConfig,
-    // Future sections (site name, branding, CSS override, theming, …) slot in
-    // here; older/newer homes ignore keys they don't know.
+    /// What the archive calls itself, in the header and on the homepage.
+    pub site: SiteConfig,
+    // Future sections (CSS override, theming, …) slot in here; older/newer
+    // homes ignore keys they don't know.
+}
+
+/// The archive's own words for the pages indice serves. Every field is
+/// optional; [`crate::views::Site`] supplies the defaults and renders the
+/// banner. Read once at startup, so a change takes a restart.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteConfig {
+    /// The archive's name: the header wordmark, the homepage heading, and the
+    /// end of every page title. Defaults to `indice`.
+    pub name: Option<String>,
+    /// One line under the homepage heading saying what the archive holds.
+    pub tagline: Option<String>,
+    /// A notice shown under the header on every page, in Markdown, e.g. "This
+    /// is a demo". Rendered by [`crate::markdown::render`], which escapes raw
+    /// HTML and keeps links to safe schemes.
+    pub banner: Option<String>,
 }
 
 /// Index tuning — currently the stored-body cap (the "frugality" lever).

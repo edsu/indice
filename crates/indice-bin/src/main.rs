@@ -1974,6 +1974,28 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         "the archive",
     );
     println!("uploads.max_total_gb:     {set}  ->  {resolved}");
+
+    let site = indice_lib::views::Site::new(&cfg.site);
+    let set = |v: &Option<String>| if v.is_some() { "set" } else { "unset" };
+    println!(
+        "site.name:                {}  ->  {}",
+        set(&cfg.site.name),
+        site.name
+    );
+    println!(
+        "site.tagline:             {}  ->  {}",
+        set(&cfg.site.tagline),
+        site.tagline
+    );
+    println!(
+        "site.banner:              {}  ->  {}",
+        set(&cfg.site.banner),
+        if site.banner.is_some() {
+            "shown under the header on every page"
+        } else {
+            "none"
+        }
+    );
     Ok(())
 }
 

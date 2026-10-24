@@ -41,9 +41,9 @@ pub struct HomeBrowse {
 pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> Markup {
     let management = chrome.manage;
     let body = html! {
-        // The brand "indice" lives in the header now; the hero leads with what
-        // the tool does + the search, rather than repeating the name.
-        h1.home-hero { "Web archive search and replay" }
+        // The archive's name and what it holds, from `site:` in config.yaml.
+        h1.home-hero { (chrome.site.name) }
+        p.home-tagline { (chrome.site.tagline) }
         form.search-form.home action="/search" method="get" {
             input type="search" name="q" placeholder="Search archived pages…" autofocus;
             button.btn type="submit" { "Search" }
@@ -145,5 +145,5 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
         }
     };
     // No header search on the homepage — the hero below carries it.
-    layout("indice", chrome, None, body)
+    layout(None, chrome, None, body)
 }

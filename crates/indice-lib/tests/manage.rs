@@ -1629,6 +1629,87 @@ async fn serve_with_config(
     (tmp, base, server)
 }
 
+/// `site:` names the archive on every page and in the viewer, and its banner
+/// goes through the safe Markdown renderer. The name and tagline carry markup
+/// to show they are escaped, not interpreted.
+#[tokio::test]
+async fn site_text_names_the_archive_everywhere() {
+    let (_tmp, base, server) = serve_with_config(
+        "site:\n  name: Ada & Co <Archive>\n  tagline: Pages <i>we</i> kept\n  banner: |\n    \
+         **Demo**: see [about](https://example.org).\n    \
+         <script>alert(1)</script> [x](javascript:alert(1))\n",
+    )
+    .await;
+    let name = "Ada &amp; Co &lt;Archive&gt;";
+
+    let (status, home) = get(format!("{base}/")).await;
+    assert_eq!(status, 200);
+    assert!(
+        home.contains(&format!("<title>{name}</title>")),
+        "title: {home}"
+    );
+    assert!(
+        home.contains(&format!(r#"class="wordmark" href="/">{name}</a>"#)),
+        "{home}"
+    );
+    assert!(
+        home.contains(&format!(r#"<h1 class="home-hero">{name}</h1>"#)),
+        "{home}"
+    );
+    assert!(
+        home.contains("Pages &lt;i&gt;we&lt;/i&gt; kept"),
+        "tagline: {home}"
+    );
+    assert!(
+        home.contains("<strong>Demo</strong>"),
+        "banner Markdown: {home}"
+    );
+    assert!(home.contains(r#"href="https://example.org""#), "{home}");
+    assert!(
+        !home.contains("<script>"),
+        "raw HTML in the banner must be escaped"
+    );
+    // Escaped hostile text may still spell the scheme; no live link may carry it.
+    assert!(
+        !home.contains(r#"href="javascript"#),
+        "an unsafe link must be dropped"
+    );
+
+    // Every page, not just the homepage: the banner and the name in the title.
+    let (_, search) = get(format!("{base}/search?q=anything")).await;
+    assert!(
+        search.contains(&format!("<title>anything - {name}</title>")),
+        "{search}"
+    );
+    assert!(search.contains(r#"class="site-banner""#), "{search}");
+
+    let (_, viewer) = get(format!("{base}/replay/viewer")).await;
+    assert!(
+        viewer.contains(&format!("<title>Replay - {name}</title>")),
+        "{viewer}"
+    );
+    assert!(
+        viewer.contains(&format!(r#"<a class="home" href="/">{name}</a>"#)),
+        "{viewer}"
+    );
+    assert!(
+        !viewer.contains("{{site_name}}"),
+        "every slot must be filled"
+    );
+    server.abort();
+}
+
+/// With no `site:` section, the archive is called indice and has no banner.
+#[tokio::test]
+async fn site_text_defaults_without_config() {
+    let (_tmp, base, server) = serve_with_config("").await;
+    let (_, home) = get(format!("{base}/")).await;
+    assert!(home.contains("<title>indice</title>"), "{home}");
+    assert!(home.contains("Web archive search and replay"), "{home}");
+    assert!(!home.contains("site-banner"), "{home}");
+    server.abort();
+}
+
 /// Pretend the archive holds `bytes`, with a sparse file that reports that size
 /// and takes no disk. The archive limit counts what `archive/` holds, so this is
 /// exactly what it measures.

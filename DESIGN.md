@@ -570,7 +570,7 @@ Related idea worth capturing (tracked as `rustyweb-object-storage-home`): the **
 
 ### Operator config (`<home>/config.yaml`)
 
-indice's first optional, hand-editable home-level config — committable alongside the archive, in the same YAML as the finding aids. It is deliberately forgiving: the file is optional, every field defaults, and unknown/missing keys are ignored, so it can grow (site name, branding, CSS override, theming, …) without breaking older or newer homes. `indice config` shows the resolved settings and the file path. It carries index tuning and the upload limits:
+indice's first optional, hand-editable home-level config — committable alongside the archive, in the same YAML as the finding aids. It is deliberately forgiving: the file is optional, every field defaults, and unknown/missing keys are ignored, so it can grow (CSS override, theming, …) without breaking older or newer homes. `indice config` shows the resolved settings and the file path. It carries index tuning, the upload limits and the site text:
 
 ```yaml
 index:
@@ -587,7 +587,14 @@ uploads:
   # hold, in GiB. Both unset = unlimited; 0 is refused rather than read as that.
   max_mb: 2048
   max_total_gb: 200
+site:
+  # The archive's name and scope, and a Markdown notice on every page.
+  name: Riverside Library Web Archive
+  tagline: Local news and community sites since 2019
+  banner: This is a **demo**.
 ```
+
+**The site text** is resolved once at startup into `views::Site` (defaults filled in, a blank value treated as unset, the banner rendered by `markdown::render`), held in `AppState` and carried to every page by `views::Chrome`. `layout` takes the page's own title and appends the name, so no view spells "indice". The replay viewer is a static page, so `server::assets::replay_viewer` fills a `{{site_name}}` slot in it, escaped, after the replay-origin slot, so a name can never write the origin the viewer checks messages against.
 
 **The upload limits** bound the browser write surface only; the CLI is the operator at the machine. `max_total_gb` limits the size of `<home>/archive/` on disk, measured by walking the directory (`index::archive_bytes`, symlinks not followed) rather than from the manifest. The manifest records only what indexed successfully, and `place_local_wacz` files an upload into the archive *before* it is parsed, so a failed ingest leaves its file behind with no entry. A manifest-derived total would let a run of uploads that are not really WACZs fill the disk while reading zero. The walk counts what is actually there, including a Browsertrix download still being written as a `.part` file. URL and streamed Browsertrix sources store nothing locally and so are not counted. Running the volume to `ENOSPC` is worse than a refused upload: the manifest survives it, since it is written atomically, but a Tantivy commit that fails mid-merge does not leave a tidy state.
 

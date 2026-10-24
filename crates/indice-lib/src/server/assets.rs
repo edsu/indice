@@ -157,6 +157,10 @@ fn parse_byte_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
 /// replay origin.
 const REPLAY_ORIGIN_SLOT: &str = "{{replay_origin}}";
 
+/// The placeholder in `viewer.html` that [`replay_viewer`] fills with the
+/// site name (`site.name`), for the title and the link home.
+const SITE_NAME_SLOT: &str = "{{site_name}}";
+
 /// The viewer, told where replay runs. The origin goes into the page rather
 /// than coming from the frame, because the viewer checks every message against
 /// it: it has to come from configuration, which archived script cannot touch.
@@ -175,14 +179,17 @@ pub(super) async fn replay_viewer(
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
     let html = String::from_utf8_lossy(&file.data)
-        .replace(REPLAY_ORIGIN_SLOT, &html_escape(origin.as_str()));
-    // The ETag covers the origin too, so a restart with a different replay URL
-    // is not answered from a cached page that frames the old one.
+        .replace(REPLAY_ORIGIN_SLOT, &html_escape(origin.as_str()))
+        .replace(SITE_NAME_SLOT, &html_escape(&state.site.name));
+    // The ETag covers the origin and the name too, so a restart with a
+    // different replay URL is not answered from a cached page that frames the
+    // old one, and a renamed site shows its new name.
     let hash: [u8; 32] = {
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
         h.update(file.metadata.sha256_hash());
         h.update(origin.as_str().as_bytes());
+        h.update(state.site.name.as_bytes());
         h.finalize().into()
     };
     serve_bytes(html.into_bytes().into(), &hash, "viewer.html", &headers)
