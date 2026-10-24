@@ -1996,6 +1996,15 @@ fn run_config(home: &std::path::Path) -> Result<()> {
             "none"
         }
     );
+    println!(
+        "site.request_access:      {}  ->  {}",
+        set(&cfg.site.request_access),
+        if site.request_access.is_some() {
+            "shown to signed-in readers"
+        } else {
+            "none (readers are told only that they can read)"
+        }
+    );
     Ok(())
 }
 

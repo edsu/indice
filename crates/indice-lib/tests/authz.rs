@@ -135,18 +135,20 @@ async fn serve_with(
     (format!("http://127.0.0.1:{port}"), handle)
 }
 
-/// GET a page as `who` (vouched for by the proxy secret) and return its body.
-async fn get_page(url: String, who: &'static str) -> String {
+/// GET `url` as `who`, optionally with an `Accept` header, returning the
+/// status and body whatever the status.
+async fn get_as(url: String, who: &'static str, accept: Option<&'static str>) -> (u16, String) {
     tokio::task::spawn_blocking(move || {
-        agent()
+        let mut req = agent()
             .get(&url)
             .header("x-indice-auth-secret", SECRET)
-            .header(USER_HEADER, who)
-            .call()
-            .unwrap()
-            .body_mut()
-            .read_to_string()
-            .unwrap()
+            .header(USER_HEADER, who);
+        if let Some(a) = accept {
+            req = req.header("accept", a);
+        }
+        let mut res = req.call().unwrap();
+        let status = res.status().as_u16();
+        (status, res.body_mut().read_to_string().unwrap_or_default())
     })
     .await
     .unwrap()
@@ -403,7 +405,9 @@ async fn only_an_admin_is_offered_the_import_tabs() {
         archiveit: Some(std::sync::Arc::new(StubAit)),
     };
     let (base, server) = serve_with(tmp.path().to_path_buf(), proxy(), both).await;
-    let curator = get_page(format!("{base}/manage/add"), "curator@x.edu").await;
+    let curator = get_as(format!("{base}/manage/add"), "curator@x.edu", None)
+        .await
+        .1;
     assert!(
         curator.contains(r#"data-src="url""#),
         "the desk rendered: {curator}"
@@ -411,7 +415,9 @@ async fn only_an_admin_is_offered_the_import_tabs() {
     for t in bx.iter().chain(&ait) {
         assert!(!curator.contains(t), "a curator must not be offered {t}");
     }
-    let admin = get_page(format!("{base}/manage/add"), "boss@x.edu").await;
+    let admin = get_as(format!("{base}/manage/add"), "boss@x.edu", None)
+        .await
+        .1;
     for t in bx.iter().chain(&ait) {
         assert!(admin.contains(t), "an admin should be offered {t}");
     }
@@ -424,7 +430,9 @@ async fn only_an_admin_is_offered_the_import_tabs() {
         archiveit: None,
     };
     let (base, server) = serve_with(tmp.path().to_path_buf(), proxy(), bx_only).await;
-    let admin = get_page(format!("{base}/manage/add"), "boss@x.edu").await;
+    let admin = get_as(format!("{base}/manage/add"), "boss@x.edu", None)
+        .await
+        .1;
     for t in bx {
         assert!(admin.contains(t), "Browsertrix is configured, so offer {t}");
     }
@@ -434,6 +442,53 @@ async fn only_an_admin_is_offered_the_import_tabs() {
             "Archive-It is not configured, so not {t}"
         );
     }
+    server.abort();
+}
+
+/// Someone signed in but not on the roster is told they can read and how to
+/// ask for more, on every page; a curator isn't.
+#[tokio::test]
+async fn a_signed_in_reader_is_told_how_to_request_access() {
+    let tmp = home_with_roster();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        "site:\n  request_access: \"Email [the archivist](mailto:archivist@x.edu).\"\n",
+    )
+    .unwrap();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let ask = r#"<a href="mailto:archivist@x.edu">the archivist</a>"#;
+
+    let (_, reader) = get_as(format!("{base}/"), "eve@x.edu", None).await;
+    assert!(
+        reader.contains("access-note"),
+        "a reader sees the note: {reader}"
+    );
+    assert!(
+        reader.contains(ask),
+        "with the request-access text: {reader}"
+    );
+    let (_, curator) = get_as(format!("{base}/"), "curator@x.edu", None).await;
+    assert!(
+        !curator.contains("access-note"),
+        "a curator doesn't: {curator}"
+    );
+
+    // A workroom page opened in a browser: a 403 that explains itself.
+    let (status, page) = get_as(format!("{base}/manage/add"), "eve@x.edu", Some("text/html")).await;
+    assert_eq!(status, 403);
+    assert!(page.contains("change this archive</h1>"), "{page}");
+    assert!(page.contains(ask), "{page}");
+    // An API client gets the plain refusal it always did.
+    let (status, text) = get_as(format!("{base}/manage/add"), "eve@x.edu", None).await;
+    assert_eq!(status, 403);
+    assert!(
+        text.starts_with("forbidden: your account is not authorized for"),
+        "{text}"
+    );
     server.abort();
 }
 

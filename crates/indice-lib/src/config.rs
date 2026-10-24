@@ -62,6 +62,10 @@ pub struct SiteConfig {
     /// is a demo". Rendered by [`crate::markdown::render`], which escapes raw
     /// HTML and keeps links to safe schemes.
     pub banner: Option<String>,
+    /// How to ask for more than read access, in Markdown, e.g. "Email
+    /// [the archivist](mailto:…)". Shown to someone signed in but not on the
+    /// roster, under the header and on the page refusing them a workroom page.
+    pub request_access: Option<String>,
 }
 
 /// Index tuning — currently the stored-body cap (the "frugality" lever).

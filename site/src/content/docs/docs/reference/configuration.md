@@ -66,9 +66,14 @@ site:
   # A notice under the header on every page, in Markdown. Omit for none.
   banner: |
     This is a **demo**. Read about it on [indice.page](https://indice.page).
+  # How to ask for more than read access, in Markdown. Shown to anyone signed
+  # in but not listed in users.yaml. Omit to tell them only that they can read.
+  request_access: Email [the archivist](mailto:archivist@example.org) to curate.
 ```
 
-The banner uses the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
+Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. They see a note under the header saying so, followed by `request_access` if you set it, and a workroom page they open answers with the same explanation rather than a bare refusal.
+
+The banner and `request_access` use the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
 ## `users.yaml`
 

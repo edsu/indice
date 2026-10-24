@@ -78,7 +78,7 @@ Your proxy decides **who gets in**. indice decides **what they can do**, using t
 
 | Role | Can |
 |---|---|
-| **Reader** | Read everything public. This is anonymous visitors, and anyone signed in who isn't on the roster. |
+| **Reader** | Read everything public. This is anonymous visitors, and anyone signed in who isn't on the roster. A signed-in reader sees a note saying so, with your [`site.request_access`](/docs/reference/configuration/#site-name-tagline-and-banner) text if you set it. |
 | **Curator** | Accession and describe: create collections, add crawls by URL or upload, edit finding aids, and annotate. Delete **crawls they added** and **their own** notes. |
 | **Admin** | Everything a curator can, plus the irreversible things and acting as the instance: delete a crawl, delete a collection, moderate anyone's notes, and import from Browsertrix or Archive-It using the server's credentials. |
 
