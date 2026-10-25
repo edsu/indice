@@ -54,4 +54,4 @@ ureq = { workspace = true }
 # Generate a valid image in tests that exercise thumbnail pinning/serving.
 image = { workspace = true }
 # Headless-browser replay smoke test (run with `cargo test -- --ignored`).
-thirtyfour = "0.37"
+thirtyfour = "0.38"
