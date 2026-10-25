@@ -87,7 +87,7 @@ pub(super) const FIELD_ANNOTATION_ID: &str = "annotation_id";
 fn facet_string() -> TextOptions {
     TextOptions::default()
         .set_stored()
-        .set_fast(Some("raw"))
+        .set_fast("raw")
         .set_indexing_options(
             TextFieldIndexing::default()
                 .set_tokenizer("raw")
