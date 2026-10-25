@@ -1,6 +1,6 @@
 # Security
 
-indice is alpha software (0.2.0). There is no stable release, no supported
+indice is alpha software (0.3.0). There is no stable release, no supported
 release line, and no deployment I know of. Fixes land on `main`, and there is
 nothing behind it to backport them to.
 
