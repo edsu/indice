@@ -161,7 +161,7 @@ pub fn layout(
                 // nothing can be changed.
                 @if chrome.signed_in.is_some() && !manage {
                     div.site-banner.access-note {
-                        p { "You're signed in, and can read this archive. Changing it takes a curator or admin role." }
+                        p { "You can read this archive, but not change it." }
                         @if let Some(r) = &site.request_access { (r) }
                     }
                 }
