@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- indice: the website's pointer arrow (a manicule for the archive), in the
+       app's reading accent (the read token in tokens.css) rather than the
+       site's blue. No double hyphen in here: XML forbids it in a comment. -->
+  <rect width="32" height="32" rx="7" fill="#2e5a7d"/>
+  <g transform="translate(6.24 4.34) scale(0.948)">
+    <path d="M3 2 L3 20 L8 15.5 L11.2 22.6 L14 21.3 L10.8 14.5 L17.6 14.3 Z"
+          fill="#ffffff" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round"/>
+  </g>
+</svg>

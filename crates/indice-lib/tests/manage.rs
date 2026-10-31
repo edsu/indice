@@ -1652,6 +1652,20 @@ async fn site_text_names_the_archive_everywhere() {
         home.contains(&format!("<title>{name}</title>")),
         "title: {home}"
     );
+    // The tab icon is named, and served from the public assets.
+    assert!(
+        home.contains(r#"rel="icon" type="image/svg+xml" href="/assets/favicon.svg""#),
+        "{home}"
+    );
+    let (status, icon) = get(format!("{base}/assets/favicon.svg")).await;
+    assert_eq!(status, 200);
+    assert!(icon.starts_with("<svg"), "{icon}");
+    // A browser drops an SVG that isn't well-formed XML, silently, and XML
+    // forbids `--` inside a comment: an earlier copy broke on exactly that.
+    for comment in icon.split("<!--").skip(1) {
+        let body = comment.split("-->").next().unwrap_or_default();
+        assert!(!body.contains("--"), "`--` inside an SVG comment: {body}");
+    }
     assert!(
         home.contains(&format!(r#"class="wordmark" href="/">{name}</a>"#)),
         "{home}"
@@ -1699,6 +1713,10 @@ async fn site_text_names_the_archive_everywhere() {
     assert!(
         !viewer.contains("{{site_name}}"),
         "every slot must be filled"
+    );
+    assert!(
+        viewer.contains("/assets/favicon.svg"),
+        "the viewer has the tab icon too"
     );
     server.abort();
 }
