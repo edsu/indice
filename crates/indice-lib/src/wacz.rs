@@ -937,6 +937,75 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
+    /// A `Read + Seek` that counts the bytes read through it.
+    struct Counting<R> {
+        inner: R,
+        read: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+    impl<R: std::io::Read> std::io::Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read.set(self.read.get() + n as u64);
+            Ok(n)
+        }
+    }
+    impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// Opening a WACZ to stream it reads its directory and the entry headers,
+    /// never the WARCs themselves. Over HTTP every byte read is a range
+    /// request, so a zip reader that scans entry bodies turns a 1.5 GB WACZ
+    /// into 10 GB of downloads: zip 9 did exactly that, on entries written
+    /// with data descriptors, as Browsertrix's are. A local file hides it,
+    /// which is why this counts bytes rather than timing anything.
+    #[test]
+    fn opening_a_wacz_reads_only_its_directory() {
+        use std::io::Write;
+        // 8 MiB of incompressible pseudo-random bytes standing in for a WARC,
+        // so a reader that walks it can't be cheap by accident.
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let warc: Vec<u8> = (0..8 * MIB)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        let mut buf = Vec::new();
+        {
+            // The streaming writer can't seek back to patch sizes into the
+            // local headers, so every entry gets a data descriptor.
+            let mut zw = zip::ZipWriter::new_stream(&mut buf);
+            let stored = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zw.start_file("archive/big.warc.gz", stored).unwrap();
+            zw.write_all(&warc).unwrap();
+            zw.start_file("datapackage.json", stored).unwrap();
+            zw.write_all(b"{}").unwrap();
+            zw.finish().unwrap();
+        }
+        let read = std::rc::Rc::new(std::cell::Cell::new(0));
+        let reader = Counting {
+            inner: std::io::Cursor::new(&buf),
+            read: read.clone(),
+        };
+        // What streaming does before it fetches any record.
+        let mut zip = zip::ZipArchive::new(reader).unwrap();
+        assert!(warcs_stored(&mut zip).unwrap());
+        let starts = warc_data_starts(&mut zip).unwrap();
+        assert!(starts.contains_key("big.warc.gz"));
+        assert!(
+            read.get() < MIB,
+            "opening read {} bytes of an {} byte WACZ; it should read only the directory",
+            read.get(),
+            buf.len()
+        );
+    }
+
     /// A zip in memory holding `(name, bytes, stored)` entries.
     fn zip_of(entries: &[(&str, &[u8], bool)]) -> zip::ZipArchive<std::io::Cursor<Vec<u8>>> {
         use std::io::Write;
