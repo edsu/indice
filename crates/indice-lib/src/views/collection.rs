@@ -54,6 +54,10 @@ pub struct CollectionPage {
     pub chrome: Chrome,
     /// How many page annotations this collection has (drives the summary link).
     pub annotation_count: usize,
+    /// Which fields began as a language model's draft, and who reviewed them,
+    /// already phrased, e.g. "Description and subjects drafted with
+    /// llama3.1:8b (localhost:11434), reviewed by Ed."
+    pub drafted_note: Option<String>,
 }
 
 impl CollectionPage {
@@ -131,6 +135,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
             @if p.has_curatorial() {
                 @if let Some(n) = &p.narrative { div.narrative { (n) } }
                 @if !curatorial.is_empty() { (meta_table(&curatorial)) }
+                @if let Some(note) = &p.drafted_note { p.muted.drafted-note { (note) } }
                 // Even partly-filled, name the DACS-minimum elements still
                 // missing — the fields ingest can't supply reliably (a real
                 // creator, the scope rationale, use conditions).

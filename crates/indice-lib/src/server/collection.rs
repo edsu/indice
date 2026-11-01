@@ -130,8 +130,48 @@ pub(super) async fn collection_page(
         annotation_count: annotations::load(&state.home, &c.id)
             .map(|v| v.len())
             .unwrap_or(0),
+        drafted_note: c.drafted.as_ref().map(|d| {
+            // Reviewed by whoever last saved the finding aid, resolved through
+            // the roster: this page is public, so never the stored identity.
+            let reviewer = c.updated_by.as_ref().map(|s| {
+                state
+                    .users
+                    .current()
+                    .resolve(s.clone())
+                    .display_name()
+                    .to_string()
+            });
+            drafted_note(d, reviewer.as_deref())
+        }),
     };
     views::collection(&page).into_response()
+}
+
+/// "Description and subjects drafted with M (S), reviewed by R."
+fn drafted_note(d: &crate::collections::Drafted, reviewer: Option<&str>) -> String {
+    let mut names: Vec<String> = d.fields.iter().map(|f| f.to_string()).collect();
+    let list = match names.len() {
+        0 => "Some fields".to_string(),
+        1 => names.remove(0),
+        _ => {
+            let last = names.pop().unwrap();
+            format!("{} and {last}", names.join(", "))
+        }
+    };
+    let mut list: Vec<char> = list.chars().collect();
+    if let Some(first) = list.first_mut() {
+        *first = first.to_ascii_uppercase();
+    }
+    let list: String = list.into_iter().collect();
+    let service = if d.service.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", d.service)
+    };
+    match reviewer {
+        Some(r) => format!("{list} drafted with {}{service}, reviewed by {r}.", d.model),
+        None => format!("{list} drafted with {}{service}, then reviewed.", d.model),
+    }
 }
 
 /// GET /collection/{id}/annotations — a public browse of every annotation in the

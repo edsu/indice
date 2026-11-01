@@ -814,9 +814,176 @@ pub(super) async fn edit_collection_form(
         subjects: c.subjects.join(", "),
         narrative: c.narrative.clone().unwrap_or_default(),
         editing: true,
+        drafting: drafting_info(&state),
+        ..Default::default()
     };
     let chrome = chrome(&state, &headers);
     views::collection_form(&form, &chrome).into_response()
+}
+
+/// The model the editor's Draft button uses, if one is configured.
+fn drafting_info(state: &AppState) -> Option<views::DraftingInfo> {
+    state.drafting.as_ref().map(|d| views::DraftingInfo {
+        model: d.llm.settings().model.clone(),
+        service: d.llm.settings().service(),
+    })
+}
+
+/// The editor as the curator left it: the posted values, so a draft (or a
+/// refusal) comes back over exactly what was on screen, unsaved edits and all.
+fn form_data(state: &AppState, id: &str, form: &CollectionForm) -> views::CollectionFormData {
+    views::CollectionFormData {
+        id: id.to_string(),
+        name: form.name.clone(),
+        description: form.description.clone(),
+        curator: form.curator.clone(),
+        creator: form.creator.clone(),
+        dates: form.dates.clone(),
+        rights: form.rights.clone(),
+        subjects: form.subjects.clone(),
+        narrative: form.narrative.clone(),
+        editing: true,
+        drafting: drafting_info(state),
+        ..Default::default()
+    }
+}
+
+/// `POST /manage/edit/{id}/draft` — ask the configured model for a draft of
+/// this finding aid and show it in the editor. Writes nothing: drafted text
+/// fills only fields the curator left empty, and is offered beside the rest,
+/// and none of it is kept until the curator saves.
+///
+/// Not under the router's request timeout: a model can take a minute to
+/// answer, and the outbound client carries its own (`llm.timeout_secs`).
+pub(super) async fn draft_collection(
+    State(state): State<Arc<AppState>>,
+    curator: Curator,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Form(form): Form<CollectionForm>,
+) -> Response {
+    let chrome = chrome(&state, &headers);
+    let mut data = form_data(&state, &id, &form);
+    let Some(drafting) = state.drafting.clone() else {
+        data.error = Some(
+            "No language model is configured, so there is nothing to draft with. An \
+             operator sets one in config.yaml (llm:)."
+                .into(),
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            views::collection_form(&data, &chrome),
+        )
+            .into_response();
+    };
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return curator.error_response(e),
+    };
+    let Some(saved) = manifest.collection_by_id(&id).cloned() else {
+        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+    };
+    let settings = drafting.llm.settings();
+    audit_detail(
+        &state,
+        curator.principal(),
+        Action::CollectionDraft,
+        &id,
+        // Where archived text was sent, which is why this is recorded at all.
+        Some(serde_json::json!({ "model": settings.model, "service": settings.service() })),
+    );
+
+    // The curator's current words, saved or not: the draft should fit them,
+    // and only what's empty on screen is filled.
+    let current = crate::collections::Collection {
+        description: field_opt(&form.description),
+        creator: field_opt(&form.creator),
+        dates: field_opt(&form.dates),
+        subjects: split_subjects(&form.subjects),
+        narrative: field_opt(&form.narrative),
+        ..saved
+    };
+    let scope = id.clone();
+    let gathered = state
+        .read_index(move |search| crate::describe::gather(&manifest, search, &scope))
+        .await;
+    let mut material = match gathered {
+        Ok(m) => m,
+        Err(e) => {
+            data.error = Some(format!("Couldn't gather this collection's pages: {e:#}"));
+            return (StatusCode::CONFLICT, views::collection_form(&data, &chrome)).into_response();
+        }
+    };
+    material.collection = current.clone();
+    let asked = drafting.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::describe::draft(&asked.llm, &asked.settings, &material)
+    })
+    .await;
+    let draft = match result {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
+            data.error = Some(format!("The draft couldn't be made: {e:#}"));
+            return (
+                StatusCode::BAD_GATEWAY,
+                views::collection_form(&data, &chrome),
+            )
+                .into_response();
+        }
+        Err(e) => return curator.error_response(anyhow::anyhow!(e)),
+    };
+
+    let (fields, filled) = draft.fill_empty(&current);
+    if let Some(v) = fields.description {
+        data.description = v;
+    }
+    if let Some(v) = fields.dates {
+        data.dates = v;
+    }
+    if let Some(v) = fields.subjects {
+        data.subjects = v.join(", ");
+    }
+    if let Some(v) = fields.narrative {
+        data.narrative = v;
+    }
+    // Where the curator had written something, offer the draft beside it.
+    let mut suggestions = Vec::new();
+    let offer =
+        |field: &str, drafted: Option<String>, written: &str, out: &mut Vec<(String, String)>| {
+            if let Some(d) =
+                drafted.filter(|d| !filled.contains(&field) && d.trim() != written.trim())
+            {
+                out.push((field.to_string(), d));
+            }
+        };
+    offer(
+        "description",
+        draft.description.clone(),
+        &form.description,
+        &mut suggestions,
+    );
+    offer("dates", draft.dates.clone(), &form.dates, &mut suggestions);
+    offer(
+        "subjects",
+        (!draft.subjects.is_empty()).then(|| draft.subjects.join(", ")),
+        &form.subjects,
+        &mut suggestions,
+    );
+    offer(
+        "narrative",
+        draft.narrative.clone(),
+        &form.narrative,
+        &mut suggestions,
+    );
+    let at = crate::describe::provenance(&drafting.llm, &[]).at;
+    data.draft = Some(views::FormDraft {
+        model: settings.model.clone(),
+        service: settings.service(),
+        at,
+        filled: filled.iter().map(|f| f.to_string()).collect(),
+        suggestions,
+    });
+    views::collection_form(&data, &chrome).into_response()
 }
 
 /// Query for the accession desk: which collection to add to (prefilled).
@@ -942,6 +1109,110 @@ pub(super) struct CollectionForm {
     subjects: String,
     #[serde(default)]
     narrative: String,
+    // A draft's provenance and choices, carried through the editor after the
+    // Draft button: which model, which fields it filled, and which written
+    // fields the curator chose to replace with the draft's text.
+    #[serde(default)]
+    draft_model: String,
+    #[serde(default)]
+    draft_service: String,
+    #[serde(default)]
+    draft_at: String,
+    #[serde(default)]
+    drafted: String,
+    #[serde(default)]
+    use_draft_description: Option<String>,
+    #[serde(default)]
+    draft_description: String,
+    #[serde(default)]
+    use_draft_dates: Option<String>,
+    #[serde(default)]
+    draft_dates: String,
+    #[serde(default)]
+    use_draft_subjects: Option<String>,
+    #[serde(default)]
+    draft_subjects: String,
+    #[serde(default)]
+    use_draft_narrative: Option<String>,
+    #[serde(default)]
+    draft_narrative: String,
+}
+
+/// Subjects as typed: comma-separated, blanks dropped.
+fn split_subjects(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+impl CollectionForm {
+    /// Swap in the draft's text for each written field the curator ticked
+    /// "use the draft instead", and work out which saved fields began as a
+    /// draft: those it filled (still holding text) plus those swapped in.
+    fn take_draft(&mut self) -> Option<crate::collections::Drafted> {
+        let mut fields: Vec<&str> = self
+            .drafted
+            .split(',')
+            .map(str::trim)
+            .filter(|f| crate::describe::DRAFTED_FIELDS.contains(f))
+            .collect();
+        let swaps = [
+            (
+                "description",
+                self.use_draft_description.is_some(),
+                self.draft_description.clone(),
+            ),
+            (
+                "dates",
+                self.use_draft_dates.is_some(),
+                self.draft_dates.clone(),
+            ),
+            (
+                "subjects",
+                self.use_draft_subjects.is_some(),
+                self.draft_subjects.clone(),
+            ),
+            (
+                "narrative",
+                self.use_draft_narrative.is_some(),
+                self.draft_narrative.clone(),
+            ),
+        ];
+        for (field, chosen, text) in swaps {
+            if !chosen || text.trim().is_empty() {
+                continue;
+            }
+            match field {
+                "description" => self.description = text,
+                "dates" => self.dates = text,
+                "subjects" => self.subjects = text,
+                _ => self.narrative = text,
+            }
+            fields.push(field);
+        }
+        // A drafted field the curator emptied again isn't drafted text.
+        let still_written = |f: &str| match f {
+            "description" => !self.description.trim().is_empty(),
+            "dates" => !self.dates.trim().is_empty(),
+            "subjects" => !self.subjects.trim().is_empty(),
+            _ => !self.narrative.trim().is_empty(),
+        };
+        let fields: Vec<String> = crate::describe::DRAFTED_FIELDS
+            .iter()
+            .filter(|f| fields.contains(f) && still_written(f))
+            .map(|f| f.to_string())
+            .collect();
+        (!fields.is_empty() && !self.draft_model.trim().is_empty()).then(|| {
+            crate::collections::Drafted {
+                model: self.draft_model.trim().to_string(),
+                service: self.draft_service.trim().to_string(),
+                fields,
+                at: self.draft_at.trim().to_string(),
+            }
+        })
+    }
 }
 
 /// Trim a form field to `Some(value)`, or `None` if empty. (v1 leaves cleared
@@ -956,8 +1227,9 @@ fn field_opt(s: &str) -> Option<String> {
 pub(super) async fn create_collection(
     State(state): State<Arc<AppState>>,
     curator: Curator,
-    Form(form): Form<CollectionForm>,
+    Form(mut form): Form<CollectionForm>,
 ) -> Response {
+    let drafted = form.take_draft();
     let name = form.name.trim().to_string();
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, "collection name is required").into_response();
@@ -971,13 +1243,7 @@ pub(super) async fn create_collection(
         // the slug stays put, so it is worth keeping alongside.
         Some(serde_json::json!({ "collection_name": name })),
     );
-    let subjects: Vec<String> = form
-        .subjects
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
+    let subjects = split_subjects(&form.subjects);
     let fields = crate::collections::CollectionFields {
         description: field_opt(&form.description),
         curator: field_opt(&form.curator),
@@ -986,7 +1252,7 @@ pub(super) async fn create_collection(
         rights: field_opt(&form.rights),
         subjects: (!subjects.is_empty()).then_some(subjects),
         narrative: field_opt(&form.narrative),
-        drafted: None,
+        drafted,
     };
     let actor = curator.principal().id().clone();
     let state = state.clone();

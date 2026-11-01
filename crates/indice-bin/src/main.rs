@@ -1341,6 +1341,9 @@ async fn main() -> Result<()> {
                     std::sync::Arc::new(EnvArchiveIt)
                         as std::sync::Arc<dyn indice_lib::archiveit::ArchiveItProvider>
                 }),
+                // Which model is config.yaml's business; the key is the
+                // environment's, like the import credentials.
+                llm_key: std::env::var("INDICE_LLM_API_KEY").ok(),
             };
 
             tokio::select! {

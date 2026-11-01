@@ -86,9 +86,24 @@ indice collection draft "Climate.gov" --apply --replace narrative
 
 `--replace` takes `description`, `narrative`, `subjects` or `dates`, repeated or separated by commas, and overwrites only those. Then open the finding aid, in the [workroom](/docs/guides/manage/) or in `collections/<slug>/README.md`, and edit the draft into your own description.
 
+## In the editor
+
+When a model is configured, a collection's **Edit collection** form has a **Draft a description** button beside **Save changes**, with a line saying which model at which service it will use. It sends the form as it stands, so text you've typed but not saved counts as yours.
+
+The form comes back with the draft in it:
+
+- **Fields that were empty** now hold the drafted text, marked "drafted, review before saving".
+- **Fields you had written** keep your text. The draft is shown beneath each one, with a **Use the draft instead** box to tick if you prefer it.
+
+Nothing is saved until you press **Save changes**, and you can edit any of it first, or press **Draft again** for another attempt. A model can take a minute to answer. If it can't be reached, or answers with nothing usable, the form comes back with your text intact and says what went wrong.
+
+On the collection page, a quiet line then says which fields began as a draft, with which model, and who reviewed them, for example *"Description and subjects drafted with llama3.1:8b (localhost:11434), reviewed by Ed."*
+
+Anyone who can edit a finding aid can ask for a draft. Each request is recorded in the [audit trail](/docs/reference/home-directory/#events-the-audit-trail), with the model and service, since it sends archived text to that service.
+
 ## Provenance
 
-When fields come from a draft, the finding aid records it in its front matter: which model, which service (the endpoint's host, never the key), which fields and when. A reader can then tell a description that began as a machine draft from one a curator wrote from scratch, in the same spirit as the crawl provenance indice records.
+When fields come from a draft, the finding aid records it in its front matter: which model, which service (the endpoint's host, never the key), which fields and when. The collection page shows it, as above. A reader can then tell a description that began as a machine draft from one a curator wrote from scratch, in the same spirit as the crawl provenance indice records.
 
 ```yaml
 drafted:

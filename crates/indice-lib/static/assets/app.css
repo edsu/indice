@@ -187,6 +187,8 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
    reading measure, which left the column looking unfinished beside them. */
 .about .narrative { font-family: var(--serif); color: var(--text-2); font-size: var(--t-lg); line-height: 1.6; margin: 0.4rem 0 1rem; }
 .about .narrative > :first-child { margin-top: 0; }
+/* That some of the finding aid began as a model's draft, and who reviewed it. */
+.about .drafted-note { font-size: var(--t-sm); margin: var(--s-2) 0 0; }
 .about .narrative h2 { font-size: var(--t-md); border: none; padding: 0; margin: 1rem 0 0.3rem; }
 .about .narrative h3 { font-size: var(--t-md); margin: 0.8rem 0 0.3rem; }
 .about .narrative p { margin: 0.5rem 0; }
@@ -456,3 +458,16 @@ nav.pagination .page-info { color: var(--muted); }
 .anno-index-body pre code { background: none; padding: 0; }
 .anno-index-loc { font-size: var(--t-sm); margin: 0.5rem 0 0; }
 .anno-index-loc .muted { color: var(--muted); word-break: break-all; }
+
+/* ── Drafting a finding aid with a language model ── */
+.form-error { color: var(--danger); background: var(--danger-wash); border: 1px solid var(--danger-line); border-radius: var(--radius); padding: var(--s-2) var(--s-3); }
+.draft-note { background: var(--work-wash); border-left: 3px solid var(--work); padding: var(--s-2) var(--s-3); font-size: var(--t-sm); max-width: var(--measure); }
+.drafted-mark { font-size: var(--t-xs); font-weight: var(--w-bold); color: var(--work-dk); background: var(--work-wash); border-radius: var(--radius); padding: 0 var(--s-1); }
+.draft-suggestion { border: 1px dashed var(--work); border-radius: var(--radius); padding: var(--s-2) var(--s-3); margin: calc(-1 * var(--s-2)) 0 var(--s-3); font-size: var(--t-sm); }
+.draft-suggestion .draft-label { display: block; font-weight: var(--w-bold); color: var(--work-dk); margin-bottom: var(--s-1); }
+.draft-suggestion .draft-text { font-family: var(--serif); color: var(--text-2); white-space: pre-wrap; margin-bottom: var(--s-2); }
+/* Scoped under .manage-form so these beat `.manage-form label { flex-direction:
+   column }` and `.manage-form input { width: 100% }`: the box beside its words. */
+.manage-form .draft-suggestion .use-draft { display: inline-flex; flex-direction: row; gap: var(--s-1); align-items: center; font-weight: var(--w-bold); color: var(--ink); }
+.manage-form .draft-suggestion .use-draft input { width: auto; margin: 0; }
+.form-actions .draft-with { font-size: var(--t-xs); color: var(--muted); }

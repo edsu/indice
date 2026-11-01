@@ -237,6 +237,15 @@ fn routes() -> Vec<Route> {
             Needs::Curator,
             Some((form, "name=Table".into())),
         ),
+        // Drafting sends archived text to the configured model, so it is a
+        // curator's, like the editor it serves. No model is configured here,
+        // so a curator gets 503, which is still not 403.
+        route(
+            "POST",
+            "/manage/edit/table/draft",
+            Needs::Curator,
+            Some((form, "name=Table".into())),
+        ),
         route(
             "POST",
             "/api/archives",
@@ -403,6 +412,7 @@ async fn only_an_admin_is_offered_the_import_tabs() {
     let both = indice_lib::server::Providers {
         browsertrix: Some(std::sync::Arc::new(StubBx)),
         archiveit: Some(std::sync::Arc::new(StubAit)),
+        llm_key: None,
     };
     let (base, server) = serve_with(tmp.path().to_path_buf(), proxy(), both).await;
     let curator = get_as(format!("{base}/manage/add"), "curator@x.edu", None)
@@ -428,6 +438,7 @@ async fn only_an_admin_is_offered_the_import_tabs() {
     let bx_only = indice_lib::server::Providers {
         browsertrix: Some(std::sync::Arc::new(StubBx)),
         archiveit: None,
+        llm_key: None,
     };
     let (base, server) = serve_with(tmp.path().to_path_buf(), proxy(), bx_only).await;
     let admin = get_as(format!("{base}/manage/add"), "boss@x.edu", None)

@@ -48,6 +48,10 @@ pub enum Action {
     /// telling them apart would mean an extra manifest read purely to pick a
     /// label.
     CollectionSet,
+    /// Asked the configured language model for a draft of a finding aid. It
+    /// writes nothing, but it sends archived text to the model's service, so
+    /// the record says who sent it, and where.
+    CollectionDraft,
     CollectionDelete,
     CrawlAdd,
     CrawlUpload,

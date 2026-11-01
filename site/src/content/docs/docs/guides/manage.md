@@ -16,7 +16,7 @@ On a workstation that is the whole setup. Whoever reaches the port is the operat
 What the controls are:
 
 - **The homepage.** Its collection list gains a **+ New collection** button, and each card an **Edit** affordance. An empty instance shows "add your first archive."
-- **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**.
+- **Each collection page** gains **Edit collection** (the finding-aid form: description, creator, dates, rights, subjects, narrative) and **+ Add crawls**. If a language model is configured, the form can [draft a description](/docs/guides/drafting/) for you to review.
 - **Add crawls** (the accession desk). Upload a `.wacz` from your computer, or give indice an `http(s)://` URL. Indexing runs in the background with live progress; when it finishes the crawl is searchable immediately (the server hot-reloads its reader, so no restart is needed). Uploaded files are copied into `<home>/archive/`; a URL is streamed in place. Admins also get a Browsertrix or Archive-It source tab when the server has that service's credentials: browse the configured account and pick crawls to import, with the same live progress. These act through the server's own credentials, so curators don't see them.
 - **The replay viewer** gains a **Notes** panel for [annotating](/docs/guides/annotations/) a page or a selected passage. Notes are public to read but only signed-in users can write them.
 

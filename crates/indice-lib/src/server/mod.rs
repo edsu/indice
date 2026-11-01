@@ -408,6 +408,9 @@ struct AppState {
     /// Where the viewer frames replay. `None` only for a router built without
     /// a replay listener, whose viewer then says replay is not configured.
     replay_origin: Option<ReplayOrigin>,
+    /// The model for drafting finding aids. `None` when no `llm:` section is
+    /// configured, which hides the editor's Draft button.
+    drafting: Option<Arc<Drafting>>,
     /// The archive's name, tagline and banner from `site:` in config.yaml,
     /// resolved at startup and shared by every page's chrome.
     site: Arc<crate::views::Site>,
@@ -420,6 +423,18 @@ struct AppState {
 pub struct Providers {
     pub browsertrix: Option<Arc<dyn crate::browsertrix::BrowsertrixProvider>>,
     pub archiveit: Option<Arc<dyn crate::archiveit::ArchiveItProvider>>,
+    /// The language model's API key (`INDICE_LLM_API_KEY`), when the service
+    /// needs one. Which model to use is `config.yaml`'s `llm:`; the key is
+    /// read by the binary and handed in, so the library never reads the
+    /// environment.
+    pub llm_key: Option<String>,
+}
+
+/// A configured model and how to draft with it, when `config.yaml` has an
+/// `llm:` section. Built once at startup and shared.
+pub(crate) struct Drafting {
+    pub(crate) llm: crate::llm::Llm,
+    pub(crate) settings: crate::describe::DescribeSettings,
 }
 
 /// An in-flight job's progress, and who started it: only they may read it.
@@ -603,6 +618,21 @@ fn build_routers(
     // the roster does, rather than at the first upload or ingest.
     let home_config = crate::config::Config::load(home)?;
     crate::config::Config::check_upload_limits(home)?;
+    // Resolved strictly here, so a mistake in `llm:` or `describe:` stops the
+    // server at startup rather than at a curator's first draft.
+    let drafting = home_config.llm_settings(home)?.map(|(llm, settings)| {
+        let llm = crate::llm::Llm::new(llm, providers.llm_key.clone());
+        let s = llm.settings();
+        tracing::info!("llm: drafting with {} at {}", s.model, s.service());
+        if s.sends_in_clear() {
+            tracing::warn!(
+                "llm.endpoint {} is plain http:// to a public host: the key and the \
+                     archived text sent for drafts travel unencrypted",
+                s.endpoint
+            );
+        }
+        Arc::new(Drafting { llm, settings })
+    });
     let upload_limits = UploadLimits {
         per_upload: home_config.max_upload_bytes(),
         archive: home_config.max_archive_bytes(),
@@ -680,6 +710,7 @@ fn build_routers(
         browsertrix: providers.browsertrix,
         archiveit: providers.archiveit,
         replay_origin: config.replay_origin.clone(),
+        drafting,
         site: Arc::new(crate::views::Site::new(&home_config.site)),
     });
 
@@ -789,6 +820,9 @@ fn build_routers(
     // All of these require a curator, so none is reachable by the anonymous
     // caller this ticket is about.
     let manage_streaming = Router::new()
+        // Drafting a finding aid waits on a language model, which can take a
+        // minute; the bound is the outbound client's `llm.timeout_secs`.
+        .route("/manage/edit/{id}/draft", post(draft_collection))
         // A whole WACZ, so axum's 2 MB default is lifted on this route only:
         // to the configured per-upload cap when there is one, with room for
         // the multipart framing and the two short text fields around the file
