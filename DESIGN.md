@@ -1041,8 +1041,13 @@ The viewer (`static/replay/viewer.html`, `assets::replay_page`) is the page ever
 opens. Its address says what is being read and nothing else: `/crawl/{id}/{ts}/{url}` for a
 page of one crawl, `/collection/{id}/{ts}/{url}` for a page of a whole collection, in the
 manner of Wayback-style archives. `ts` is as many digits of the capture time as are known (or
-left out), and the archived URL follows as it is, scheme and query included; `url_in_path`
-encodes only what a link can't hold and drops the fragment. The server reads the archived URL
+left out), and the archived URL follows, scheme and query included, as a browser would request
+it: `url_in_path` serializes it by the URL standard, which encodes what a link can't hold and
+resolves `.` and `..` segments, and drops the fragment. Resolving dot segments is a security
+rule, not tidiness: a browser resolves them in a link before requesting it (`%2e%2e` too), so
+one left in the tail would climb out of the replay path to any address on the site
+(`an_archived_url_cannot_climb_out_of_its_replay_address`). For the same reason the viewer
+moves its address only within its own crawl or collection. The server reads the archived URL
 from the raw path and query (axum's extractors would decode its escapes and drop its query),
 looks up the crawl or collection, and fills the page with what the viewer needs as JSON in a
 `<script type="application/json">`: the `source` ReplayWeb.page loads (the crawl's

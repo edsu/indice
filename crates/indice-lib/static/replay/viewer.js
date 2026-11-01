@@ -106,28 +106,41 @@
   });
 
   // The archived URL as the tail of this page's address, as the server
-  // writes it (`url_in_path` in server/util.rs): readable, with only what a
-  // link can't hold encoded, and no fragment.
+  // writes it (`url_in_path` in server/util.rs): parsed by the URL standard,
+  // which resolves `.` and `..` segments, and without its fragment.
   function inPath(u) {
-    return u.split('#')[0].replace(/["<>`{}|\\^\s]|[^\x21-\x7e]/gu, function (c) {
-      return encodeURIComponent(c);
-    });
+    let parsed;
+    try {
+      parsed = new URL(u);
+    } catch (_) {
+      return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    parsed.hash = '';
+    return parsed.href;
   }
 
   // Keep the banner, and the address, in step as the reader navigates the
   // archive, so the address in the bar is always one that opens the page in
-  // view. The frame's report is only a suggestion (see above), and at worst
-  // puts a different page of the same crawl or collection in the address.
+  // view. The frame's report is only a suggestion (see above), so the new
+  // address must still be a page of this crawl or collection once the browser
+  // has resolved it: archived script can choose which page, never somewhere
+  // else on the site.
   window.addEventListener('indice-replay', function (e) {
     const d = e.detail;
-    if (d.type === 'url' && typeof d.url === 'string' && /^https?:\/\//.test(d.url)) {
-      currentUrl.textContent = d.url;
-      if (typeof d.ts === 'string') showCaptured(d.ts);
-      const ts = typeof d.ts === 'string' ? d.ts.replace(/\D/g, '').slice(0, 14) : '';
-      const path = ctx.base + '/' + (ts ? ts + '/' : '') + inPath(d.url);
-      if (path !== window.location.pathname + window.location.search) {
-        history.replaceState(null, '', path + window.location.hash);
-      }
+    if (d.type !== 'url' || typeof d.url !== 'string') return;
+    const tail = inPath(d.url);
+    if (!tail) return;
+    currentUrl.textContent = d.url;
+    if (typeof d.ts === 'string') showCaptured(d.ts);
+    const ts = typeof d.ts === 'string' ? d.ts.replace(/\D/g, '').slice(0, 14) : '';
+    const next = new URL(ctx.base + '/' + (ts ? ts + '/' : '') + tail, window.location.origin);
+    if (next.origin !== window.location.origin || !next.pathname.startsWith(ctx.base + '/')) {
+      return;
+    }
+    const path = next.pathname + next.search;
+    if (path !== window.location.pathname + window.location.search) {
+      history.replaceState(null, '', path + window.location.hash);
     }
   });
 })();

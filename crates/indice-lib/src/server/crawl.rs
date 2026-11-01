@@ -35,10 +35,12 @@ pub(super) async fn crawl_page(
     let pages: Vec<views::PageItem> = c
         .seed_pages
         .iter()
-        .map(|p| views::PageItem {
-            href: replay_href(scope, &p.ts, &p.url),
-            title: p.title.clone().unwrap_or_else(|| p.url.clone()),
-            url: p.url.clone(),
+        .filter_map(|p| {
+            Some(views::PageItem {
+                href: replay_href(scope, &p.ts, &p.url)?,
+                title: p.title.clone().unwrap_or_else(|| p.url.clone()),
+                url: p.url.clone(),
+            })
         })
         .collect();
     let replay = pages.first().map(|p| p.href.clone());

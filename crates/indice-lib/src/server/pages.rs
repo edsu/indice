@@ -256,19 +256,22 @@ pub(super) async fn search_page(
                 r.title.clone()
             };
 
+            // Where a page can't be replayed (a note on no page, a URL replay
+            // can't open), the crawl or collection it belongs to.
+            let crawl_page = format!("/crawl/{}", url_encode(&r.crawl_id));
             let href = if is_annotation {
                 // Notes carry no crawl; open the annotated page in the collection
                 // replay (where the note re-anchors + highlights via the panel).
-                format!(
-                    "{}#note={}",
-                    replay_href(ReplayScope::Collection(&r.collection), &r.timestamp, &r.url),
-                    url_encode(&r.annotation_id)
-                )
+                match replay_href(ReplayScope::Collection(&r.collection), &r.timestamp, &r.url) {
+                    Some(href) => format!("{href}#note={}", url_encode(&r.annotation_id)),
+                    None => format!("/collection/{coll_href}"),
+                }
             } else if is_collection {
                 // A crawl's own record: its page, which has the Replay button.
-                format!("/crawl/{}", url_encode(&r.crawl_id))
+                crawl_page
             } else {
                 replay_href(ReplayScope::Crawl(&r.crawl_id), &r.timestamp, &r.url)
+                    .unwrap_or(crawl_page)
             };
 
             // Prefer the hit-highlighted body snippet; if the query didn't match

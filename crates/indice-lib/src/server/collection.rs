@@ -212,15 +212,15 @@ pub(super) async fn collection_annotations(
                 note_html: crate::markdown::render(&a.body.value),
                 page_url: a.target.source.clone(),
                 // Names the note, so the page opens on its passage.
-                replay_href: format!(
-                    "{}#note={}",
-                    replay_href(
-                        ReplayScope::Collection(&id),
-                        &a.target.timestamp,
-                        &a.target.source
-                    ),
-                    url_encode(&a.id)
-                ),
+                replay_href: match replay_href(
+                    ReplayScope::Collection(&id),
+                    &a.target.timestamp,
+                    &a.target.source,
+                ) {
+                    Some(href) => format!("{href}#note={}", url_encode(&a.id)),
+                    // A page replay can't open: the collection instead.
+                    None => format!("/collection/{}", url_encode(&id)),
+                },
                 region,
             }
         })

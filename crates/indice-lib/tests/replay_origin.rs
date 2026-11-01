@@ -33,11 +33,11 @@ fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).join(name)
 }
 
-/// A server's two routers, with a curator on the roster so a write that
-/// reached a handler would be allowed to run.
 /// A page of the "demo" collection in the replay viewer.
 const VIEWER: &str = "/collection/demo/20250101000000/https://example.org/";
 
+/// A server's two routers, with a curator on the roster so a write that
+/// reached a handler would be allowed to run.
 fn server(home: &Path) -> Routers {
     std::fs::write(
         home.join("users.yaml"),

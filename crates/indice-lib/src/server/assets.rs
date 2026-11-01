@@ -216,7 +216,7 @@ pub(super) async fn replay_page(
         Ok(m) => m,
         Err(e) => return error_response(e).into_response(),
     };
-    let context = if target.kind == "crawl" {
+    let context = if target.kind == ReplayKind::Crawl {
         let Some(w) = manifest.wacz_by_id(&target.id) else {
             return not_found();
         };
