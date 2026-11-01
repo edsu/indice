@@ -25,6 +25,10 @@ pub const BUILT_IN_PROMPT: &str = include_str!("describe_prompt.md");
 /// isn't set: room for a few dozen pages within a small model's context.
 pub const DEFAULT_MAX_INPUT_CHARS: usize = 24_000;
 
+/// The least `describe.max_input_chars` may be: room for the collection's
+/// outline and a page or two. Less would send a model almost nothing.
+pub const MIN_INPUT_CHARS: usize = 2_000;
+
 /// The most text sent from any one page, so the sample covers many pages
 /// rather than a few long ones.
 const PAGE_CHARS: usize = 1_500;
@@ -152,17 +156,20 @@ pub fn preview(settings: &DescribeSettings, m: &Material) -> Preview {
     Preview {
         system: settings.prompt.clone(),
         user,
-        pages: m.pages.iter().take(included).cloned().collect(),
+        pages: included.into_iter().map(|i| m.pages[i].clone()).collect(),
     }
 }
 
-/// The user message, and how many of `m.pages` it included before the budget
-/// ran out.
-fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
-    let mut included = 0;
+/// The user message, and which of `m.pages` (by position) it included.
+fn prompt_with_count(m: &Material, budget: usize) -> (String, Vec<usize>) {
+    // The answer format closes every message, so it comes out of the budget
+    // first, and each part after this is added only if it fits in the rest.
+    let budget = budget.saturating_sub(ANSWER_FORMAT.chars().count() + 1);
+    let fits = |out: &str, more: &str| out.chars().count() + more.chars().count() <= budget;
+    let mut included = Vec::new();
     let mut out = String::new();
     let c = &m.collection;
-    out.push_str(&format!("Collection: {}\n", c.name));
+    out.push_str(&format!("Collection: {}\n", one_line(&c.name, 200)));
 
     let written: Vec<(&str, String)> = [
         ("description", c.description.clone()),
@@ -180,7 +187,10 @@ fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
     if !written.is_empty() {
         out.push_str("\nAlready written by the archivist:\n");
         for (k, v) in written {
-            out.push_str(&format!("- {k}: {}\n", one_line(&v, 600)));
+            let line = format!("- {k}: {}\n", one_line(&v, 600));
+            if fits(&out, &line) {
+                out.push_str(&line);
+            }
         }
     }
 
@@ -254,7 +264,10 @@ fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
             .take(BUCKETS_PER_FACET)
             .map(|b| format!("{} ({})", b.value, b.count))
             .collect();
-        out.push_str(&format!("{}: {}\n", g.label, list.join(", ")));
+        let line = format!("{}: {}\n", g.label, list.join(", "));
+        if fits(&out, &line) {
+            out.push_str(&line);
+        }
     }
 
     if !m.pages.is_empty() {
@@ -267,7 +280,7 @@ fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
         if room < 300 {
             break;
         }
-        let n = i + 1;
+        let n = included.len() + 1;
         let mut block = format!("<<<PAGE {n}\nURL: {}\n", p.url);
         if !p.timestamp.is_empty() {
             block.push_str(&format!("Captured: {}\n", day(&p.timestamp)));
@@ -291,13 +304,21 @@ fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
             Some(rest) if !opening.is_empty() && !rest.is_empty() => rest.join(" "),
             _ => words.join(" "),
         };
+        // A page whose own address and title leave no room for its text
+        // would spend the budget on headers; a shorter one may still fit.
+        if text_room < 100 && !body.is_empty() {
+            continue;
+        }
         let text = one_line(&defang(&body), text_room);
         if !text.is_empty() {
             block.push_str(&format!("Text: {text}\n"));
         }
         block.push_str(&closing);
+        if !fits(&out, &block) {
+            continue;
+        }
         out.push_str(&block);
-        included += 1;
+        included.push(i);
     }
     out.push('\n');
     out.push_str(ANSWER_FORMAT);
@@ -632,7 +653,7 @@ mod tests {
         let m = material(pages);
         let msg = user_message(&m, 6_000);
         let count = msg.chars().count();
-        assert!(count <= 6_000 + ANSWER_FORMAT.len() + 2, "{count} chars");
+        assert!(count <= 6_000, "{count} chars");
         assert!(msg.starts_with("Collection: Climate.gov"));
         assert!(msg.contains("Site: climate.gov (6649)"));
         let opened = msg.matches("<<<PAGE ").count();
@@ -641,6 +662,25 @@ mod tests {
         assert!(msg.trim_end().ends_with(ANSWER_FORMAT));
         // A page's text is cut to the per-page share, not sent whole.
         assert!(!msg.contains(&long));
+    }
+
+    #[test]
+    fn the_budget_holds_however_much_is_already_written() {
+        let mut m = material(vec![page(1, "Drought outlook."), page(2, "Wildfire.")]);
+        m.pages[0].url = format!("https://climate.gov/{}", "x".repeat(3_000));
+        let essay = "word ".repeat(500);
+        m.collection.description = Some(essay.clone());
+        m.collection.narrative = Some(essay.clone());
+        m.collection.dates = Some(essay.clone());
+        m.collection.creator = Some(essay);
+        let msg = user_message(&m, MIN_INPUT_CHARS);
+        assert!(msg.chars().count() <= MIN_INPUT_CHARS, "{msg}");
+        assert!(msg.trim_end().ends_with(ANSWER_FORMAT));
+        assert!(
+            !msg.contains("xxxxxxxxxx"),
+            "a page too big to fit is left out"
+        );
+        assert!(msg.contains("<<<PAGE 1\nURL: https://ex.org/2"), "{msg}");
     }
 
     #[test]

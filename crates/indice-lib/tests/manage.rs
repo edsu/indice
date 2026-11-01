@@ -5,6 +5,7 @@
 //! that local access means local.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Local trust, as a workstation has it. The helper binds `127.0.0.1:0`, so the
 /// address handed to `Access::local` matches what the listener will get.
@@ -2164,40 +2165,49 @@ async fn an_oversized_text_field_is_refused_even_with_no_limits_set() {
     server.abort();
 }
 
-/// A one-request OpenAI-compatible service answering with `content` as the
-/// model's message. Returns its `/v1` endpoint.
-fn fake_llm(content: &'static str) -> String {
+/// An OpenAI-compatible service answering every request with `content` as
+/// the model's message. Returns its `/v1` endpoint, and the request bodies it
+/// was sent.
+fn fake_llm(content: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let record = sent.clone();
     std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut length = 0;
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            if line.trim().is_empty() {
-                break;
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap();
+                }
             }
-            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = v.trim().parse().unwrap();
-            }
-        }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body).unwrap();
-        let answer =
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            record
+                .lock()
+                .unwrap()
+                .push(String::from_utf8(body).unwrap());
+            let answer =
             serde_json::json!({"choices": [{"message": {"role": "assistant", "content": content}}]})
                 .to_string();
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
              Connection: close\r\n\r\n{answer}",
-            answer.len()
-        )
-        .unwrap();
+                answer.len()
+            )
+            .unwrap();
+        }
     });
-    endpoint
+    (endpoint, sent)
 }
 
 /// POST a urlencoded form, following the redirect; returns status and body.
@@ -2234,7 +2244,7 @@ async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
     let dest = archive.join("github-bitcoin-mining.wacz");
     std::fs::copy(fixture("github-bitcoin-mining.wacz"), &dest).unwrap();
     indice_lib::index::index_path(&dest, home, None, "coll").unwrap();
-    let endpoint = fake_llm(
+    let (endpoint, sent) = fake_llm(
         r#"{"description": "Drafted abstract.", "narrative": "Drafted narrative.",
             "subjects": ["Bitcoin"], "dates": "2024", "rights": "Never accepted"}"#,
     );
@@ -2301,10 +2311,15 @@ async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
             || drafted.contains("value=\"The curator's abstract.\""),
         "the curator's text stays in its field"
     );
-    assert!(
-        drafted.contains(r#"name="drafted" value="dates,subjects,narrative""#),
-        "{drafted}"
-    );
+    // The drafted text of each field rides along, so Save can tell which
+    // ones the curator left as drafted.
+    for hidden in [
+        r#"name="draft_narrative" value="Drafted narrative.""#,
+        r#"name="draft_dates" value="2024""#,
+        r#"name="draft_description" value="Drafted abstract.""#,
+    ] {
+        assert!(drafted.contains(hidden), "{hidden}: {drafted}");
+    }
     assert!(
         !drafted.contains("Never accepted"),
         "rights are not the model's"
@@ -2327,7 +2342,9 @@ async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
             ("draft_model", "fake-model".into()),
             ("draft_service", service.clone()),
             ("draft_at", "2026-11-01T12:00:00Z".into()),
-            ("drafted", "dates,subjects,narrative".into()),
+            ("draft_dates", "2024".into()),
+            ("draft_subjects", "Bitcoin".into()),
+            ("draft_narrative", "Drafted narrative.".into()),
             ("use_draft_description", "on".into()),
             ("draft_description", "Drafted abstract.".into()),
         ],
@@ -2354,6 +2371,68 @@ async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
         page.contains(&format!("drafted with fake-model ({service})")),
         "the collection page says so: {page}"
     );
+    drop(manifest);
+
+    // Draft again, over a form still holding the first draft's narrative: it
+    // is the model's text, not the curator's, so it is replaced and marked,
+    // and the model isn't told the archivist wrote it.
+    let (status, again) = post_fields(
+        format!("{base}/manage/edit/coll/draft"),
+        vec![
+            ("name", "coll".into()),
+            ("description", "The curator's abstract.".into()),
+            ("narrative", "Drafted narrative.".into()),
+            ("draft_model", "fake-model".into()),
+            ("draft_narrative", "Drafted narrative.".into()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{again}");
+    assert!(
+        again.contains(r#"name="draft_narrative" value="Drafted narrative.""#),
+        "{again}"
+    );
+    let asked = sent.lock().unwrap().last().cloned().unwrap();
+    assert!(asked.contains("The curator's abstract."), "{asked}");
+    assert!(
+        !asked.contains("narrative: Drafted narrative."),
+        "the earlier draft isn't the archivist's: {asked}"
+    );
+
+    // A hand edit makes a field the curator's: it leaves the record, and the
+    // rest stay.
+    let saved = |narrative: &str, dates: &str, subjects: &str, description: &str| {
+        vec![
+            ("name", "coll".into()),
+            ("description", description.to_string()),
+            ("dates", dates.to_string()),
+            ("subjects", subjects.to_string()),
+            ("narrative", narrative.to_string()),
+        ]
+    };
+    let (status, page) = post_fields(
+        format!("{base}/api/collections"),
+        saved("Rewritten by hand.", "2024", "Bitcoin", "Drafted abstract."),
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let d = manifest.collection_by_id("coll").unwrap().drafted.clone();
+    assert_eq!(
+        d.expect("the untouched fields are still drafted").fields,
+        vec!["description", "subjects", "dates"]
+    );
+    drop(manifest);
+
+    // Every drafted field rewritten: no record, and the page stops saying so.
+    let (_, page) = post_fields(
+        format!("{base}/api/collections"),
+        saved("Rewritten by hand.", "2023-2024", "Mining", "Mine."),
+    )
+    .await;
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(manifest.collection_by_id("coll").unwrap().drafted, None);
+    assert!(!page.contains("drafted with"), "{page}");
     server.abort();
 }
 

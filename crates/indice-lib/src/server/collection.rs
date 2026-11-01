@@ -170,7 +170,9 @@ fn drafted_note(d: &crate::collections::Drafted, reviewer: Option<&str>) -> Stri
     };
     match reviewer {
         Some(r) => format!("{list} drafted with {}{service}, reviewed by {r}.", d.model),
-        None => format!("{list} drafted with {}{service}, then reviewed.", d.model),
+        // Saved without a known editor (`collection draft --apply` from the
+        // command line): claim no review that may not have happened.
+        None => format!("{list} drafted with {}{service}.", d.model),
     }
 }
 

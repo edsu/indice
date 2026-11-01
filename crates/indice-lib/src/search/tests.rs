@@ -1504,3 +1504,52 @@ fn sample_pages_reaches_every_site_and_skips_error_pages() {
     );
     assert_eq!(sample.len(), 4);
 }
+
+#[test]
+fn sample_pages_looks_past_redirects_that_were_captured_first() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    // Captured first, so first in index order: a redirecting seed capture
+    // and a run of redirects from the site.
+    idx.index_page(&Page {
+        url: "https://redirects.example/",
+        body: "Moved",
+        collection: "coll",
+        status: Some(301),
+        ..Default::default()
+    })
+    .unwrap();
+    for i in 0..20 {
+        idx.index_page(&Page {
+            url: &format!("https://redirects.example/old/{i}"),
+            body: "Moved",
+            collection: "coll",
+            status: Some(302),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    idx.index_page(&Page {
+        url: "https://redirects.example/",
+        body: "the front page",
+        collection: "coll",
+        status: Some(200),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.index_page(&Page {
+        url: "https://redirects.example/about",
+        body: "about the site",
+        collection: "coll",
+        status: Some(200),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.commit().unwrap();
+
+    let seeds = vec!["https://redirects.example/".to_string()];
+    let sites = vec!["redirects.example".to_string()];
+    let sample = idx.sample_pages("coll", &seeds, &sites, 4).unwrap();
+    let texts: Vec<&str> = sample.iter().map(|p| p.text.as_str()).collect();
+    assert_eq!(texts, vec!["the front page", "about the site"]);
+}

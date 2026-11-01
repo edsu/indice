@@ -626,9 +626,9 @@ fn build_routers(
         tracing::info!("llm: drafting with {} at {}", s.model, s.service());
         if s.sends_in_clear() {
             tracing::warn!(
-                "llm.endpoint {} is plain http:// to a public host: the key and the \
+                "llm.endpoint at {} is plain http:// to a public host: the key and the \
                      archived text sent for drafts travel unencrypted",
-                s.endpoint
+                s.service()
             );
         }
         Arc::new(Drafting { llm, settings })

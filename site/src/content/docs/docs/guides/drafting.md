@@ -112,13 +112,15 @@ The form comes back with the draft in it:
 
 Nothing is saved until you press **Save changes**, and you can edit any of it first, or press **Draft again** for another attempt. A model can take a minute to answer. If it can't be reached, or answers with nothing usable, the form comes back with your text intact and says what went wrong.
 
-On the collection page, a quiet line then says which fields began as a draft, with which model, and who reviewed them, for example *"Description and subjects drafted with llama3.1:8b (localhost:11434), reviewed by Ed."*
+On the collection page, a quiet line then says which fields hold drafted text, with which model, and who saved them, for example *"Description and subjects drafted with llama3.1:8b (localhost:11434), reviewed by Ed."* A draft applied with `indice collection draft --apply` has no reviewer to name, so the line leaves that part out.
 
 Anyone who can edit a finding aid can ask for a draft. Each request is recorded in the [audit trail](/docs/reference/home-directory/#events-the-audit-trail), with the model and service, since it sends archived text to that service.
 
 ## Provenance
 
-When fields come from a draft, the finding aid records it in its front matter: which model, which service (the endpoint's host, never the key), which fields and when. The collection page shows it, as above. A reader can then tell a description that began as a machine draft from one a curator wrote from scratch, in the same spirit as the crawl provenance indice records.
+When fields come from a draft, the finding aid records it in its front matter: which model, which service (the endpoint's host, never the key), which fields and when. The collection page shows it, as above. A reader can then tell a description that is a machine draft from one a curator wrote, in the same spirit as the crawl provenance indice records.
+
+The record follows the text. Edit a drafted field before or after you save it and it's yours: it leaves the record, and the collection page stops calling it drafted. Fields you leave as the model wrote them stay in the record, across later saves and later drafts. When no drafted field is left, the record goes. Press **Draft again** and fields still holding the earlier draft's text are drafted afresh, not treated as yours.
 
 ```yaml
 drafted:

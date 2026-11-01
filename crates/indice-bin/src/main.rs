@@ -2150,7 +2150,7 @@ fn run_collection_draft(
         eprintln!(
             "warning: {} is plain http:// to a public host, so the key and the archived \
              text travel unencrypted; use https:// if the service offers it",
-            llm.settings().endpoint
+            llm.settings().service()
         );
     }
     if let Some(notice) = &llm.settings().notice {

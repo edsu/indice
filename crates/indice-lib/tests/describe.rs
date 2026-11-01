@@ -172,10 +172,11 @@ fn a_draft_is_asked_for_with_the_collections_material_and_applied_only_where_emp
             .trim_start_matches("http://")
             .trim_end_matches("/v1")
     );
-    assert_eq!(
-        drafted.fields,
-        filled.iter().map(|f| f.to_string()).collect::<Vec<_>>()
-    );
+    let mut recorded = drafted.fields.clone();
+    recorded.sort();
+    let mut expected: Vec<String> = filled.iter().map(|f| f.to_string()).collect();
+    expected.sort();
+    assert_eq!(recorded, expected);
     for f in &filled {
         match *f {
             "subjects" => assert_eq!(c.subjects, vec!["Bitcoin", "Cryptocurrency mining"]),

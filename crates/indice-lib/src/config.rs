@@ -229,7 +229,8 @@ impl Config {
     /// feature is off.
     ///
     /// Refused: `describe:` without `llm:`; `llm:` without an endpoint or a
-    /// model; an endpoint that isn't http(s); a `max_input_chars` of 0; a
+    /// model; an endpoint that isn't http(s); a `max_input_chars` too small to
+    /// hold a page; a
     /// `prompt_file` that can't be read.
     pub fn llm_settings(
         &self,
@@ -258,7 +259,10 @@ impl Config {
                 path.display()
             );
         };
-        if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+        let scheme = endpoint
+            .split_once("://")
+            .map(|(s, _)| s.to_ascii_lowercase());
+        if !matches!(scheme.as_deref(), Some("http" | "https")) {
             anyhow::bail!(
                 "{}: llm.endpoint must be an http:// or https:// URL, not {endpoint}",
                 path.display()
@@ -277,16 +281,19 @@ impl Config {
         );
         let describe = self.describe.clone().unwrap_or_default();
         let max_input_chars = match describe.max_input_chars {
-            Some(0) => anyhow::bail!(
-                "{}: describe.max_input_chars is 0, which would send nothing to describe",
-                path.display()
+            Some(n) if n < crate::describe::MIN_INPUT_CHARS => anyhow::bail!(
+                "{}: describe.max_input_chars is {n}, too little to hold even one page; \
+                 give at least {}",
+                path.display(),
+                crate::describe::MIN_INPUT_CHARS
             ),
             Some(n) => n,
             None => crate::describe::DEFAULT_MAX_INPUT_CHARS,
         };
-        let prompt = match given(&describe.prompt_file) {
+        let prompt_file = given(&describe.prompt_file);
+        let prompt = match &prompt_file {
             Some(file) => {
-                let p = home.join(&file);
+                let p = home.join(file);
                 std::fs::read_to_string(&p).with_context(|| {
                     format!(
                         "{}: reading describe.prompt_file {}",
@@ -307,7 +314,7 @@ impl Config {
             crate::describe::DescribeSettings {
                 max_input_chars,
                 prompt,
-                prompt_is_custom: describe.prompt_file.is_some(),
+                prompt_is_custom: prompt_file.is_some(),
             },
         )))
     }
@@ -550,6 +557,17 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_prompt_file_is_the_built_in_prompt_and_schemes_ignore_case() {
+        let (_t, r) = llm_of(
+            "llm:\n  endpoint: HTTPS://api.example.org/v1\n  model: m\n\
+             describe:\n  prompt_file: ''\n",
+        );
+        let (_, describe) = r.unwrap().unwrap();
+        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(!describe.prompt_is_custom, "reported as built in");
+    }
+
+    #[test]
     fn mistakes_in_the_llm_sections_are_refused() {
         for (yaml, says) in [
             (
@@ -564,7 +582,11 @@ mod tests {
             ),
             (
                 "llm:\n  endpoint: http://x/v1\n  model: m\ndescribe:\n  max_input_chars: 0\n",
-                "is 0",
+                "too little",
+            ),
+            (
+                "llm:\n  endpoint: http://x/v1\n  model: m\ndescribe:\n  max_input_chars: 500\n",
+                "too little",
             ),
             (
                 "llm:\n  endpoint: http://x/v1\n  model: m\ndescribe:\n  prompt_file: nope.md\n",

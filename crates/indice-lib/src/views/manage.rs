@@ -60,10 +60,14 @@ pub struct FormDraft {
     pub model: String,
     pub service: String,
     pub at: String,
-    /// Fields the draft filled because they were empty.
+    /// Fields holding drafted text: filled because they were empty, or still
+    /// holding an earlier draft's text.
     pub filled: Vec<String>,
     /// `(field, drafted text)` for fields already written.
     pub suggestions: Vec<(String, String)>,
+    /// `(field, drafted text)` for every field the draft covers, carried in
+    /// hidden inputs so Save can tell which the curator left as drafted.
+    pub texts: Vec<(String, String)>,
 }
 
 impl FormDraft {
@@ -150,7 +154,6 @@ fn draft_suggestion(draft: Option<&FormDraft>, field: &str) -> Markup {
                     input type="checkbox" name=(format!("use_draft_{field}"));
                     " Use the draft instead"
                 }
-                input type="hidden" name=(format!("draft_{field}")) value=(text);
             }
         }
     }
@@ -190,7 +193,9 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
                 input type="hidden" name="draft_model" value=(d.model);
                 input type="hidden" name="draft_service" value=(d.service);
                 input type="hidden" name="draft_at" value=(d.at);
-                input type="hidden" name="drafted" value=(d.filled.join(","));
+                @for (field, text) in &d.texts {
+                    input type="hidden" name=(format!("draft_{field}")) value=(text);
+                }
             }
             label {
                 span { "Name" }

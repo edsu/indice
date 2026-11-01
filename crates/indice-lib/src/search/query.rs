@@ -3,9 +3,10 @@
 //! `mod.rs`.
 
 use anyhow::Result;
+use std::ops::Bound;
 use tantivy::aggregation::{AggContextParams, AggregationCollector};
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{IndexRecordOption, Value};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{TantivyDocument, Term};
@@ -291,7 +292,9 @@ impl SearchIndex {
         // Up to `n` pages of this collection that also match `field = value`,
         // leaving out captured error pages (a 404, a redirect): archived
         // faithfully, but they say nothing about what the collection holds.
-        // A page with no recorded status is kept.
+        // A page with no recorded status is kept. The status is part of the
+        // query, not checked afterwards, so a site whose first hits are
+        // redirects still gets its `n` readable pages.
         let pages_where = |field, value: &str, n: usize| -> Result<Vec<PageSample>> {
             let term = |field, value: &str| -> Box<dyn Query> {
                 Box::new(TermQuery::new(
@@ -299,19 +302,30 @@ impl SearchIndex {
                     IndexRecordOption::Basic,
                 ))
             };
+            let status = |lower: Bound<u64>, upper: Bound<u64>| -> Box<dyn Query> {
+                Box::new(RangeQuery::new(
+                    lower.map(|s| Term::from_field_u64(status_f, s)),
+                    upper.map(|s| Term::from_field_u64(status_f, s)),
+                ))
+            };
             let query = BooleanQuery::new(vec![
                 (Occur::Must, term(collection_f, collection_id)),
                 (Occur::Must, term(doc_type_f, "page")),
                 (Occur::Must, term(field, value)),
+                (
+                    Occur::MustNot,
+                    status(Bound::Unbounded, Bound::Excluded(200)),
+                ),
+                (
+                    Occur::MustNot,
+                    status(Bound::Included(300), Bound::Unbounded),
+                ),
             ]);
             let mut out = Vec::new();
             for (_score, addr) in
                 searcher.search(&query, &TopDocs::with_limit(n).order_by_score())?
             {
                 let doc: TantivyDocument = searcher.doc(addr)?;
-                if get_u64(&doc, status_f).is_some_and(|s| !(200..300).contains(&s)) {
-                    continue;
-                }
                 out.push(PageSample {
                     url: get_text(&doc, url_f),
                     title: get_text(&doc, title_f),
@@ -335,8 +349,9 @@ impl SearchIndex {
             if seen.contains(url) {
                 continue;
             }
-            // Several captures of one URL say nothing new: take one.
-            if let Some(p) = pages_where(url_f, url, 1)?.into_iter().find(readable) {
+            // Several captures of one URL say nothing new: take one, the
+            // first with something to read.
+            if let Some(p) = pages_where(url_f, url, 3)?.into_iter().find(readable) {
                 seen.insert(p.url.clone());
                 out.push(p);
             }

@@ -817,10 +817,9 @@ pub(super) async fn edit_collection_form(
         drafting: drafting_info(&state),
         ..Default::default()
     };
-    drop(manifest);
     let mut form = form;
     if let Some(d) = form.drafting.as_mut() {
-        d.preview = with_preview(&state, &id).await;
+        d.preview = with_preview(&state, manifest, &id).await;
     }
     let chrome = chrome(&state, &headers);
     views::collection_form(&form, &chrome).into_response()
@@ -857,9 +856,12 @@ fn preview_view(p: &crate::describe::Preview) -> views::DraftPreview {
 /// Work out what a draft of collection `id` would send, so the editor can show
 /// it before anything is sent. `None` when there's no model, or nothing to
 /// describe yet.
-async fn with_preview(state: &Arc<AppState>, id: &str) -> Option<views::DraftPreview> {
+async fn with_preview(
+    state: &Arc<AppState>,
+    manifest: Manifest,
+    id: &str,
+) -> Option<views::DraftPreview> {
     let drafting = state.drafting.clone()?;
-    let manifest = Manifest::open(&state.index_dir).ok()?;
     let scope = id.to_string();
     let material = state
         .read_index(move |search| crate::describe::gather(&manifest, search, &scope))
@@ -936,13 +938,24 @@ pub(super) async fn draft_collection(
     );
 
     // The curator's current words, saved or not: the draft should fit them,
-    // and only what's empty on screen is filled.
+    // and only what's empty on screen is filled. A field still holding an
+    // earlier draft's text (Draft again) isn't the curator's: it counts as
+    // empty, so the new draft replaces it and the model isn't told it was
+    // written by the archivist.
+    let redrafting = form.unedited_drafts();
+    let mine = |field: &str, value: &str| {
+        (!redrafting.contains(&field))
+            .then(|| field_opt(value))
+            .flatten()
+    };
     let current = crate::collections::Collection {
-        description: field_opt(&form.description),
+        description: mine("description", &form.description),
         creator: field_opt(&form.creator),
-        dates: field_opt(&form.dates),
-        subjects: split_subjects(&form.subjects),
-        narrative: field_opt(&form.narrative),
+        dates: mine("dates", &form.dates),
+        subjects: mine("subjects", &form.subjects)
+            .map(|s| split_subjects(&s))
+            .unwrap_or_default(),
+        narrative: mine("narrative", &form.narrative),
         ..saved
     };
     let scope = id.clone();
@@ -1024,13 +1037,33 @@ pub(super) async fn draft_collection(
         &form.narrative,
         &mut suggestions,
     );
+    // The drafted text of every field, carried in the form so Save can tell
+    // which fields the curator left as drafted: what this draft filled, what
+    // it suggests, and an earlier draft's text this one didn't replace.
+    let mut filled: Vec<String> = filled.iter().map(|f| f.to_string()).collect();
+    let mut texts: Vec<(String, String)> = suggestions.clone();
+    for (field, _, earlier) in form.drafts() {
+        let on_screen = match field {
+            "description" => &data.description,
+            "dates" => &data.dates,
+            "subjects" => &data.subjects,
+            _ => &data.narrative,
+        };
+        if filled.iter().any(|f| f == field) {
+            texts.push((field.to_string(), on_screen.clone()));
+        } else if redrafting.contains(&field) {
+            filled.push(field.to_string());
+            texts.push((field.to_string(), earlier.to_string()));
+        }
+    }
     let at = crate::describe::provenance(&drafting.llm, &[]).at;
     data.draft = Some(views::FormDraft {
         model: settings.model.clone(),
         service: settings.service(),
         at,
-        filled: filled.iter().map(|f| f.to_string()).collect(),
+        filled,
         suggestions,
+        texts,
     });
     views::collection_form(&data, &chrome).into_response()
 }
@@ -1158,17 +1191,15 @@ pub(super) struct CollectionForm {
     subjects: String,
     #[serde(default)]
     narrative: String,
-    // A draft's provenance and choices, carried through the editor after the
-    // Draft button: which model, which fields it filled, and which written
-    // fields the curator chose to replace with the draft's text.
+    // A draft, carried through the editor after the Draft button: which model
+    // made it, the text it drafted for each field (`draft_*`), and which
+    // written fields the curator chose to replace with it (`use_draft_*`).
     #[serde(default)]
     draft_model: String,
     #[serde(default)]
     draft_service: String,
     #[serde(default)]
     draft_at: String,
-    #[serde(default)]
-    drafted: String,
     #[serde(default)]
     use_draft_description: Option<String>,
     #[serde(default)]
@@ -1196,62 +1227,60 @@ fn split_subjects(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether `value` is `drafted`, word for word: what the curator would have
+/// had to leave alone for a field to count as the model's text. Line endings
+/// and the ends' whitespace don't count; subjects compare as a list.
+fn unedited(field: &str, value: &str, drafted: &str) -> bool {
+    let norm = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+    if drafted.trim().is_empty() {
+        return false;
+    }
+    match field {
+        "subjects" => split_subjects(value) == split_subjects(drafted),
+        _ => norm(value) == norm(drafted),
+    }
+}
+
 impl CollectionForm {
+    /// `(field, value on screen, drafted text)` for each draftable field.
+    fn drafts(&self) -> [(&'static str, &str, &str); 4] {
+        [
+            ("description", &self.description, &self.draft_description),
+            ("dates", &self.dates, &self.draft_dates),
+            ("subjects", &self.subjects, &self.draft_subjects),
+            ("narrative", &self.narrative, &self.draft_narrative),
+        ]
+    }
+
+    /// The fields still holding the draft's text, unedited.
+    fn unedited_drafts(&self) -> Vec<&'static str> {
+        self.drafts()
+            .into_iter()
+            .filter(|(f, value, drafted)| unedited(f, value, drafted))
+            .map(|(f, _, _)| f)
+            .collect()
+    }
+
     /// Swap in the draft's text for each written field the curator ticked
-    /// "use the draft instead", and work out which saved fields began as a
-    /// draft: those it filled (still holding text) plus those swapped in.
+    /// "use the draft instead", then record which fields hold the draft's
+    /// text word for word. A drafted field the curator edited is theirs.
     fn take_draft(&mut self) -> Option<crate::collections::Drafted> {
-        let mut fields: Vec<&str> = self
-            .drafted
-            .split(',')
-            .map(str::trim)
-            .filter(|f| crate::describe::DRAFTED_FIELDS.contains(f))
-            .collect();
-        let swaps = [
-            (
-                "description",
-                self.use_draft_description.is_some(),
-                self.draft_description.clone(),
-            ),
-            (
-                "dates",
-                self.use_draft_dates.is_some(),
-                self.draft_dates.clone(),
-            ),
-            (
-                "subjects",
-                self.use_draft_subjects.is_some(),
-                self.draft_subjects.clone(),
-            ),
-            (
-                "narrative",
-                self.use_draft_narrative.is_some(),
-                self.draft_narrative.clone(),
-            ),
-        ];
-        for (field, chosen, text) in swaps {
-            if !chosen || text.trim().is_empty() {
-                continue;
-            }
-            match field {
-                "description" => self.description = text,
-                "dates" => self.dates = text,
-                "subjects" => self.subjects = text,
-                _ => self.narrative = text,
-            }
-            fields.push(field);
+        if self.use_draft_description.is_some() && !self.draft_description.trim().is_empty() {
+            self.description = self.draft_description.clone();
         }
-        // A drafted field the curator emptied again isn't drafted text.
-        let still_written = |f: &str| match f {
-            "description" => !self.description.trim().is_empty(),
-            "dates" => !self.dates.trim().is_empty(),
-            "subjects" => !self.subjects.trim().is_empty(),
-            _ => !self.narrative.trim().is_empty(),
-        };
-        let fields: Vec<String> = crate::describe::DRAFTED_FIELDS
-            .iter()
-            .filter(|f| fields.contains(f) && still_written(f))
-            .map(|f| f.to_string())
+        if self.use_draft_dates.is_some() && !self.draft_dates.trim().is_empty() {
+            self.dates = self.draft_dates.clone();
+        }
+        if self.use_draft_subjects.is_some() && !self.draft_subjects.trim().is_empty() {
+            self.subjects = self.draft_subjects.clone();
+        }
+        if self.use_draft_narrative.is_some() && !self.draft_narrative.trim().is_empty() {
+            self.narrative = self.draft_narrative.clone();
+        }
+        let fields: Vec<String> = self
+            .unedited_drafts()
+            .into_iter()
+            .map(str::to_string)
             .collect();
         (!fields.is_empty() && !self.draft_model.trim().is_empty()).then(|| {
             crate::collections::Drafted {

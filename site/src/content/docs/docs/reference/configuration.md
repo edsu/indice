@@ -96,7 +96,7 @@ llm:
     [About our model service](https://example.org/llm)
 describe:
   # The most archived text and metadata to send, in characters. Omit for 24000.
-  # Lower it for a small model with a short context.
+  # Lower it for a small model with a short context; it can't go below 2000.
   max_input_chars: 24000
   # A prompt of your own instead of indice's, relative to the home. Omit to use
   # the built-in one.
@@ -108,7 +108,7 @@ If the service needs an API key, put it in the `INDICE_LLM_API_KEY` environment 
 - **What it drafts:** the description, the narrative, subjects and a dates statement. Never the creator, curator or rights, which the model could only guess at. Applying a draft fills only fields that are empty, unless the curator names one to replace.
 - **What it sends:** the collection's name and existing fields, each crawl's provenance and seed pages, counts of its sites, years, types and languages, and a sample of pages with the text the search index stored for them, up to `max_input_chars`. Text that opens most pages, such as a site's menu, is sent once at most. **That text goes to the endpoint you configure.** With a hosted service it leaves your machine; with a local model it doesn't.
 - **The prompt:** `indice collection draft <name> --show-prompt` prints exactly what would be sent, which is the place to start when writing a `prompt_file`. Whatever your prompt says, indice asks for JSON and accepts only the four descriptive fields from the answer.
-- **Provenance:** a finding aid records which fields began as a model's draft, which model and which service (the endpoint's host), in a `drafted:` entry in its front matter.
+- **Provenance:** a finding aid records which fields hold a model's drafted text, which model and which service (the endpoint's host), in a `drafted:` entry in its front matter. A field leaves the entry when someone rewrites it.
 
 The `notice` uses the same safe Markdown as the site banner. `indice config` shows the model and service in force, and whether a notice is set. A mistake in either section, such as `describe:` without `llm:`, a missing endpoint or model, or a `prompt_file` that can't be read, is reported when you use it.
 
