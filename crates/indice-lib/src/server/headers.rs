@@ -56,6 +56,10 @@ const APP_CRAWL: CrawlPolicy = CrawlPolicy {
     disallow: &["/files/", "/search", "/api/", "/manage/"],
     noindex: &[
         "/replay/",
+        // Replayed pages: `/crawl/{id}/{ts}/{url}` and the collection form.
+        // The crawl and collection pages themselves stay listable.
+        "/crawl/*/",
+        "/collection/*/*/",
         "/files/",
         "/thumb/",
         "/collection-thumb/",
@@ -253,5 +257,20 @@ mod tests {
         assert!(!robots_match("/collection/*/pages", "/collection/demo"));
         assert!(!robots_match("/replay/", "/collection/replay/x"));
         assert!(!robots_match("/files/", "/"));
+    }
+
+    #[test]
+    fn replayed_pages_are_not_listed_but_the_pages_about_them_are() {
+        let noindex = |p| super::APP_CRAWL.noindex(p);
+        assert!(noindex(
+            "/crawl/aeea520d/20250421164752/https://www.climate.gov/"
+        ));
+        assert!(noindex(
+            "/collection/climate-gov/20250421/https://www.climate.gov/"
+        ));
+        assert!(!noindex("/crawl/aeea520d"));
+        assert!(!noindex("/collection/climate-gov"));
+        assert!(!noindex("/collection/climate-gov/annotations"));
+        assert!(noindex("/collection/climate-gov/pages"));
     }
 }

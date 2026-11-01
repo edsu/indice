@@ -25,7 +25,7 @@ indice index <files>                  indice serve
        ├── WACZ metadata ──► Tantivy          ├── GET /search?q=    → search results
        └── manifest ───► collections.json     ├── GET /api/search   → search JSON
                                               ├── GET /files/{id}   → WACZ byte-range
-                                              └── GET /replay/viewer → viewer shell
+                                              └── GET /crawl/{id}/{ts}/{url} → viewer
                                                      │ frames
                                                      ▼
                                      [replay listener, its own origin]
@@ -141,7 +141,8 @@ it still resolves.
 | `GET /collection/{id}/replay.json` | wabac multi-WACZ manifest for replaying a whole collection |
 | `GET /collection/{id}/pages` | Collection page list + exact-URL→WACZ resolution (wabac `pagesQueryUrl`), from the index |
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
-| `GET /replay/viewer` | Viewer shell (reads `?source=&url=&ts=&name=&collection=` params): banner, notes panel, and the replay frame |
+| `GET /crawl/{id}/{ts}/{url}` | The replay viewer on one page of a crawl, as captured at `ts`: banner, notes panel, and the replay frame (see *Replay Viewer*) |
+| `GET /collection/{id}/{ts}/{url}` | The same, replaying the whole collection's crawls as one |
 | `GET /replay/annotations.{js,css}` | The viewer's notes panel. Nothing else under `/replay/` is served on this origin |
 
 The replay listener, on its own origin (see *Replay Viewer*), serves only these:
@@ -1036,10 +1037,22 @@ indice's finding aid plus crawl provenance already lean toward. Tracked by
 
 Replay is two pages, one inside the other, on two origins.
 
-`GET /replay/viewer` (`static/replay/viewer.html`) is the page every replay link opens. It
-reads `source`, `url`, `ts`, and `name` from its query string, renders the banner (collection
-name and current page URL) and the annotations panel, and embeds the replay frame in an
-iframe, passing its query on. It does not load ReplayWeb.page.
+The viewer (`static/replay/viewer.html`, `assets::replay_page`) is the page every replay link
+opens. Its address says what is being read and nothing else: `/crawl/{id}/{ts}/{url}` for a
+page of one crawl, `/collection/{id}/{ts}/{url}` for a page of a whole collection, in the
+manner of Wayback-style archives. `ts` is as many digits of the capture time as are known (or
+left out), and the archived URL follows as it is, scheme and query included; `url_in_path`
+encodes only what a link can't hold and drops the fragment. The server reads the archived URL
+from the raw path and query (axum's extractors would decode its escapes and drop its query),
+looks up the crawl or collection, and fills the page with what the viewer needs as JSON in a
+`<script type="application/json">`: the `source` ReplayWeb.page loads (the crawl's
+`/files/{id}` or the collection's `replay.json`), the page and time, and the names for the
+banner. A link therefore can't name a source of its own. The viewer renders the banner and the
+annotations panel, embeds the replay frame, and keeps its address following the page in view
+(`history.replaceState`), so the address bar always opens what the reader sees. A link to a
+note names it in the fragment (`#note={id}`), since the query belongs to the archived URL. The
+viewer does not load ReplayWeb.page. The request log records a replay path only as far as the
+crawl or collection (`loggable_path`), as it records a search's path and not its query.
 
 `GET /replay-frame` (`static/replay/frame.html`) mounts the `<replay-web-page>` component with
 the given `source`, `url` and `ts`, and loads `agent.js` beside it. Archived pages run their

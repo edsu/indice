@@ -144,7 +144,7 @@ async fn browser_renders_collection_with_hashless_members() {
     let result = render_check(
         &driver,
         addr,
-        &format!("/collection/{id}/replay.json"),
+        &id,
         "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179",
         "20260609213407",
         "2Tone",
@@ -177,13 +177,12 @@ async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Resu
     // Both pages are replayed through the SAME collection manifest source; only
     // the target url/ts differ. Each lives in a *different* member WACZ, so
     // rendering both proves wabac resolved them across members via our manifest.
-    let source = format!("/collection/{id}/replay.json");
 
     // Member A (a.wacz): the 200 HTML story page (the arcg.is seed 301s to it).
     render_check(
         driver,
         addr,
-        &source,
+        id,
         "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179",
         "20260609213407",
         "2Tone",
@@ -194,7 +193,7 @@ async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Resu
     render_check(
         driver,
         addr,
-        &source,
+        id,
         "https://github.com/DocNow/hydrator/pull/78/files",
         "20210417155642",
         "hydrator",
@@ -207,14 +206,12 @@ async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Resu
 async fn render_check(
     driver: &WebDriver,
     addr: SocketAddr,
-    source: &str,
+    collection: &str,
     url: &str,
     ts: &str,
     needle: &str,
 ) -> Result<(), String> {
-    let viewer = format!(
-        "http://{addr}/replay/viewer?source={source}&url={url}&ts={ts}&name=Test%20Collection&collection_id=test-collection"
-    );
+    let viewer = format!("http://{addr}/collection/{collection}/{ts}/{url}");
     driver.goto(&viewer).await.map_err(|e| e.to_string())?;
 
     // ReplayWeb.page lives in the viewer's replay frame; search there.

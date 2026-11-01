@@ -28,7 +28,9 @@ pub struct CrawlPage {
     pub note: Option<PreEscaped<String>>,
     /// `/thumb/{id}` for this crawl's representative image, if it has one.
     pub thumb: Option<String>,
-    pub replay_href: String,
+    /// The address that replays the crawl's first seed page; `None` when it
+    /// recorded none, as replay would have no page to open.
+    pub replay_href: Option<String>,
     /// Whether the crawl is hosted remotely (a URL or a streamed Browsertrix
     /// source) rather than stored in `<home>/archive`.
     pub remote: bool,
@@ -64,7 +66,9 @@ pub fn crawl(p: &CrawlPage) -> Markup {
             h1.page-title { (p.name) }
         }
         @if let Some(d) = &p.description { p.desc { (d) } }
-        div.actions { a.btn href=(p.replay_href) { "Replay" } }
+        @if let Some(href) = &p.replay_href {
+            div.actions { a.btn href=(href) { "Replay" } }
+        }
 
         @if let Some(n) = &p.note {
             section.about {

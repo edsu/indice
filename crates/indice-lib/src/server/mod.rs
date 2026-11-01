@@ -724,9 +724,12 @@ fn build_routers(
         .route("/collection/{id}/pages", get(collection_pages))
         .route("/collection/{id}/annotations", get(collection_annotations))
         .route("/crawl/{id}", get(crawl_page))
+        // Replay: `/crawl/{id}/{ts}/{url}`, `/collection/{id}/{ts}/{url}`.
+        // The routes above under `/collection/{id}/` are matched first.
+        .route("/crawl/{id}/{*page}", get(replay_page))
+        .route("/collection/{id}/{*page}", get(replay_page))
         .route("/thumb/{id}", get(thumb_handler))
         .route("/collection-thumb/{id}", get(collection_thumb_handler))
-        .route("/replay/viewer", get(replay_viewer))
         .route("/api/search", get(search_api))
         // Public read of page annotations (display is public; writes are gated below).
         .route("/api/annotations", get(list_annotations))
@@ -946,9 +949,10 @@ fn outer_layers(
         .layer(
             TraceLayer::new_for_http()
                 // The path, never the query string, and no address. A reader's
-                // searches and the pages they replay travel in the query
-                // (`/search?q=…`, `/replay/viewer?url=…`), and a log of them is
-                // a record of what people read, kept as long as the logs are.
+                // searches travel in the query (`/search?q=…`) and the pages
+                // they replay in the path (`/crawl/{id}/{ts}/{url}`, which
+                // `loggable_path` cuts short), and a log of them is a record of
+                // what people read, kept as long as the logs are.
                 // The address would be the proxy's on a server anyway. The id is
                 // what finds a failure, whose error is logged in full; the one
                 // address indice logs is a client a limit refused
@@ -959,7 +963,7 @@ fn outer_layers(
                         "request",
                         id = id.map(tracing::field::display),
                         method = %req.method(),
-                        path = %req.uri().path(),
+                        path = %loggable_path(req.uri().path()),
                     )
                 })
                 .on_response(

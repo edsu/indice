@@ -1639,7 +1639,7 @@ async fn serve_with_config(
 /// to show they are escaped, not interpreted.
 #[tokio::test]
 async fn site_text_names_the_archive_everywhere() {
-    let (_tmp, base, server) = serve_with_config(
+    let (tmp, base, server) = serve_with_config(
         "site:\n  name: Ada & Co <Archive>\n  tagline: Pages <i>we</i> kept\n  banner: |\n    \
          **Demo**: see [about](https://example.org).\n    \
          <script>alert(1)</script> [x](javascript:alert(1))\n",
@@ -1702,7 +1702,14 @@ async fn site_text_names_the_archive_everywhere() {
     );
     assert!(search.contains(r#"class="site-banner""#), "{search}");
 
-    let (_, viewer) = get(format!("{base}/replay/viewer")).await;
+    // The viewer, on a page of a collection: a finding aid is enough.
+    std::fs::create_dir_all(tmp.path().join("collections/demo")).unwrap();
+    std::fs::write(
+        tmp.path().join("collections/demo/README.md"),
+        "---\nname: demo\n---\n",
+    )
+    .unwrap();
+    let (_, viewer) = get(format!("{base}/collection/demo/2025/https://example.org/")).await;
     assert!(
         viewer.contains(&format!("<title>Replay - {name}</title>")),
         "{viewer}"

@@ -7,19 +7,15 @@
 // channel set up here.
 
 (function () {
-  const params = new URLSearchParams(window.location.search);
-  const source = params.get('source'); // e.g. /files/a926c132
-  const url    = params.get('url') || '';
-  const name   = params.get('name') || '';
-  const collection   = params.get('collection') || '';
-  const collectionId = params.get('collection_id') || '';
-  const crawlId      = params.get('crawl') || '';
-
-  if (!source) {
-    document.body.innerHTML =
-      '<div id="error">Missing <code>source</code> parameter.</div>';
-    return;
-  }
+  // What to replay, worked out by the server from this page's address
+  // (/crawl/{id}/{ts}/{url} or /collection/{id}/{ts}/{url}).
+  const ctx = JSON.parse(document.getElementById('replay-context').textContent);
+  const source = ctx.source; // e.g. /files/a926c132
+  const url    = ctx.url;
+  const name   = ctx.name;
+  const collection   = ctx.collection;
+  const collectionId = ctx.collectionId;
+  const crawlId      = ctx.crawl;
 
   // Breadcrumb: indice › <collection> › <crawl name> › <url>. The
   // collection crumb links to its collection page, and the crawl crumb to the
@@ -64,7 +60,7 @@
     if (d.length >= 12) text += ', ' + d.slice(8, 10) + ':' + d.slice(10, 12) + ' UTC';
     captured.textContent = text;
   }
-  showCaptured(params.get('ts'));
+  showCaptured(ctx.ts);
 
   // The frame's origin, from the server's configuration and never from a
   // message, because the check below is what everything trusting a
@@ -74,8 +70,12 @@
   const frameOrigin =
     document.querySelector('meta[name="indice-replay-origin"]').content;
 
-  const frameParams = new URLSearchParams(params);
-  frameParams.set('parent', window.location.origin);
+  const frameParams = new URLSearchParams({
+    source: source,
+    url: url,
+    ts: ctx.ts,
+    parent: window.location.origin,
+  });
   const frame = document.createElement('iframe');
   frame.id = 'replay-frame';
   frame.title = 'Archived page';
@@ -105,12 +105,29 @@
     window.dispatchEvent(new CustomEvent('indice-replay', { detail: d }));
   });
 
-  // Keep the banner URL in step as the reader navigates the archive.
+  // The archived URL as the tail of this page's address, as the server
+  // writes it (`url_in_path` in server/util.rs): readable, with only what a
+  // link can't hold encoded, and no fragment.
+  function inPath(u) {
+    return u.split('#')[0].replace(/["<>`{}|\\^\s]|[^\x21-\x7e]/gu, function (c) {
+      return encodeURIComponent(c);
+    });
+  }
+
+  // Keep the banner, and the address, in step as the reader navigates the
+  // archive, so the address in the bar is always one that opens the page in
+  // view. The frame's report is only a suggestion (see above), and at worst
+  // puts a different page of the same crawl or collection in the address.
   window.addEventListener('indice-replay', function (e) {
     const d = e.detail;
-    if (d.type === 'url' && typeof d.url === 'string' && d.url) {
+    if (d.type === 'url' && typeof d.url === 'string' && /^https?:\/\//.test(d.url)) {
       currentUrl.textContent = d.url;
       if (typeof d.ts === 'string') showCaptured(d.ts);
+      const ts = typeof d.ts === 'string' ? d.ts.replace(/\D/g, '').slice(0, 14) : '';
+      const path = ctx.base + '/' + (ts ? ts + '/' : '') + inPath(d.url);
+      if (path !== window.location.pathname + window.location.search) {
+        history.replaceState(null, '', path + window.location.hash);
+      }
     }
   });
 })();

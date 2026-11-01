@@ -24,47 +24,24 @@ pub(super) async fn crawl_page(
         return (StatusCode::NOT_FOUND, "Crawl not found").into_response();
     };
 
-    let source_enc = url_encode(&viewer_source(c));
     let display_name = c.display_name();
-    let name_enc = url_encode(&display_name);
-    // Breadcrumb + replay params for the containing collection (name + id).
+    // Breadcrumb for the containing collection (name + id).
     let col = manifest.collection_by_id(&c.collection);
     let crumb = col.map(|col| (col.id.to_string(), col.name.clone()));
-    let mut coll_q = col
-        .map(|col| {
-            format!(
-                "&collection={}&collection_id={}",
-                url_encode(&col.name),
-                url_encode(&col.id)
-            )
-        })
-        .unwrap_or_default();
-    // The crawl id, so the viewer's crawl crumb links back to this page.
-    coll_q.push_str(&format!("&crawl={}", url_encode(&c.id)));
 
-    // Replay button: first seed page, else the collection root.
-    let replay_href = match c.seed_pages.first() {
-        Some(p) => format!(
-            "/replay/viewer?source={source_enc}&url={}&ts={}&name={name_enc}{coll_q}",
-            url_encode(&p.url),
-            ts_to_14digit(&p.ts),
-        ),
-        None => format!("/replay/viewer?source={source_enc}&name={name_enc}{coll_q}"),
-    };
-
+    // Each seed page replays at its own address; the Replay button opens the
+    // first one.
+    let scope = ReplayScope::Crawl(&c.id);
     let pages: Vec<views::PageItem> = c
         .seed_pages
         .iter()
         .map(|p| views::PageItem {
-            href: format!(
-                "/replay/viewer?source={source_enc}&url={}&ts={}&name={name_enc}{coll_q}",
-                url_encode(&p.url),
-                ts_to_14digit(&p.ts),
-            ),
+            href: replay_href(scope, &p.ts, &p.url),
             title: p.title.clone().unwrap_or_else(|| p.url.clone()),
             url: p.url.clone(),
         })
         .collect();
+    let replay = pages.first().map(|p| p.href.clone());
 
     // Provenance panel: how this crawl was produced. Only rows with data show.
     let mut provenance = Vec::new();
@@ -192,7 +169,7 @@ pub(super) async fn crawl_page(
         note: crate::collections::read_crawl_note(&state.home, &c.collection, &id)
             .map(|n| crate::markdown::render(&n)),
         thumb: thumb_href(&state.home, &state.index_dir, &c.collection, &id),
-        replay_href,
+        replay_href: replay,
         // Fetched from a remote host at replay time, not stored in <home>/archive.
         remote: c.source.is_remote(),
         provenance,

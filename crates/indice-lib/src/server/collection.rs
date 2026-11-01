@@ -123,7 +123,7 @@ pub(super) async fn collection_page(
             },
             |_| false,
         ),
-        replay_href: collection_replay_href(&id, &c.name, collection_default_page(&members)),
+        replay_href: collection_replay_href(&id, collection_default_page(&members)),
         id: id.clone(),
         can_delete,
         chrome,
@@ -213,11 +213,11 @@ pub(super) async fn collection_annotations(
                 page_url: a.target.source.clone(),
                 // Names the note, so the page opens on its passage.
                 replay_href: format!(
-                    "{}&note={}",
-                    collection_replay_href(
-                        &id,
-                        &c.name,
-                        Some((a.target.source.clone(), a.target.timestamp.clone())),
+                    "{}#note={}",
+                    replay_href(
+                        ReplayScope::Collection(&id),
+                        &a.target.timestamp,
+                        &a.target.source
                     ),
                     url_encode(&a.id)
                 ),

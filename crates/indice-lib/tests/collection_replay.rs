@@ -123,21 +123,21 @@ async fn collection_replay_button_opens_on_a_default_landing_page() {
     let (status, html) = get_text(app, &format!("/collection/{id}")).await;
     assert_eq!(status, StatusCode::OK);
 
-    // The "Replay collection" button points at the multi-WACZ manifest and, since
-    // a whole-collection entry has no page in mind, carries a default url+ts (the
-    // first member's first seed page) so the viewer opens on a real page. On the
+    // The "Replay collection" button replays the whole collection and, since
+    // a whole-collection entry has no page in mind, opens on a default page
+    // (the first member's first seed page) at its capture time. On the
     // read-only collection page the action row has just this one `.btn`.
     let btn = html
         .split("class=\"btn\" href=\"")
         .nth(1)
         .and_then(|s| s.split('"').next())
         .expect("replay button href present");
-    assert!(
-        btn.contains("replay.json"),
-        "targets the collection manifest"
-    );
-    assert!(btn.contains("url="), "carries a default landing url");
-    assert!(btn.contains("ts="), "carries a default landing ts");
+    let tail = btn
+        .strip_prefix(&format!("/collection/{id}/"))
+        .expect("a whole-collection replay address");
+    let (ts, url) = tail.split_once('/').expect("a time and a page");
+    assert_eq!(ts.len(), 14, "the default page's capture time: {btn}");
+    assert!(url.starts_with("http"), "the default page: {btn}");
 }
 
 #[tokio::test]

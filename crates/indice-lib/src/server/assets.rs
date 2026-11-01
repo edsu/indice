@@ -153,21 +153,58 @@ fn parse_byte_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
     }
 }
 
-/// The placeholder in `viewer.html` that [`replay_viewer`] fills with the
+/// The placeholder in `viewer.html` that [`replay_page`] fills with the
 /// replay origin.
 const REPLAY_ORIGIN_SLOT: &str = "{{replay_origin}}";
 
-/// The placeholder in `viewer.html` that [`replay_viewer`] fills with the
+/// The placeholder in `viewer.html` that [`replay_page`] fills with the
 /// site name (`site.name`), for the title and the link home.
 const SITE_NAME_SLOT: &str = "{{site_name}}";
 
-/// The viewer, told where replay runs. The origin goes into the page rather
-/// than coming from the frame, because the viewer checks every message against
-/// it: it has to come from configuration, which archived script cannot touch.
-pub(super) async fn replay_viewer(
+/// The placeholder in `viewer.html` that [`replay_page`] fills with what to
+/// replay, as JSON (see [`ReplayContext`]).
+const REPLAY_CONTEXT_SLOT: &str = "{{replay_context}}";
+
+/// What the viewer needs to replay a page and label it, worked out from the
+/// replay path so the link carries none of it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplayContext {
+    /// The scope's page (`/crawl/{id}` or `/collection/{id}`), which the
+    /// viewer's address follows as the reader moves between pages.
+    base: String,
+    /// What ReplayWeb.page loads: a crawl's `/files/{id}`, or a collection's
+    /// `replay.json`.
+    source: String,
+    url: String,
+    ts: String,
+    /// The crawl's name, or the collection's for a whole-collection replay.
+    name: String,
+    collection: String,
+    collection_id: String,
+    /// The crawl's id, for its crumb; empty for a whole collection.
+    crawl: String,
+}
+
+/// `GET /crawl/{id}/{ts}/{url}` and `GET /collection/{id}/{ts}/{url}`: the
+/// replay viewer, for one page of a crawl or of a whole collection.
+///
+/// The archived URL is read from the raw path and query rather than through
+/// axum's extractors, which would decode its own `%` escapes and drop its
+/// query, and the archived URL is exactly what replay looks up.
+///
+/// The replay origin goes into the page rather than coming from the frame,
+/// because the viewer checks every message against it: it has to come from
+/// configuration, which archived script cannot touch.
+pub(super) async fn replay_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Response {
+    let not_found = || (StatusCode::NOT_FOUND, "not found").into_response();
+    let Some(target) = parse_replay_path(uri.path(), uri.query()) else {
+        return not_found();
+    };
     let Some(origin) = &state.replay_origin else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -175,22 +212,56 @@ pub(super) async fn replay_viewer(
         )
             .into_response();
     };
-    let Some(file) = ReplayAssets::get("viewer.html") else {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e).into_response(),
     };
+    let context = if target.kind == "crawl" {
+        let Some(w) = manifest.wacz_by_id(&target.id) else {
+            return not_found();
+        };
+        let col = manifest.collection_by_id(&w.collection);
+        ReplayContext {
+            base: ReplayScope::Crawl(&w.id).base(),
+            source: viewer_source(w),
+            url: target.url,
+            ts: target.ts,
+            name: w.display_name(),
+            collection: col.map(|c| c.name.clone()).unwrap_or_default(),
+            collection_id: col.map(|c| c.id.to_string()).unwrap_or_default(),
+            crawl: w.id.clone(),
+        }
+    } else {
+        let Some(c) = manifest.collection_by_id(&target.id) else {
+            return not_found();
+        };
+        ReplayContext {
+            base: ReplayScope::Collection(&c.id).base(),
+            source: format!("/collection/{}/replay.json", c.id),
+            url: target.url,
+            ts: target.ts,
+            name: c.name.clone(),
+            collection: c.name.clone(),
+            collection_id: c.id.to_string(),
+            crawl: String::new(),
+        }
+    };
+    let Some(file) = ReplayAssets::get("viewer.html") else {
+        return not_found();
+    };
+    // JSON in a `<script type="application/json">`: data the page reads, not
+    // script it runs, so the policy refusing inline script doesn't apply.
+    // `<` is escaped so no archived URL can close the element.
+    let json = serde_json::to_string(&context)
+        .unwrap_or_default()
+        .replace('<', "\\u003c");
     let html = String::from_utf8_lossy(&file.data)
         .replace(REPLAY_ORIGIN_SLOT, &html_escape(origin.as_str()))
-        .replace(SITE_NAME_SLOT, &html_escape(&state.site.name));
-    // The ETag covers the origin and the name too, so a restart with a
-    // different replay URL is not answered from a cached page that frames the
-    // old one, and a renamed site shows its new name.
+        .replace(SITE_NAME_SLOT, &html_escape(&state.site.name))
+        .replace(REPLAY_CONTEXT_SLOT, &json);
     let hash: [u8; 32] = {
         use sha2::Digest;
-        let mut h = sha2::Sha256::new();
-        h.update(file.metadata.sha256_hash());
-        h.update(origin.as_str().as_bytes());
-        h.update(state.site.name.as_bytes());
-        h.finalize().into()
+        sha2::Sha256::digest(html.as_bytes()).into()
     };
     serve_bytes(html.into_bytes().into(), &hash, "viewer.html", &headers)
 }

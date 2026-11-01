@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Filled in by the server: where replay runs. See `replay_viewer`. -->
   <meta name="indice-replay-origin" content="{{replay_origin}}">
+  <!-- Filled in by the server: what to replay, from the address. -->
+  <script type="application/json" id="replay-context">{{replay_context}}</script>
   <title>Replay - {{site_name}}</title>
   <!--
     The replay viewer: indice's chrome and the notes panel, around a frame that
@@ -13,11 +15,11 @@
     in the frame's origin. Messages from the frame are therefore suggestions:
     see viewer.js and annotations.js.
   -->
-  <script src="annotations.js"></script>
+  <script src="/replay/annotations.js"></script>
   <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
   <link rel="stylesheet" href="/assets/tokens.css">
-  <link rel="stylesheet" href="annotations.css">
-  <link rel="stylesheet" href="viewer.css">
+  <link rel="stylesheet" href="/replay/annotations.css">
+  <link rel="stylesheet" href="/replay/viewer.css">
 </head>
 <body>
   <div id="banner">
@@ -35,6 +37,6 @@
     <aside id="anno-panel"></aside>
   </div>
 
-  <script src="viewer.js"></script>
+  <script src="/replay/viewer.js"></script>
 </body>
 </html>

@@ -43,33 +43,160 @@ pub(super) fn viewer_source(col: &Wacz) -> String {
     format!("/files/{}", col.id)
 }
 
-/// The viewer URL that replays a whole collection (multi-WACZ): wabac loads the
-/// collection's `replay.json` manifest (see `collection_replay_json`) as one
-/// merged collection, cached under the collection's id, which the frame takes
-/// from the manifest's path. The rest are breadcrumb params.
-///
-/// A whole-collection entry has no page in mind, so it opens on a sensible
-/// default landing page (`default_page`) when one is known — otherwise wabac
-/// lands on its collection root. (Specific-context replay — a crawl's Replay
-/// button, a search result — carries its own `url`/`ts` and doesn't come through
-/// here.)
-pub(super) fn collection_replay_href(
-    id: &str,
-    name: &str,
-    default_page: Option<(String, String)>,
-) -> String {
-    let source = format!("/collection/{id}/replay.json");
-    let mut href = format!(
-        "/replay/viewer?source={}&name={}&collection={}&collection_id={}",
-        url_encode(&source),
-        url_encode(name),
-        url_encode(name),
-        url_encode(id),
-    );
-    if let Some((url, ts)) = default_page {
-        href.push_str(&format!("&url={}&ts={}", url_encode(&url), url_encode(&ts)));
+/// What a replay link replays: one crawl's WACZ, or a whole collection's
+/// crawls merged into one (see `collection_replay_json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReplayScope<'a> {
+    Crawl(&'a str),
+    Collection(&'a str),
+}
+
+impl ReplayScope<'_> {
+    /// The page the replay links sit under: `/crawl/{id}` or `/collection/{id}`.
+    pub(super) fn base(&self) -> String {
+        match self {
+            ReplayScope::Crawl(id) => format!("/crawl/{}", url_encode(id)),
+            ReplayScope::Collection(id) => format!("/collection/{}", url_encode(id)),
+        }
     }
-    href
+}
+
+/// The address that replays `url` as captured at `ts` within `scope`:
+/// `/crawl/{id}/{ts}/{url}` or `/collection/{id}/{ts}/{url}`, the archived URL
+/// written out as it is, scheme and query included, in the manner of
+/// Wayback-style archives. The server works out everything else the viewer
+/// needs (`replay_page`), so the link says only what is being read. A `ts`
+/// with no digits is left out and replay picks the capture.
+pub(super) fn replay_href(scope: ReplayScope, ts: &str, url: &str) -> String {
+    let ts = ts_to_14digit(ts);
+    let url = url_in_path(url);
+    if ts.is_empty() {
+        format!("{}/{url}", scope.base())
+    } else {
+        format!("{}/{ts}/{url}", scope.base())
+    }
+}
+
+/// An archived URL as the tail of a replay path. It stays readable: only what
+/// can't appear in a link (spaces, quotes, angle brackets, control and
+/// non-ASCII characters) is percent-encoded, as a browser would encode it
+/// when requesting the page. A `?` stays, and the server takes the query back
+/// as part of the URL; a `%` stays, as one of the URL's own escapes. The
+/// fragment is dropped: it never reaches a server, so replay ignores it.
+pub(super) fn url_in_path(url: &str) -> String {
+    let url = url.split('#').next().unwrap_or_default();
+    let mut out = String::with_capacity(url.len());
+    for b in url.bytes() {
+        match b {
+            b'"' | b'<' | b'>' | b'`' | b'{' | b'}' | b'|' | b'\\' | b'^' => {
+                out.push_str(&format!("%{b:02X}"))
+            }
+            0x21..=0x7E => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A replay path taken apart: the scope's kind (`crawl` or `collection`) and
+/// id, the capture time, and the archived URL. `path` is the request's raw
+/// path, still percent-encoded, and `query` its raw query, which belongs to
+/// the archived URL, which must be a web address. `None` when it isn't a
+/// replay path.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ReplayTarget {
+    pub kind: &'static str,
+    pub id: String,
+    pub ts: String,
+    pub url: String,
+}
+
+pub(super) fn parse_replay_path(path: &str, query: Option<&str>) -> Option<ReplayTarget> {
+    let rest = path.strip_prefix('/')?;
+    let (kind, rest) = rest.split_once('/')?;
+    let kind = match kind {
+        "crawl" => "crawl",
+        "collection" => "collection",
+        _ => return None,
+    };
+    let (id, rest) = rest.split_once('/')?;
+    let id = percent_decode(id);
+    // A capture time is all digits, as many as the reader knows (`2025` is
+    // fine: replay picks the nearest capture). Anything else starts the URL.
+    let (ts, url) = match rest.split_once('/') {
+        Some((ts, url))
+            if (1..=14).contains(&ts.len()) && ts.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            (ts.to_string(), url)
+        }
+        _ => (String::new(), rest),
+    };
+    if id.is_empty() || url.is_empty() {
+        return None;
+    }
+    // Something on the way may fold the `//` after the scheme to one slash.
+    let mut url = url.to_string();
+    for scheme in ["http:/", "https:/"] {
+        if url.starts_with(scheme) && !url[scheme.len()..].starts_with('/') {
+            url.insert(scheme.len(), '/');
+        }
+    }
+    // The tail stays as it came: its escapes are the URL's own, and replay
+    // treats `%20` and a space alike.
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return None;
+    }
+    if let Some(q) = query {
+        url.push('?');
+        url.push_str(q);
+    }
+    Some(ReplayTarget { kind, id, ts, url })
+}
+
+/// A path segment, percent-decoded.
+fn percent_decode(s: &str) -> String {
+    decode_where(s, |_| true)
+}
+
+/// Decode the `%XX` escapes in `s` whose byte `decode` accepts.
+fn decode_where(s: &str, decode: impl Fn(u8) -> bool) -> String {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                let b = h * 16 + l;
+                if decode(b) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A request path as the log records it. A replay path names the page a
+/// reader is reading, so the log keeps only which crawl or collection, as it
+/// keeps a search's path and not its query.
+pub(super) fn loggable_path(path: &str) -> std::borrow::Cow<'_, str> {
+    match parse_replay_path(path, None) {
+        Some(t) => format!("/{}/{}/…", t.kind, url_encode(&t.id)).into(),
+        None => path.into(),
+    }
+}
+
+/// The address that replays a whole collection, opening on `start` (a page's
+/// url and timestamp, usually `collection_default_page`). `None` without a
+/// start page: replay with no page to open shows nothing, so there is
+/// nothing to link to.
+pub(super) fn collection_replay_href(id: &str, start: Option<(String, String)>) -> Option<String> {
+    start.map(|(url, ts)| replay_href(ReplayScope::Collection(id), &ts, &url))
 }
 
 /// A sensible landing page for whole-collection replay: the first member (in

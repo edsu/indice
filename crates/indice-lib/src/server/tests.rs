@@ -619,3 +619,89 @@ fn blank_site_text_falls_back_to_the_defaults() {
     });
     assert_eq!(named.name, "Ada's archive", "surrounding space is trimmed");
 }
+
+/// A replay address names what is read and nothing else, and reads back as
+/// the same page: the archived URL's scheme, query and own escapes survive
+/// the round trip, and only what would break the address is encoded.
+#[test]
+fn a_replay_address_round_trips_the_archived_url() {
+    let cases = [
+        (
+            "https://www.climate.gov/",
+            "/crawl/aeea520d/20250421164752/https://www.climate.gov/",
+        ),
+        (
+            "https://ex.org/search?q=sea+ice&page=2",
+            "/crawl/aeea520d/20250421164752/https://ex.org/search?q=sea+ice&page=2",
+        ),
+    ];
+    for (url, href) in cases {
+        let built = replay_href(ReplayScope::Crawl("aeea520d"), "2025-04-21T16:47:52Z", url);
+        assert_eq!(built, href);
+        let (path, query) = match built.split_once('?') {
+            Some((p, q)) => (p.to_string(), Some(q.to_string())),
+            None => (built.clone(), None),
+        };
+        let t = parse_replay_path(&path, query.as_deref()).unwrap();
+        assert_eq!(
+            (t.kind, t.id.as_str(), t.ts.as_str(), t.url.as_str()),
+            ("crawl", "aeea520d", "20250421164752", url)
+        );
+    }
+}
+
+/// What can't go in an address is encoded as a browser would encode it, and
+/// the fragment, which never reaches a server, is dropped.
+#[test]
+fn a_replay_address_encodes_only_what_a_link_cannot_hold() {
+    assert_eq!(
+        replay_href(
+            ReplayScope::Crawl("c"),
+            "",
+            "https://ex.org/a%20b/caf\u{e9} x\"<>#top"
+        ),
+        "/crawl/c/https://ex.org/a%20b/caf%C3%A9%20x%22%3C%3E"
+    );
+    let t = parse_replay_path("/crawl/c/https://ex.org/caf%C3%A9%20x", None).unwrap();
+    assert_eq!(
+        t.url, "https://ex.org/caf%C3%A9%20x",
+        "left as the browser asks for it"
+    );
+}
+
+#[test]
+fn a_replay_path_takes_a_partial_time_or_none_and_mends_a_folded_scheme() {
+    let t =
+        parse_replay_path("/collection/climate-gov/2025/https:/www.climate.gov/", None).unwrap();
+    assert_eq!(t.kind, "collection");
+    assert_eq!(t.ts, "2025");
+    assert_eq!(t.url, "https://www.climate.gov/");
+    let t = parse_replay_path("/crawl/abc/https://ex.org/", None).unwrap();
+    assert_eq!((t.ts.as_str(), t.url.as_str()), ("", "https://ex.org/"));
+    assert_eq!(
+        replay_href(ReplayScope::Collection("c"), "", "https://ex.org/"),
+        "/collection/c/https://ex.org/"
+    );
+    assert!(parse_replay_path("/crawl/abc", None).is_none());
+    assert!(parse_replay_path("/crawl/abc/", None).is_none());
+    assert!(parse_replay_path("/search/x/y", None).is_none());
+    assert!(
+        parse_replay_path("/collection/c/pages", None).is_none(),
+        "not a web address"
+    );
+}
+
+/// The log keeps which crawl or collection was replayed, never the page.
+#[test]
+fn a_replay_path_is_logged_without_the_page() {
+    assert_eq!(
+        loggable_path("/crawl/aeea520d/20250421164752/https://www.climate.gov/x"),
+        "/crawl/aeea520d/…"
+    );
+    assert_eq!(
+        loggable_path("/collection/c/2025/https://ex.org/"),
+        "/collection/c/…"
+    );
+    assert_eq!(loggable_path("/crawl/aeea520d"), "/crawl/aeea520d");
+    assert_eq!(loggable_path("/collection/c/pages"), "/collection/c/pages");
+}
