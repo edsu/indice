@@ -33,12 +33,22 @@ fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")).join(name)
 }
 
+/// A page of the "demo" collection in the replay viewer.
+const VIEWER: &str = "/collection/demo/20250101000000/https://example.org/";
+
 /// A server's two routers, with a curator on the roster so a write that
 /// reached a handler would be allowed to run.
 fn server(home: &Path) -> Routers {
     std::fs::write(
         home.join("users.yaml"),
         "users:\n  - id: curator@x.edu\n    role: curator\n",
+    )
+    .unwrap();
+    // A collection to open the viewer on: a finding aid is enough.
+    std::fs::create_dir_all(home.join("collections/demo")).unwrap();
+    std::fs::write(
+        home.join("collections/demo/README.md"),
+        "---\nname: demo\n---\n",
     )
     .unwrap();
     let mut config = proxy_config();
@@ -88,7 +98,7 @@ async fn get(router: &axum::Router, path: &str) -> (StatusCode, String) {
 async fn the_viewer_frames_the_configured_replay_origin() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, .. } = server(tmp.path());
-    let (status, html) = get(&app, "/replay/viewer").await;
+    let (status, html) = get(&app, VIEWER).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(&format!("content=\"{REPLAY}\"")),
@@ -109,6 +119,55 @@ async fn the_viewer_frames_the_configured_replay_origin() {
         !html.contains("ui.js"),
         "viewer must not load ReplayWeb.page"
     );
+}
+
+/// The viewer works out what to replay from its address: the collection's
+/// manifest as the source, and the page and time as written. Unknown crawls,
+/// collections and non-web addresses are not pages to replay.
+#[tokio::test]
+async fn the_viewer_takes_what_to_replay_from_its_address() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let (status, html) = get(
+        &app,
+        "/collection/demo/2025/https://example.org/search?q=sea%20ice&p=2",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for expected in [
+        r#""source":"/collection/demo/replay.json""#,
+        r#""url":"https://example.org/search?q=sea%20ice&p=2""#,
+        r#""ts":"2025""#,
+        r#""base":"/collection/demo""#,
+        r#""collectionId":"demo""#,
+    ] {
+        assert!(html.contains(expected), "{expected}: {html}");
+    }
+    // Nothing in the address can close the element holding it.
+    let (_, html) = get(
+        &app,
+        "/collection/demo/https://example.org/%3C/script%3E%3Cb%3E",
+    )
+    .await;
+    assert_eq!(
+        html.matches("</script>").count(),
+        3,
+        "only the page's own: {html}"
+    );
+
+    for path in [
+        "/crawl/nope/2025/https://example.org/",
+        "/collection/nope/2025/https://example.org/",
+        "/collection/demo/2025/not-a-web-address",
+        "/collection/demo/",
+    ] {
+        // 404, or the forward-auth guard's 403 for a path with no route.
+        let (status, _) = get(&app, path).await;
+        assert!(
+            matches!(status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN),
+            "{path}: {status}"
+        );
+    }
 }
 
 /// Anything on the app origin that could boot ReplayWeb.page could be framed
@@ -168,11 +227,11 @@ async fn the_viewer_files_are_the_apps() {
 async fn the_viewers_etag_follows_the_replay_origin() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, .. } = server(tmp.path());
-    let (_, a, _) = call(&app, Method::GET, "/replay/viewer", &[]).await;
+    let (_, a, _) = call(&app, Method::GET, VIEWER, &[]).await;
     let mut config = proxy_config();
     config.replay_origin = Some(ReplayOrigin::parse("https://elsewhere.example.test").unwrap());
     let other = indice_lib::server::routers(tmp.path(), config).unwrap().app;
-    let (_, b, _) = call(&other, Method::GET, "/replay/viewer", &[]).await;
+    let (_, b, _) = call(&other, Method::GET, VIEWER, &[]).await;
     assert_ne!(a.get("etag"), b.get("etag"));
 }
 
@@ -183,7 +242,7 @@ async fn a_viewer_without_a_replay_origin_says_so() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
     let app = indice_lib::server::router(tmp.path(), proxy_config()).unwrap();
-    let (status, body) = get(&app, "/replay/viewer").await;
+    let (status, body) = get(&app, VIEWER).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body.contains("replay"), "{body}");
 }
@@ -274,7 +333,7 @@ async fn the_replay_origin_has_no_write_or_page_routes() {
         "/manage/login",
         "/api/search?q=x",
         "/api/annotations?collection=x",
-        "/replay/viewer",
+        VIEWER,
         "/crawl/x",
         "/collection/x",
     ] {

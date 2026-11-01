@@ -40,11 +40,7 @@ pub(super) async fn homepage(
                 name: c.name.clone(),
                 count: members.len(),
                 description: c.description.clone(),
-                replay_href: collection_replay_href(
-                    &c.id,
-                    &c.name,
-                    collection_default_page(&members),
-                ),
+                replay_href: collection_replay_href(&c.id, collection_default_page(&members)),
                 // Capture date range (temporal span is meaningful at the
                 // collection level; per-tool software lives on the WACZ page).
                 date_range: members_capture_range(&members),
@@ -206,16 +202,6 @@ pub(super) async fn search_page(
     };
     let results = &response.results;
 
-    // Map each WACZ id to the wabac `source` to use: /files/{id} for a local
-    // WACZ, or the remote URL directly for an http source.
-    let waczs = load_waczs(&state);
-    let source_for = |wacz_id: &str| -> String {
-        waczs
-            .iter()
-            .find(|w| w.id == wacz_id)
-            .map(viewer_source)
-            .unwrap_or_else(|| format!("/files/{wacz_id}"))
-    };
     // Ids -> the names a reader sees: collections for the "in <collection>"
     // link and the collection facet, crawls for the replay banner.
     let manifest = Manifest::open(&state.index_dir).ok();
@@ -270,38 +256,22 @@ pub(super) async fn search_page(
                 r.title.clone()
             };
 
+            // Where a page can't be replayed (a note on no page, a URL replay
+            // can't open), the crawl or collection it belongs to.
+            let crawl_page = format!("/crawl/{}", url_encode(&r.crawl_id));
             let href = if is_annotation {
                 // Notes carry no crawl; open the annotated page in the collection
                 // replay (where the note re-anchors + highlights via the panel).
-                format!(
-                    "{}&note={}",
-                    collection_replay_href(
-                        &r.collection,
-                        &coll_display,
-                        Some((r.url.clone(), r.timestamp.clone())),
-                    ),
-                    url_encode(&r.annotation_id)
-                )
-            } else {
-                let name_enc = url_encode(&crawl_name(r));
-                let source_enc = url_encode(&source_for(&r.crawl_id));
-                // Carry the breadcrumb into the replay viewer: the collection
-                // (name + id) and the crawl id (so its crumb links to the crawl).
-                let coll_q = format!(
-                    "&collection={}&collection_id={coll_href}&crawl={}",
-                    url_encode(&coll_display),
-                    url_encode(&r.crawl_id)
-                );
-                if is_collection {
-                    // Link to the collection's root in the viewer.
-                    format!("/replay/viewer?source={source_enc}&name={name_enc}{coll_q}")
-                } else {
-                    format!(
-                        "/replay/viewer?source={source_enc}&url={}&ts={}&name={name_enc}{coll_q}",
-                        url_encode(&r.url),
-                        r.timestamp
-                    )
+                match replay_href(ReplayScope::Collection(&r.collection), &r.timestamp, &r.url) {
+                    Some(href) => format!("{href}#note={}", url_encode(&r.annotation_id)),
+                    None => format!("/collection/{coll_href}"),
                 }
+            } else if is_collection {
+                // A crawl's own record: its page, which has the Replay button.
+                crawl_page
+            } else {
+                replay_href(ReplayScope::Crawl(&r.crawl_id), &r.timestamp, &r.url)
+                    .unwrap_or(crawl_page)
             };
 
             // Prefer the hit-highlighted body snippet; if the query didn't match

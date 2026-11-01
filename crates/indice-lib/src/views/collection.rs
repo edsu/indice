@@ -43,8 +43,9 @@ pub struct CollectionPage {
     pub members: Vec<MemberItem>,
     /// Pages crawled per month across the collection's span.
     pub crawl_months: Vec<TimelineBar>,
-    /// Viewer URL that replays the whole collection (multi-WACZ).
-    pub replay_href: String,
+    /// The address that replays the whole collection (multi-WACZ), when it
+    /// has a page to open on.
+    pub replay_href: Option<String>,
     /// Collection id (slug) — for the edit / add-crawls links.
     pub id: String,
     /// Whether to render the danger zone. Deaccession is an admin act, so a
@@ -122,8 +123,8 @@ pub fn collection(p: &CollectionPage) -> Markup {
         // One action row: Replay plus, in workroom mode, the edit-in-place
         // curation actions — all the same button treatment.
         div.actions {
-            @if !p.members.is_empty() {
-                a.btn href=(p.replay_href) { "Replay collection" }
+            @if let Some(href) = &p.replay_href {
+                a.btn href=(href) { "Replay collection" }
             }
             @if p.chrome.manage {
                 a.btn.edit href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }

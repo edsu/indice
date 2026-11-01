@@ -74,7 +74,18 @@ fn assert_common(h: &HeaderMap, what: &str) {
 async fn the_app_origin_allows_only_its_own_code() {
     let tmp = TempDir::new().unwrap();
     let Routers { app, .. } = routers(tmp.path(), config());
-    for path in ["/", "/replay/viewer", "/assets/app.css", "/no-such-page"] {
+    std::fs::create_dir_all(tmp.path().join("collections/demo")).unwrap();
+    std::fs::write(
+        tmp.path().join("collections/demo/README.md"),
+        "---\nname: demo\n---\n",
+    )
+    .unwrap();
+    for path in [
+        "/",
+        "/collection/demo/2025/https://example.org/",
+        "/assets/app.css",
+        "/no-such-page",
+    ] {
         let h = headers(&app, Method::GET, path, &[]).await;
         assert_common(&h, path);
         let policy = csp(&h);
@@ -283,7 +294,8 @@ async fn crawlers_list_only_indices_own_pages_and_skip_what_is_costly() {
     }
     // Not indice's own: fetchable, so the crawler sees that it is not to be listed.
     for path in [
-        "/replay/viewer",
+        "/crawl/x/2025/https://example.org/",
+        "/collection/x/2025/https://example.org/",
         "/thumb/x",
         "/collection-thumb/x",
         "/collection/x/replay.json",

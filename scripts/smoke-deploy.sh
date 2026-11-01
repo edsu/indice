@@ -162,8 +162,10 @@ chk 200 "$(code "$B/")" "an anonymous visitor gets the homepage, not a login red
 chk 200 "$(code "$B/api/search?q=apod")" "public search"
 chk 200 "$(code "$B/api/annotations?collection=apod")" "public annotations API is NOT behind the login"
 chk 200 "$(code "$B/collection/apod")" "public collection page"
-chk 200 "$(code "$B/replay/viewer")" "replay viewer"
-chk 1 "$(curl -s --max-time 15 "$B/replay/viewer" | grep -c "content=\"${R}\"")" \
+# The viewer, at the address the collection's Replay button links to.
+viewer=$(curl -s --max-time 15 "$B/collection/apod" | grep -o 'href="/collection/apod/[0-9]*/http[^"]*"' | head -1 | sed 's/^href="//; s/"$//')
+chk 200 "$(code "$B${viewer:-/collection/apod/no-replay-link}")" "replay viewer"
+chk 1 "$(curl -s --max-time 15 "$B$viewer" | grep -c "content=\"${R}\"")" \
 	"the viewer frames the replay origin"
 site_hdrs=$(curl -s -D- -o /dev/null --max-time 15 "$B/")
 chk 1 "$(grep -ci '^content-security-policy:.*frame-src '"${R}" <<<"$site_hdrs")" \

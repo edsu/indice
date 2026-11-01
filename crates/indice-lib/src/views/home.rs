@@ -12,8 +12,9 @@ pub struct CollectionCard {
     pub count: usize,
     pub description: Option<String>,
     pub date_range: Option<String>,
-    /// Viewer URL that replays the whole collection (multi-WACZ).
-    pub replay_href: String,
+    /// The address that replays the whole collection (multi-WACZ), when it
+    /// has a page to open on.
+    pub replay_href: Option<String>,
     /// `/thumb/{id}` for a representative member crawl, if any has one.
     pub thumb: Option<String>,
     /// Whether the collection has any locally-stored / any remote member — both
@@ -129,13 +130,13 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                         @if let Some(d) = &c.description {
                             p.desc { (d) }
                         }
-                        @if c.date_range.is_some() || c.count > 0 {
+                        @if c.date_range.is_some() || c.replay_href.is_some() {
                             div.card-footer {
                                 @if let Some(r) = &c.date_range {
                                     div.prov { (r) }
                                 }
-                                @if c.count > 0 {
-                                    a.btn href=(c.replay_href) { "Replay" }
+                                @if let Some(href) = &c.replay_href {
+                                    a.btn href=(href) { "Replay" }
                                 }
                             }
                         }

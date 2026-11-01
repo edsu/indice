@@ -524,8 +524,8 @@ async fn crawl_page_shows_metadata_and_pages() {
         "a local crawl should say it is stored here"
     );
     assert!(
-        html.contains(&format!("crawl={id}")),
-        "replay links should carry the crawl id so the viewer crumb can link back"
+        html.contains(&format!("href=\"/crawl/{id}/")),
+        "seed pages replay at the crawl's own addresses"
     );
     // a.wacz's seed page (title "2Tone: The Sound of Britain").
     assert!(html.contains("2Tone"), "should list the crawl's pages");
@@ -1150,23 +1150,32 @@ async fn index_from_http_url_and_replay_through_files() {
     // replay origin replays only this server's paths. That path redirects to
     // the remote URL, so the bytes still come from the remote host.
     let app2 = public_router(tmp.path());
-    let resp = app2
-        .clone()
-        .oneshot(
-            Request::get(format!("/crawl/{}", col.id))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
+    let page = |path: String| {
+        let app = app2.clone();
+        async move {
+            let resp = app
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            String::from_utf8(body.to_vec()).unwrap()
+        }
+    };
+    let html = page(format!("/crawl/{}", col.id)).await;
+    let prefix = format!("href=\"/crawl/{}/", col.id);
+    let replay = html
+        .split(&prefix)
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .map(|tail| format!("/crawl/{}/{tail}", col.id))
+        .expect("a replay link");
+    let viewer = page(replay.replace("&amp;", "&")).await;
     assert!(
-        html.contains(&format!("source=%2Ffiles%2F{}", col.id)),
-        "a remote crawl replays through its own /files/{{id}}"
+        viewer.contains(&format!(r#""source":"/files/{}""#, col.id)),
+        "a remote crawl replays through its own /files/{{id}}: {viewer}"
     );
     assert!(
-        !html.contains("source=http%3A%2F%2F127.0.0.1"),
+        !viewer.contains(r#""source":"http"#),
         "the remote URL is never handed to the viewer, which would refuse it"
     );
     let resp = app2

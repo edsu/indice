@@ -377,12 +377,16 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
   function init() {
-    const p = new URLSearchParams(window.location.search);
-    state.collection = p.get("collection_id") || p.get("collection") || "";
-    state.url = p.get("url") || "";
-    state.ts = p.get("ts") || "";
-    // A link from the notes list names the note it is for: open on it.
-    state.openOn = p.get("note") || "";
+    // What is being replayed, from the server (see viewer.html).
+    const ctxEl = document.getElementById("replay-context");
+    const ctx = ctxEl ? JSON.parse(ctxEl.textContent || "{}") : {};
+    state.collection = ctx.collectionId || "";
+    state.url = ctx.url || "";
+    state.ts = ctx.ts || "";
+    // A link from the notes list names the note it is for, in the fragment
+    // (`#note={id}`), since the query belongs to the archived URL.
+    const note = window.location.hash.match(/^#note=([^&]+)/);
+    state.openOn = note ? decodeURIComponent(note[1]) : "";
     if (!state.collection) {
       // No collection context to scope notes to: hide the panel + toggle so a
       // plain replay isn't left with an empty 340px strip and an inert button.

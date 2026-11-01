@@ -136,9 +136,7 @@ async fn browser_renders_archived_page() {
 async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {
     // The 200 HTML capture of the story page (the arcg.is seed is a 301 to it).
     let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
-    let url = format!(
-        "http://{addr}/replay/viewer?source=/files/{id}&url={page_url}&ts=20260609213407&name=2Tone"
-    );
+    let url = format!("http://{addr}/crawl/{id}/20260609213407/{page_url}");
     driver.goto(&url).await.map_err(|e| e.to_string())?;
 
     // The banner is rendered by our own viewer JS immediately - a quick sanity
@@ -206,21 +204,25 @@ async fn check_banner_tracks_navigation(driver: &WebDriver) -> Result<(), String
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut last = String::new();
     while Instant::now() <= deadline {
-        let banner = driver
+        // The banner, and the address, which follows so that it always
+        // opens the page in view.
+        let seen = driver
             .execute(
-                "return document.getElementById('current-url').textContent;",
+                "return document.getElementById('current-url').textContent
+                   + ' ' + window.location.pathname;",
                 vec![],
             )
             .await
             .map_err(|e| e.to_string())?;
-        last = banner.json().as_str().unwrap_or("").to_string();
-        if last == new_url {
+        last = seen.json().as_str().unwrap_or("").to_string();
+        if last.starts_with(&format!("{new_url} /crawl/")) && last.ends_with(&format!("/{new_url}"))
+        {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Err(format!(
-        "banner did not track rwp-url-change: expected {new_url}, got {last:?}"
+        "banner and address did not track rwp-url-change: expected {new_url}, got {last:?}"
     ))
 }
 
@@ -369,10 +371,7 @@ async fn annotate_through_viewer(
     id: &str,
 ) -> Result<(), String> {
     let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
-    let viewer = format!(
-        "http://{addr}/replay/viewer?source=/files/{id}&url={page_url}&ts=20260609213407\
-         &name=2Tone&collection=notes&collection_id=notes"
-    );
+    let viewer = format!("http://{addr}/crawl/{id}/20260609213407/{page_url}");
     driver.goto(&viewer).await.map_err(|e| e.to_string())?;
 
     // Wait for the archived page, then select a passage in it. The agent only
@@ -551,10 +550,16 @@ async fn annotate_through_viewer(
     )
     .await?;
 
-    // A link that names the note, as the notes list's does, opens on it.
+    // A link that names the note, as the notes list's does, opens on it. It
+    // names it in the fragment, since the query belongs to the archived URL,
+    // and is followed from another page, as a reader arrives from the list.
     let note_id = saved["id"].as_str().unwrap_or_default();
     driver
-        .goto(&format!("{viewer}&note={}", note_id))
+        .goto(&format!("http://{addr}/"))
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .goto(&format!("{viewer}#note={note_id}"))
         .await
         .map_err(|e| e.to_string())?;
     wait_for_highlight(
@@ -743,10 +748,7 @@ async fn a_hostile_capture_cannot_write_as_the_reader() {
 
 /// Replay the hostile page and return what its script reported doing.
 async fn replay_hostile(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<String, String> {
-    let viewer = format!(
-        "http://{addr}/replay/viewer?source=/files/{id}&url=https://hostile.example/\
-         &ts=20260101000000&name=Hostile"
-    );
+    let viewer = format!("http://{addr}/crawl/{id}/20260101000000/https://hostile.example/");
     driver.goto(&viewer).await.map_err(|e| e.to_string())?;
     enter_replay_frame(driver).await?;
     let read = format!(
@@ -814,7 +816,7 @@ async fn the_replay_frame_refuses_to_replay_unframed() {
 async fn open_frame_unframed(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {
     // The replay origin, as the viewer is told it.
     driver
-        .goto(&format!("http://{addr}/replay/viewer?source=/files/{id}"))
+        .goto(&format!("http://{addr}/crawl/{id}/https://example.org/"))
         .await
         .map_err(|e| e.to_string())?;
     let replay = driver
@@ -917,10 +919,7 @@ async fn collect_violations(
         "/manage/add".to_string(),
         "/manage/collections/new".to_string(),
         "/manage/edit/csp".to_string(),
-        format!(
-            "/replay/viewer?source=/files/{id}&url={page_url}&ts=20260609213407\
-             &name=2Tone&collection=csp&collection_id=csp"
-        ),
+        format!("/crawl/{id}/20260609213407/{page_url}"),
     ];
     let mut violations = Vec::new();
     for page in &pages {
@@ -1030,13 +1029,8 @@ async fn renders_within(driver: &WebDriver, secs: u64) -> Result<bool, String> {
 async fn try_foreign_replays(driver: &WebDriver, addr: SocketAddr, id: &str) -> Result<(), String> {
     let page_url = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
     let ts = "20260609213407";
-    let viewer = |source: &str| {
-        format!("http://{addr}/replay/viewer?source={source}&url={page_url}&ts={ts}&name=x")
-    };
-    driver
-        .goto(&viewer(&format!("/files/{id}")))
-        .await
-        .map_err(|e| e.to_string())?;
+    let viewer = format!("http://{addr}/crawl/{id}/{ts}/{page_url}");
+    driver.goto(&viewer).await.map_err(|e| e.to_string())?;
     let replay = driver
         .execute(
             "return document.querySelector('meta[name=\"indice-replay-origin\"]').content;",
@@ -1060,12 +1054,22 @@ async fn try_foreign_replays(driver: &WebDriver, addr: SocketAddr, id: &str) -> 
         return Err("the shell replayed when opened directly, before the worker".into());
     }
 
-    // 2. A foreign WACZ, named in a viewer link. It is a real archive, the
-    //    same bytes served by the site rather than the replay host, so nothing
-    //    but where it comes from stops it.
-    let foreign = url_escape(&format!("http://{addr}/files/{id}"));
+    // 2. A foreign WACZ, handed to the frame. A viewer link can no longer
+    //    name a source (the server works it out from the crawl), so this
+    //    points the viewer's own frame at one, as a page that could frame the
+    //    replay origin might. It is a real archive, the same bytes served by
+    //    the site rather than the replay host, so nothing but where it comes
+    //    from stops it.
+    driver.goto(&viewer).await.map_err(|e| e.to_string())?;
+    let foreign = format!("http://{addr}/files/{id}");
     driver
-        .goto(&viewer(&foreign))
+        .execute(
+            "const f = document.getElementById('replay-frame');
+             const u = new URL(f.src);
+             u.searchParams.set('source', arguments[0]);
+             f.src = u.toString();",
+            vec![serde_json::json!(foreign)],
+        )
         .await
         .map_err(|e| e.to_string())?;
     enter_replay_frame(driver).await?;
@@ -1082,10 +1086,7 @@ async fn try_foreign_replays(driver: &WebDriver, addr: SocketAddr, id: &str) -> 
 
     // 3. An ordinary replay, which installs the service worker on the replay
     //    origin, and shows the guard lets indice's own replay through.
-    driver
-        .goto(&viewer(&format!("/files/{id}")))
-        .await
-        .map_err(|e| e.to_string())?;
+    driver.goto(&viewer).await.map_err(|e| e.to_string())?;
     enter_replay_frame(driver).await?;
     if !renders_within(driver, 45).await? {
         let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
@@ -1169,8 +1170,9 @@ async fn a_crawl_added_by_url_replays() {
             .map_err(|e| e.to_string())?;
         let href = driver
             .execute(
-                "const a = document.querySelector('a[href*=\"/replay/viewer\"]'); return a ? a.href : '';",
-                vec![],
+                "const a = document.querySelector('a[href^=\"/crawl/' + arguments[0] + '/\"]');
+                 return a ? a.href : '';",
+                vec![serde_json::json!(id)],
             )
             .await
             .map_err(|e| e.to_string())?
@@ -1187,7 +1189,9 @@ async fn a_crawl_added_by_url_replays() {
             Ok(())
         } else {
             let diag = diagnostics(&driver).await.unwrap_or_else(|e| e);
-            Err(format!("a crawl added by URL did not replay from {href}.\nDIAG: {diag}"))
+            Err(format!(
+                "a crawl added by URL did not replay from {href}.\nDIAG: {diag}"
+            ))
         }
     }
     .await;
