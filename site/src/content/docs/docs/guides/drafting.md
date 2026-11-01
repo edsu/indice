@@ -69,6 +69,8 @@ llm:
 export INDICE_LLM_API_KEY=...
 ```
 
+With Docker Compose, put it in the `.env` file beside `compose.yaml`, which passes it to indice.
+
 `indice config` shows the model and service in force. The [configuration reference](/docs/reference/configuration/#drafting-descriptions-with-a-language-model) lists every setting, including how long to wait for an answer.
 
 ## Drafting a description
