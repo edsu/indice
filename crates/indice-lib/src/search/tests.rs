@@ -1430,7 +1430,10 @@ fn sample_pages_spreads_across_sites_after_the_seeds() {
     idx.commit().unwrap();
 
     let seeds = vec!["https://c.example/seed".to_string()];
-    let all = idx.sample_pages("coll", &seeds, 100).unwrap();
+    let sites: Vec<String> = ["a.example", "b.example", "c.example", "other.example"]
+        .map(String::from)
+        .to_vec();
+    let all = idx.sample_pages("coll", &seeds, &sites, 100).unwrap();
     assert_eq!(all[0].url, "https://c.example/seed", "the seed leads");
     let urls: Vec<&str> = all.iter().map(|p| p.url.as_str()).collect();
     assert!(
@@ -1450,9 +1453,54 @@ fn sample_pages_spreads_across_sites_after_the_seeds() {
     assert_eq!(all[0].text, "the seed page");
 
     // With room for three after the seed, each site gets one before any gets two.
-    let few = idx.sample_pages("coll", &seeds, 3).unwrap();
+    let few = idx.sample_pages("coll", &seeds, &sites, 3).unwrap();
     let sites: std::collections::BTreeSet<&str> =
         few[1..].iter().map(|p| p.site.as_str()).collect();
     assert_eq!(few.len(), 3);
     assert_eq!(sites.len(), 2, "a and b, one page each: {few:?}");
+}
+
+/// A site whose pages all come late in the index is still sampled, however
+/// many pages another site has first, and captured error pages are left out.
+#[test]
+fn sample_pages_reaches_every_site_and_skips_error_pages() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    for i in 0..300 {
+        idx.index_page(&Page {
+            url: &format!("https://big.example/{i}"),
+            body: "a big site",
+            collection: "coll",
+            status: Some(200),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    idx.index_page(&Page {
+        url: "https://small.example/missing",
+        body: "Not Found",
+        collection: "coll",
+        status: Some(404),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.index_page(&Page {
+        url: "https://small.example/",
+        body: "the small site",
+        collection: "coll",
+        status: Some(200),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.commit().unwrap();
+
+    let sites = vec!["big.example".to_string(), "small.example".to_string()];
+    let sample = idx.sample_pages("coll", &[], &sites, 4).unwrap();
+    let urls: Vec<&str> = sample.iter().map(|p| p.url.as_str()).collect();
+    assert!(urls.contains(&"https://small.example/"), "{urls:?}");
+    assert!(
+        !urls.contains(&"https://small.example/missing"),
+        "an error page: {urls:?}"
+    );
+    assert_eq!(sample.len(), 4);
 }

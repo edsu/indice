@@ -24,11 +24,6 @@ const TITLE_BOOST: tantivy::Score = 3.0;
 /// come from the aggregation, which is exact over the full match set.
 const CANDIDATE_CAP: usize = 1000;
 
-/// The most documents [`SearchIndex::sample_pages`] reads to choose a sample.
-/// Enough to see a collection's range of sites; bounded so a million-page
-/// collection costs the same to sample as a ten-thousand-page one.
-const SAMPLE_CANDIDATES: usize = 5000;
-
 /// Headings rank above body text but below the title.
 const HEADINGS_BOOST: tantivy::Score = 2.0;
 
@@ -268,17 +263,21 @@ impl SearchIndex {
     }
 
     /// Up to `limit` pages of a collection, with their stored text, chosen to
-    /// show the collection's range rather than its bulk: pages whose URL is in
-    /// `first` (the seed pages) lead, then the rest are dealt round-robin
-    /// across sites, so one large site doesn't crowd out the others. Pages
-    /// with no text and no description are skipped.
+    /// show the collection's range rather than its bulk: the pages at the
+    /// URLs in `first` (the seed pages) lead, then pages from each of `sites`
+    /// (the collection's sites, most pages first) are dealt round-robin, so a
+    /// site with tens of thousands of pages doesn't crowd out the others.
+    /// Pages with no text and no description are skipped, and each URL is
+    /// taken once.
     ///
-    /// Reads at most [`SAMPLE_CANDIDATES`] documents. Deterministic for a
-    /// given index, so the same collection yields the same sample.
+    /// Queries each seed URL and each site directly rather than scanning the
+    /// collection, so a sample costs the same in a collection of any size, and
+    /// a site isn't missed because its pages come late in the index.
     pub fn sample_pages(
         &self,
         collection_id: &str,
         first: &[String],
+        sites: &[String],
         limit: usize,
     ) -> Result<Vec<PageSample>> {
         let schema = self.index.schema();
@@ -286,63 +285,82 @@ impl SearchIndex {
         let (collection_f, doc_type_f) = (f(FIELD_COLLECTION)?, f(FIELD_DOC_TYPE)?);
         let (url_f, title_f, ts_f) = (f(FIELD_URL)?, f(FIELD_TITLE)?, f(FIELD_TS)?);
         let (site_f, desc_f, snip_f) = (f(FIELD_SITE)?, f(FIELD_DESCRIPTION)?, f(FIELD_BODY_SNIP)?);
-
-        let term = |field, value: &str| -> Box<dyn Query> {
-            Box::new(TermQuery::new(
-                Term::from_field_text(field, value),
-                IndexRecordOption::Basic,
-            ))
-        };
-        let query = BooleanQuery::new(vec![
-            (Occur::Must, term(collection_f, collection_id)),
-            (Occur::Must, term(doc_type_f, "page")),
-        ]);
+        let status_f = f(FIELD_STATUS)?;
         let searcher = self.index.reader()?.searcher();
-        let top = searcher.search(
-            &query,
-            &TopDocs::with_limit(SAMPLE_CANDIDATES).order_by_score(),
-        )?;
 
-        let first: std::collections::HashSet<&str> = first.iter().map(String::as_str).collect();
-        let mut seeds = Vec::new();
-        // Sites in the order first seen, each with its pages in that order.
-        let mut by_site: Vec<(String, std::collections::VecDeque<PageSample>)> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for (_score, addr) in top {
-            let doc: TantivyDocument = searcher.doc(addr)?;
-            let page = PageSample {
-                url: get_text(&doc, url_f),
-                title: get_text(&doc, title_f),
-                timestamp: get_text(&doc, ts_f),
-                site: get_text(&doc, site_f),
-                description: get_text(&doc, desc_f),
-                text: get_text(&doc, snip_f),
+        // Up to `n` pages of this collection that also match `field = value`,
+        // leaving out captured error pages (a 404, a redirect): archived
+        // faithfully, but they say nothing about what the collection holds.
+        // A page with no recorded status is kept.
+        let pages_where = |field, value: &str, n: usize| -> Result<Vec<PageSample>> {
+            let term = |field, value: &str| -> Box<dyn Query> {
+                Box::new(TermQuery::new(
+                    Term::from_field_text(field, value),
+                    IndexRecordOption::Basic,
+                ))
             };
-            // One sample per URL: repeat captures say nothing new.
-            if (page.text.trim().is_empty() && page.description.trim().is_empty())
-                || !seen.insert(page.url.clone())
+            let query = BooleanQuery::new(vec![
+                (Occur::Must, term(collection_f, collection_id)),
+                (Occur::Must, term(doc_type_f, "page")),
+                (Occur::Must, term(field, value)),
+            ]);
+            let mut out = Vec::new();
+            for (_score, addr) in
+                searcher.search(&query, &TopDocs::with_limit(n).order_by_score())?
             {
+                let doc: TantivyDocument = searcher.doc(addr)?;
+                if get_u64(&doc, status_f).is_some_and(|s| !(200..300).contains(&s)) {
+                    continue;
+                }
+                out.push(PageSample {
+                    url: get_text(&doc, url_f),
+                    title: get_text(&doc, title_f),
+                    timestamp: get_text(&doc, ts_f),
+                    site: get_text(&doc, site_f),
+                    description: get_text(&doc, desc_f),
+                    text: get_text(&doc, snip_f),
+                });
+            }
+            Ok(out)
+        };
+        let readable =
+            |p: &PageSample| !(p.text.trim().is_empty() && p.description.trim().is_empty());
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for url in first {
+            if out.len() == limit {
+                break;
+            }
+            if seen.contains(url) {
                 continue;
             }
-            if first.contains(page.url.as_str()) {
-                seeds.push(page);
-            } else if let Some((_, q)) = by_site.iter_mut().find(|(s, _)| *s == page.site) {
-                q.push_back(page);
-            } else {
-                by_site.push((page.site.clone(), std::iter::once(page).collect()));
+            // Several captures of one URL say nothing new: take one.
+            if let Some(p) = pages_where(url_f, url, 1)?.into_iter().find(readable) {
+                seen.insert(p.url.clone());
+                out.push(p);
             }
         }
 
-        let mut out: Vec<PageSample> = seeds.into_iter().take(limit).collect();
+        // Enough per site to fill the sample even if some sites run dry or
+        // their pages were already taken as seeds, without reading thousands.
+        let per_site = (limit / sites.len().max(1)).max(2) + 2;
+        let mut queues: Vec<std::collections::VecDeque<PageSample>> = Vec::new();
+        for site in sites {
+            queues.push(pages_where(site_f, site, per_site)?.into_iter().collect());
+        }
         while out.len() < limit {
             let mut took = false;
-            for (_, q) in by_site.iter_mut() {
+            for q in queues.iter_mut() {
                 if out.len() == limit {
                     break;
                 }
-                if let Some(p) = q.pop_front() {
-                    out.push(p);
-                    took = true;
+                while let Some(p) = q.pop_front() {
+                    if readable(&p) && seen.insert(p.url.clone()) {
+                        out.push(p);
+                        took = true;
+                        break;
+                    }
                 }
             }
             if !took {

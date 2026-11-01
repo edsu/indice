@@ -32,8 +32,15 @@ const PAGE_CHARS: usize = 1_500;
 /// The most pages to consider for the sample; the budget usually stops sooner.
 const SAMPLE_PAGES: usize = 80;
 
+/// The most sites the sample draws from.
+const SAMPLE_SITES: usize = 20;
+
 /// The most seed pages listed per crawl.
-const SEEDS_PER_CRAWL: usize = 10;
+const SEEDS_PER_CRAWL: usize = 5;
+
+/// The most of the budget the collection's and crawls' metadata may take,
+/// as a fraction, so most of it goes on the pages themselves.
+const METADATA_SHARE: f64 = 0.4;
 
 /// The most buckets listed per facet.
 const BUCKETS_PER_FACET: usize = 10;
@@ -80,14 +87,30 @@ pub fn gather(manifest: &Manifest, search: &SearchIndex, collection_id: &str) ->
         .filter(|w| w.collection.as_str() == collection_id)
         .cloned()
         .collect();
+    // Each crawl's way in: its first seed, one per crawl. Some crawls record
+    // dozens of seeds (sign-in pages and widgets among them), which, all taken
+    // first, would leave no room for the rest of the collection.
     let seeds: Vec<String> = crawls
         .iter()
-        .flat_map(|w| w.seed_pages.iter().map(|p| p.url.clone()))
+        .filter_map(|w| w.seed_pages.first().map(|p| p.url.clone()))
         .collect();
     let facets = search
         .facet_overview_scoped(FacetScope::Collection(collection_id))?
         .facets;
-    let pages = search.sample_pages(collection_id, &seeds, SAMPLE_PAGES)?;
+    // The collection's sites, most pages first, from the same counts its page
+    // shows: the sample takes a few pages from each.
+    let sites: Vec<String> = facets
+        .iter()
+        .find(|g| g.field == "site")
+        .map(|g| {
+            g.buckets
+                .iter()
+                .take(SAMPLE_SITES)
+                .map(|b| b.value.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let pages = search.sample_pages(collection_id, &seeds, &sites, SAMPLE_PAGES)?;
     if crawls.is_empty() && pages.is_empty() {
         bail!("collection {collection_id} has no crawls to describe yet");
     }
@@ -163,38 +186,60 @@ fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
 
     if !m.crawls.is_empty() {
         out.push_str(&format!("\nCrawls ({}):\n", m.crawls.len()));
-        for w in &m.crawls {
-            let mut line = format!("- {}", w.display_name());
+        let metadata_room = (budget as f64 * METADATA_SHARE) as usize;
+        for (i, w) in m.crawls.iter().enumerate() {
+            let mut entry = format!("- {}", w.display_name());
             if let (Some(a), Some(b)) = (&w.capture_start, &w.capture_end) {
-                line.push_str(&format!(", captured {} to {}", day(a), day(b)));
+                entry.push_str(&format!(", captured {} to {}", day(a), day(b)));
             } else if let Some(d) = &w.crawl_date {
-                line.push_str(&format!(", crawled {}", day(d)));
+                entry.push_str(&format!(", crawled {}", day(d)));
             }
             if let Some(n) = w.page_count {
-                line.push_str(&format!(", {n} pages"));
+                entry.push_str(&format!(", {n} pages"));
             }
             if !w.software.is_empty() {
-                line.push_str(&format!(", made with {}", w.software.join(", ")));
+                entry.push_str(&format!(", made with {}", w.software.join(", ")));
             }
             if let Some(ait) = &w.archive_it {
                 if !ait.collection_title.is_empty() {
-                    line.push_str(&format!(
+                    entry.push_str(&format!(
                         ", from the Archive-It collection \"{}\"",
                         ait.collection_title
                     ));
                 }
             }
             if let Some(d) = w.description.as_deref().filter(|d| !d.trim().is_empty()) {
-                line.push_str(&format!(". {}", one_line(d, 300)));
+                entry.push_str(&format!(". {}", one_line(d, 300)));
             }
-            out.push_str(&line);
-            out.push('\n');
-            for p in w.seed_pages.iter().take(SEEDS_PER_CRAWL) {
-                match p.title.as_deref().filter(|t| !t.trim().is_empty()) {
-                    Some(t) => out.push_str(&format!("  seed: {} ({})\n", p.url, one_line(t, 120))),
-                    None => out.push_str(&format!("  seed: {}\n", p.url)),
+            entry.push('\n');
+            // The same seed is often recorded more than once.
+            let mut listed = std::collections::HashSet::new();
+            for p in w
+                .seed_pages
+                .iter()
+                .filter(|p| listed.insert(p.url.as_str()))
+                .take(SEEDS_PER_CRAWL)
+            {
+                match p
+                    .title
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty() && *t != p.url)
+                {
+                    Some(t) => {
+                        entry.push_str(&format!("  seed: {} ({})\n", p.url, one_line(t, 120)))
+                    }
+                    None => entry.push_str(&format!("  seed: {}\n", p.url)),
                 }
             }
+            if out.chars().count() + entry.chars().count() > metadata_room {
+                out.push_str(&format!(
+                    "- and {} more crawl{}\n",
+                    m.crawls.len() - i,
+                    if m.crawls.len() - i == 1 { "" } else { "s" }
+                ));
+                break;
+            }
+            out.push_str(&entry);
         }
     }
 
