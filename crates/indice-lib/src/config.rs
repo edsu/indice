@@ -43,8 +43,44 @@ pub struct Config {
     pub uploads: UploadsConfig,
     /// What the archive calls itself, in the header and on the homepage.
     pub site: SiteConfig,
+    /// A language model indice may use, if the operator configures one.
+    pub llm: Option<LlmConfig>,
+    /// How the model drafts a finding aid's description.
+    pub describe: Option<DescribeConfig>,
     // Future sections (CSS override, theming, …) slot in here; older/newer
     // homes ignore keys they don't know.
+}
+
+/// Which language model to use: any service that speaks the OpenAI chat
+/// completions API, hosted or local (Ollama, llama.cpp, vLLM). Named for the
+/// model rather than for one use of it, so later uses share it. Its API key,
+/// when it needs one, comes from `INDICE_LLM_API_KEY`, never this file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LlmConfig {
+    /// The API's base URL, ending in `/v1`, e.g. `http://localhost:11434/v1`.
+    pub endpoint: Option<String>,
+    /// The model name the service knows, e.g. `llama3.1:8b`.
+    pub model: Option<String>,
+    /// How long to wait for an answer, in seconds. Default 120.
+    pub timeout_secs: Option<u64>,
+    /// What a curator should know about the service before sending it
+    /// archived text, in Markdown: who runs it, what it keeps, a link to its
+    /// privacy policy. Shown beside the editor's Draft button and printed by
+    /// `indice collection draft`.
+    pub notice: Option<String>,
+}
+
+/// How the model drafts a description. Needs an `llm:` section.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DescribeConfig {
+    /// The most archived text and metadata to send, in characters, so a small
+    /// local model's context and a large hosted one's can both be fitted.
+    /// Default 24,000.
+    pub max_input_chars: Option<usize>,
+    /// A prompt to use instead of indice's own, relative to the home.
+    pub prompt_file: Option<String>,
 }
 
 /// The archive's own words for the pages indice serves. Every field is
@@ -184,6 +220,103 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The model and the drafting settings, if both are configured, checked
+    /// strictly: the server calls this at startup and the command line before
+    /// it drafts, so a mistake is reported before anything is sent. `None`
+    /// when there is no `llm:` section, which is the default and means the
+    /// feature is off.
+    ///
+    /// Refused: `describe:` without `llm:`; `llm:` without an endpoint or a
+    /// model; an endpoint that isn't http(s); a `max_input_chars` too small to
+    /// hold a page; a
+    /// `prompt_file` that can't be read.
+    pub fn llm_settings(
+        &self,
+        home: &Path,
+    ) -> Result<Option<(crate::llm::LlmSettings, crate::describe::DescribeSettings)>> {
+        let path = Self::path(home);
+        let Some(llm) = &self.llm else {
+            if self.describe.is_some() {
+                anyhow::bail!(
+                    "{}: describe: needs an llm: section saying which model to use",
+                    path.display()
+                );
+            }
+            return Ok(None);
+        };
+        let given = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        let Some(endpoint) = given(&llm.endpoint) else {
+            anyhow::bail!(
+                "{}: llm.endpoint is missing; give the service's base URL, e.g. \
+                 http://localhost:11434/v1",
+                path.display()
+            );
+        };
+        let scheme = endpoint
+            .split_once("://")
+            .map(|(s, _)| s.to_ascii_lowercase());
+        if !matches!(scheme.as_deref(), Some("http" | "https")) {
+            anyhow::bail!(
+                "{}: llm.endpoint must be an http:// or https:// URL, not {endpoint}",
+                path.display()
+            );
+        }
+        let Some(model) = given(&llm.model) else {
+            anyhow::bail!(
+                "{}: llm.model is missing; give the model name the service knows",
+                path.display()
+            );
+        };
+        let timeout = std::time::Duration::from_secs(
+            llm.timeout_secs
+                .unwrap_or(crate::llm::DEFAULT_TIMEOUT_SECS)
+                .max(1),
+        );
+        let describe = self.describe.clone().unwrap_or_default();
+        let max_input_chars = match describe.max_input_chars {
+            Some(n) if n < crate::describe::MIN_INPUT_CHARS => anyhow::bail!(
+                "{}: describe.max_input_chars is {n}, too little to hold even one page; \
+                 give at least {}",
+                path.display(),
+                crate::describe::MIN_INPUT_CHARS
+            ),
+            Some(n) => n,
+            None => crate::describe::DEFAULT_MAX_INPUT_CHARS,
+        };
+        let prompt_file = given(&describe.prompt_file);
+        let prompt = match &prompt_file {
+            Some(file) => {
+                let p = home.join(file);
+                std::fs::read_to_string(&p).with_context(|| {
+                    format!(
+                        "{}: reading describe.prompt_file {}",
+                        path.display(),
+                        p.display()
+                    )
+                })?
+            }
+            None => crate::describe::BUILT_IN_PROMPT.to_string(),
+        };
+        Ok(Some((
+            crate::llm::LlmSettings {
+                endpoint,
+                model,
+                timeout,
+                notice: given(&llm.notice),
+            },
+            crate::describe::DescribeSettings {
+                max_input_chars,
+                prompt,
+                prompt_is_custom: prompt_file.is_some(),
+            },
+        )))
     }
 
     /// The largest single upload in bytes, if limited.
@@ -348,5 +481,121 @@ mod tests {
         std::fs::write(Config::path(tmp.path()), "index: {}\n").unwrap();
         let cfg = Config::load(tmp.path()).unwrap();
         assert_eq!(cfg.stored_body_cap_bytes(), DEFAULT_STORED_BODY_CAP_BYTES);
+    }
+
+    /// Write `yaml` as a home's config.yaml and resolve its model settings.
+    fn llm_of(
+        yaml: &str,
+    ) -> (
+        tempfile::TempDir,
+        Result<Option<(crate::llm::LlmSettings, crate::describe::DescribeSettings)>>,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(Config::path(tmp.path()), yaml).unwrap();
+        let cfg = Config::load(tmp.path()).unwrap();
+        let r = cfg.llm_settings(tmp.path());
+        (tmp, r)
+    }
+
+    #[test]
+    fn no_llm_section_means_drafting_is_off() {
+        let (_t, r) = llm_of("index: {}\n");
+        assert!(r.unwrap().is_none());
+    }
+
+    #[test]
+    fn llm_settings_resolve_with_defaults() {
+        let (_t, r) = llm_of("llm:\n  endpoint: http://localhost:11434/v1\n  model: llama3.1:8b\n");
+        let (llm, describe) = r.unwrap().unwrap();
+        assert_eq!(llm.model, "llama3.1:8b");
+        assert_eq!(llm.service(), "localhost:11434");
+        assert_eq!(llm.timeout.as_secs(), crate::llm::DEFAULT_TIMEOUT_SECS);
+        assert_eq!(
+            describe.max_input_chars,
+            crate::describe::DEFAULT_MAX_INPUT_CHARS
+        );
+        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(!describe.prompt_is_custom);
+    }
+
+    #[test]
+    fn a_prompt_file_and_budget_replace_the_defaults() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("prompts")).unwrap();
+        std::fs::write(
+            tmp.path().join("prompts/describe.md"),
+            "Describe it briefly.",
+        )
+        .unwrap();
+        std::fs::write(
+            Config::path(tmp.path()),
+            "llm:\n  endpoint: https://api.example.org/v1\n  model: m\n  timeout_secs: 30\n\
+             describe:\n  max_input_chars: 8000\n  prompt_file: prompts/describe.md\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path()).unwrap();
+        let (llm, describe) = cfg.llm_settings(tmp.path()).unwrap().unwrap();
+        assert_eq!(llm.timeout.as_secs(), 30);
+        assert_eq!(describe.max_input_chars, 8000);
+        assert_eq!(describe.prompt, "Describe it briefly.");
+        assert!(describe.prompt_is_custom);
+    }
+
+    #[test]
+    fn the_notice_is_carried_and_a_blank_one_is_unset() {
+        let (_t, r) = llm_of(
+            "llm:\n  endpoint: http://localhost:1/v1\n  model: m\n  notice: \"Runs here. [More](https://x.org)\"\n",
+        );
+        let (llm, _) = r.unwrap().unwrap();
+        assert_eq!(
+            llm.notice.as_deref(),
+            Some("Runs here. [More](https://x.org)")
+        );
+        let (_t, r) =
+            llm_of("llm:\n  endpoint: http://localhost:1/v1\n  model: m\n  notice: '  '\n");
+        assert_eq!(r.unwrap().unwrap().0.notice, None);
+    }
+
+    #[test]
+    fn a_blank_prompt_file_is_the_built_in_prompt_and_schemes_ignore_case() {
+        let (_t, r) = llm_of(
+            "llm:\n  endpoint: HTTPS://api.example.org/v1\n  model: m\n\
+             describe:\n  prompt_file: ''\n",
+        );
+        let (_, describe) = r.unwrap().unwrap();
+        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(!describe.prompt_is_custom, "reported as built in");
+    }
+
+    #[test]
+    fn mistakes_in_the_llm_sections_are_refused() {
+        for (yaml, says) in [
+            (
+                "describe:\n  max_input_chars: 100\n",
+                "needs an llm: section",
+            ),
+            ("llm:\n  model: m\n", "llm.endpoint is missing"),
+            ("llm:\n  endpoint: http://x/v1\n", "llm.model is missing"),
+            (
+                "llm:\n  endpoint: ftp://x/v1\n  model: m\n",
+                "http:// or https://",
+            ),
+            (
+                "llm:\n  endpoint: http://x/v1\n  model: m\ndescribe:\n  max_input_chars: 0\n",
+                "too little",
+            ),
+            (
+                "llm:\n  endpoint: http://x/v1\n  model: m\ndescribe:\n  max_input_chars: 500\n",
+                "too little",
+            ),
+            (
+                "llm:\n  endpoint: http://x/v1\n  model: m\ndescribe:\n  prompt_file: nope.md\n",
+                "prompt_file",
+            ),
+        ] {
+            let (_t, r) = llm_of(yaml);
+            let err = format!("{:#}", r.expect_err(yaml));
+            assert!(err.contains(says), "{yaml} -> {err}");
+        }
     }
 }

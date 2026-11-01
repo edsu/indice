@@ -1399,3 +1399,157 @@ fn live_crawl_ids_ignores_annotation_documents() {
     assert_eq!(live.len(), 1, "only the page's crawl: {live:?}");
     assert_eq!(live.get("c1"), Some(&1));
 }
+
+/// A collection's sample leads with its seed pages, then spreads across sites
+/// before taking a second page from any of them, skips pages with nothing to
+/// read, takes each URL once, and stays inside the collection.
+#[test]
+fn sample_pages_spreads_across_sites_after_the_seeds() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    let mut add = |url: &str, body: &str, collection: &str| {
+        idx.index_page(&Page {
+            url,
+            title: url,
+            body,
+            crawl_id: "c1",
+            collection,
+            ..Default::default()
+        })
+        .unwrap();
+    };
+    for i in 0..5 {
+        add(&format!("https://a.example/{i}"), "text from a", "coll");
+    }
+    add("https://b.example/1", "text from b", "coll");
+    add("https://b.example/2", "text from b", "coll");
+    add("https://c.example/seed", "the seed page", "coll");
+    add("https://c.example/empty", "", "coll");
+    add("https://a.example/0", "a repeat capture", "coll");
+    add("https://other.example/x", "another collection", "elsewhere");
+    idx.commit().unwrap();
+
+    let seeds = vec!["https://c.example/seed".to_string()];
+    let sites: Vec<String> = ["a.example", "b.example", "c.example", "other.example"]
+        .map(String::from)
+        .to_vec();
+    let all = idx.sample_pages("coll", &seeds, &sites, 100).unwrap();
+    assert_eq!(all[0].url, "https://c.example/seed", "the seed leads");
+    let urls: Vec<&str> = all.iter().map(|p| p.url.as_str()).collect();
+    assert!(
+        !urls.contains(&"https://c.example/empty"),
+        "nothing to read"
+    );
+    assert!(
+        !urls.contains(&"https://other.example/x"),
+        "another collection"
+    );
+    assert_eq!(
+        urls.iter().filter(|u| **u == "https://a.example/0").count(),
+        1,
+        "each URL once"
+    );
+    assert_eq!(all.len(), 8, "5 from a, 2 from b, the seed: {urls:?}");
+    assert_eq!(all[0].text, "the seed page");
+
+    // With room for three after the seed, each site gets one before any gets two.
+    let few = idx.sample_pages("coll", &seeds, &sites, 3).unwrap();
+    let sites: std::collections::BTreeSet<&str> =
+        few[1..].iter().map(|p| p.site.as_str()).collect();
+    assert_eq!(few.len(), 3);
+    assert_eq!(sites.len(), 2, "a and b, one page each: {few:?}");
+}
+
+/// A site whose pages all come late in the index is still sampled, however
+/// many pages another site has first, and captured error pages are left out.
+#[test]
+fn sample_pages_reaches_every_site_and_skips_error_pages() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    for i in 0..300 {
+        idx.index_page(&Page {
+            url: &format!("https://big.example/{i}"),
+            body: "a big site",
+            collection: "coll",
+            status: Some(200),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    idx.index_page(&Page {
+        url: "https://small.example/missing",
+        body: "Not Found",
+        collection: "coll",
+        status: Some(404),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.index_page(&Page {
+        url: "https://small.example/",
+        body: "the small site",
+        collection: "coll",
+        status: Some(200),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.commit().unwrap();
+
+    let sites = vec!["big.example".to_string(), "small.example".to_string()];
+    let sample = idx.sample_pages("coll", &[], &sites, 4).unwrap();
+    let urls: Vec<&str> = sample.iter().map(|p| p.url.as_str()).collect();
+    assert!(urls.contains(&"https://small.example/"), "{urls:?}");
+    assert!(
+        !urls.contains(&"https://small.example/missing"),
+        "an error page: {urls:?}"
+    );
+    assert_eq!(sample.len(), 4);
+}
+
+#[test]
+fn sample_pages_looks_past_redirects_that_were_captured_first() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    // Captured first, so first in index order: a redirecting seed capture
+    // and a run of redirects from the site.
+    idx.index_page(&Page {
+        url: "https://redirects.example/",
+        body: "Moved",
+        collection: "coll",
+        status: Some(301),
+        ..Default::default()
+    })
+    .unwrap();
+    for i in 0..20 {
+        idx.index_page(&Page {
+            url: &format!("https://redirects.example/old/{i}"),
+            body: "Moved",
+            collection: "coll",
+            status: Some(302),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    idx.index_page(&Page {
+        url: "https://redirects.example/",
+        body: "the front page",
+        collection: "coll",
+        status: Some(200),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.index_page(&Page {
+        url: "https://redirects.example/about",
+        body: "about the site",
+        collection: "coll",
+        status: Some(200),
+        ..Default::default()
+    })
+    .unwrap();
+    idx.commit().unwrap();
+
+    let seeds = vec!["https://redirects.example/".to_string()];
+    let sites = vec!["redirects.example".to_string()];
+    let sample = idx.sample_pages("coll", &seeds, &sites, 4).unwrap();
+    let texts: Vec<&str> = sample.iter().map(|p| p.text.as_str()).collect();
+    assert_eq!(texts, vec!["the front page", "about the site"]);
+}

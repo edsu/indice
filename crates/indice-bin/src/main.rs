@@ -628,6 +628,41 @@ enum CollectionCmd {
         #[arg(long, default_value = ".")]
         home: PathBuf,
     },
+    /// Draft a collection's description with the language model configured in
+    /// config.yaml (llm: and describe:), as a starting point to review: its
+    /// description, narrative, subjects and dates, never its creator, curator
+    /// or rights. Prints the draft; --apply also fills the fields that are still
+    /// empty and records that a model drafted them. The key, if the service
+    /// needs one, comes from INDICE_LLM_API_KEY.
+    Draft {
+        /// Collection id/slug or name.
+        id: String,
+
+        /// Fill the finding aid's empty fields from the draft (never overwrites
+        /// what's already written), recording the model as their provenance.
+        #[arg(long, conflicts_with = "show_prompt")]
+        apply: bool,
+
+        /// With --apply, also overwrite these fields when the draft has them,
+        /// even though they're already written (repeat, or separate with
+        /// commas). Only the drafted fields can be named.
+        #[arg(
+            long,
+            requires = "apply",
+            value_delimiter = ',',
+            value_parser = ["description", "narrative", "subjects", "dates"]
+        )]
+        replace: Vec<String>,
+
+        /// Print the prompt that would be sent, and send nothing. Useful for
+        /// checking the sample and for writing a describe.prompt_file.
+        #[arg(long)]
+        show_prompt: bool,
+
+        /// indice home directory (holds archive/ and index/).
+        #[arg(long, default_value = ".")]
+        home: PathBuf,
+    },
     /// List collections and their WACZ counts.
     List {
         /// indice home directory (holds archive/ and index/).
@@ -1306,6 +1341,9 @@ async fn main() -> Result<()> {
                     std::sync::Arc::new(EnvArchiveIt)
                         as std::sync::Arc<dyn indice_lib::archiveit::ArchiveItProvider>
                 }),
+                // Which model is config.yaml's business; the key is the
+                // environment's, like the import credentials.
+                llm_key: std::env::var("INDICE_LLM_API_KEY").ok(),
             };
 
             tokio::select! {
@@ -1444,6 +1482,7 @@ async fn main() -> Result<()> {
                     // is); pass Some only when the curator gave at least one.
                     subjects: (!subjects.is_empty()).then_some(subjects),
                     narrative,
+                    drafted: None,
                 };
                 // No request identity on the CLI; the edit is recorded as
                 // unattributed rather than credited to an invented user.
@@ -1457,6 +1496,13 @@ async fn main() -> Result<()> {
                     println!("  add a scope note by editing {}", readme.display());
                 }
             }
+            CollectionCmd::Draft {
+                id,
+                apply,
+                replace,
+                show_prompt,
+                home,
+            } => run_collection_draft(&home, &id, apply, &replace, show_prompt)?,
             CollectionCmd::List { home } => {
                 run_collection_list(&home)?;
             }
@@ -2005,6 +2051,140 @@ fn run_config(home: &std::path::Path) -> Result<()> {
             "none (readers are told only that they can read)"
         }
     );
+
+    match cfg.llm_settings(home) {
+        Ok(Some((llm, describe))) => {
+            println!(
+                "llm:                      {} at {} (timeout {}s)",
+                llm.model,
+                llm.service(),
+                llm.timeout.as_secs()
+            );
+            if llm.sends_in_clear() {
+                println!(
+                    "                          warning: plain http:// to a public host, so the \
+                     key and archived text travel unencrypted; use https://"
+                );
+            }
+            println!(
+                "llm.notice:               {}",
+                if llm.notice.is_some() {
+                    "set  ->  shown before a draft is sent"
+                } else {
+                    "unset  ->  curators see only the model and service"
+                }
+            );
+            println!(
+                "describe:                 {} prompt, up to {} characters of material",
+                if describe.prompt_is_custom {
+                    "custom"
+                } else {
+                    "built-in"
+                },
+                describe.max_input_chars
+            );
+        }
+        Ok(None) => println!("llm:                      unset  ->  no model; drafting is off"),
+        Err(e) => println!("llm:                      invalid  ->  {e:#}"),
+    }
+    Ok(())
+}
+
+/// `indice collection draft`: ask the configured model for a draft of a
+/// collection's descriptive fields, print it, and with `apply` fill the empty
+/// ones.
+fn run_collection_draft(
+    home: &std::path::Path,
+    id: &str,
+    apply: bool,
+    replace: &[String],
+    show_prompt: bool,
+) -> Result<()> {
+    use indice_lib::describe;
+    let cfg = indice_lib::config::Config::load(home)?;
+    let resolved = cfg.llm_settings(home)?;
+    // Previewing the prompt needs no model, so it works before one is set up,
+    // with the built-in prompt and budget.
+    let describe_settings = match &resolved {
+        Some((_, d)) => d.clone(),
+        None => describe::DescribeSettings {
+            max_input_chars: describe::DEFAULT_MAX_INPUT_CHARS,
+            prompt: describe::BUILT_IN_PROMPT.to_string(),
+            prompt_is_custom: false,
+        },
+    };
+    let llm_settings = resolved.map(|(l, _)| l);
+    if llm_settings.is_none() && !show_prompt {
+        anyhow::bail!(
+            "no model is configured: add an llm: section to {} (an OpenAI-compatible \
+             endpoint and model). See https://indice.page/docs/reference/configuration/",
+            indice_lib::config::Config::path(home).display()
+        );
+    }
+    let index_dir = indice_lib::index::index_dir(home);
+    let manifest = indice_lib::collections::Manifest::open(&index_dir)?;
+    // The id, or the display name, as `collection delete` accepts.
+    let coll_id = match manifest.collection_by_id(id) {
+        Some(c) => c.id.clone(),
+        None => match manifest.collections.iter().find(|c| c.name == id) {
+            Some(c) => c.id.clone(),
+            None => anyhow::bail!("no collection {id}; `indice collection list` shows them"),
+        },
+    };
+    let search = indice_lib::search::SearchIndex::open_read_only(&index_dir.join("full_text"))?;
+    let material = describe::gather(&manifest, &search, coll_id.as_str())?;
+    drop(manifest);
+
+    if show_prompt {
+        println!("--- system ---\n{}", describe_settings.prompt.trim_end());
+        println!(
+            "--- user ---\n{}",
+            describe::user_message(&material, describe_settings.max_input_chars)
+        );
+        return Ok(());
+    }
+
+    let key = std::env::var("INDICE_LLM_API_KEY").ok();
+    let llm = indice_lib::llm::Llm::new(llm_settings.expect("checked above"), key);
+    if llm.settings().sends_in_clear() {
+        eprintln!(
+            "warning: {} is plain http:// to a public host, so the key and the archived \
+             text travel unencrypted; use https:// if the service offers it",
+            llm.settings().service()
+        );
+    }
+    if let Some(notice) = &llm.settings().notice {
+        eprintln!("{}\n", notice.trim());
+    }
+    eprintln!(
+        "drafting a description of \"{}\" with {} at {} ({} pages in the sample)…",
+        material.collection.name,
+        llm.settings().model,
+        llm.settings().service(),
+        material.pages.len()
+    );
+    let draft = describe::draft(&llm, &describe_settings, &material)?;
+    println!(
+        "# Drafted with {} at {}. A starting point: review before using.",
+        llm.settings().model,
+        llm.settings().service()
+    );
+    print!("{}", draft.to_yaml()?);
+
+    if apply {
+        let replace: Vec<&str> = replace.iter().map(String::as_str).collect();
+        let (mut fields, filled) = draft.fill(&material.collection, &replace);
+        if filled.is_empty() {
+            println!(
+                "\nnothing applied: every field the draft covers is already written \
+                 (--replace FIELD overwrites one)"
+            );
+        } else {
+            fields.drafted = Some(describe::provenance(&llm, &filled));
+            indice_lib::index::set_collection(home, &material.collection.name, &fields, None)?;
+            println!("\napplied to {}: {}", coll_id, filled.join(", "));
+        }
+    }
     Ok(())
 }
 

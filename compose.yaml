@@ -63,6 +63,12 @@
 #       The same, for Archive-It.
 #   Leave them unset and indice does not offer that import.
 #
+# ── Optional: drafting descriptions ──
+#
+#   INDICE_LLM_API_KEY
+#       The API key for the language model set in config.yaml's llm: section,
+#       if its service needs one. A local model usually doesn't.
+#
 # ── And one file ──
 #
 # <home>/users.yaml, which here means /data/users.yaml inside the volume. indice
@@ -118,6 +124,8 @@ services:
       ARCHIVEIT_HOST: ${ARCHIVEIT_HOST:-}
       ARCHIVEIT_USER: ${ARCHIVEIT_USER:-}
       ARCHIVEIT_PASSWORD: ${ARCHIVEIT_PASSWORD:-}
+      # The language model's key, for drafting descriptions; see above.
+      INDICE_LLM_API_KEY: ${INDICE_LLM_API_KEY:-}
     volumes:
       # archive/ + index/ + collections/ + users.yaml, kept across restarts. To
       # use a directory you can see instead, bind-mount it from an override.

@@ -3,9 +3,10 @@
 //! `mod.rs`.
 
 use anyhow::Result;
+use std::ops::Bound;
 use tantivy::aggregation::{AggContextParams, AggregationCollector};
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{IndexRecordOption, Value};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{TantivyDocument, Term};
@@ -260,6 +261,128 @@ impl SearchIndex {
             facets: facets_from_aggregations(&agg_json),
             timeline: timeline_from_aggregations(&agg_json),
         })
+    }
+
+    /// Up to `limit` pages of a collection, with their stored text, chosen to
+    /// show the collection's range rather than its bulk: the pages at the
+    /// URLs in `first` (the seed pages) lead, then pages from each of `sites`
+    /// (the collection's sites, most pages first) are dealt round-robin, so a
+    /// site with tens of thousands of pages doesn't crowd out the others.
+    /// Pages with no text and no description are skipped, and each URL is
+    /// taken once.
+    ///
+    /// Queries each seed URL and each site directly rather than scanning the
+    /// collection, so a sample costs the same in a collection of any size, and
+    /// a site isn't missed because its pages come late in the index.
+    pub fn sample_pages(
+        &self,
+        collection_id: &str,
+        first: &[String],
+        sites: &[String],
+        limit: usize,
+    ) -> Result<Vec<PageSample>> {
+        let schema = self.index.schema();
+        let f = |name| schema.get_field(name);
+        let (collection_f, doc_type_f) = (f(FIELD_COLLECTION)?, f(FIELD_DOC_TYPE)?);
+        let (url_f, title_f, ts_f) = (f(FIELD_URL)?, f(FIELD_TITLE)?, f(FIELD_TS)?);
+        let (site_f, desc_f, snip_f) = (f(FIELD_SITE)?, f(FIELD_DESCRIPTION)?, f(FIELD_BODY_SNIP)?);
+        let status_f = f(FIELD_STATUS)?;
+        let searcher = self.index.reader()?.searcher();
+
+        // Up to `n` pages of this collection that also match `field = value`,
+        // leaving out captured error pages (a 404, a redirect): archived
+        // faithfully, but they say nothing about what the collection holds.
+        // A page with no recorded status is kept. The status is part of the
+        // query, not checked afterwards, so a site whose first hits are
+        // redirects still gets its `n` readable pages.
+        let pages_where = |field, value: &str, n: usize| -> Result<Vec<PageSample>> {
+            let term = |field, value: &str| -> Box<dyn Query> {
+                Box::new(TermQuery::new(
+                    Term::from_field_text(field, value),
+                    IndexRecordOption::Basic,
+                ))
+            };
+            let status = |lower: Bound<u64>, upper: Bound<u64>| -> Box<dyn Query> {
+                Box::new(RangeQuery::new(
+                    lower.map(|s| Term::from_field_u64(status_f, s)),
+                    upper.map(|s| Term::from_field_u64(status_f, s)),
+                ))
+            };
+            let query = BooleanQuery::new(vec![
+                (Occur::Must, term(collection_f, collection_id)),
+                (Occur::Must, term(doc_type_f, "page")),
+                (Occur::Must, term(field, value)),
+                (
+                    Occur::MustNot,
+                    status(Bound::Unbounded, Bound::Excluded(200)),
+                ),
+                (
+                    Occur::MustNot,
+                    status(Bound::Included(300), Bound::Unbounded),
+                ),
+            ]);
+            let mut out = Vec::new();
+            for (_score, addr) in
+                searcher.search(&query, &TopDocs::with_limit(n).order_by_score())?
+            {
+                let doc: TantivyDocument = searcher.doc(addr)?;
+                out.push(PageSample {
+                    url: get_text(&doc, url_f),
+                    title: get_text(&doc, title_f),
+                    timestamp: get_text(&doc, ts_f),
+                    site: get_text(&doc, site_f),
+                    description: get_text(&doc, desc_f),
+                    text: get_text(&doc, snip_f),
+                });
+            }
+            Ok(out)
+        };
+        let readable =
+            |p: &PageSample| !(p.text.trim().is_empty() && p.description.trim().is_empty());
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for url in first {
+            if out.len() == limit {
+                break;
+            }
+            if seen.contains(url) {
+                continue;
+            }
+            // Several captures of one URL say nothing new: take one, the
+            // first with something to read.
+            if let Some(p) = pages_where(url_f, url, 3)?.into_iter().find(readable) {
+                seen.insert(p.url.clone());
+                out.push(p);
+            }
+        }
+
+        // Enough per site to fill the sample even if some sites run dry or
+        // their pages were already taken as seeds, without reading thousands.
+        let per_site = (limit / sites.len().max(1)).max(2) + 2;
+        let mut queues: Vec<std::collections::VecDeque<PageSample>> = Vec::new();
+        for site in sites {
+            queues.push(pages_where(site_f, site, per_site)?.into_iter().collect());
+        }
+        while out.len() < limit {
+            let mut took = false;
+            for q in queues.iter_mut() {
+                if out.len() == limit {
+                    break;
+                }
+                while let Some(p) = q.pop_front() {
+                    if readable(&p) && seen.insert(p.url.clone()) {
+                        out.push(p);
+                        took = true;
+                        break;
+                    }
+                }
+            }
+            if !took {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Page documents within one collection, for the wabac `pagesQueryUrl`

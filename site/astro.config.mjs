@@ -51,6 +51,7 @@ export default defineConfig({
             'docs/guides/import-browsertrix',
             'docs/guides/import-archive-it',
             'docs/guides/manage',
+            'docs/guides/drafting',
             'docs/guides/annotations',
             'docs/guides/deploy',
             'docs/guides/security',

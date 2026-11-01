@@ -474,6 +474,40 @@ pub struct Collection {
     /// finding-aid file, not in front-matter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrative: Option<String>,
+
+    /// Which of these fields started as a language model's draft, when one
+    /// did. Recorded so readers can tell machine-drafted description from a
+    /// curator's own; see [`Drafted`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drafted: Option<Drafted>,
+}
+
+/// Which of a finding aid's fields still hold a language model's drafted
+/// text, unedited: which model, at which service, which fields, and when.
+/// A field leaves the record when someone rewrites it (see
+/// [`CollectionFields::merge_drafted`]). `service` is the endpoint's host,
+/// never its path or key.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Drafted {
+    pub model: String,
+    pub service: String,
+    pub fields: Vec<String>,
+    /// When the draft was made (RFC 3339).
+    pub at: String,
+}
+
+/// A draftable field's text, compared to tell whether it changed: whitespace
+/// at the ends and line endings don't count (a browser posts a textarea with
+/// CRLF), anything else does.
+fn drafted_text(c: &Collection, field: &str) -> String {
+    let text = match field {
+        "description" => c.description.clone().unwrap_or_default(),
+        "narrative" => c.narrative.clone().unwrap_or_default(),
+        "dates" => c.dates.clone().unwrap_or_default(),
+        "subjects" => c.subjects.join("\n"),
+        _ => String::new(),
+    };
+    text.replace("\r\n", "\n").trim().to_string()
 }
 
 /// The on-disk manifest. WACZ members (membership + derived provenance) live in
@@ -773,6 +807,9 @@ pub struct CollectionFields {
     pub rights: Option<String>,
     pub subjects: Option<Vec<String>>,
     pub narrative: Option<String>,
+    /// Fields this edit sets to a model's drafted text, unedited. Merged into
+    /// the collection's record by [`Self::apply_to`], not replacing it.
+    pub drafted: Option<Drafted>,
 }
 
 impl CollectionFields {
@@ -785,10 +822,14 @@ impl CollectionFields {
             && self.rights.is_none()
             && self.subjects.is_none()
             && self.narrative.is_none()
+            && self.drafted.is_none()
     }
 
-    /// Overwrite `c`'s fields for each value that is `Some` (leave the rest).
+    /// Overwrite `c`'s fields for each value that is `Some` (leave the rest),
+    /// and bring its record of drafted fields up to date (see
+    /// [`Self::merge_drafted`]).
     fn apply_to(&self, c: &mut Collection) {
+        let before = c.clone();
         if self.description.is_some() {
             c.description = self.description.clone();
         }
@@ -810,6 +851,42 @@ impl CollectionFields {
         if self.narrative.is_some() {
             c.narrative = self.narrative.clone();
         }
+        c.drafted = self.merge_drafted(&before, c);
+    }
+
+    /// Which of `after`'s fields hold a model's text once this edit lands: an
+    /// earlier draft's fields that this edit left as they were, plus the ones
+    /// it sets to drafted text now. A drafted field someone rewrote is theirs,
+    /// so it leaves the record, and a record with no fields left goes. The
+    /// model and service are the latest draft's.
+    fn merge_drafted(&self, before: &Collection, after: &Collection) -> Option<Drafted> {
+        let mut fields: Vec<String> = Vec::new();
+        if let Some(old) = &before.drafted {
+            fields.extend(
+                old.fields
+                    .iter()
+                    .filter(|f| drafted_text(before, f) == drafted_text(after, f))
+                    .cloned(),
+            );
+        }
+        if let Some(new) = &self.drafted {
+            fields.extend(new.fields.iter().cloned());
+        }
+        // In the order the finding aid lists them, once each, and only ones
+        // that still hold text.
+        let fields: Vec<String> = crate::describe::DRAFTED_FIELDS
+            .iter()
+            .filter(|f| fields.iter().any(|g| g == *f) && !drafted_text(after, f).is_empty())
+            .map(|f| f.to_string())
+            .collect();
+        if fields.is_empty() {
+            return None;
+        }
+        let latest = self.drafted.as_ref().or(before.drafted.as_ref())?;
+        Some(Drafted {
+            fields,
+            ..latest.clone()
+        })
     }
 
     /// Apply each `Some` value only where `c`'s corresponding field is *empty*
@@ -893,6 +970,10 @@ struct FrontMatter {
     // per-collection gap), so it stays optional and is omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     curator: Option<String>,
+    // Written only when a model drafted something: provenance, not a blank
+    // for the curator to fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    drafted: Option<Drafted>,
 }
 
 /// A validated collection id (slug).
@@ -1129,6 +1210,7 @@ fn parse_finding_aid(id: &CollectionId, text: &str) -> Result<Collection> {
         rights: blank_none(fm.rights),
         subjects: fm.subjects,
         narrative,
+        drafted: fm.drafted,
     })
 }
 
@@ -1173,6 +1255,7 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
         rights: c.rights.clone().unwrap_or_default(),
         subjects: c.subjects.clone(),
         curator: c.curator.clone(),
+        drafted: c.drafted.clone(),
     };
     let yaml = serde_yaml_ng::to_string(&fm).context("serializing YAML front-matter")?;
     let mut out = String::from("---\n");
@@ -2031,6 +2114,78 @@ mod tests {
             ..Default::default()
         }
         .apply_to_empty(&mut { back }));
+    }
+
+    fn drafted(fields: &[&str], model: &str) -> Option<Drafted> {
+        Some(Drafted {
+            model: model.into(),
+            service: "localhost:11434".into(),
+            fields: fields.iter().map(|f| f.to_string()).collect(),
+            at: "2026-11-01T12:00:00Z".into(),
+        })
+    }
+
+    #[test]
+    fn the_drafted_record_follows_the_text_through_later_edits() {
+        let tmp = TempDir::new().unwrap();
+        let mut m = Manifest::open(&tmp.path().join("index")).unwrap();
+        let c = |m: &Manifest| m.collections[0].clone();
+        m.apply_fields(
+            "Coll",
+            &CollectionFields {
+                description: Some("Drafted abstract.".into()),
+                narrative: Some("Drafted\nnarrative.".into()),
+                drafted: drafted(&["description", "narrative"], "m1"),
+                ..Default::default()
+            },
+            "now",
+            None,
+        );
+
+        // A later draft of another field adds to the record, it doesn't
+        // replace it; resaving unchanged text (as a browser posts it, CRLF and
+        // all) keeps those fields drafted.
+        m.apply_fields(
+            "Coll",
+            &CollectionFields {
+                description: Some("Drafted abstract.".into()),
+                narrative: Some("Drafted\r\nnarrative.\n".into()),
+                dates: Some("2024".into()),
+                drafted: drafted(&["dates"], "m2"),
+                ..Default::default()
+            },
+            "now",
+            None,
+        );
+        let d = c(&m).drafted.unwrap();
+        assert_eq!(d.fields, vec!["description", "narrative", "dates"]);
+        assert_eq!(d.model, "m2", "the latest draft's model");
+
+        // An edit with no draft at all, from any path, takes a rewritten field
+        // out and leaves the rest.
+        m.apply_fields(
+            "Coll",
+            &CollectionFields {
+                narrative: Some("Mine now.".into()),
+                ..Default::default()
+            },
+            "now",
+            None,
+        );
+        assert_eq!(c(&m).drafted.unwrap().fields, vec!["description", "dates"]);
+
+        // Rewrite the rest and the record goes.
+        m.apply_fields(
+            "Coll",
+            &CollectionFields {
+                description: Some("Mine.".into()),
+                dates: Some("2023".into()),
+                ..Default::default()
+            },
+            "now",
+            None,
+        );
+        assert_eq!(c(&m).drafted, None);
     }
 
     #[test]

@@ -122,6 +122,8 @@ A reader's searches and the pages they replay are a record of what they read, an
 
 If you put another proxy, a CDN or a load balancer in front, its logs are yours to decide on: most record addresses and full URLs by default.
 
+If you configure a [language model for drafting descriptions](/docs/guides/drafting/), a curator's draft request sends a sample of a collection's archived text to the model's service. With a hosted service, that text leaves your server under the service's terms; with a local model it doesn't. Each request is in the audit trail with the model and service. Use `https://` for any service not on your own network: indice warns at startup about plain `http://` to a public host, since the API key travels with every request.
+
 ## Adding archives by URL
 
 A curator can add an archive by its URL, and indice then fetches that URL from the server. On a server it refuses a URL that resolves to the machine itself or to your internal network, so the form cannot be used to probe services behind your firewall. If your WACZs really do live on an internal host, `--allow-internal-fetch` allows it. There is no way to add an archive by a path on the server's disk over the web; that is `indice index` at the command line.

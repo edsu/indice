@@ -22,6 +22,141 @@ pub struct CollectionFormData {
     pub subjects: String,
     pub narrative: String,
     pub editing: bool,
+    /// The model the Draft button uses, when one is configured.
+    pub drafting: Option<DraftingInfo>,
+    /// A draft to show, after the Draft button was pressed.
+    pub draft: Option<FormDraft>,
+    /// Why a draft couldn't be made, shown above the form.
+    pub error: Option<String>,
+}
+
+/// Which model drafts, at which service, what the operator says about it,
+/// and what would be sent: shown beside the Draft button, before anything is.
+pub struct DraftingInfo {
+    pub model: String,
+    pub service: String,
+    /// The operator's note about the service (`llm.notice`), rendered.
+    pub notice: Option<maud::PreEscaped<String>>,
+    /// How long the editor waits for an answer, for the waiting message.
+    pub timeout_secs: u64,
+    /// What a draft would send now, when it could be worked out.
+    pub preview: Option<DraftPreview>,
+}
+
+/// What pressing Draft would send.
+pub struct DraftPreview {
+    /// `(title, url)` of each page included.
+    pub pages: Vec<(String, String)>,
+    /// How much would be sent, in characters.
+    pub chars: usize,
+    /// The whole prompt: the instructions, then the material.
+    pub prompt: String,
+}
+
+/// A model's draft as the editor shows it. Fields that were empty already
+/// hold the drafted text in their inputs; for fields the curator had written,
+/// the draft is offered beside them, to use only if asked.
+pub struct FormDraft {
+    pub model: String,
+    pub service: String,
+    pub at: String,
+    /// Fields holding drafted text: filled because they were empty, or still
+    /// holding an earlier draft's text.
+    pub filled: Vec<String>,
+    /// `(field, drafted text)` for fields already written.
+    pub suggestions: Vec<(String, String)>,
+    /// `(field, drafted text)` for every field the draft covers, carried in
+    /// hidden inputs so Save can tell which the curator left as drafted.
+    pub texts: Vec<(String, String)>,
+}
+
+impl FormDraft {
+    fn filled(&self, field: &str) -> bool {
+        self.filled.iter().any(|f| f == field)
+    }
+
+    fn suggestion(&self, field: &str) -> Option<&str> {
+        self.suggestions
+            .iter()
+            .find(|(f, _)| f == field)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// Below the Draft button, before anything is sent: which model at which
+/// service, the operator's note about it, and what would be sent, down to the
+/// pages and the full prompt.
+fn draft_panel(m: &DraftingInfo) -> Markup {
+    html! {
+        div.draft-panel {
+            p.draft-who {
+                "Drafts with " b { (m.model) } " at " b { (m.service) }
+                ", which is sent a sample of this collection's archived text."
+            }
+            @if let Some(n) = &m.notice { div.draft-notice { (n) } }
+            @if let Some(p) = &m.preview {
+                details.draft-preview {
+                    summary {
+                        "What will be sent: " (p.pages.len()) " page" @if p.pages.len() != 1 { "s" }
+                        ", " (thousands(p.chars)) " characters"
+                    }
+                    ol.draft-pages {
+                        @for (title, url) in &p.pages {
+                            li {
+                                @if title.trim().is_empty() { (url) } @else { (title) " " span.url { (url) } }
+                            }
+                        }
+                    }
+                    details.draft-prompt {
+                        summary { "The full prompt" }
+                        pre { (p.prompt) }
+                    }
+                }
+            }
+            // Filled in by editor.js while a draft is being made.
+            p #draft-status.draft-status hidden {}
+        }
+        script src="/assets/editor.js" defer {}
+    }
+}
+
+/// `23800` as `23,800`.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The marker on a field a draft filled: say so, so the curator reviews it.
+fn drafted_mark(draft: Option<&FormDraft>, field: &str) -> Markup {
+    html! {
+        @if draft.is_some_and(|d| d.filled(field)) {
+            " " span.drafted-mark { "drafted, review before saving" }
+        }
+    }
+}
+
+/// For a field already written, the draft's alternative, used only if the
+/// curator ticks the box.
+fn draft_suggestion(draft: Option<&FormDraft>, field: &str) -> Markup {
+    html! {
+        @if let Some(text) = draft.and_then(|d| d.suggestion(field)) {
+            div.draft-suggestion {
+                span.draft-label { "The draft suggests:" }
+                div.draft-text { (text) }
+                label.use-draft {
+                    input type="checkbox" name=(format!("use_draft_{field}"));
+                    " Use the draft instead"
+                }
+            }
+        }
+    }
 }
 
 /// The finding-aid form (`/manage/collections/new` and `/manage/edit/{id}`):
@@ -44,32 +179,64 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
         @if form.editing {
             p.muted { "The name is fixed (it's the collection's identity); edit the description below." }
         }
+        @if let Some(e) = &form.error {
+            p.form-error { (e) }
+        }
+        @if let Some(d) = &form.draft {
+            p.draft-note {
+                "Drafted with " b { (d.model) } " at " (d.service) ". "
+                "Fields marked “drafted” were empty and now hold the draft; where you had already written something, the draft is shown below it, to use only if you choose. Nothing is saved until you press Save."
+            }
+        }
         form.manage-form method="post" action="/api/collections" {
+            @if let Some(d) = &form.draft {
+                input type="hidden" name="draft_model" value=(d.model);
+                input type="hidden" name="draft_service" value=(d.service);
+                input type="hidden" name="draft_at" value=(d.at);
+                @for (field, text) in &d.texts {
+                    input type="hidden" name=(format!("draft_{field}")) value=(text);
+                }
+            }
             label {
                 span { "Name" }
                 input type="text" name="name" required value=(form.name) readonly[form.editing];
             }
             label {
-                span { "Description " span.hint { "a one-line summary, shown on cards and under the title" } }
+                span { "Description" (drafted_mark(form.draft.as_ref(), "description")) span.hint { "a one-line summary, shown on cards and under the title" } }
                 input type="text" name="description" value=(form.description);
             }
+            (draft_suggestion(form.draft.as_ref(), "description"))
             div.grid-2 {
                 label { span { "Creator" } input type="text" name="creator" value=(form.creator); }
-                label { span { "Dates" } input type="text" name="dates" value=(form.dates); }
+                label { span { "Dates" (drafted_mark(form.draft.as_ref(), "dates")) } input type="text" name="dates" value=(form.dates); }
                 label { span { "Curator" } input type="text" name="curator" value=(form.curator); }
                 label { span { "Rights" } input type="text" name="rights" value=(form.rights); }
             }
+            (draft_suggestion(form.draft.as_ref(), "dates"))
             label {
-                span { "Subjects " span.hint { "comma-separated" } }
+                span { "Subjects" (drafted_mark(form.draft.as_ref(), "subjects")) span.hint { "comma-separated" } }
                 input type="text" name="subjects" value=(form.subjects);
             }
+            (draft_suggestion(form.draft.as_ref(), "subjects"))
             label {
-                span { "Narrative " span.hint { "the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
+                span { "Narrative" (drafted_mark(form.draft.as_ref(), "narrative")) span.hint { "the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
                 textarea name="narrative" rows="8" { (form.narrative) }
             }
+            (draft_suggestion(form.draft.as_ref(), "narrative"))
             div.form-actions {
                 button.btn type="submit" { @if form.editing { "Save changes" } @else { "Create collection" } }
+                @if let (true, Some(m)) = (form.editing, &form.drafting) {
+                    // Posts the form as it stands, so unsaved edits count, to
+                    // the draft route instead of saving.
+                    button.btn.draft type="submit" formaction=(format!("/manage/edit/{}/draft", form.id)) formnovalidate
+                        data-service=(m.service) data-timeout=(m.timeout_secs) {
+                        @if form.draft.is_some() { "Draft again" } @else { "Draft a description" }
+                    }
+                }
                 a.cancel href=(back) { "Cancel" }
+            }
+            @if let (true, Some(m)) = (form.editing, &form.drafting) {
+                (draft_panel(m))
             }
         }
     };

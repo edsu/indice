@@ -5,6 +5,7 @@
 //! that local access means local.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Local trust, as a workstation has it. The helper binds `127.0.0.1:0`, so the
 /// address handed to `Access::local` matches what the listener will get.
@@ -2038,6 +2039,7 @@ async fn a_workstation_operator_is_offered_the_import_tabs() {
             indice_lib::server::Providers {
                 browsertrix: Some(std::sync::Arc::new(StubBx)),
                 archiveit: Some(std::sync::Arc::new(StubAit)),
+                llm_key: None,
             },
         )
         .await
@@ -2095,6 +2097,7 @@ async fn a_full_archive_refuses_a_download_import_before_it_starts() {
             indice_lib::server::Providers {
                 browsertrix: Some(std::sync::Arc::new(NeverBx)),
                 archiveit: Some(std::sync::Arc::new(NeverAit)),
+                llm_key: None,
             },
         )
         .await
@@ -2159,5 +2162,303 @@ async fn an_oversized_text_field_is_refused_even_with_no_limits_set() {
     assert_eq!(status, 413, "an oversized text field must be refused");
     assert!(text.contains("text field"), "and say which part: {text}");
     assert!(!tmp.path().join("archive").exists());
+    server.abort();
+}
+
+/// An OpenAI-compatible service answering every request with `content` as
+/// the model's message. Returns its `/v1` endpoint, and the request bodies it
+/// was sent.
+fn fake_llm(content: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let record = sent.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            record
+                .lock()
+                .unwrap()
+                .push(String::from_utf8(body).unwrap());
+            let answer =
+            serde_json::json!({"choices": [{"message": {"role": "assistant", "content": content}}]})
+                .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{answer}",
+                answer.len()
+            )
+            .unwrap();
+        }
+    });
+    (endpoint, sent)
+}
+
+/// POST a urlencoded form, following the redirect; returns status and body.
+async fn post_fields(url: String, fields: Vec<(&'static str, String)>) -> (u16, String) {
+    tokio::task::spawn_blocking(move || {
+        let mut ser = url::form_urlencoded::Serializer::new(String::new());
+        for (k, v) in &fields {
+            ser.append_pair(k, v);
+        }
+        let mut res = agent()
+            .post(&url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .send(ser.finish())
+            .unwrap();
+        (
+            res.status().as_u16(),
+            res.body_mut().read_to_string().unwrap(),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+/// The editor's Draft button end to end: the button names the model and
+/// service; a draft fills only empty fields, offers itself beside written ones
+/// and writes nothing; Save keeps what the curator chose and records which
+/// fields began as a draft; the collection page says so.
+#[tokio::test]
+async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let archive = home.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let dest = archive.join("github-bitcoin-mining.wacz");
+    std::fs::copy(fixture("github-bitcoin-mining.wacz"), &dest).unwrap();
+    indice_lib::index::index_path(&dest, home, None, "coll").unwrap();
+    let (endpoint, sent) = fake_llm(
+        r#"{"description": "Drafted abstract.", "narrative": "Drafted narrative.",
+            "subjects": ["Bitcoin"], "dates": "2024", "rights": "Never accepted"}"#,
+    );
+    std::fs::write(
+        home.join("config.yaml"),
+        format!(
+            "llm:\n  endpoint: {endpoint}\n  model: fake-model\n  notice: \
+             \"A test service. [Privacy](https://example.org/privacy) <script>x</script>\"\n"
+        ),
+    )
+    .unwrap();
+    let service = endpoint
+        .trim_start_matches("http://")
+        .trim_end_matches("/v1")
+        .to_string();
+    let readme = home.join("collections/coll/README.md");
+    let (base, server) = serve(home.to_path_buf(), local_access()).await;
+
+    let (status, edit) = get(format!("{base}/manage/edit/coll")).await;
+    assert_eq!(status, 200);
+    assert!(edit.contains("Draft a description"), "{edit}");
+    assert!(edit.contains("Drafts with <b>fake-model</b>"), "{edit}");
+    assert!(edit.contains(&format!("<b>{service}</b>")), "{edit}");
+    // The operator's note, as safe Markdown, before anything is sent.
+    assert!(
+        edit.contains(r#"<a href="https://example.org/privacy">Privacy</a>"#),
+        "{edit}"
+    );
+    assert!(
+        !edit.contains("<script>x"),
+        "raw HTML in the note is escaped"
+    );
+    // And what would be sent, down to the pages and the prompt.
+    assert!(edit.contains("What will be sent: "), "{edit}");
+    assert!(edit.contains("The full prompt"), "{edit}");
+    assert!(edit.contains("/assets/editor.js"), "the waiting script");
+
+    // The curator has written a description, and nothing else, then asks.
+    let before = std::fs::read_to_string(&readme).unwrap();
+    let (status, drafted) = post_fields(
+        format!("{base}/manage/edit/coll/draft"),
+        vec![
+            ("name", "coll".into()),
+            ("description", "The curator's abstract.".into()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{drafted}");
+    assert!(
+        drafted.contains("drafted, review before saving"),
+        "{drafted}"
+    );
+    assert!(
+        drafted.contains("Drafted narrative."),
+        "the empty narrative is filled"
+    );
+    assert!(
+        drafted.contains("The draft suggests:"),
+        "offered beside the written field"
+    );
+    assert!(drafted.contains("Drafted abstract."), "{drafted}");
+    assert!(
+        drafted.contains("value=\"The curator&#39;s abstract.\"")
+            || drafted.contains("value=\"The curator's abstract.\""),
+        "the curator's text stays in its field"
+    );
+    // The drafted text of each field rides along, so Save can tell which
+    // ones the curator left as drafted.
+    for hidden in [
+        r#"name="draft_narrative" value="Drafted narrative.""#,
+        r#"name="draft_dates" value="2024""#,
+        r#"name="draft_description" value="Drafted abstract.""#,
+    ] {
+        assert!(drafted.contains(hidden), "{hidden}: {drafted}");
+    }
+    assert!(
+        !drafted.contains("Never accepted"),
+        "rights are not the model's"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&readme).unwrap(),
+        before,
+        "a draft writes nothing"
+    );
+
+    // Save: keep the filled fields, and choose the draft's description too.
+    let (status, page) = post_fields(
+        format!("{base}/api/collections"),
+        vec![
+            ("name", "coll".into()),
+            ("description", "The curator's abstract.".into()),
+            ("dates", "2024".into()),
+            ("subjects", "Bitcoin".into()),
+            ("narrative", "Drafted narrative.".into()),
+            ("draft_model", "fake-model".into()),
+            ("draft_service", service.clone()),
+            ("draft_at", "2026-11-01T12:00:00Z".into()),
+            ("draft_dates", "2024".into()),
+            ("draft_subjects", "Bitcoin".into()),
+            ("draft_narrative", "Drafted narrative.".into()),
+            ("use_draft_description", "on".into()),
+            ("draft_description", "Drafted abstract.".into()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let c = manifest.collection_by_id("coll").unwrap();
+    assert_eq!(
+        c.description.as_deref(),
+        Some("Drafted abstract."),
+        "chosen, so swapped in"
+    );
+    let d = c.drafted.as_ref().expect("provenance recorded");
+    assert_eq!(
+        d.fields,
+        vec!["description", "narrative", "subjects", "dates"]
+    );
+    assert_eq!(
+        (d.model.as_str(), d.service.as_str()),
+        ("fake-model", service.as_str())
+    );
+    assert!(
+        page.contains(&format!("drafted with fake-model ({service})")),
+        "the collection page says so: {page}"
+    );
+    drop(manifest);
+
+    // Draft again, over a form still holding the first draft's narrative: it
+    // is the model's text, not the curator's, so it is replaced and marked,
+    // and the model isn't told the archivist wrote it.
+    let (status, again) = post_fields(
+        format!("{base}/manage/edit/coll/draft"),
+        vec![
+            ("name", "coll".into()),
+            ("description", "The curator's abstract.".into()),
+            ("narrative", "Drafted narrative.".into()),
+            ("draft_model", "fake-model".into()),
+            ("draft_narrative", "Drafted narrative.".into()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 200, "{again}");
+    assert!(
+        again.contains(r#"name="draft_narrative" value="Drafted narrative.""#),
+        "{again}"
+    );
+    let asked = sent.lock().unwrap().last().cloned().unwrap();
+    assert!(asked.contains("The curator's abstract."), "{asked}");
+    assert!(
+        !asked.contains("narrative: Drafted narrative."),
+        "the earlier draft isn't the archivist's: {asked}"
+    );
+
+    // A hand edit makes a field the curator's: it leaves the record, and the
+    // rest stay.
+    let saved = |narrative: &str, dates: &str, subjects: &str, description: &str| {
+        vec![
+            ("name", "coll".into()),
+            ("description", description.to_string()),
+            ("dates", dates.to_string()),
+            ("subjects", subjects.to_string()),
+            ("narrative", narrative.to_string()),
+        ]
+    };
+    let (status, page) = post_fields(
+        format!("{base}/api/collections"),
+        saved("Rewritten by hand.", "2024", "Bitcoin", "Drafted abstract."),
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let d = manifest.collection_by_id("coll").unwrap().drafted.clone();
+    assert_eq!(
+        d.expect("the untouched fields are still drafted").fields,
+        vec!["description", "subjects", "dates"]
+    );
+    drop(manifest);
+
+    // Every drafted field rewritten: no record, and the page stops saying so.
+    let (_, page) = post_fields(
+        format!("{base}/api/collections"),
+        saved("Rewritten by hand.", "2023-2024", "Mining", "Mine."),
+    )
+    .await;
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    assert_eq!(manifest.collection_by_id("coll").unwrap().drafted, None);
+    assert!(!page.contains("drafted with"), "{page}");
+    server.abort();
+}
+
+/// With no model configured there is no Draft button, and the route says why.
+#[tokio::test]
+async fn without_a_model_there_is_nothing_to_draft_with() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    let (status, _) = post_fields(
+        format!("{base}/api/collections"),
+        vec![("name", "coll".into())],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, edit) = get(format!("{base}/manage/edit/coll")).await;
+    assert!(!edit.contains("Draft a description"), "{edit}");
+    let (status, page) = post_fields(
+        format!("{base}/manage/edit/coll/draft"),
+        vec![("name", "coll".into()), ("description", "kept".into())],
+    )
+    .await;
+    assert_eq!(status, 503);
+    assert!(page.contains("No language model is configured"), "{page}");
+    assert!(
+        page.contains("value=\"kept\""),
+        "the curator's text survives: {page}"
+    );
     server.abort();
 }
