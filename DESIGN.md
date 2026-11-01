@@ -604,6 +604,12 @@ An upload is bounded as it streams, too. The route's `DefaultBodyLimit` follows 
 
 `Config::load` stays forgiving, because every ingest calls it and the command line must not stop over a setting it does not use. The server checks the `uploads:` section strictly at startup instead (`Config::check_upload_limits`), refusing anything that would quietly mean no limit: an unknown key, a key with no value, or `0`. It logs the limits in force beside `access:` and `roles:`.
 
+### Drafting descriptions with a language model
+
+Optional, and off unless `config.yaml` has an `llm:` section. `llm.rs` is a generic client for any OpenAI-compatible chat completions endpoint (hosted, or local such as Ollama), so indice needs only an HTTP client and the operator chooses the model and whether text leaves the machine. It sets connect and overall timeouts and asks for JSON mode, retrying once without it for a server that refuses the parameter. The key comes from `INDICE_LLM_API_KEY`, read in the binary. The config is split by purpose: `llm:` says which model, and each use gets its own section (`describe:`), so later uses share the model.
+
+`describe.rs` is the first use. `gather` collects what indice already knows about a collection: the finding aid's existing fields, each crawl's provenance and seed pages, `facet_overview_scoped`, and `SearchIndex::sample_pages`, which leads with the seed pages and then deals pages round-robin across sites from the stored `body_snip`, so no WACZ is re-read and every source works. `user_message` lays that out within `describe.max_input_chars`, sends a site's shared opening (its menu) once at most, and fences each page between `<<<PAGE n` and `PAGE n>>>`, breaking those markers inside page text. Archived pages are untrusted input: the prompt tells the model to ignore instructions in them, and the answer can only become draft text a curator reviews. `Draft::from_answer` accepts only `description`, `narrative`, `subjects` and `dates`, whatever the prompt asked for, and `Draft::fill_empty` applies a draft only where the curator left a field empty. Saving records `Collection::drafted` (model, service as the endpoint's host, fields, time) in the finding aid's front matter.
+
 ### Ingesting large corpora
 
 `index` accepts many WACZs at once (globs, or `--from-file`), and builds the

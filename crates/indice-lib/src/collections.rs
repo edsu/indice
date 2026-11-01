@@ -474,6 +474,25 @@ pub struct Collection {
     /// finding-aid file, not in front-matter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narrative: Option<String>,
+
+    /// Which of these fields started as a language model's draft, when one
+    /// did. Recorded so readers can tell machine-drafted description from a
+    /// curator's own; see [`Drafted`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drafted: Option<Drafted>,
+}
+
+/// That some of a finding aid's fields began as a language model's draft,
+/// which a curator then reviewed and saved: which model, at which service,
+/// which fields, and when. `service` is the endpoint's host, never its path
+/// or key.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Drafted {
+    pub model: String,
+    pub service: String,
+    pub fields: Vec<String>,
+    /// When the draft was made (RFC 3339).
+    pub at: String,
 }
 
 /// The on-disk manifest. WACZ members (membership + derived provenance) live in
@@ -773,6 +792,9 @@ pub struct CollectionFields {
     pub rights: Option<String>,
     pub subjects: Option<Vec<String>>,
     pub narrative: Option<String>,
+    /// Record that some fields began as a model's draft. Replaces any earlier
+    /// record when set.
+    pub drafted: Option<Drafted>,
 }
 
 impl CollectionFields {
@@ -785,6 +807,7 @@ impl CollectionFields {
             && self.rights.is_none()
             && self.subjects.is_none()
             && self.narrative.is_none()
+            && self.drafted.is_none()
     }
 
     /// Overwrite `c`'s fields for each value that is `Some` (leave the rest).
@@ -809,6 +832,9 @@ impl CollectionFields {
         }
         if self.narrative.is_some() {
             c.narrative = self.narrative.clone();
+        }
+        if self.drafted.is_some() {
+            c.drafted = self.drafted.clone();
         }
     }
 
@@ -893,6 +919,10 @@ struct FrontMatter {
     // per-collection gap), so it stays optional and is omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     curator: Option<String>,
+    // Written only when a model drafted something: provenance, not a blank
+    // for the curator to fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    drafted: Option<Drafted>,
 }
 
 /// A validated collection id (slug).
@@ -1129,6 +1159,7 @@ fn parse_finding_aid(id: &CollectionId, text: &str) -> Result<Collection> {
         rights: blank_none(fm.rights),
         subjects: fm.subjects,
         narrative,
+        drafted: fm.drafted,
     })
 }
 
@@ -1173,6 +1204,7 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
         rights: c.rights.clone().unwrap_or_default(),
         subjects: c.subjects.clone(),
         curator: c.curator.clone(),
+        drafted: c.drafted.clone(),
     };
     let yaml = serde_yaml_ng::to_string(&fm).context("serializing YAML front-matter")?;
     let mut out = String::from("---\n");

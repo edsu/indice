@@ -1399,3 +1399,60 @@ fn live_crawl_ids_ignores_annotation_documents() {
     assert_eq!(live.len(), 1, "only the page's crawl: {live:?}");
     assert_eq!(live.get("c1"), Some(&1));
 }
+
+/// A collection's sample leads with its seed pages, then spreads across sites
+/// before taking a second page from any of them, skips pages with nothing to
+/// read, takes each URL once, and stays inside the collection.
+#[test]
+fn sample_pages_spreads_across_sites_after_the_seeds() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    let mut add = |url: &str, body: &str, collection: &str| {
+        idx.index_page(&Page {
+            url,
+            title: url,
+            body,
+            crawl_id: "c1",
+            collection,
+            ..Default::default()
+        })
+        .unwrap();
+    };
+    for i in 0..5 {
+        add(&format!("https://a.example/{i}"), "text from a", "coll");
+    }
+    add("https://b.example/1", "text from b", "coll");
+    add("https://b.example/2", "text from b", "coll");
+    add("https://c.example/seed", "the seed page", "coll");
+    add("https://c.example/empty", "", "coll");
+    add("https://a.example/0", "a repeat capture", "coll");
+    add("https://other.example/x", "another collection", "elsewhere");
+    idx.commit().unwrap();
+
+    let seeds = vec!["https://c.example/seed".to_string()];
+    let all = idx.sample_pages("coll", &seeds, 100).unwrap();
+    assert_eq!(all[0].url, "https://c.example/seed", "the seed leads");
+    let urls: Vec<&str> = all.iter().map(|p| p.url.as_str()).collect();
+    assert!(
+        !urls.contains(&"https://c.example/empty"),
+        "nothing to read"
+    );
+    assert!(
+        !urls.contains(&"https://other.example/x"),
+        "another collection"
+    );
+    assert_eq!(
+        urls.iter().filter(|u| **u == "https://a.example/0").count(),
+        1,
+        "each URL once"
+    );
+    assert_eq!(all.len(), 8, "5 from a, 2 from b, the seed: {urls:?}");
+    assert_eq!(all[0].text, "the seed page");
+
+    // With room for three after the seed, each site gets one before any gets two.
+    let few = idx.sample_pages("coll", &seeds, 3).unwrap();
+    let sites: std::collections::BTreeSet<&str> =
+        few[1..].iter().map(|p| p.site.as_str()).collect();
+    assert_eq!(few.len(), 3);
+    assert_eq!(sites.len(), 2, "a and b, one page each: {few:?}");
+}

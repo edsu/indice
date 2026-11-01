@@ -986,6 +986,7 @@ pub(super) async fn create_collection(
         rights: field_opt(&form.rights),
         subjects: (!subjects.is_empty()).then_some(subjects),
         narrative: field_opt(&form.narrative),
+        drafted: None,
     };
     let actor = curator.principal().id().clone();
     let state = state.clone();

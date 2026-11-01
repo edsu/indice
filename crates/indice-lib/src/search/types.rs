@@ -12,6 +12,20 @@ pub struct PageHit {
     pub crawl_id: String,
 }
 
+/// A page's stored text and metadata, for building a description of the
+/// collection it's in (`describe`). `text` is the stored, capped body, not the
+/// whole page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageSample {
+    pub url: String,
+    pub title: String,
+    /// 14-digit capture timestamp.
+    pub timestamp: String,
+    pub site: String,
+    pub description: String,
+    pub text: String,
+}
+
 /// The indexable fields of one page. Borrowed string slices so callers can pass
 /// references without cloning; unset fields default to `""` via [`Default`], so
 /// adding a field here does not force every call site to change.

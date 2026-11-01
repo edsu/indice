@@ -518,6 +518,7 @@ pub fn collection_fields(c: &Collection) -> crate::collections::CollectionFields
         dates: None, // filled from crawl times by the caller when available
         subjects,
         curator: None,
+        drafted: None,
     }
 }
 

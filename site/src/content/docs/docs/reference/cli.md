@@ -322,6 +322,22 @@ indice collection set [OPTIONS] <NAME>
 
 `<NAME>` is the collection name; its id is a slug of it.
 
+### `collection draft`
+
+Ask the configured [language model](/docs/reference/configuration/#drafting-descriptions-with-a-language-model) for a draft of a collection's description, narrative, subjects and dates, and print it as YAML.
+
+```text
+indice collection draft [OPTIONS] <ID>
+```
+
+| Option | Does |
+|---|---|
+| `--apply` | Fill the finding aid's empty fields from the draft, never overwriting what's already written, and record the model as their provenance |
+| `--replace <FIELD>` | With `--apply`, also overwrite these fields when the draft has them: `description`, `narrative`, `subjects` or `dates` (repeat, or separate with commas) |
+| `--show-prompt` | Print the prompt that would be sent, and send nothing. Works before a model is configured |
+
+`<ID>` is the collection's id or name. The key, if the service needs one, comes from `INDICE_LLM_API_KEY`.
+
 ### `collection list`
 
 ```text

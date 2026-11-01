@@ -24,6 +24,11 @@ const TITLE_BOOST: tantivy::Score = 3.0;
 /// come from the aggregation, which is exact over the full match set.
 const CANDIDATE_CAP: usize = 1000;
 
+/// The most documents [`SearchIndex::sample_pages`] reads to choose a sample.
+/// Enough to see a collection's range of sites; bounded so a million-page
+/// collection costs the same to sample as a ten-thousand-page one.
+const SAMPLE_CANDIDATES: usize = 5000;
+
 /// Headings rank above body text but below the title.
 const HEADINGS_BOOST: tantivy::Score = 2.0;
 
@@ -260,6 +265,91 @@ impl SearchIndex {
             facets: facets_from_aggregations(&agg_json),
             timeline: timeline_from_aggregations(&agg_json),
         })
+    }
+
+    /// Up to `limit` pages of a collection, with their stored text, chosen to
+    /// show the collection's range rather than its bulk: pages whose URL is in
+    /// `first` (the seed pages) lead, then the rest are dealt round-robin
+    /// across sites, so one large site doesn't crowd out the others. Pages
+    /// with no text and no description are skipped.
+    ///
+    /// Reads at most [`SAMPLE_CANDIDATES`] documents. Deterministic for a
+    /// given index, so the same collection yields the same sample.
+    pub fn sample_pages(
+        &self,
+        collection_id: &str,
+        first: &[String],
+        limit: usize,
+    ) -> Result<Vec<PageSample>> {
+        let schema = self.index.schema();
+        let f = |name| schema.get_field(name);
+        let (collection_f, doc_type_f) = (f(FIELD_COLLECTION)?, f(FIELD_DOC_TYPE)?);
+        let (url_f, title_f, ts_f) = (f(FIELD_URL)?, f(FIELD_TITLE)?, f(FIELD_TS)?);
+        let (site_f, desc_f, snip_f) = (f(FIELD_SITE)?, f(FIELD_DESCRIPTION)?, f(FIELD_BODY_SNIP)?);
+
+        let term = |field, value: &str| -> Box<dyn Query> {
+            Box::new(TermQuery::new(
+                Term::from_field_text(field, value),
+                IndexRecordOption::Basic,
+            ))
+        };
+        let query = BooleanQuery::new(vec![
+            (Occur::Must, term(collection_f, collection_id)),
+            (Occur::Must, term(doc_type_f, "page")),
+        ]);
+        let searcher = self.index.reader()?.searcher();
+        let top = searcher.search(
+            &query,
+            &TopDocs::with_limit(SAMPLE_CANDIDATES).order_by_score(),
+        )?;
+
+        let first: std::collections::HashSet<&str> = first.iter().map(String::as_str).collect();
+        let mut seeds = Vec::new();
+        // Sites in the order first seen, each with its pages in that order.
+        let mut by_site: Vec<(String, std::collections::VecDeque<PageSample>)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (_score, addr) in top {
+            let doc: TantivyDocument = searcher.doc(addr)?;
+            let page = PageSample {
+                url: get_text(&doc, url_f),
+                title: get_text(&doc, title_f),
+                timestamp: get_text(&doc, ts_f),
+                site: get_text(&doc, site_f),
+                description: get_text(&doc, desc_f),
+                text: get_text(&doc, snip_f),
+            };
+            // One sample per URL: repeat captures say nothing new.
+            if (page.text.trim().is_empty() && page.description.trim().is_empty())
+                || !seen.insert(page.url.clone())
+            {
+                continue;
+            }
+            if first.contains(page.url.as_str()) {
+                seeds.push(page);
+            } else if let Some((_, q)) = by_site.iter_mut().find(|(s, _)| *s == page.site) {
+                q.push_back(page);
+            } else {
+                by_site.push((page.site.clone(), std::iter::once(page).collect()));
+            }
+        }
+
+        let mut out: Vec<PageSample> = seeds.into_iter().take(limit).collect();
+        while out.len() < limit {
+            let mut took = false;
+            for (_, q) in by_site.iter_mut() {
+                if out.len() == limit {
+                    break;
+                }
+                if let Some(p) = q.pop_front() {
+                    out.push(p);
+                    took = true;
+                }
+            }
+            if !took {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Page documents within one collection, for the wabac `pagesQueryUrl`

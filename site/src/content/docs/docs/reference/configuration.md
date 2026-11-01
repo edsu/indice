@@ -76,6 +76,36 @@ Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. They
 
 The banner and `request_access` use the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
+## Drafting descriptions with a language model
+
+indice can ask a language model for a first draft of a collection's description, as a starting point the curator reviews and edits; the [Drafting descriptions](/docs/guides/drafting/) guide explains it. It is off unless you configure a model:
+
+```yaml
+llm:
+  # Any service that speaks the OpenAI chat completions API: a hosted one, or
+  # a local one such as Ollama, llama.cpp or vLLM. The base URL, ending in /v1.
+  endpoint: http://localhost:11434/v1
+  model: llama3.1:8b
+  # How long to wait for an answer, in seconds. Omit for 120.
+  timeout_secs: 120
+describe:
+  # The most archived text and metadata to send, in characters. Omit for 24000.
+  # Lower it for a small model with a short context.
+  max_input_chars: 24000
+  # A prompt of your own instead of indice's, relative to the home. Omit to use
+  # the built-in one.
+  prompt_file: prompts/describe.md
+```
+
+If the service needs an API key, put it in the `INDICE_LLM_API_KEY` environment variable, never in this file.
+
+- **What it drafts:** the description, the narrative, subjects and a dates statement. Never the creator, curator or rights, which the model could only guess at. Applying a draft fills only fields that are empty, unless the curator names one to replace.
+- **What it sends:** the collection's name and existing fields, each crawl's provenance and seed pages, counts of its sites, years, types and languages, and a sample of pages with the text the search index stored for them, up to `max_input_chars`. Text that opens most pages, such as a site's menu, is sent once at most. **That text goes to the endpoint you configure.** With a hosted service it leaves your machine; with a local model it doesn't.
+- **The prompt:** `indice collection draft <name> --show-prompt` prints exactly what would be sent, which is the place to start when writing a `prompt_file`. Whatever your prompt says, indice asks for JSON and accepts only the four descriptive fields from the answer.
+- **Provenance:** a finding aid records which fields began as a model's draft, which model and which service (the endpoint's host), in a `drafted:` entry in its front matter.
+
+`indice config` shows the model and service in force. A mistake in either section, such as `describe:` without `llm:`, a missing endpoint or model, or a `prompt_file` that can't be read, is reported when you use it.
+
 ## `users.yaml`
 
 This file is important because it describes who may do what, when running behind an auth proxy. It is separate from `config.yaml` because it's a different kind of decision: `config.yaml` tunes the index, `users.yaml` grants privilege. If you are using version control you'll probably want to include it alongside your finding aids.
