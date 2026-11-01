@@ -182,9 +182,10 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
 
 /* Finding-aid "About this collection" front-matter */
 .about { margin: 0 0 1.75rem; }
-/* The finding aid's prose: serif, at a reading measure, with a little more
-   leading than the sans around it. */
-.about .narrative { font-family: var(--serif); color: var(--text-2); font-size: var(--t-lg); line-height: 1.6; max-width: var(--measure); margin: 0.4rem 0 1rem; }
+/* The finding aid's prose: serif, with a little more leading than the sans
+   around it, and as wide as the details below it rather than held to the
+   reading measure, which left the column looking unfinished beside them. */
+.about .narrative { font-family: var(--serif); color: var(--text-2); font-size: var(--t-lg); line-height: 1.6; margin: 0.4rem 0 1rem; }
 .about .narrative > :first-child { margin-top: 0; }
 .about .narrative h2 { font-size: var(--t-md); border: none; padding: 0; margin: 1rem 0 0.3rem; }
 .about .narrative h3 { font-size: var(--t-md); margin: 0.8rem 0 0.3rem; }
