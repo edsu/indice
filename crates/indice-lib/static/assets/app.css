@@ -470,4 +470,13 @@ nav.pagination .page-info { color: var(--muted); }
    column }` and `.manage-form input { width: 100% }`: the box beside its words. */
 .manage-form .draft-suggestion .use-draft { display: inline-flex; flex-direction: row; gap: var(--s-1); align-items: center; font-weight: var(--w-bold); color: var(--ink); }
 .manage-form .draft-suggestion .use-draft input { width: auto; margin: 0; }
-.form-actions .draft-with { font-size: var(--t-xs); color: var(--muted); }
+.draft-panel { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--rule-soft); font-size: var(--t-sm); color: var(--text-2); max-width: var(--measure); }
+.draft-panel p { margin: 0 0 var(--s-2); }
+.draft-notice { background: var(--panel); border-radius: var(--radius); padding: var(--s-2) var(--s-3); margin-bottom: var(--s-2); }
+.draft-notice > * { margin: 0; }
+.draft-notice > * + * { margin-top: var(--s-1); }
+.draft-preview summary, .draft-prompt summary { cursor: pointer; font-weight: var(--w-bold); color: var(--ink); }
+.draft-pages { margin: var(--s-2) 0; padding-left: var(--s-5); max-height: 18rem; overflow-y: auto; }
+.draft-pages .url { color: var(--muted); font-family: var(--mono); font-size: var(--t-xs); word-break: break-all; }
+.draft-prompt pre { white-space: pre-wrap; font-size: var(--t-xs); background: var(--panel-2); padding: var(--s-3); border-radius: var(--radius); max-height: 24rem; overflow-y: auto; }
+.draft-status { font-weight: var(--w-bold); color: var(--work-dk); }

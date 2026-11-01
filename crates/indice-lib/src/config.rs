@@ -64,6 +64,11 @@ pub struct LlmConfig {
     pub model: Option<String>,
     /// How long to wait for an answer, in seconds. Default 120.
     pub timeout_secs: Option<u64>,
+    /// What a curator should know about the service before sending it
+    /// archived text, in Markdown: who runs it, what it keeps, a link to its
+    /// privacy policy. Shown beside the editor's Draft button and printed by
+    /// `indice collection draft`.
+    pub notice: Option<String>,
 }
 
 /// How the model drafts a description. Needs an `llm:` section.
@@ -297,6 +302,7 @@ impl Config {
                 endpoint,
                 model,
                 timeout,
+                notice: given(&llm.notice),
             },
             crate::describe::DescribeSettings {
                 max_input_chars,
@@ -526,6 +532,21 @@ mod tests {
         assert_eq!(describe.max_input_chars, 8000);
         assert_eq!(describe.prompt, "Describe it briefly.");
         assert!(describe.prompt_is_custom);
+    }
+
+    #[test]
+    fn the_notice_is_carried_and_a_blank_one_is_unset() {
+        let (_t, r) = llm_of(
+            "llm:\n  endpoint: http://localhost:1/v1\n  model: m\n  notice: \"Runs here. [More](https://x.org)\"\n",
+        );
+        let (llm, _) = r.unwrap().unwrap();
+        assert_eq!(
+            llm.notice.as_deref(),
+            Some("Runs here. [More](https://x.org)")
+        );
+        let (_t, r) =
+            llm_of("llm:\n  endpoint: http://localhost:1/v1\n  model: m\n  notice: '  '\n");
+        assert_eq!(r.unwrap().unwrap().0.notice, None);
     }
 
     #[test]

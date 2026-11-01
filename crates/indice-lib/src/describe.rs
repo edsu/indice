@@ -103,6 +103,40 @@ pub fn gather(manifest: &Manifest, search: &SearchIndex, collection_id: &str) ->
 /// collection, its crawls and facets first, then as many sampled pages as fit,
 /// each fenced so the model can tell archived text from the request.
 pub fn user_message(m: &Material, budget: usize) -> String {
+    prompt_with_count(m, budget).0
+}
+
+/// What would be sent for `m`, for showing a curator before they send it:
+/// the prompt, the user message, and the pages that fit in the budget.
+#[derive(Debug, Clone)]
+pub struct Preview {
+    pub system: String,
+    pub user: String,
+    /// The sampled pages the message includes, in order.
+    pub pages: Vec<PageSample>,
+}
+
+impl Preview {
+    /// How much would be sent, in characters, prompt included.
+    pub fn chars(&self) -> usize {
+        self.system.chars().count() + self.user.chars().count()
+    }
+}
+
+/// The preview of what [`draft`] would send for `m`.
+pub fn preview(settings: &DescribeSettings, m: &Material) -> Preview {
+    let (user, included) = prompt_with_count(m, settings.max_input_chars);
+    Preview {
+        system: settings.prompt.clone(),
+        user,
+        pages: m.pages.iter().take(included).cloned().collect(),
+    }
+}
+
+/// The user message, and how many of `m.pages` it included before the budget
+/// ran out.
+fn prompt_with_count(m: &Material, budget: usize) -> (String, usize) {
+    let mut included = 0;
     let mut out = String::new();
     let c = &m.collection;
     out.push_str(&format!("Collection: {}\n", c.name));
@@ -218,10 +252,11 @@ pub fn user_message(m: &Material, budget: usize) -> String {
         }
         block.push_str(&closing);
         out.push_str(&block);
+        included += 1;
     }
     out.push('\n');
     out.push_str(ANSWER_FORMAT);
-    out
+    (out, included)
 }
 
 /// A model's draft of the descriptive fields.

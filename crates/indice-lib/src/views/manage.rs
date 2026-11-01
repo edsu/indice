@@ -30,10 +30,27 @@ pub struct CollectionFormData {
     pub error: Option<String>,
 }
 
-/// Which model drafts, and at which service, for the line beside the button.
+/// Which model drafts, at which service, what the operator says about it,
+/// and what would be sent: shown beside the Draft button, before anything is.
 pub struct DraftingInfo {
     pub model: String,
     pub service: String,
+    /// The operator's note about the service (`llm.notice`), rendered.
+    pub notice: Option<maud::PreEscaped<String>>,
+    /// How long the editor waits for an answer, for the waiting message.
+    pub timeout_secs: u64,
+    /// What a draft would send now, when it could be worked out.
+    pub preview: Option<DraftPreview>,
+}
+
+/// What pressing Draft would send.
+pub struct DraftPreview {
+    /// `(title, url)` of each page included.
+    pub pages: Vec<(String, String)>,
+    /// How much would be sent, in characters.
+    pub chars: usize,
+    /// The whole prompt: the instructions, then the material.
+    pub prompt: String,
 }
 
 /// A model's draft as the editor shows it. Fields that were empty already
@@ -60,6 +77,56 @@ impl FormDraft {
             .find(|(f, _)| f == field)
             .map(|(_, v)| v.as_str())
     }
+}
+
+/// Below the Draft button, before anything is sent: which model at which
+/// service, the operator's note about it, and what would be sent, down to the
+/// pages and the full prompt.
+fn draft_panel(m: &DraftingInfo) -> Markup {
+    html! {
+        div.draft-panel {
+            p.draft-who {
+                "Drafts with " b { (m.model) } " at " b { (m.service) }
+                ", which is sent a sample of this collection's archived text."
+            }
+            @if let Some(n) = &m.notice { div.draft-notice { (n) } }
+            @if let Some(p) = &m.preview {
+                details.draft-preview {
+                    summary {
+                        "What will be sent: " (p.pages.len()) " page" @if p.pages.len() != 1 { "s" }
+                        ", " (thousands(p.chars)) " characters"
+                    }
+                    ol.draft-pages {
+                        @for (title, url) in &p.pages {
+                            li {
+                                @if title.trim().is_empty() { (url) } @else { (title) " " span.url { (url) } }
+                            }
+                        }
+                    }
+                    details.draft-prompt {
+                        summary { "The full prompt" }
+                        pre { (p.prompt) }
+                    }
+                }
+            }
+            // Filled in by editor.js while a draft is being made.
+            p #draft-status.draft-status hidden {}
+        }
+        script src="/assets/editor.js" defer {}
+    }
+}
+
+/// `23800` as `23,800`.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The marker on a field a draft filled: say so, so the curator reviews it.
@@ -156,12 +223,15 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
                 @if let (true, Some(m)) = (form.editing, &form.drafting) {
                     // Posts the form as it stands, so unsaved edits count, to
                     // the draft route instead of saving.
-                    button.btn.draft type="submit" formaction=(format!("/manage/edit/{}/draft", form.id)) formnovalidate {
+                    button.btn.draft type="submit" formaction=(format!("/manage/edit/{}/draft", form.id)) formnovalidate
+                        data-service=(m.service) data-timeout=(m.timeout_secs) {
                         @if form.draft.is_some() { "Draft again" } @else { "Draft a description" }
                     }
-                    span.hint.draft-with { "with " (m.model) " at " (m.service) ", which is sent a sample of this collection's archived text" }
                 }
                 a.cancel href=(back) { "Cancel" }
+            }
+            @if let (true, Some(m)) = (form.editing, &form.drafting) {
+                (draft_panel(m))
             }
         }
     };

@@ -1237,3 +1237,118 @@ async fn static_wacz_host(path: std::path::PathBuf) -> (SocketAddr, tokio::task:
     });
     (addr, handle)
 }
+
+/// While a draft is being made, the editor says so and stops a second
+/// request: both buttons disable, the button reads "Drafting…" and a line
+/// counts the wait. Then the draft arrives. Needs editor.js, which only a
+/// browser runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn the_editor_shows_a_draft_is_on_its_way() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    // A model that takes a few seconds to answer.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = v.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        std::thread::sleep(Duration::from_secs(4));
+        let content = r#"{"description": "Drafted abstract.", "narrative": "Drafted narrative."}"#;
+        let answer =
+            serde_json::json!({"choices": [{"message": {"role": "assistant", "content": content}}]})
+                .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{answer}",
+            answer.len()
+        )
+        .unwrap();
+    });
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "coll").unwrap();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        format!("llm:\n  endpoint: {endpoint}\n  model: slow-model\n"),
+    )
+    .unwrap();
+    let (addr, server) = serve(tmp.path(), workstation()).await;
+
+    let driver = connect().await;
+    let result = async {
+        driver
+            .goto(format!("http://{addr}/manage/edit/coll"))
+            .await
+            .map_err(|e| e.to_string())?;
+        driver
+            .find(By::Css("button.draft"))
+            .await
+            .map_err(|e| e.to_string())?;
+        // The page records its own state 1.2 s after the click, while the
+        // draft is still pending, into sessionStorage, which survives the
+        // navigation. Looking from WebDriver instead doesn't work: chromedriver
+        // holds each command until the draft's navigation has finished, by
+        // which time the waiting state is gone.
+        driver
+            .execute(
+                "sessionStorage.removeItem('probe'); \
+                 setTimeout(() => document.querySelector('button.draft').click(), 0); \
+                 setTimeout(() => sessionStorage.setItem('probe', JSON.stringify({ \
+                   disabled: [...document.querySelectorAll('form.manage-form button')].every(b => b.disabled), \
+                   label: document.querySelector('button.draft').textContent, \
+                   status: document.getElementById('draft-status').textContent, \
+                   hidden: document.getElementById('draft-status').hidden })), 1200);",
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Then the draft arrives, as a new page.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let source = driver.source().await.map_err(|e| e.to_string())?;
+            if source.contains("drafted, review before saving") {
+                let probe: String = driver
+                    .execute("return sessionStorage.getItem('probe') || ''", vec![])
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .convert()
+                    .map_err(|e| e.to_string())?;
+                let probe: serde_json::Value =
+                    serde_json::from_str(&probe).map_err(|e| format!("no probe: {e} {probe:?}"))?;
+                if probe["disabled"] != true {
+                    return Err(format!("the buttons should be disabled while drafting: {probe}"));
+                }
+                if probe["label"] != "Drafting…" {
+                    return Err(format!("the button should say Drafting…: {probe}"));
+                }
+                let status = probe["status"].as_str().unwrap_or("");
+                if probe["hidden"] != false || !status.starts_with("Waiting for 127.0.0.1") {
+                    return Err(format!("the wait should be counted: {probe}"));
+                }
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err("the draft never arrived".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    }
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+}

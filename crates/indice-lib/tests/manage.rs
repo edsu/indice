@@ -2240,7 +2240,10 @@ async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
     );
     std::fs::write(
         home.join("config.yaml"),
-        format!("llm:\n  endpoint: {endpoint}\n  model: fake-model\n"),
+        format!(
+            "llm:\n  endpoint: {endpoint}\n  model: fake-model\n  notice: \
+             \"A test service. [Privacy](https://example.org/privacy) <script>x</script>\"\n"
+        ),
     )
     .unwrap();
     let service = endpoint
@@ -2253,10 +2256,21 @@ async fn the_editor_drafts_a_finding_aid_and_save_records_it() {
     let (status, edit) = get(format!("{base}/manage/edit/coll")).await;
     assert_eq!(status, 200);
     assert!(edit.contains("Draft a description"), "{edit}");
+    assert!(edit.contains("Drafts with <b>fake-model</b>"), "{edit}");
+    assert!(edit.contains(&format!("<b>{service}</b>")), "{edit}");
+    // The operator's note, as safe Markdown, before anything is sent.
     assert!(
-        edit.contains(&format!("with fake-model at {service}")),
+        edit.contains(r#"<a href="https://example.org/privacy">Privacy</a>"#),
         "{edit}"
     );
+    assert!(
+        !edit.contains("<script>x"),
+        "raw HTML in the note is escaped"
+    );
+    // And what would be sent, down to the pages and the prompt.
+    assert!(edit.contains("What will be sent: "), "{edit}");
+    assert!(edit.contains("The full prompt"), "{edit}");
+    assert!(edit.contains("/assets/editor.js"), "the waiting script");
 
     // The curator has written a description, and nothing else, then asks.
     let before = std::fs::read_to_string(&readme).unwrap();

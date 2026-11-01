@@ -54,6 +54,15 @@ llm:
   model: llama3.1:8b
 ```
 
+Say something about the service for curators to read before they send it text. It's optional, but it's the place to explain who runs the model and what happens to what's sent:
+
+```yaml
+llm:
+  endpoint: http://localhost:11434/v1
+  model: llama3.1:8b
+  notice: Runs on this machine; archived text never leaves it.
+```
+
 **With a hosted service,** use its OpenAI-compatible base URL and a model it offers, and put its API key in the environment, never in `config.yaml`:
 
 ```sh
@@ -88,7 +97,13 @@ indice collection draft "Climate.gov" --apply --replace narrative
 
 ## In the editor
 
-When a model is configured, a collection's **Edit collection** form has a **Draft a description** button beside **Save changes**, with a line saying which model at which service it will use. It sends the form as it stands, so text you've typed but not saved counts as yours.
+When a model is configured, a collection's **Edit collection** form has a **Draft a description** button beside **Save changes**. Below it, before you send anything, you can see:
+
+- which model, at which service, it will use;
+- what your operator says about that service, if they've written a note: who runs it, what it keeps, and a link to its policy;
+- **What will be sent**, which opens to list the pages in the sample and the full prompt, and says how many characters that comes to.
+
+The button sends the form as it stands, so text you've typed but not saved counts as yours. While the model works, the buttons are disabled and a line counts the seconds, up to the time limit.
 
 The form comes back with the draft in it:
 

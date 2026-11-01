@@ -91,6 +91,7 @@ fn settings(endpoint: &str, timeout: Duration) -> LlmSettings {
         endpoint: endpoint.into(),
         model: "fake-model".into(),
         timeout,
+        notice: None,
     }
 }
 

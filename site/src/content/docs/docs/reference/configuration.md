@@ -88,6 +88,12 @@ llm:
   model: llama3.1:8b
   # How long to wait for an answer, in seconds. Omit for 120.
   timeout_secs: 120
+  # What curators should know about the service before sending it archived
+  # text, in Markdown: who runs it, what it keeps, a link to its policy. Shown
+  # beside the editor's Draft button and printed by `collection draft`.
+  notice: |
+    Runs on a GPU at the library; nothing leaves the building.
+    [About our model service](https://example.org/llm)
 describe:
   # The most archived text and metadata to send, in characters. Omit for 24000.
   # Lower it for a small model with a short context.
@@ -104,7 +110,7 @@ If the service needs an API key, put it in the `INDICE_LLM_API_KEY` environment 
 - **The prompt:** `indice collection draft <name> --show-prompt` prints exactly what would be sent, which is the place to start when writing a `prompt_file`. Whatever your prompt says, indice asks for JSON and accepts only the four descriptive fields from the answer.
 - **Provenance:** a finding aid records which fields began as a model's draft, which model and which service (the endpoint's host), in a `drafted:` entry in its front matter.
 
-`indice config` shows the model and service in force. A mistake in either section, such as `describe:` without `llm:`, a missing endpoint or model, or a `prompt_file` that can't be read, is reported when you use it.
+The `notice` uses the same safe Markdown as the site banner. `indice config` shows the model and service in force, and whether a notice is set. A mistake in either section, such as `describe:` without `llm:`, a missing endpoint or model, or a `prompt_file` that can't be read, is reported when you use it.
 
 ## `users.yaml`
 

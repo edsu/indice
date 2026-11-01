@@ -2067,6 +2067,14 @@ fn run_config(home: &std::path::Path) -> Result<()> {
                 );
             }
             println!(
+                "llm.notice:               {}",
+                if llm.notice.is_some() {
+                    "set  ->  shown before a draft is sent"
+                } else {
+                    "unset  ->  curators see only the model and service"
+                }
+            );
+            println!(
                 "describe:                 {} prompt, up to {} characters of material",
                 if describe.prompt_is_custom {
                     "custom"
@@ -2144,6 +2152,9 @@ fn run_collection_draft(
              text travel unencrypted; use https:// if the service offers it",
             llm.settings().endpoint
         );
+    }
+    if let Some(notice) = &llm.settings().notice {
+        eprintln!("{}\n", notice.trim());
     }
     eprintln!(
         "drafting a description of \"{}\" with {} at {} ({} pages in the sample)…",

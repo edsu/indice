@@ -817,16 +817,58 @@ pub(super) async fn edit_collection_form(
         drafting: drafting_info(&state),
         ..Default::default()
     };
+    drop(manifest);
+    let mut form = form;
+    if let Some(d) = form.drafting.as_mut() {
+        d.preview = with_preview(&state, &id).await;
+    }
     let chrome = chrome(&state, &headers);
     views::collection_form(&form, &chrome).into_response()
 }
 
-/// The model the editor's Draft button uses, if one is configured.
+/// The model the editor's Draft button uses, if one is configured, without a
+/// preview of what would be sent (see [`with_preview`]).
 fn drafting_info(state: &AppState) -> Option<views::DraftingInfo> {
-    state.drafting.as_ref().map(|d| views::DraftingInfo {
-        model: d.llm.settings().model.clone(),
-        service: d.llm.settings().service(),
+    state.drafting.as_ref().map(|d| {
+        let s = d.llm.settings();
+        views::DraftingInfo {
+            model: s.model.clone(),
+            service: s.service(),
+            notice: s.notice.as_deref().map(crate::markdown::render),
+            timeout_secs: s.timeout.as_secs(),
+            preview: None,
+        }
     })
+}
+
+/// A preview, for the panel beside the Draft button.
+fn preview_view(p: &crate::describe::Preview) -> views::DraftPreview {
+    views::DraftPreview {
+        pages: p
+            .pages
+            .iter()
+            .map(|pg| (pg.title.clone(), pg.url.clone()))
+            .collect(),
+        chars: p.chars(),
+        prompt: format!("{}\n\n{}", p.system.trim_end(), p.user),
+    }
+}
+
+/// Work out what a draft of collection `id` would send, so the editor can show
+/// it before anything is sent. `None` when there's no model, or nothing to
+/// describe yet.
+async fn with_preview(state: &Arc<AppState>, id: &str) -> Option<views::DraftPreview> {
+    let drafting = state.drafting.clone()?;
+    let manifest = Manifest::open(&state.index_dir).ok()?;
+    let scope = id.to_string();
+    let material = state
+        .read_index(move |search| crate::describe::gather(&manifest, search, &scope))
+        .await
+        .ok()?;
+    Some(preview_view(&crate::describe::preview(
+        &drafting.settings,
+        &material,
+    )))
 }
 
 /// The editor as the curator left it: the posted values, so a draft (or a
@@ -915,6 +957,13 @@ pub(super) async fn draft_collection(
         }
     };
     material.collection = current.clone();
+    // Show what was sent, under the result, as the panel shows it before.
+    if let Some(d) = data.drafting.as_mut() {
+        d.preview = Some(preview_view(&crate::describe::preview(
+            &drafting.settings,
+            &material,
+        )));
+    }
     let asked = drafting.clone();
     let result = tokio::task::spawn_blocking(move || {
         crate::describe::draft(&asked.llm, &asked.settings, &material)

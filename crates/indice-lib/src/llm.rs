@@ -35,6 +35,8 @@ pub struct LlmSettings {
     pub model: String,
     /// How long to wait for an answer.
     pub timeout: Duration,
+    /// The operator's note about the service, in Markdown (`llm.notice`).
+    pub notice: Option<String>,
 }
 
 impl LlmSettings {
@@ -283,6 +285,7 @@ mod tests {
             endpoint: "http://localhost:11434/v1/".into(),
             model: "test-model".into(),
             timeout: Duration::from_secs(5),
+            notice: None,
         }
     }
 
