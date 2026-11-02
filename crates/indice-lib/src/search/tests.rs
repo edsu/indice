@@ -525,6 +525,64 @@ fn collection_pages_url_prefers_2xx_capture() {
     assert_eq!(hits[1].crawl_id, "badcrawl");
 }
 
+/// The 2xx preference ranks the whole result set, not just one page of it:
+/// with more error captures of a URL than wabac asks for (25), the one real
+/// 200 still comes first.
+#[test]
+fn collection_pages_puts_a_2xx_capture_first_however_many_errors_precede_it() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    for i in 0..40 {
+        idx.index_page(&Page {
+            url: "https://ex.com/page",
+            title: "Not Found",
+            status: Some(404),
+            crawl_id: &format!("error{i}"),
+            collection: "c",
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    idx.index_page(&Page {
+        url: "https://ex.com/page",
+        title: "The Page",
+        status: Some(200),
+        crawl_id: "good",
+        collection: "c",
+        ..Default::default()
+    })
+    .unwrap();
+    idx.commit().unwrap();
+
+    let (total, hits) = idx
+        .collection_pages("c", Some("https://ex.com/page"), None, 0, 25)
+        .unwrap();
+    assert_eq!(total, 41);
+    assert_eq!(hits.len(), 25);
+    assert_eq!(hits[0].crawl_id, "good", "indexed last, ranked first");
+}
+
+/// A page list can't be paged arbitrarily deep: past the cap there are no
+/// hits, and no allocation sized by the offset.
+#[test]
+fn collection_pages_stops_at_its_deepest_offset() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    idx.index_page(&Page {
+        url: "https://ex.com/",
+        status: Some(200),
+        crawl_id: "c1",
+        collection: "c",
+        ..Default::default()
+    })
+    .unwrap();
+    idx.commit().unwrap();
+    let (total, hits) = idx
+        .collection_pages("c", None, None, usize::MAX - 10, 25)
+        .unwrap();
+    assert_eq!((total, hits.len()), (1, 0));
+}
+
 #[test]
 fn description_falls_back_to_og_description() {
     let html = br#"<html><head><meta property="og:description" content="OG only"></head>

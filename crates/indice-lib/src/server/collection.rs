@@ -240,10 +240,9 @@ pub(super) async fn collection_annotations(
 /// same byte-serving endpoint single-WACZ replay already uses (`viewer_source`):
 /// `/files/{id}` for local/Browsertrix sources, the remote URL for a plain URL.
 ///
-/// `name`/`crawlId` are the WACZ id (kept identical so a future server-side pages
-/// endpoint can return the same id as `filename` — see the scale-valve phase of
-/// rustyweb-homepage-replay-bukh / rustyweb-cross-wacz-replay-dk4). `hash` carries
-/// the `sha256:` prefix wabac expects.
+/// `name`/`crawlId` are the WACZ id, the same id `collection_pages` returns as
+/// `filename`, so wabac can match a looked-up page to its member. `hash`
+/// carries the `sha256:` prefix wabac expects.
 pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -303,16 +302,17 @@ pub(super) async fn collection_replay_json(
     }
     let body = serde_json::json!({
         "resources": resources,
+        // Where wabac asks which member holds a page (`collection_pages`).
+        // Without it, wabac opens and indexes every member WACZ before it can
+        // show any page: for a collection of streamed crawls, hundreds of
+        // remote reads. With it, wabac opens only the member that holds the
+        // page being read. Top-level, not under `metadata`, because that is
+        // where wabac's `loadFromJSON` reads it. Relative, so it resolves on
+        // whichever origin serves replay.
+        "pagesQueryUrl": format!("/collection/{}/pages", url_encode(&c.id)),
         "metadata": {
             "title": c.name,
             "desc": c.description,
-            // No `pagesQueryUrl` yet: wabac replays this as a native multi-WACZ
-            // collection, loading each member's CDX and resolving URLs itself.
-            // Deferring the pagesQueryUrl scale valve (server-side resolution via
-            // `collection_pages`) until its lazy-loading + resolution-completeness
-            // are browser-verified — the hash fix unblocked it, but proving the
-            // flat-footprint win needs more than a render check. See
-            // rustyweb-scale-footprint-qw5.10.
         },
     });
     (StatusCode::OK, axum::Json(body)).into_response()
@@ -346,7 +346,9 @@ pub(super) async fn collection_pages(
     }
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(25).clamp(1, 200);
-    let offset = (page - 1) * page_size;
+    // Saturating, so an absurd `page` can't overflow; the index caps how
+    // deep it will go (`MAX_PAGES_OFFSET`).
+    let offset = (page - 1).saturating_mul(page_size);
     let (pages_id, url, search) = (id.clone(), params.url.clone(), params.search.clone());
     match state
         .read_index(move |s| {

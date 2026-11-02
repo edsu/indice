@@ -396,6 +396,9 @@ impl SearchIndex {
     /// Returns `(total_matches, one page of hits)`. Unlike `search_faceted`, this
     /// is not URL-collapsed or candidate-capped, so `total` is exact and deep
     /// pagination is complete — a page listing needs every page, not the top N.
+    /// The deepest offset `collection_pages` will page to.
+    pub const MAX_PAGES_OFFSET: usize = 10_000;
+
     pub fn collection_pages(
         &self,
         collection_id: &str,
@@ -469,38 +472,48 @@ impl SearchIndex {
             clauses.push((Occur::Must, text_query));
         }
 
+        // Prefer good captures: an HTTP 2xx scores above everything else
+        // (errors, redirects, no recorded status). This matters for URL→WACZ
+        // resolution: when several crawls captured the same URL and one holds a
+        // real 200 while another holds an archived 404, wabac tries the WACZs in
+        // the order given and must land on the 200. Its resolve call carries no
+        // timestamp, so we can't pick by time. A boost in the query, rather than
+        // a sort afterwards, ranks the whole result set, so a 2xx capture is
+        // first however many captures there are, not only within one page.
+        clauses.push((
+            Occur::Should,
+            Box::new(tantivy::query::BoostQuery::new(
+                Box::new(tantivy::query::ConstScoreQuery::new(
+                    Box::new(RangeQuery::new(
+                        Bound::Included(Term::from_field_u64(status_f, 200)),
+                        Bound::Excluded(Term::from_field_u64(status_f, 300)),
+                    )),
+                    1.0,
+                )),
+                1000.0,
+            )),
+        ));
         let query = BooleanQuery::new(clauses);
-        let want = offset.saturating_add(limit).max(1);
+        // Deep pages of a page list are not worth their cost: collecting the
+        // top `offset + limit` hits allocates for all of them.
+        if offset > Self::MAX_PAGES_OFFSET {
+            let total = searcher.search(&query, &Count)?;
+            return Ok((total, Vec::new()));
+        }
+        let want = (offset + limit).max(1);
         let (total, top) =
             searcher.search(&query, &(Count, TopDocs::with_limit(want).order_by_score()))?;
 
-        // Prefer good captures: rank HTTP 2xx ahead of everything else
-        // (errors/redirects/no-recorded-status). This matters for URL→WACZ
-        // resolution — when several crawls captured the same URL and one holds a
-        // real 200 while another holds an archived 404, wabac must land on the
-        // 200. wabac's resolve call carries no timestamp, so we can't pick by
-        // time; a stable 2xx-first sort keeps the index's relevance order within
-        // each rank. (For a paginated page-list this orders within the page,
-        // which is harmless.)
-        let mut ranked: Vec<(u8, PageHit)> = Vec::new();
+        let mut hits = Vec::new();
         for (_score, addr) in top.into_iter().skip(offset).take(limit) {
             let doc: TantivyDocument = searcher.doc(addr)?;
-            let rank = match get_u64(&doc, status_f) {
-                Some(s) if (200..300).contains(&s) => 0,
-                _ => 1,
-            };
-            ranked.push((
-                rank,
-                PageHit {
-                    url: get_text(&doc, url_f),
-                    timestamp: get_text(&doc, ts_f),
-                    title: get_text(&doc, title_f),
-                    crawl_id: get_text(&doc, crawl_id_f),
-                },
-            ));
+            hits.push(PageHit {
+                url: get_text(&doc, url_f),
+                timestamp: get_text(&doc, ts_f),
+                title: get_text(&doc, title_f),
+                crawl_id: get_text(&doc, crawl_id_f),
+            });
         }
-        ranked.sort_by_key(|(rank, _)| *rank);
-        let hits = ranked.into_iter().map(|(_, h)| h).collect();
         Ok((total, hits))
     }
 }

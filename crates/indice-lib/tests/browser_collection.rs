@@ -155,6 +155,132 @@ async fn browser_renders_collection_with_hashless_members() {
     result.unwrap();
 }
 
+/// Replaying one page of a collection opens only the member WACZ that holds
+/// it. The collection's `replay.json` names indice's lookup
+/// (`pagesQueryUrl`), so wabac asks which member holds the page instead of
+/// opening and indexing every member first, which for streamed crawls is
+/// hundreds of remote reads before anything shows. Checked from the server's
+/// request log: the other member's WACZ is never fetched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn collection_replay_opens_only_the_member_holding_the_page() {
+    let log = request_log();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let coll = "Test Collection";
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
+    indice_lib::index::index_path(
+        &fixture("github-bitcoin-mining.wacz"),
+        tmp.path(),
+        None,
+        coll,
+    )
+    .unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let member = |file: &str| {
+        manifest
+            .waczs
+            .iter()
+            .find(|w| w.source.location().ends_with(file))
+            .map(|w| w.id.clone())
+            .unwrap()
+    };
+    let (holds_page, other) = (member("a.wacz"), member("github-bitcoin-mining.wacz"));
+    let id = indice_lib::collections::slugify(coll);
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+
+    let driver = connect_driver().await;
+    let result = render_check(
+        &driver,
+        addr,
+        &id,
+        "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179",
+        "20260609213407",
+        "2Tone",
+    )
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+
+    let log = String::from_utf8_lossy(&log.lock().unwrap()).into_owned();
+    assert!(
+        log.contains(&format!("/collection/{id}/pages")),
+        "wabac asked indice which member holds the page"
+    );
+    assert!(
+        log.contains(&format!("/files/{holds_page}")),
+        "the member holding the page was read"
+    );
+    assert!(
+        !log.contains(&format!("/files/{other}")),
+        "the other member was never opened"
+    );
+}
+
+/// A page reached through a redirect still replays when indice resolves
+/// pages: the seed is an `arcg.is` short link captured as a redirect to the
+/// story, so wabac looks up the short link, follows the redirect, and looks
+/// up the story in turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn collection_replay_follows_a_redirect_through_the_lookup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let coll = "Test Collection";
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, coll).unwrap();
+    indice_lib::index::index_path(
+        &fixture("github-bitcoin-mining.wacz"),
+        tmp.path(),
+        None,
+        coll,
+    )
+    .unwrap();
+    let id = indice_lib::collections::slugify(coll);
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+    let driver = connect_driver().await;
+    let result = render_check(
+        &driver,
+        addr,
+        &id,
+        "https://arcg.is/1zLCSC4",
+        "20260609213406",
+        "2Tone",
+    )
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    result.unwrap();
+}
+
+/// Everything this test binary logs, for a test to read back which paths were
+/// requested. One global subscriber for the binary; each test's homes give
+/// its crawls ids of their own, so lines from other tests don't match.
+fn request_log() -> &'static std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOG: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+    LOG.get_or_init(|| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || LogSink(sink.clone()))
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+        buf
+    })
+}
+
+struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Connect to a headless Chrome via WebDriver. `WEBDRIVER_URL` overrides the
 /// chromedriver endpoint; `CHROME_BIN` selects a specific Chrome binary (e.g. a
 /// matched Chrome for Testing from @puppeteer/browsers).
