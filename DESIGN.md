@@ -1596,7 +1596,7 @@ and shows no bar, so logs aren't lost.
 
 `static/replay/` holds the [ReplayWeb.page][rwp] JS bundle (`ui.js` + `sw.js`), embedded in the binary at compile time via `rust-embed` and served under `/replay/`. Replay runs in WACZ-direct mode: the `<replay-web-page>` component reads the WACZ over byte-range from our `/files/{id}` endpoint and serves every resource client-side through its service worker (`sw.js`); indice does no server-side rewriting (see *Replay Viewer*).
 
-These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.5.3**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
+These two files **are committed**, **pinned** to a specific `replaywebpage` npm release (currently **2.5.4**), so builds are reproducible and offline. They are vendored assets, not a Cargo dependency, so **Dependabot does not track them** - upgrading is a deliberate manual step via `scripts/fetch-replay.sh`:
 
 ```sh
 ./scripts/fetch-replay.sh          # re-fetch the pinned VERSION
