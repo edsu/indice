@@ -2699,7 +2699,10 @@ fn run_browsertrix(
         for (i, res) in resources.iter().enumerate() {
             let key = (host.clone(), item.id.clone(), res.hash.clone());
             if !opts.force && seen.contains(&key) {
-                tracing::debug!(item = %item.name, "already imported; skipping");
+                // Said, not just counted: Browsertrix lists the WACZs in no
+                // fixed order, so a resumed import that skipped silently would
+                // seem to start over on an unfamiliar one.
+                eprintln!("= skipping {}, already imported", res.name);
                 skipped += 1;
                 continue;
             }
@@ -2901,6 +2904,10 @@ fn run_browsertrix_public(
             };
             let key = (host.clone(), item_id.clone(), res.hash.clone());
             if !opts.force && seen.contains(&key) {
+                // Said, not just counted: the public API lists a collection's
+                // WACZs in no fixed order, so a resumed import that skipped
+                // silently would seem to start over on an unfamiliar one.
+                eprintln!("= skipping {}, already imported", res.name);
                 skipped += 1;
                 continue;
             }

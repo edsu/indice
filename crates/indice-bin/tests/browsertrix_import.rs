@@ -244,6 +244,10 @@ fn import_a_collection_then_skip_on_rerun() {
         stderr2.contains("skipped 1") || stderr2.contains("imported 0"),
         "re-run should report a skip; stderr: {stderr2}"
     );
+    assert!(
+        stderr2.contains("= skipping simple.wacz, already imported"),
+        "and say which WACZ it skipped; stderr: {stderr2}"
+    );
     assert_eq!(
         manifest_array(home.path(), "waczs.json").len(),
         1,
@@ -262,18 +266,21 @@ fn public_import_needs_no_credentials() {
     // --public uses the unauthenticated API: no BROWSERTRIX_* env vars at all.
     let base = start_mock();
     let home = TempDir::new().unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_indice"))
-        .args(["import", "browsertrix", "--public"])
-        .args(["--host", &base])
-        .args(["--org", "demo"])
-        .args(["--collection", "news"])
-        .arg("--home")
-        .arg(home.path())
-        .env_remove("BROWSERTRIX_USER")
-        .env_remove("BROWSERTRIX_PASSWORD")
-        .env_remove("BROWSERTRIX_TOKEN")
-        .output()
-        .unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_indice"))
+            .args(["import", "browsertrix", "--public"])
+            .args(["--host", &base])
+            .args(["--org", "demo"])
+            .args(["--collection", "news"])
+            .arg("--home")
+            .arg(home.path())
+            .env_remove("BROWSERTRIX_USER")
+            .env_remove("BROWSERTRIX_PASSWORD")
+            .env_remove("BROWSERTRIX_TOKEN")
+            .output()
+            .unwrap()
+    };
+    let out = run();
     assert!(
         out.status.success(),
         "public import failed\nstdout: {}\nstderr: {}",
@@ -308,6 +315,17 @@ fn public_import_needs_no_credentials() {
     let waczs = manifest_array(home.path(), "waczs.json");
     assert_eq!(waczs.len(), 1);
     assert_eq!(waczs[0]["browsertrix"]["item_id"], "crawlA");
+
+    // Resumed, it names the WACZ it skips: the public API lists them in no
+    // fixed order, so a silent skip looks like starting over.
+    let again = run();
+    let stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(again.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("= skipping simple.wacz, already imported"),
+        "{stderr}"
+    );
+    assert_eq!(manifest_array(home.path(), "waczs.json").len(), 1);
 }
 
 #[test]
