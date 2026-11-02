@@ -16,7 +16,7 @@
 set -euo pipefail
 
 # Pinned ReplayWeb.page (replaywebpage npm package) version.
-VERSION="${1:-2.5.3}"
+VERSION="${1:-2.5.4}"
 
 DEST="$(cd "$(dirname "$0")/.." && pwd)/crates/indice-lib/static/replay"
 BASE="https://cdn.jsdelivr.net/npm/replaywebpage@${VERSION}"
