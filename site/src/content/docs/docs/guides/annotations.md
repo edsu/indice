@@ -5,10 +5,10 @@ description: Attach Markdown notes to a whole page or a selected passage, anchor
 
 Annotations let people add notes to the pages in an archive. A note is pinned to a **specific capture** (a URL at a timestamp) and can cover the **whole page** or a **selected passage**. It's freeform [Markdown](#markdown), it's **public to read**, and only a signed-in user can create one.
 
-Where finding aids and crawl provenance describe a collection or a crawl, annotations carry that context gathering down to the individual page. The hope is that this will let curators flag why a capture matters, note what's missing, or connect it to the rest of the record. (The framing is Michèle Valerie Cloonan and Ross Harvey's lineage and, directly, Light & Hyry's *Colophons and Annotations*; see the [design notes](https://github.com/edsu/indice/blob/main/DESIGN.md).)
+Where finding aids and crawl provenance describe a collection or a crawl, annotations add that context to individual pages: a curator can flag why a capture matters, note what's missing, or connect it to the rest of the record. (The framing is Michèle Valerie Cloonan and Ross Harvey's lineage and, directly, Light & Hyry's *Colophons and Annotations*; see the [design notes](https://github.com/edsu/indice/blob/main/DESIGN.md).)
 
 :::note
-Annotations are expressed in the clear as Markdown, and display is **public**. Don't put anything private in a note. They are stored as a JSON-LD using the [W3C Web Annotation](https://www.w3.org/TR/annotation-vocab/) vocabulary.
+Annotations are plain Markdown, and anyone can read them. Don't put anything private in a note. indice stores them as JSON-LD using the [W3C Web Annotation](https://www.w3.org/TR/annotation-vocab/) vocabulary.
 :::
 
 ## Who can annotate
@@ -18,7 +18,7 @@ Reading annotations is open to everyone. **Creating, editing, and deleting** the
 - **On a workstation** (`indice serve` on loopback) you are the trusted admin, and notes are authored as `local`.
 - **Behind a forward-auth proxy** the authenticated user is the author, if they're a curator or admin. Someone signed in but not on your `users.yaml` roster is a reader, and can read notes but not write them.
 
-You can edit or delete **only your own** notes, except that an [admin](/docs/guides/manage/#who-can-do-what) *named in a `users.yaml` roster* can moderate anyone's, so an abusive or orphaned note can be removed. Without a roster there are no distinct roles to speak of, so notes stay strictly author-only. On a loopback instance the own-only rule has nothing to distinguish: there's a single local identity, so every note is editable by whoever is at the machine. Telling authors apart needs a forward-auth proxy.
+You can edit or delete **only your own** notes, except that an [admin](/docs/guides/manage/#who-can-do-what) *named in a `users.yaml` roster* can moderate anyone's, so an abusive or orphaned note can be removed. Without a roster there are no distinct roles, so notes stay author-only. On a loopback instance the own-only rule has nothing to distinguish: there's a single local identity, so every note is editable by whoever is at the machine. Telling authors apart needs a forward-auth proxy.
 
 ### Authorship and privacy
 
@@ -27,7 +27,7 @@ Each note records two different things about its author, and only one of them is
 - a **subject id**, used to decide who may edit the note. It's normalized (`alice@x.edu` and `Alice@X.edu` are one person) and never displayed.
 - a **display name**, shown on the note. It's derived from the identity your proxy forwards, with any domain stripped, so an `alice@x.edu` login is attributed to `alice`.
 
-This matters because annotations are **public to read** and `annotations.jsonl` is meant to be committed to version control. Publishing the raw login identity could put contributors' email addresses in front of anonymous visitors and into your git history. If your proxy forwards emails, only the local part is ever shown.
+Annotations are **public to read**, and `annotations.jsonl` is meant to be committed to version control. Publishing the raw login identity could put contributors' email addresses in front of anonymous visitors and into your git history. If your proxy forwards emails, only the local part is ever shown.
 
 ## Creating a note
 
@@ -36,17 +36,17 @@ Open any archived page in the replay viewer. With management on, a **Notes** pan
 - **Note on this page** lets you add a note about the whole page capture.
 - **Note on selection** lets you select some text in the replayed page first, then add a note anchored to that passage. The selected text is stored as a [quote selector](#how-a-note-finds-its-passage) so it can be re-found and highlighted on future visits.
 
-Notes are written in Markdown and saved immediately, which requires no rebuild or restart. A passage note shows its quoted text; on replay, the passage is **highlighted in place** in the page.
+Notes are written in Markdown and saved immediately, with no rebuild or restart. A passage note shows its quoted text; on replay, the passage is **highlighted in place** in the page.
 
 ![The replay viewer with the Notes panel open beside a replayed page: the phrase "Web archiving for" is highlighted in yellow in the page, and the panel lists two notes, a passage note and a whole-page note, each with Edit and Delete controls](../../../../assets/docs/annotations-replay.png)
 
 ## Where notes show up
 
-A note you write is surfaced in several places:
+A note you write shows up in three places:
 
 - **The replay panel** includes every note on the current capture, with passage notes highlighted in the page. Click a passage note to scroll to its passage and mark it more strongly.
-- **The collection annotations index** includes a per-collection browse at `/collection/<id>/annotations`, linked from the collection page, listing every note with its author, quoted passage, and a link that opens the page at that note.
-- **Full-text search** each note is indexed as its own result (a "Note by …" row) so a search over the archive turns up relevant notes alongside pages, and a note's result opens the page at that note. See [Searching](/docs/guides/searching/).
+- **The collection annotations index** at `/collection/<id>/annotations`, linked from the collection page, lists every note with its author, quoted passage, and a link that opens the page at that note.
+- **Full-text search** indexes each note as its own result (a "Note by …" row), so a search over the archive turns up relevant notes alongside pages, and a note's result opens the page at that note. See [Searching](/docs/guides/searching/).
 
 ![The per-collection annotations index: a page titled "Annotations" with a count of 2 notes on pages in this collection, listing each note with its author and date, the quoted passage for a passage note, the rendered Markdown body, and an "Open page" link back into replay](../../../../assets/docs/annotations-index.png)
 
@@ -56,7 +56,7 @@ Note bodies are rendered through the same sanitizing Markdown renderer as collec
 
 ## How a note finds its passage
 
-A passage note stores a [W3C Web Annotation](https://www.w3.org/TR/annotation-model/) `TextQuoteSelector` which is the exact quoted text plus a little surrounding context. On replay, indice re-locates that text in the page and highlights it, so a note keeps pointing at the right passage even though nothing is written back into the archived page itself.
+A passage note stores a [W3C Web Annotation](https://www.w3.org/TR/annotation-model/) `TextQuoteSelector`, which is the exact quoted text plus a little surrounding context. On replay, indice re-locates that text in the page and highlights it, so a note keeps pointing at the right passage without indice writing anything into the archived page.
 
 ## Where notes are stored
 
@@ -66,7 +66,7 @@ Annotations live in a JSON Lines file per collection:
 <home>/collections/<slug>/annotations.jsonl
 ```
 
-One [W3C Web Annotation](https://www.w3.org/TR/annotation-model/) (JSON-LD) per line, keyed by the capture's URL + timestamp. Because it's a file it is diff-friendly and **committable** to version control alongside the collection's finding aid, and it survives an [`indice reindex`](/docs/reference/cli/).
+One [W3C Web Annotation](https://www.w3.org/TR/annotation-model/) (JSON-LD) per line, keyed by the capture's URL + timestamp. As a plain file it diffs cleanly, and you can **commit** it to version control alongside the collection's finding aid, and it survives an [`indice reindex`](/docs/reference/cli/).
 
 ## API
 

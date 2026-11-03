@@ -11,7 +11,7 @@ indice runs in one of two shapes, and the only question that separates them is w
 No read-only server shape exists. A server you cannot write to sends you back to the command line the first time you want to fix a finding aid, and a server with an empty `users.yaml` already reads as read-only to every visitor.
 
 :::note[Read this before a public instance]
-indice is alpha, and what it does and does not defend is written down rather than implied: [Securing a server](/docs/guides/security/) is the operator's version, [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes is the full argument, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) lists what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so it is worth ten minutes before you put one on the open web.
+indice is alpha, and its security boundaries are documented: [Securing a server](/docs/guides/security/) is the operator's version, [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes is the full argument, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) lists what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so read them before you put one on the open web.
 :::
 
 ## Container image
@@ -37,9 +37,9 @@ Port 8081 is the replay listener, which your proxy serves on the replay hostname
 
 [`compose.yaml`](https://github.com/edsu/indice/blob/main/compose.yaml) runs three containers: Caddy terminates TLS, [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) brokers the login against your identity provider, and indice serves the archive.
 
-Three containers for one application deserves a word. indice authenticates nobody: it reads an identity from a request header and checks it against `users.yaml`. That is what lets one mechanism cover SAML, OIDC and anything else your institution already runs, and it is why the Shibboleth section below needs no oauth2-proxy at all. The price is that something has to turn a login into that header, and for an OIDC issuer oauth2-proxy is the smallest well-tested thing that will. It proxies nothing here, despite the name; Caddy does that, while oauth2-proxy answers one question per request and handles the sign-in and sign-out routes.
+indice authenticates nobody: it reads an identity from a request header and checks it against `users.yaml`. One mechanism then covers SAML, OIDC and anything else your institution already runs, and the Shibboleth section below needs no oauth2-proxy at all. Something has to turn a login into that header, and for an OIDC issuer oauth2-proxy is the smallest well-tested tool that does. Despite the name, it proxies nothing here; Caddy does that, while oauth2-proxy answers one question per request and handles the sign-in and sign-out routes.
 
-Swap it for whatever suits you. The two containers that matter are indice and something terminating TLS.
+You can swap oauth2-proxy for another login service. The stack needs indice and something terminating TLS.
 
 ```sh
 SITE_ADDRESS=archive.example.org REPLAY_ADDRESS=replay.archive.example.org docker compose up -d
@@ -64,7 +64,7 @@ Archived pages run their own JavaScript. That is how a replayed page still works
 
 **A separate domain is stronger still**, say `example-replay.org`. A subdomain shares its parent domain with the site, so script on it can set cookies on that parent. indice's own cookie cannot be planted that way and authorizes nothing anyway, but other services on your domain may rely on cookies of their own. If your institution runs many services under one domain, give replay a domain of its own.
 
-Either way it is configuration, not code: `REPLAY_ADDRESS` names the hostname to Caddy, and indice frames replay from `https://` that hostname (`REPLAY_URL` overrides it).
+Either way, you set it in configuration: `REPLAY_ADDRESS` names the hostname to Caddy, and indice frames replay from `https://` that hostname (`REPLAY_URL` overrides it).
 
 A workstation needs none of this. `indice serve` on loopback runs replay on the next port, `127.0.0.1:8081` beside `127.0.0.1:8080`, which is already another origin.
 
@@ -121,7 +121,7 @@ Clicking **Log in** sends you to your issuer. After you authenticate you come ba
 
 The stack uses plain OIDC rather than oauth2-proxy's GitHub integration, which asks for `read:org` whether or not you restrict anyone by organization: it calls GitHub's `/user/orgs` on every login to populate groups for apps that authorize on them. indice authorizes on `users.yaml`, so that would be asking visitors for something it never reads. Plain OIDC makes no calls beyond the issuer's own endpoints.
 
-GitHub publishes no OIDC discovery document for user login, so signing in with a GitHub account now means putting a broker in front, such as [Dex](https://dexidp.io/) with its GitHub connector, which then presents OIDC to oauth2-proxy. That costs a fourth container and buys back a minimal consent screen.
+GitHub publishes no OIDC discovery document for user login, so signing in with a GitHub account means putting a broker in front, such as [Dex](https://dexidp.io/) with its GitHub connector, which then presents OIDC to oauth2-proxy. That adds a fourth container and keeps the consent screen minimal.
 
 ## Trying the stack on your machine
 
@@ -173,9 +173,9 @@ If you want a **public read-only archive**, that is a roster with nobody in it:
 users: []
 ```
 
-Anyone may read, nobody may write. An empty roster is an answer; a missing one is a question.
+Anyone may read, nobody may write.
 
-There is no flag to skip this. "Everyone my provider admits is an admin" is not a setting worth keeping within reach on a networked instance, and an opt-out would mostly get used by whoever wanted the error to go away.
+There is no flag to skip this check.
 :::
 
 ## Using a different identity provider
@@ -230,7 +230,7 @@ Replay gets a virtual host of its own, with no SP at all, since replay is the sa
 </VirtualHost>
 ```
 
-`requireSession 0` plus `Require shibboleth` is the SP's lazy-session mode: it does not send anyone to the IdP, and it fills in attributes whenever a session already exists. That gives indice what it wants, an identity on every request from someone signed in and nothing from someone who is not, so the workroom chrome appears on ordinary pages rather than only under `/manage`. Protecting the whole site with `requireSession 1` instead would force a campus login on every anonymous visitor and make the archive private, which is the subject of the last section rather than this one.
+`requireSession 0` plus `Require shibboleth` is the SP's lazy-session mode: it does not send anyone to the IdP, and it fills in attributes whenever a session already exists. indice then gets an identity on every request from someone signed in and none from someone who is not, so the workroom chrome appears on ordinary pages as well as under `/manage`. Protecting the whole site with `requireSession 1` instead would force a campus login on every anonymous visitor and make the archive private; see [Keeping an instance private](#keeping-an-instance-private).
 
 Three things to get right:
 
@@ -253,7 +253,7 @@ Two requirements of whatever you put in front:
 Caddy is doing six separable jobs here, and none of them is Caddy-specific. Anything that can do all six works:
 
 1. **Route `/oauth2/*`** to your login service.
-2. **Ask who the caller is on every request, and continue anonymously when the answer is nobody.** This is the one people get wrong. Gating only `/manage` and the write APIs looks right and costs you the workroom chrome on ordinary pages, because indice decides whether to draw the edit controls from the forwarded identity.
+2. **Ask who the caller is on every request, and continue anonymously when the answer is nobody.** Gating only `/manage` and the write APIs looks right and costs you the workroom chrome on ordinary pages, because indice decides whether to draw the edit controls from the forwarded identity.
 3. **Inject the identity and the shared secret together**, only on a request your proxy authenticated, replacing any copy the client sent.
 4. **Leave byte ranges alone.** No gzip on a ranged response, no buffering of large bodies, or WACZ replay breaks.
 5. **Send the replay hostname to the replay listener**, port 8081 by default (`--replay-bind`), with no login and with both identity headers stripped, and pass that hostname to indice as `--replay-url`.
@@ -267,7 +267,7 @@ On indice's side, pass the site's public URL as `--site-url`. A server will not 
 
 **Traefik** has a ForwardAuth middleware that fits job 2.
 
-One arrangement to avoid: running oauth2-proxy as the reverse proxy itself, with `OAUTH2_PROXY_UPSTREAMS` pointed at indice and no Caddy. It is tempting because it drops a container, but in that mode it gates everything by default, so you have to list the public routes in `--skip-auth-regex`. That is a second copy of indice's route policy living somewhere no test can see it, which is the exact arrangement that broke the public annotations API before.
+One arrangement to avoid: running oauth2-proxy as the reverse proxy itself, with `OAUTH2_PROXY_UPSTREAMS` pointed at indice and no Caddy. It saves a container, but in that mode it gates everything by default, so you have to list the public routes in `--skip-auth-regex`. That puts a second copy of indice's route policy where no test can check it, so the two copies can drift apart.
 
 :::caution[These are sketches, not tested configs]
 The shipped `Caddyfile` is exercised by [`scripts/smoke-deploy.sh`](https://github.com/edsu/indice/blob/main/scripts/smoke-deploy.sh). The alternatives above are not. Proxy configuration fails quietly: Caddy's documented `handle_errors 502 503 504` form, for one, parses and validates and then never matches, so the fallback it describes silently never runs. Test your own against the same checks that script makes.
@@ -276,7 +276,7 @@ The shipped `Caddyfile` is exercised by [`scripts/smoke-deploy.sh`](https://gith
 
 ## Keeping an instance private
 
-The server shape serves reads to anyone. If your archive holds in-copyright or embargoed material that should stay off the open web, you can gate reads at the proxy as well. indice does not mind: the identity header then arrives on read requests too, and the roster still decides who may write. Nothing changes inside indice.
+The server shape serves reads to anyone. If your archive holds in-copyright or embargoed material that should stay off the open web, you can gate reads at the proxy as well. The identity header then arrives on read requests too, the roster still decides who may write, and indice itself needs no change.
 
 The shipped `Caddyfile` needs three changes first, and all of them are easy to miss because the site looks private once the homepage asks for a login.
 
@@ -286,4 +286,4 @@ The shipped `Caddyfile` needs three changes first, and all of them are easy to m
 
 **Replace the `handle_errors` fallback with a failure.** It exists so a dead login service does not take a public archive offline, which means it serves every request anonymously. On a private archive that turns an oauth2-proxy outage into an open door. Swap the body for `respond "authentication unavailable" 503`.
 
-Once reads are gated, `OIDC_EMAIL_DOMAINS` becomes load-bearing rather than cosmetic: it is what stops anyone with an account at your issuer from reading the archive.
+Once reads are gated, `OIDC_EMAIL_DOMAINS` controls who can read: without it, anyone with an account at your issuer can read the archive.

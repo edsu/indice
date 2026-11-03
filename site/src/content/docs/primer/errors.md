@@ -56,8 +56,8 @@ let sha = file_sha256(path)
 
 Printed with `{e:#}`, the layers read as a chain, *computing sha256 of
 /archive/x.wacz: No such file or directory*, so you learn both what the code was
-attempting and what went wrong. The closure form is deliberate: it builds the
-string only when there is an error.
+attempting and what went wrong. The closure builds the string only when there is
+an error, so the success path pays nothing for it.
 
 Copy this habit: context says **what you were trying to do**. The underlying
 error already says what failed.

@@ -83,8 +83,8 @@ shape is the one `std::process::Command` uses, for the same reason: the call sit
 names each value, so you cannot transpose `download` and `force`, and everything
 invariant sits once above the loop.
 
-The payoff is bigger than tidiness. **A new collaborator is one field and one
-setter**, reachable by whichever phase needs it, without a single signature in
+**A new collaborator is one field and one setter**, reachable by whichever phase
+needs it, without a single signature in
 between changing. Custody proved it: `actor` needed a field, a setter and one
 expression, and it let us delete about fifty lines of out-of-band machinery.
 
@@ -105,8 +105,7 @@ builder there is no move to object to: the setter gets a *copy*, configures it,
 and returns it into nothing.
 
 `#[must_use]` on each setter is what restores the warning. It says "the return
-value of this function is the point", so discarding it is a diagnostic. That
-attribute is doing work no other part of the language does here.
+value of this function is the point", so discarding it is a diagnostic.
 
 ## Grouping, for values that travel together
 
@@ -145,9 +144,9 @@ parameters instead of eight.
   one caller adds indirection and nothing else.
 
 The thing to watch for is one lint firing over and over in the same module. Here
-it fired eight times across months, and eight times someone silenced it, which
-turned a design signal into invisible debt and then into two bugs. The lint was
-right the first time.
+it fired eight times across months, and eight times someone silenced it. Each
+`allow` hid the design problem from the next reader, and the workaround for the
+missing parameter produced the two bugs above.
 
 ## What to take forward
 

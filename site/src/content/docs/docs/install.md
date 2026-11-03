@@ -3,7 +3,7 @@ title: Install
 description: Install indice from a prebuilt binary, Homebrew, cargo, a container image, or a source clone.
 ---
 
-indice is a single self-contained binary, so there's nothing else to fetch or configure.
+indice is a single self-contained binary with nothing else to fetch or configure.
 
 ## Prebuilt binary
 

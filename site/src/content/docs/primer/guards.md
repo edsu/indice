@@ -84,8 +84,8 @@ drop(outer);                          // ← releases the flock
 
 dropped the `File`, releasing the flock, while the depth count still said 1.
 The next acquisition on that thread saw a non-zero count, handed back a guard
-backed by nothing, and an ingest ran with no exclusion at all. No panic, no
-error, no hang.
+backed by nothing, and an ingest ran with no exclusion at all, without a panic,
+an error or a hang to tell you.
 
 Moving the `File` into the thread-local fixes it by making release depend on
 **the count reaching zero** rather than on which guard happens to drop first.
@@ -111,8 +111,8 @@ buys two separate things:
 lives in *this* thread's map; a guard moved to another thread would decrement
 the wrong count. `!Send` makes that a compile error rather than a subtle bug.
 
-**An axum handler cannot hold the lock across an `.await`.** This is the one to
-remember. In async Rust, a value held across an await point must be `Send` if the
+**An axum handler cannot hold the lock across an `.await`.** In async Rust, a
+value held across an await point must be `Send` if the
 future is going to run on a multi-threaded executor, because the task can resume
 on a different thread. So:
 
@@ -122,8 +122,8 @@ some_async_thing().await;     // ← does not compile
 ```
 
 The compiler refuses. Without `!Send` this would compile and hold a cross-process
-file lock across an arbitrary await, for as long as an HTTP request takes. You
-would find that out in production. Here the type system says no.
+file lock across an arbitrary await, for as long as an HTTP request takes, and
+you would find out in production.
 
 This is why indice does its locked work inside `spawn_blocking` (see
 [Concurrency](/primer/concurrency/)): a blocking closure has no await points, so

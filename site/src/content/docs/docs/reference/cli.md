@@ -44,8 +44,7 @@ indice index [OPTIONS] --collection <NAME> <PATH|URL>...
 | `-v`, `--verbose` | Debug logs instead of the progress bar |
 
 **`--collection` is required** because every crawl belongs to a curated collection. There are no
-auto-created singletons. This is deliberate, to encourage curators to say what a crawl is part of
-and why it's being kept.
+auto-created singletons, so you say what a crawl is part of and why you are keeping it.
 
 **Where files land.** A local WACZ may live anywhere; indice files it into
 `<home>/archive/<collection-slug>/`, **moving** it if it's already under `archive/` and **copying**
@@ -149,7 +148,7 @@ finished. A crash, kill, or full disk mid-rebuild leaves your existing index int
 `serve` keeps answering from the old index until the swap. The transient cost is that both indexes
 coexist on disk until then, roughly 2× the index size.
 
-It's also resilient: a source that can't be indexed (a missing local file, or a remote source still
+A source that can't be indexed (a missing local file, or a remote source still
 failing after retries) is skipped with a warning rather than aborting the rebuild. The mostly-rebuilt
 index is still usable, and if anything was skipped the command exits non-zero with a summary count,
 so you, or cron, or CI, know to re-run it once the source is fixed.
@@ -190,8 +189,8 @@ indice verify
 ```
 
 Reports each as `OK`, `MODIFIED`, or `MISSING`, and exits non-zero if any fail, so it works in a
-cron job or CI. This is indice's fixity check, a small guard against the archive quietly bit-rotting
-or being tampered with.
+cron job or CI. This is indice's fixity check: it catches a WACZ that has bit-rotted or been altered
+since indexing.
 
 ## `indice reconcile`
 
@@ -208,7 +207,7 @@ through an add can leave the two disagreeing.
 
 The symptom is a crawl that behaves like a ghost: its pages turn up in search results, but clicking
 through gives a 404, and it cannot be deleted from the workroom either. If that is what you are
-looking at, this is the command to run.
+looking at, run this command.
 
 It reports two kinds of disagreement:
 
@@ -216,23 +215,22 @@ It reports two kinds of disagreement:
   in `archive/`, so the fix is to re-index it, and the report prints that command with the absolute
   file path, the collection and `--home` already filled in, so it runs from anywhere. If the file
   is gone there is nothing to re-index from, and the report says so, because then the text in the
-  index is the last copy of the crawl. Clearing those documents is a rebuild
-  ([`indice reindex`](#indice-reindex)) rather than `indice crawl delete`, which cannot help: it
-  plans from the manifest entry, and the missing entry is the whole problem.
+  index is the last copy of the crawl. To clear those documents, rebuild with
+  [`indice reindex`](#indice-reindex). `indice crawl delete` cannot help, because it plans from
+  the manifest entry and there is none.
 - **Missing documents** are the other way round: a manifest entry whose pages are not searchable.
   Re-indexing fixes those too.
 
-It never changes anything. Every finding comes with the command that repairs it, so you decide one
-crawl at a time, which matters because clearing an orphan whose file has gone means throwing its
-text away.
+It changes nothing. Each finding comes with the command that repairs it, so you decide one crawl
+at a time: clearing an orphan whose file has gone throws its text away.
 
 Exits non-zero when it finds damage the manifest confirms, so it suits a cron job. A crawl with no
 recorded page count is reported but does not fail the run, since a WACZ with nothing extractable
 indexes to nothing and was never broken.
 
 Run against a directory that holds no index, it says so rather than reporting agreement, and writes
-nothing. Worth knowing because `--home` defaults to the current directory, so this is what you see
-if you run it from the wrong place.
+nothing. `--home` defaults to the current directory, so this is what you see if you run it from
+the wrong place.
 
 This is a different question from [`indice verify`](#indice-verify): fixity asks whether the files
 still match what was recorded, reconciliation asks whether the two records agree with each other.
@@ -486,8 +484,8 @@ indice wacz build [OPTIONS] --collection <NAME> <WARC>...
 | `--yes` | Skip the interactive metadata prompts; missing values then error instead |
 | `-v`, `--verbose` | Debug logs instead of the progress bar |
 
-The original WARC bytes are stored **verbatim**, uncompressed at the ZIP layer. indice only
-*packages* your crawl data, it never rewrites it. A CDX index, `pages/pages.jsonl`,
+The original WARC bytes are stored **verbatim**, uncompressed at the ZIP layer. indice
+*packages* your crawl data without rewriting it. A CDX index, `pages/pages.jsonl`,
 `datapackage.json`, and `datapackage-digest.json` are generated so the WACZ both indexes here and is
 **shaped to replay in ReplayWeb.page**. The CDX mirrors
 [warcio.js](https://github.com/webrecorder/warcio.js)'s indexer, verified line-for-line against it,
@@ -500,5 +498,5 @@ as a WARC with at least one indexable record, so a bad file fails fast instead o
 WACZ.
 
 This is also the building block for importing from services that serve WARCs rather than WACZs, which
-is how [`import archive-it`](#import-archive-it) works. For the fuller story, including what a WARC
+is how [`import archive-it`](#import-archive-it) works. For more, including what a WARC
 crawl can't give you that a browser-based capture can, see the [WACZ guide](/docs/guides/wacz/#i-have-warcs-not-waczs).

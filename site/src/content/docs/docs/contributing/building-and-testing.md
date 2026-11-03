@@ -19,7 +19,7 @@ cargo test              # unit + integration tests (no browser needed)
 
 Most tests run without a browser, including server-side *replay-contract* tests that assert what wabac.js depends on: the WACZ we serve is byte-identical to disk, byte-range requests return the correct slice, the served archive's CDX resolves a page, and the replay frame wires up `<replay-web-page>` correctly.
 
-Actual replay rendering can only be checked in a real browser, so there's one `#[ignore]`d end-to-end test that drives headless Chrome via WebDriver and confirms an archived page renders from a WACZ we serve:
+Replay rendering can only be checked in a real browser, so there's one `#[ignore]`d end-to-end test that drives headless Chrome via WebDriver and confirms an archived page renders from a WACZ we serve:
 
 ```sh
 chromedriver --port=9515 &          # WebDriver server; must match your Chrome's major version

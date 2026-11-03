@@ -3,7 +3,7 @@ title: Searching
 description: Query syntax, field search, and the faceted, temporal results page.
 ---
 
-The search box matches page titles, headings, body text, descriptions, keywords, author, and words from the page URL. A few things worth knowing (there's also a "Search tips" panel in the app itself):
+The search box matches page titles, headings, body text, descriptions, keywords, author, and words from the page URL. The rules (the app also has a "Search tips" panel):
 
 - **All words must match.** `climate policy` finds pages containing both words. Use `OR` for either (`climate OR weather`) and `-` to exclude (`climate -policy`).
 - **Quotes** search an exact phrase: `"climate policy"`.
@@ -18,4 +18,4 @@ The results page is faceted: a sidebar shows counts by collection, year, site, t
 
 ## Crawl thumbnails
 
-Crawls carry a representative image, cached as a small thumbnail at index time. It's taken from the crawl's home-page `og:image`; failing that, the largest content image the page embeds; and failing *that* the largest captured image on the crawl's own domain (skipping icons/sprites and full-res originals). Homepage collection cards and the crawl detail page show one; the collection detail page shows a grid of its member crawls, each with its own image, which conveys that a collection spans multiple crawls of multiple sites. Crawls without an image fall back to a CSS placeholder. A curator can pin a specific image with `indice crawl set <crawl-id> --image <file>` (kept across reindexing).
+Crawls carry a representative image, cached as a small thumbnail at index time. It's taken from the crawl's home-page `og:image`; failing that, the largest content image the page embeds; and failing *that* the largest captured image on the crawl's own domain (skipping icons/sprites and full-res originals). Homepage collection cards and the crawl detail page show one; the collection detail page shows a grid of its member crawls, each with its own image. Crawls without an image fall back to a CSS placeholder. A curator can pin a specific image with `indice crawl set <crawl-id> --image <file>` (kept across reindexing).

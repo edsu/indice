@@ -16,9 +16,8 @@ async fn delete_crawl(state: State<Arc<AppState>>, headers: HeaderMap) -> Respon
 }
 ```
 
-This works, and it fails in one specific way: the next handler someone adds
-forgets the first line. Nothing breaks, nothing warns, and the endpoint is open.
-You find out later.
+This works until the next handler someone adds forgets the first line. Nothing
+breaks or warns, and the endpoint is open.
 
 ## A type as proof
 
@@ -52,13 +51,13 @@ pub(super) async fn create_annotation(
 ) -> Response
 ```
 
-Holding a `Curator` *is* the proof that the check ran. There is no other way to
-have one, so there is no way to forget.
+Holding a `Curator` *is* the proof that the check ran, because there is no other
+way to have one.
 
 The pattern is called a **witness type**, or a capability: a value whose
 existence testifies that something was established. It costs nothing at runtime,
-since it wraps a `Principal` the handler needed anyway, and it moves "remember to
-check" out of human discipline and into the type system.
+since it wraps a `Principal` the handler needed anyway, and the compiler, rather
+than the person writing the handler, remembers the check.
 
 ## A proof as a precondition
 
@@ -79,7 +78,7 @@ one. The compiler enforces the precondition.
 The proof does a second job here. It names who started the import, and only that
 person may read its progress. `start_index_job` has the same shape with a
 `&Curator`, and also reads it for `principal().id()`, because a crawl records who
-accessioned it. Same argument, two jobs: the proof, and the identity.
+accessioned it, so the one argument carries both the proof and the identity.
 
 Sometimes the proof is all there is:
 
@@ -93,8 +92,8 @@ pub(super) async fn new_collection_form(
 
 This handler never reads its `Curator`. It asks for one so that a reader isn't
 shown a form whose every control would refuse them. When an argument exists only
-to constrain who may call a function, `_name` plus a comment saying so is the
-honest way to write it.
+to constrain who may call a function, write it as `_name` with a comment saying
+so.
 
 ## Roles, ordered
 
@@ -131,11 +130,10 @@ one, is a build error rather than a silent hole.
 A witness type proves a check *ran*. It cannot prove it was the *right* one:
 `Curator` on a handler that should have demanded `Admin` compiles fine. indice
 covers that with a test that walks every management route and asserts the
-privilege each one demands. Types cannot do that for you.
+privilege each one demands.
 
-Hold onto that boundary. These patterns move a whole class of mistake from
-runtime to compile time, and you still write tests for the part that is a
-judgement call.
+These patterns move forgotten checks from runtime to compile time, and you still
+write tests for the part that is a judgement call.
 
 ## What to take forward
 

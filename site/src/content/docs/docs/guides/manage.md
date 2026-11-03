@@ -9,7 +9,7 @@ The ordinary site doubles as an editable **workroom**. For anyone allowed to cha
 indice serve        # http://127.0.0.1:8080
 ```
 
-On a workstation that is the whole setup. Whoever reaches the port is the operator, so there is no login and no roster. On a server it is `users.yaml` that decides, and a visitor who is not listed sees the reading room.
+On a workstation that is the whole setup. Whoever reaches the port is the operator, so there is no login and no roster. On a server, `users.yaml` decides who may change what, and a visitor who is not listed sees the reading room.
 
 ![The indice homepage in management mode: a clay "MANAGE" chip in the app bar, a clay accent throughout, and a "+ New collection" button above the collection cards](../../../../assets/docs/workroom-home.png)
 
@@ -29,14 +29,14 @@ The accession desk takes an `http(s)://` URL, not a path on the server's disk, i
 
 A path would let a curator make the server read any `.wacz` it can reach and file it into a collection they can read back, and on a server a curator may be someone you approved rather than someone you know. On a workstation it would buy nothing: the file is already on the disk, and `indice index /path/to.wacz` is a shorter route than a web form. That command is how a mounted archive volume is accessioned.
 
-A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. You also need it if this machine reaches the internet only through an HTTP proxy: a proxy resolves the address itself, so indice cannot check where the fetch lands and declines to use one rather than let the check pass silently. Your Browsertrix and Archive-It credentials are unaffected: those hosts come from the environment, never from a request, so they were never what this guards.
+A URL also has to resolve to a **public** address once indice runs behind an auth proxy, so a curator cannot point the server at your internal network. If you serve WACZs from an internal host, start indice with `--allow-internal-fetch`. You also need it if this machine reaches the internet only through an HTTP proxy: a proxy resolves the address itself, so indice cannot check where the fetch lands and declines to use one rather than let the check pass silently. The check does not apply to Browsertrix and Archive-It imports: those hosts come from the environment, never from a request.
 :::
 
-Every one of these routes is always mounted. Whether you may use them is an authorization question, answered below, so an anonymous visitor gets a `403` rather than a page that does not exist.
+These routes are always mounted, and indice checks each request against the caller's role ([below](#who-can-do-what)), so an anonymous visitor gets a `403` rather than a `404`.
 
 ## On a workstation
 
-`indice serve` bound to `127.0.0.1`, which is the default, trusts every caller: you are the only one who can reach it, so you are the admin and there is no login. `users.yaml` is not consulted at all here, which surprises people who write one and expect it to apply.
+`indice serve` bound to `127.0.0.1`, which is the default, trusts every caller: you are the only one who can reach it, so you are the admin and there is no login. indice does not read `users.yaml` here, so a roster you write on a workstation has no effect.
 
 Because it trusts everything, indice **refuses to start** on a non-loopback address with no auth proxy configured, rather than putting an unauthenticated write surface on the network.
 
@@ -45,16 +45,16 @@ Replay runs on the next port, `127.0.0.1:8081`, because archived pages run their
 :::caution[A loopback port is not a user boundary]
 "Whoever reaches the port" is literal. Another account on the machine reaches it: `curl -X POST http://127.0.0.1:8080/api/collections/x/delete` from a second shell deletes the collection. So does anyone at the far end of an `ssh -L`, and so does every peer of your tailnet the moment you point `tailscale serve` at it.
 
-indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: a check on the `Host` header is bypassable, because any client that is not a browser sets `Host` to whatever it likes. A check that refuses the honest tunnel and waves the dishonest one through is worse than none, since it reads like a wall.
+indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: a check on the `Host` header is bypassable, because any client that is not a browser sets `Host` to whatever it likes. Such a check would refuse an honest tunnel and let a dishonest client through.
 
-A loopback bind keeps indice off the network. That is the whole promise. Run it as a server if the machine is shared, or if anything you do not control can reach that port.
+A loopback bind keeps indice off the network and promises nothing more. Run it as a server if the machine is shared, or if anything you do not control can reach that port.
 :::
 
 ## On a server (forward-auth)
 
 To offer management to real users over the network, run indice behind a reverse proxy that authenticates the request and sets two headers: the caller's identity, and a shared secret. Caddy and nginx both do this, with a login service such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) or [Authelia](https://www.authelia.com/) alongside them, which is what the [shipped stack](/docs/guides/deploy/) wires up.
 
-Anything that can set both headers qualifies. Note the second one rules out some otherwise-plausible options: `tailscale serve` forwards its own identity headers but gives you no way to add a static secret, so it needs a real proxy behind it rather than replacing one.
+Anything that can set both headers qualifies. The secret rules out some options: `tailscale serve` forwards its own identity headers but gives you no way to add a static secret, so it needs a real proxy behind it rather than replacing one.
 
 ```bash
 indice serve \
@@ -68,7 +68,7 @@ indice serve \
 - **`--auth-proxy-header`** is the header your proxy injects with the authenticated identity (e.g. `X-Forwarded-Email` for oauth2-proxy, `Remote-Email` for Authelia).
 - **`--site-url`** (or `INDICE_SITE_URL`) is the address readers use for the site. Writes are accepted only from pages at that address, and a server will not start without it; see [Cross-site protection](#cross-site-protection).
 - **`--replay-url`** (or `INDICE_REPLAY_URL`) is the hostname replay is served on, which your proxy sends to indice's replay listener (`127.0.0.1:8081` here). A server will not start without one; [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own) explains why, and how to choose it.
-- **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. Requiring it is what makes trusting the identity header safe: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
+- **`--auth-proxy-secret`** (or the `INDICE_AUTH_PROXY_SECRET` env var) is a random secret your **proxy** must send in the `X-Indice-Auth-Secret` header. It is a static header you set in the proxy config, *not* something your identity provider sends. indice trusts the identity header only when the secret comes with it: a client that forges `X-Forwarded-Email`, or any request that didn't come through the proxy, lacks the secret and gets a `403`.
 
 Every write must carry both the identity header and the secret; anything else is rejected. Reading is not gated, so search, browse and replay stay open to anyone.
 
@@ -84,9 +84,9 @@ Your proxy decides **who gets in**. indice decides **what they can do**, using t
 
 In short: **curators add and describe; admins remove, moderate, and act as the instance.**
 
-The asymmetry is deliberate. "You can delete what you created" reads well until someone else adds forty crawls to a collection you made, then deleting "yours" destroys their work. So ownership governs **crawls**, which belong to whoever accessioned them, while removing a whole **collection** stays an admin act.
+"You can delete what you created" reads well until someone else adds forty crawls to a collection you made, then deleting "yours" destroys their work. So ownership governs **crawls**, which belong to whoever accessioned them, while removing a whole **collection** stays an admin act.
 
-indice records who added each crawl, so a curator can undo their own mis-upload without waiting for an admin. Crawls added from the command line, or before indice recorded this, have no recorded owner, they're nobody's, so only an admin can remove them.
+indice records who added each crawl, so a curator can undo their own mis-upload without waiting for an admin. A crawl with no recorded owner, such as one added from the command line, is nobody's, so only an admin can remove it.
 
 ### Setting roles
 
@@ -101,18 +101,18 @@ users:
     aliases: [j.tanaka@old.example.org]   # prior addresses, so they keep their notes
 ```
 
-Listed people get their role. Anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) means nobody may write, which is honored as an answer rather than read as a missing file, and is how you run a public read-only archive.
+Listed people get their role. Anyone else who signs in is a **reader**, with no more power than an anonymous visitor. An empty list (`users: []`) means nobody may write; that is how you run a public read-only archive.
 
 Put your own identity in it, or you will have locked yourself out of your own archive. indice logs which roles it loaded at startup.
 
-**Changes take effect without a restart.** indice checks whether the file has moved and re-reads it when it has, so approving a colleague is one line in a file you can commit and diff, not an ops task.
+**Changes take effect without a restart.** indice checks whether the file has moved and re-reads it when it has, so approving a colleague is one line in a file you can commit and diff.
 
 :::caution[A server will not start without it]
-With no `users.yaml` at all, every user your proxy authenticates is an **admin**. That is how indice behaved before roles existed, and it is right on a workstation, where you are the only caller. On a server it means the first stranger your identity provider admits can delete the archive, so indice refuses to start and tells you what to write. There is no flag to skip it.
+With no `users.yaml` at all, every user your proxy authenticates is an **admin**. That is right on a workstation, where you are the only caller. On a server it means the first stranger your identity provider admits can delete the archive, so indice refuses to start and tells you what to write. There is no flag to skip it.
 
-A reload can only ever replace a good roster with another good one. If the file becomes malformed mid-edit, or is deleted, indice keeps the roster already in force and logs the error, because falling back to "no file" would promote everyone signed in.
+A reload only replaces a good roster with another good one. If the file becomes malformed mid-edit, or is deleted, indice keeps the roster already in force and logs the error, because falling back to "no file" would promote everyone signed in.
 
-One thing the roster does *not* hand out even when it is absent: moderation. Notes stay **author-only** under the permissive default, because being able to delete other people's work is something you opt into by naming admins, not something a missing file grants.
+One thing the roster does *not* hand out even when it is absent: moderation. Notes stay **author-only** under the permissive default: only an admin named in the roster may delete someone else's note.
 :::
 
 :::caution[Identities aren't passwords]
@@ -130,7 +130,7 @@ Management writes are refused unless the request came from indice's own pages. i
 :::note[Replay runs on an origin of its own]
 A replayed page runs its own archived JavaScript, which is replay's job. indice serves replay from a second listener, on its own origin, so that script is cross-site to indice like any other website's: a write it attempts is refused by this same check, and it cannot reach the page around it. On a workstation that listener is the next loopback port; a server gives it a hostname of its own (see [Deploy](/docs/guides/deploy/#replay-gets-a-hostname-of-its-own)).
 
-What a capture's script can still do is read other captures replayed in the same browser, since they share the replay origin. Weigh that if one instance holds both captures from sources you do not control and material that is not public.
+A capture's script can still read other captures replayed in the same browser, since they share the replay origin. Weigh that if one instance holds both captures from sources you do not control and material that is not public.
 :::
 
 Requests with no `Origin` header at all are allowed, which is what keeps `curl` and scripts working. That's safe because browsers *always* send `Origin` on a cross-origin write, so its absence means the caller isn't a browser and has no ambient credentials to ride on.

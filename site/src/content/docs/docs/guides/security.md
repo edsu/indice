@@ -49,7 +49,7 @@ What a capture's script *can* still do:
 
 ### Only your own archives
 
-ReplayWeb.page, the player, will replay whatever WACZ its page's address names. Left alone, that would let anyone show a WACZ of their own making under your replay hostname, with your institution's name on it. indice serves a small guard ahead of the player, in the same file, so every page that starts the player checks first: the WACZ must be one of this server's own, by its path, and the player must be running in indice's replay frame. Anything else, a link naming a WACZ from elsewhere, or the player's page opened on its own, shows a refusal instead. Which pages may embed that frame is the next section's question. The check runs in the browser because, once a reader has replayed something, the player's service worker answers some of those pages itself without asking the server.
+ReplayWeb.page, the player, will replay whatever WACZ its page's address names. Left alone, that would let anyone show a WACZ of their own making under your replay hostname, with your institution's name on it. indice serves a small guard ahead of the player, in the same file, so every page that starts the player checks first: the WACZ must be one of this server's own, by its path, and the player must be running in indice's replay frame. Anything else, a link naming a WACZ from elsewhere, or the player's page opened on its own, shows a refusal instead. [Requests from other websites](#requests-from-other-websites) covers which pages may embed that frame. The check runs in the browser because, once a reader has replayed something, the player's service worker answers some of those pages itself without asking the server.
 
 ## Requests from other websites
 
@@ -107,11 +107,11 @@ The rule has two halves, and it is the same for every crawler, search engine or 
 
 The halves are different lists because a crawler that obeys `robots.txt` never fetches a page it disallows, so it never sees that page's `noindex`, and can still list the bare address it found in a link. So what should stay out of search results is left fetchable and marked `noindex`, and only what should not be fetched at all is disallowed. On the replay hostname every response carries `noindex`, and its `/robots.txt` disallows `/files/`.
 
-Both are requests a crawler may ignore. What a crawler cannot ignore is the [rate limit](#limits): past its share it is told to wait, whatever it calls itself, so an aggressive one is slowed rather than allowed to take the site down. `/robots.txt` itself is never limited, because a crawler refused it treats the whole site as off limits for a while. To refuse a particular crawler outright, by its address or its user agent, do it at your proxy.
+A crawler may ignore both. It cannot ignore the [rate limit](#limits): past its share it is told to wait, whatever it calls itself, so an aggressive one is slowed rather than allowed to take the site down. `/robots.txt` itself is never limited, because a crawler refused it treats the whole site as off limits for a while. To refuse a particular crawler outright, by its address or its user agent, do it at your proxy.
 
 ## What is recorded
 
-A reader's searches and the pages they replay are a record of what they read, and indice does not keep one. Here is everything the shipped stack records, and where:
+A reader's searches and the pages they replay are a record of what they read, and indice does not keep one. The shipped stack records the following, and where:
 
 - **indice's log** has one line per request: the method, the path, the status, the content type, how long it took, and the request's reference. It has no query string, so no search terms and no replayed page's address, and no client address. A failure's error goes in full under its reference. Startup lines record the settings indice started with.
 - **The rate limiter's reports** are the one place indice logs a client's address, and only for a client it refused: once a minute, saying how many times. That is the address an operator may need to block. A reader within the limits never appears.
@@ -126,7 +126,7 @@ If you configure a [language model for drafting descriptions](/docs/guides/draft
 
 ## Adding archives by URL
 
-A curator can add an archive by its URL, and indice then fetches that URL from the server. On a server it refuses a URL that resolves to the machine itself or to your internal network, so the form cannot be used to probe services behind your firewall. If your WACZs really do live on an internal host, `--allow-internal-fetch` allows it. There is no way to add an archive by a path on the server's disk over the web; that is `indice index` at the command line.
+A curator can add an archive by its URL, and indice then fetches that URL from the server. On a server it refuses a URL that resolves to the machine itself or to your internal network, so the form cannot be used to probe services behind your firewall. If your WACZs live on an internal host, `--allow-internal-fetch` allows it. There is no way to add an archive by a path on the server's disk over the web; that is `indice index` at the command line.
 
 ## Keeping the archive private
 

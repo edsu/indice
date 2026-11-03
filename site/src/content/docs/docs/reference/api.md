@@ -86,9 +86,9 @@ A liveness check: returns `200 OK` with the body `ok`. Useful for container/orch
 
 ## Timeouts
 
-Routes that should answer quickly carry a 30-second budget and return `503` if they exceed it. That is a backstop rather than a service level: in practice these answer in milliseconds, and a 503 here means something is wrong on the server, not that you asked for too much.
+Routes that should answer quickly carry a 30-second budget and return `503` if they exceed it. The budget is a backstop: these routes answer in milliseconds, so a 503 here means something is wrong on the server.
 
-Four kinds of request are deliberately outside it, because they have no sensible time bound: `GET /files/{id}` streams whole archives, the SSE progress stream follows a job that may run for hours, uploads are as slow as the link, and the Browsertrix and Archive-It browse endpoints wait on someone else's service.
+Four kinds of request have no budget, because they have no sensible time bound: `GET /files/{id}` streams whole archives, the SSE progress stream follows a job that may run for hours, uploads are as slow as the link, and the Browsertrix and Archive-It browse endpoints wait on someone else's service.
 
 ## Rate limits
 
@@ -100,11 +100,11 @@ A server limits each client. A workstation doesn't.
 
 A client is its IP address, and for IPv6 its /64. Behind a reverse proxy on the same machine or network, indice uses the rightmost `X-Forwarded-For` entry that isn't itself internal. The shipped Caddy stack sets that header. Curators and admins are exempt from the per-client limits, so a script that reads hard needs a roster entry.
 
-The operator sees a refusal in the server log twice: once when it starts, naming the address and the limit, and once a minute later with how many requests were refused. One line per refused request would turn a flood the limits are turning away into a flood of log lines.
+The operator sees a refusal in the server log twice: once when it starts, naming the address and the limit, and once a minute later with how many requests were refused. indice does not log each refused request, so a flood of requests does not become a flood of log lines.
 
 ## Machine-readable replay endpoints
 
-These serve ReplayWeb.page and are handy for tooling, though their primary consumer is the in-browser player. They answer on both the site and the replay origin; the player reads them from the replay origin:
+These serve ReplayWeb.page's in-browser player, and tooling can use them too. They answer on both the site and the replay origin; the player reads them from the replay origin:
 
 - **`GET /files/{id}`**: the raw WACZ for a crawl, honoring HTTP `Range` requests (partial fetches). This is how replay reads archived resources without downloading the whole file.
 - **`GET /collection/{id}/replay.json`**: a multi-WACZ replay manifest for a collection (every member crawl), handed to wabac.js so cross-crawl links resolve.
@@ -114,4 +114,4 @@ See [How indice works](/docs/reference/how-it-works/) for how these fit together
 
 ## Management write API
 
-indice also carries write endpoints under `/api/` (add archives, create or edit collections, delete crawls, Browsertrix and Archive-It import), plus SSE progress streams. These **power the workroom UI**. They are always mounted; who may call them is decided by [`Access`](/docs/guides/manage/), which is loopback trust on a workstation and a forward-auth proxy plus `users.yaml` on a server. An anonymous caller gets a `403`. Treat them as an implementation detail of that UI rather than a stable public API.
+indice also carries write endpoints under `/api/` (add archives, create or edit collections, delete crawls, Browsertrix and Archive-It import), plus SSE progress streams. The workroom UI calls them. They are always mounted; who may call them is decided by [`Access`](/docs/guides/manage/), which is loopback trust on a workstation and a forward-auth proxy plus `users.yaml` on a server. An anonymous caller gets a `403`. Treat them as an implementation detail of that UI rather than a stable public API.
