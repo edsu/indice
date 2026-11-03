@@ -389,6 +389,12 @@ only who may frame it.
 - Only one large record inflates at a time, and a record whose CDX length is past
   the limit is not fetched. `wacz.rs::only_a_large_record_takes_the_shared_lock`,
   `pages.rs::a_cdx_length_past_the_limit_is_not_fetched`
+- A record of a few MiB is read, and its text extracted, alone.
+  `pages.rs::a_multi_megabyte_record_is_read_alone`
+- No more than `index.max_extract_mb` of a page is read for text, and a larger PDF
+  is not parsed. `pages.rs::a_pdf_past_the_extract_limit_is_indexed_by_name_unread`,
+  `pages.rs::text_past_the_extract_limit_is_not_read`,
+  `integration.rs::text_past_max_extract_mb_is_not_indexed`
 - A remote host that answers a range with more than was asked is refused.
   `http_range.rs::a_range_longer_than_asked_for_is_refused`
 
@@ -413,8 +419,10 @@ page lists and the CDX (at both its compression layers) are read through
 Past the limit on those, the ingest fails and the crawl is not added. A single WARC
 record over it, by its CDX length or what it inflates to, is skipped with a warning
 and the crawl is indexed without it, as warcinfo is skipped. Records inflate in
-parallel only up to 16 MiB; past that a worker waits its turn, so one large record
-is in memory at a time. The limit applies on a workstation too, because it protects
+parallel only up to 2 MiB; past that a worker waits its turn, so one large record
+is in memory, and being read for text, at a time. No more than
+`index.max_extract_mb` (default 16 MiB) of a page is read for text, since that
+costs many times the page's size. The limit applies on a workstation too, because it protects
 the indexing machine whoever started the ingest. What a WACZ inflates to on *disk*, a deflated WARC or
 inner WACZ extracted to a temp file, is not yet bounded (`rustyweb-6vjz`). Replay,
 where hostile input would otherwise matter most, isolates every capture alike; see
@@ -1181,8 +1189,11 @@ and for a hostile one is whatever it asks for. Measured on Linux with 4 workers,
 20,000-page, 120 MB crawl indexes in 371 MB; a 12 MB WACZ whose 40 records inflate to
 4 GB of HTML indexes in 733 MB. A page's metadata fields are capped (64 KiB of
 headings, 8 KiB of description, 2 KiB of title) since it may wait in memory, and no
-more than 16 MiB of a page's HTML is parsed for text, since parsing builds a DOM many
-times the page's size; neither cap touches a real page. The body is indexed in full.
+more than `index.max_extract_mb` (default 16 MiB) of any page is read for text,
+since finding the text costs many times the page's size: parsing HTML builds a DOM
+around 20 times it, and a PDF took up to 65 times it to extract. HTML and rendered
+text past the cap are not indexed; a PDF can't be read in part, so a larger one is
+indexed by its file name alone. Below the cap the body is indexed in full.
 
 Collapsing to one document per URL deduplicates repeat captures *within a WACZ*;
 repeat captures of the same URL *across* WACZs stay as separate documents and are
@@ -1192,9 +1203,12 @@ grouped at query time instead (see *Faceted, temporal discovery*).
 `index.max_member_mb` (default 1024 MiB; see *Threat Model*): metadata, page lists
 and the CDX are read through `wacz::Limited`, and a record whose CDX length or
 inflated size is past it is skipped. Records are read in parallel, but a record whose
-CDX length is past 16 MiB takes a shared lock before it is fetched, and one that
-inflates past 16 MiB takes it before inflating further; either holds it until its
-page is written or set aside, so only one large record is in memory at a time. The
+CDX length is past 2 MiB takes a shared lock before it is fetched, and one that
+inflates past 2 MiB takes it before inflating further; either holds it until its
+page is written or set aside, so only one large record is in memory, and being
+read for text, at a time. The threshold is low because extraction is what costs:
+at 16 MiB, four workers could each be extracting a PDF just under it, and PDFs that
+size took up to 1.2 GB each. The
 page lists are read twice; a remote WACZ's are copied to a local temp file first, so
 the second read is not a second download.
 

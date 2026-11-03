@@ -38,6 +38,7 @@ fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
         collection: "coll",
         search,
         read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
+        extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
     }
 }
 
@@ -445,6 +446,7 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
             collection: "coll",
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
+            extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
         },
         2,
         crate::index::no_progress(),

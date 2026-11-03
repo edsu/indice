@@ -450,7 +450,8 @@ pub(super) fn index_one(
     // Its datapackage metadata, read up front so the title can name the crawl.
     // Precedence: explicit --name, then the WACZ title, then the filename/URL stem.
     // Read here, per crawl, so a reindex and an ingest both honour it.
-    let read_limit = crate::config::Config::load(home)?.max_member_bytes();
+    let config = crate::config::Config::load(home)?;
+    let (read_limit, extract_limit) = (config.max_member_bytes(), config.max_extract_bytes());
     let meta = access.read_datapackage(read_limit)?;
     let id = wacz_id(&effective_source);
     let crawl_name = pick_display_name(name, &meta, &effective_source);
@@ -478,6 +479,7 @@ pub(super) fn index_one(
                 collection: collection.0,
                 search,
                 read_limit,
+                extract_limit,
             },
             workers: resolve_workers(concurrency, access.is_remote()),
             thumbs_dir: &thumbs_dir,

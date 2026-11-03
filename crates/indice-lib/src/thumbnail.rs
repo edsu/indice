@@ -77,6 +77,7 @@ pub(crate) fn generate<F>(
     main_page_url: &str,
     pinned_dest: &Path,
     limit: u64,
+    extract: usize,
 ) -> Result<bool>
 where
     F: RangeFetch + Clone + Send + Sync,
@@ -104,7 +105,9 @@ where
     let Some(html) = fetch_payload(&fetch, &cdx, &starts, main_page_url, "html", limit)? else {
         return Ok(false);
     };
-    let (og_image, embedded) = candidate_images(&html);
+    // Parsing HTML costs about 20 times its size, so read no more of it than
+    // indexing does.
+    let (og_image, embedded) = candidate_images(crate::search::utf8_prefix(&html, extract));
 
     // 1. The declared og:image / twitter:image, if it was captured.
     if let Some(src) = og_image {
@@ -365,6 +368,7 @@ mod tests {
             "https://ex.com/",
             &pinned,
             crate::wacz::DEFAULT_MEMBER_LIMIT,
+            crate::config::DEFAULT_EXTRACT_BYTES,
         )
         .unwrap();
 

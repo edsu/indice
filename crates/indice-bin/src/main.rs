@@ -1999,6 +1999,22 @@ fn run_config(home: &std::path::Path) -> Result<()> {
     };
     println!("index.max_member_mb:      {member_set}  ->  {member_resolved}");
 
+    let extract_set = cfg
+        .index
+        .max_extract_mb
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "unset".to_string());
+    let extract = cfg.max_extract_bytes();
+    let extract_resolved = if extract == usize::MAX {
+        "no limit on what is read of a page for its text".to_string()
+    } else {
+        format!(
+            "{} MiB of a page read for its text",
+            extract / (1024 * 1024)
+        )
+    };
+    println!("index.max_extract_mb:     {extract_set}  ->  {extract_resolved}");
+
     // Unset is reported as "no limit" rather than left blank, because for these
     // two that is a decision with consequences: it is what a server exposing
     // its archive to curators it does not know should not be running with.

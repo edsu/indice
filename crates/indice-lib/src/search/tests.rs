@@ -1611,3 +1611,14 @@ fn sample_pages_looks_past_redirects_that_were_captured_first() {
     let texts: Vec<&str> = sample.iter().map(|p| p.text.as_str()).collect();
     assert_eq!(texts, vec!["the front page", "about the site"]);
 }
+
+#[test]
+fn utf8_prefix_cuts_on_a_character_boundary() {
+    let s = "aé€😀".as_bytes(); // 1 + 2 + 3 + 4 bytes
+    assert_eq!(utf8_prefix(s, 100), s);
+    assert_eq!(utf8_prefix(s, 2), b"a");
+    assert_eq!(utf8_prefix(s, 3), "aé".as_bytes());
+    assert_eq!(utf8_prefix(s, 9), "aé€".as_bytes());
+    // Bytes that aren't UTF-8 lose at most three.
+    assert_eq!(utf8_prefix(&[0x80; 10], 8).len(), 5);
+}

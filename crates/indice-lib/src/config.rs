@@ -32,6 +32,12 @@ pub const DEFAULT_WRITER_HEAP_BYTES: usize = 50 * 1024 * 1024;
 /// configured value is clamped up to something it accepts.
 const MIN_WRITER_HEAP_BYTES: usize = 15 * 1024 * 1024;
 
+/// Default for the most of one record read for its text. Finding a record's
+/// text costs many times its size (measured: a 100 MiB HTML page took 2.3 GB
+/// to parse, and a 16 MiB PDF 1.2 GB to extract), and real pages are far
+/// smaller, so this bounds the worst record without costing real ones.
+pub const DEFAULT_EXTRACT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Operator configuration for a indice home. Every section and field is
 /// optional; an absent file (or key) means "use the defaults".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -128,6 +134,14 @@ pub struct IndexConfig {
     /// read into memory. Omit for the default (1024 MiB); raise it for a
     /// genuine crawl that exceeds it, which the refusal names. `0` is no limit.
     pub max_member_mb: Option<u64>,
+
+    /// The most of any one page indice reads for its text, in MiB. HTML and
+    /// rendered text past it are not searchable; a PDF larger than it is
+    /// indexed by its file name alone, since a PDF can't be read in part.
+    /// Omit for the default (16 MiB); `0` is no limit. Each MiB can cost
+    /// tens of MiB of memory while it's read, so raise it only with memory
+    /// to match.
+    pub max_extract_mb: Option<u64>,
 }
 
 /// Limits on what the browser write surface may add to the archive.
@@ -351,6 +365,16 @@ impl Config {
         }
     }
 
+    /// The most of one page to read for its text, in bytes; see
+    /// [`IndexConfig::max_extract_mb`].
+    pub fn max_extract_bytes(&self) -> usize {
+        match self.index.max_extract_mb {
+            Some(0) => usize::MAX,
+            Some(mb) => (mb as usize).saturating_mul(1024 * 1024),
+            None => DEFAULT_EXTRACT_BYTES,
+        }
+    }
+
     /// The Tantivy writer heap in bytes: an explicit MiB value (clamped up to
     /// Tantivy's minimum), else the default.
     pub fn writer_heap_bytes(&self) -> usize {
@@ -396,6 +420,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(unbounded.stored_body_cap_bytes(), usize::MAX);
+    }
+
+    #[test]
+    fn max_extract_mb_resolves_to_bytes() {
+        assert_eq!(Config::default().max_extract_bytes(), DEFAULT_EXTRACT_BYTES);
+        let parse = |yaml: &str| -> Config { serde_yaml_ng::from_str(yaml).unwrap() };
+        assert_eq!(
+            parse("index:\n  max_extract_mb: 4\n").max_extract_bytes(),
+            4 * 1024 * 1024
+        );
+        assert_eq!(
+            parse("index:\n  max_extract_mb: 0\n").max_extract_bytes(),
+            usize::MAX
+        );
     }
 
     #[test]

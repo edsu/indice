@@ -17,7 +17,7 @@ use tracing::{debug, info};
 
 use crate::http_range::{RangeFetch, RangeReader};
 use crate::index::IndexProgress;
-use crate::search::{extract_html_text, SearchIndex};
+use crate::search::{extract_html_text, utf8_prefix, SearchIndex};
 use crate::wacz::{extract_warc_from_wacz, iter_warc_paths};
 use crate::warc::{iter_records, WarcRecord, Warcinfo};
 
@@ -47,6 +47,9 @@ pub(super) struct Docs<'a> {
     /// The most to inflate of any one WACZ member (`index.max_member_mb`). See
     /// [`crate::wacz::DEFAULT_MEMBER_LIMIT`].
     pub read_limit: u64,
+    /// The most of one page to read for its text (`index.max_extract_mb`).
+    /// See [`record_to_raw`].
+    pub extract_limit: usize,
 }
 
 /// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
@@ -110,6 +113,7 @@ where
         ctx.main_page_url,
         ctx.pinned_thumb,
         ctx.docs.read_limit,
+        ctx.docs.extract_limit,
     );
     Ok(stats)
 }
@@ -529,7 +533,7 @@ where
         concurrency,
         progress,
     } = *run;
-    let limit = docs.read_limit;
+    let (limit, extract) = (docs.read_limit, docs.extract_limit);
     let started = std::time::Instant::now();
 
     // 1. Which pages the page lists give text for.
@@ -607,7 +611,7 @@ where
                             lock: &large,
                             held: &mut held,
                         };
-                        for raw in fetch_raw_records(&fetch, starts, c, limit, gate) {
+                        for raw in fetch_raw_records(&fetch, starts, c, limit, extract, gate) {
                             if belongs_to(raw.url(), page, &slot) {
                                 merge_raw(&mut merged, raw);
                             }
@@ -641,7 +645,9 @@ where
         if merged.timestamp.is_empty() {
             merged.timestamp = l.timestamp.clone();
         }
-        merged.rendered_text = Some(page.text);
+        // Capped like a record's text, so a page reads the same however its
+        // rendered text was stored.
+        merged.rendered_text = Some(cap(page.text, extract));
         // Rendered text always comes from an HTML page.
         merged.media_type.get_or_insert_with(|| "html".to_string());
         // A page-list title fills in only when the HTML capture gave none.
@@ -707,14 +713,19 @@ struct Run<'a> {
     progress: &'a dyn IndexProgress,
 }
 
-/// The most of a page's HTML parsed for its text. See [`record_to_raw`].
-const HTML_TEXT_CAP: usize = 16 * 1024 * 1024;
-
-/// How far a record inflates before its worker has to take the shared lock.
-/// Nearly every page is far smaller, so records are read in parallel; one that
-/// is not waits its turn, so the workers together hold at most this much each
-/// plus one record of up to the limit, rather than the limit each.
-const SMALL_RECORD: u64 = 16 * 1024 * 1024;
+/// How far a record inflates before its worker has to take the shared lock,
+/// which it keeps until its page is written, so through the record's text
+/// extraction as well as its fetch. Nearly every page is far smaller, so
+/// records are read in parallel; one that is not waits its turn.
+///
+/// It is this low because extraction, not the bytes, is what costs: a PDF can
+/// take 65 times its size to read (a 13 MB one peaked at 840 MB) and HTML 23
+/// times. At 16 MiB, four workers could each be extracting a PDF just under
+/// it, and PDFs that size took up to 1.2 GB each, more than a 4 GB server
+/// could hold (rustyweb-63jk). At 2 MiB the parallel workers hold a few hundred
+/// MB between them, and only the largest few percent of records, all PDFs in a
+/// crawl of mostly PDFs, wait their turn.
+const SMALL_RECORD: u64 = 2 * 1024 * 1024;
 
 /// The shared lock a worker takes for a large record, and its hold on it,
 /// kept until the worker's page is written or set aside.
@@ -723,14 +734,16 @@ struct Gate<'a, 'g> {
     held: &'a mut Option<std::sync::MutexGuard<'g, ()>>,
 }
 
-/// Fetch one CDX record and turn what it holds into page contributions. A
-/// record that cannot be read, including one that inflates past the limit, is
-/// skipped with a warning: one bad record should not cost the crawl.
+/// Fetch one CDX record and turn what it holds into page contributions, each
+/// read for at most `extract` bytes of text. A record that cannot be read,
+/// including one that inflates past the limit, is skipped with a warning: one
+/// bad record should not cost the crawl.
 fn fetch_raw_records<F: RangeFetch>(
     fetch: &F,
     starts: &HashMap<String, u64>,
     c: &crate::wacz::CdxjRecord,
     limit: u64,
+    extract: usize,
     gate: Gate<'_, '_>,
 ) -> Vec<RawRecord> {
     let base = c.filename.rsplit('/').next().unwrap_or(&c.filename);
@@ -763,7 +776,10 @@ fn fetch_raw_records<F: RangeFetch>(
                 gate.held,
             )
         }) {
-        Ok(records) => records.iter().filter_map(record_to_raw).collect(),
+        Ok(records) => records
+            .iter()
+            .filter_map(|r| record_to_raw(r, extract))
+            .collect(),
         Err(e) => {
             tracing::warn!(url = %c.url, "skipping unreadable CDX record: {e:#}");
             Vec::new()
@@ -785,13 +801,8 @@ const LANG_CAP: usize = 64;
 
 /// `s`, cut to at most `max` bytes on a character boundary.
 fn cap(mut s: String, max: usize) -> String {
-    if s.len() > max {
-        let mut end = max;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        s.truncate(end);
-    }
+    let end = utf8_prefix(s.as_bytes(), max).len();
+    s.truncate(end);
     s
 }
 
@@ -980,13 +991,22 @@ fn cache_thumbnail<F>(
     main_page_url: Option<&str>,
     pinned_dest: &Path,
     read_limit: u64,
+    extract: usize,
 ) where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
 {
     let Some(url) = main_page_url else {
         return;
     };
-    match crate::thumbnail::generate(fetch, thumbs_dir, crawl_id, url, pinned_dest, read_limit) {
+    match crate::thumbnail::generate(
+        fetch,
+        thumbs_dir,
+        crawl_id,
+        url,
+        pinned_dest,
+        read_limit,
+        extract,
+    ) {
         Ok(true) => debug!(crawl_id, "cached representative thumbnail"),
         Ok(false) => {}
         Err(e) => debug!(crawl_id, "thumbnail generation failed: {e:#}"),
@@ -1033,7 +1053,14 @@ impl RawRecord {
 /// not a page: warcinfo, `dns:`, other `urn:` pseudo-records (pageinfo,
 /// thumbnail, …), non-HTML/PDF responses, or empty payloads. Both extraction
 /// paths come through here, via [`index_pages`], so both index identically.
-fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
+///
+/// No more than `extract` bytes of a record are read for text, whatever its
+/// type, because reading text costs many times its size (see
+/// [`crate::config::DEFAULT_EXTRACT_BYTES`]). Text past it is not searchable.
+/// A PDF can't be read in part, so one larger is indexed by its file name,
+/// and the text read from a smaller one is cut at `extract` too: a
+/// compressed PDF can hold more text than its size.
+fn record_to_raw(record: &WarcRecord, extract: usize) -> Option<RawRecord> {
     let uri = record.target_uri.as_str();
     if uri.is_empty() || uri.starts_with("dns:") {
         return None;
@@ -1042,7 +1069,9 @@ fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
     // Browsertrix stores fully rendered page text as a `urn:text:<url>` resource
     // record (WARC-Type: resource). Map it back to the real URL as the body.
     if let Some(real_url) = uri.strip_prefix("urn:text:") {
-        let text = String::from_utf8_lossy(&record.payload).trim().to_string();
+        let text = String::from_utf8_lossy(utf8_prefix(&record.payload, extract))
+            .trim()
+            .to_string();
         if text.is_empty() {
             return None;
         }
@@ -1065,15 +1094,25 @@ fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
         if record.payload.is_empty() {
             return None;
         }
-        let Some(text) = crate::pdf::extract_pdf_text(&record.payload) else {
-            debug!(url = uri, "PDF text extraction yielded nothing; skipping");
-            return None;
+        let body = if record.payload.len() > extract {
+            tracing::warn!(
+                url = uri,
+                bytes = record.payload.len(),
+                "PDF larger than index.max_extract_mb; indexed by its file name only"
+            );
+            String::new()
+        } else {
+            let Some(text) = crate::pdf::extract_pdf_text(&record.payload) else {
+                debug!(url = uri, "PDF text extraction yielded nothing; skipping");
+                return None;
+            };
+            cap(text, extract)
         };
         return Some(RawRecord::Html {
             url: uri.to_string(),
             timestamp: record.timestamp.clone(),
             title: pdf_title_from_url(uri),
-            body: text,
+            body,
             description: String::new(),
             headings: String::new(),
             keywords: String::new(),
@@ -1088,12 +1127,7 @@ fn record_to_raw(record: &WarcRecord) -> Option<RawRecord> {
     if !mime.contains("html") || record.payload.is_empty() {
         return None;
     }
-    // Parsed into a DOM to find the text, which costs many times the page's
-    // size: measured, a 100 MiB page of paragraphs took 2.3 GB to read. So no
-    // more than HTML_TEXT_CAP of a page is parsed; a real page is far smaller,
-    // and text past it in one that is not is simply not searchable.
-    let html = &record.payload[..record.payload.len().min(HTML_TEXT_CAP)];
-    let html = extract_html_text(html);
+    let html = extract_html_text(utf8_prefix(&record.payload, extract));
     if html.title.is_empty() && html.body.is_empty() && html.description.is_empty() {
         return None;
     }
@@ -1175,7 +1209,7 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        assert!(fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, gate).is_empty());
+        assert!(fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, usize::MAX, gate).is_empty());
     }
 
     #[test]
@@ -1249,8 +1283,115 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        fetch_raw_records(&fetch, &starts, &c, u64::MAX, gate);
+        fetch_raw_records(&fetch, &starts, &c, u64::MAX, usize::MAX, gate);
         assert!(held_during_fetch.load(Ordering::SeqCst));
+    }
+
+    /// A record of a few MiB is read alone, not just one past 16 MiB: PDFs
+    /// just under 16 MiB took up to 1.2 GB each to extract, and four workers
+    /// could be reading them at once, more than a 4 GB server holds
+    /// (rustyweb-63jk). The guard
+    /// is kept after the fetch, so it covers the record's extraction too.
+    #[test]
+    fn a_multi_megabyte_record_is_read_alone() {
+        struct Empty;
+        impl RangeFetch for Empty {
+            fn total_len(&self) -> u64 {
+                u64::MAX
+            }
+            fn fetch(&self, _: u64, _: u64) -> std::io::Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
+        }
+        let starts = HashMap::from([("w".to_string(), 0)]);
+        let c = crate::wacz::CdxjRecord {
+            url: "https://ex.test/report.pdf".into(),
+            timestamp: String::new(),
+            mime: "application/pdf".into(),
+            status: 200,
+            filename: "w".into(),
+            offset: 0,
+            length: 3 * 1024 * 1024,
+        };
+        let lock = Mutex::new(());
+        let mut held = None;
+        let gate = Gate {
+            lock: &lock,
+            held: &mut held,
+        };
+        fetch_raw_records(&Empty, &starts, &c, u64::MAX, usize::MAX, gate);
+        assert!(held.is_some(), "a 3 MiB record should wait its turn");
+    }
+
+    /// A response record of `content_type` at `uri`, holding `payload`.
+    fn response(uri: &str, content_type: &str, payload: &[u8]) -> WarcRecord {
+        WarcRecord {
+            record_id: String::new(),
+            concurrent_to: None,
+            target_uri: uri.into(),
+            timestamp: "20241117102601".into(),
+            warc_type: if uri.starts_with("urn:") {
+                "resource".into()
+            } else {
+                "response".into()
+            },
+            http_status: Some(200),
+            content_type: content_type.into(),
+            digest: String::new(),
+            payload: payload.to_vec(),
+            http_headers: Vec::new(),
+            offset: 0,
+            record_length: 0,
+        }
+    }
+
+    /// A PDF can't be read in part, so one past the limit isn't parsed. It is
+    /// still a page, found by its file name, rather than left out of search.
+    #[test]
+    fn a_pdf_past_the_extract_limit_is_indexed_by_name_unread() {
+        // Not a PDF at all: if it were parsed it would yield nothing, and the
+        // record would be dropped rather than indexed.
+        let rec = response(
+            "https://ex.test/docs/ART-2016-Report.pdf?x=1",
+            "application/pdf",
+            &[b'x'; 64],
+        );
+        let Some(RawRecord::Html {
+            title,
+            body,
+            media_type,
+            ..
+        }) = record_to_raw(&rec, 32)
+        else {
+            panic!("a PDF past the limit should still be a page");
+        };
+        assert_eq!(title, "ART-2016-Report.pdf");
+        assert!(body.is_empty());
+        assert_eq!(media_type, "pdf");
+        // Within the limit the same bytes are parsed, find no PDF, and drop.
+        assert!(record_to_raw(&rec, 64).is_none());
+    }
+
+    /// HTML and rendered text are read only as far as the limit, and a cut in
+    /// the middle of a character drops the whole character.
+    #[test]
+    fn text_past_the_extract_limit_is_not_read() {
+        let html = response(
+            "https://ex.test/",
+            "text/html",
+            b"<html><body><p>kept</p><p>dropped</p></body></html>",
+        );
+        let Some(RawRecord::Html { body, .. }) = record_to_raw(&html, 25) else {
+            panic!("the page's start should be read");
+        };
+        assert!(body.contains("kept") && !body.contains("dropped"), "{body}");
+
+        // "é" is two bytes, so 5 bytes in falls inside the third one.
+        let text = response("urn:text:https://ex.test/", "text/plain", "éééé".as_bytes());
+        let Some(RawRecord::Text { text, .. }) = record_to_raw(&text, 5) else {
+            panic!("rendered text should be read");
+        };
+        assert_eq!(text, "éé");
     }
 
     /// The second pass over the page lists must reach every page the first
@@ -1294,6 +1435,7 @@ mod tests {
             collection: "c",
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
+            extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
         };
         let err = index_pages(
             PageSource {

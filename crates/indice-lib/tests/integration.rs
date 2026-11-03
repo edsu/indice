@@ -1944,6 +1944,68 @@ async fn public_only_refuses_a_fetch_that_lands_on_this_machine() {
 
 // ── Hostile WACZs ───────────────────────────────────────────────────────────
 
+/// `index.max_extract_mb` reaches indexing: a page's text past it is not
+/// searchable, and the text before it still is.
+#[test]
+fn text_past_max_extract_mb_is_not_indexed() {
+    use std::io::{Read, Write};
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        "index:\n  max_extract_mb: 1\n",
+    )
+    .unwrap();
+
+    // A real WACZ, with one page whose rendered text runs past 1 MiB.
+    let mut src = zip::ZipArchive::new(std::fs::File::open(fixture("a.wacz")).unwrap()).unwrap();
+    let archive = tmp.path().join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let wacz = archive.join("long.wacz");
+    {
+        let mut out = zip::ZipWriter::new(std::fs::File::create(&wacz).unwrap());
+        for i in 0..src.len() {
+            let mut entry = src.by_index(i).unwrap();
+            let name = entry.name().unwrap().into_owned();
+            if name == "pages/extraPages.jsonl" {
+                continue;
+            }
+            let opt = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            out.start_file(name, opt).unwrap();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            out.write_all(&bytes).unwrap();
+        }
+        out.start_file(
+            "pages/extraPages.jsonl",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let filler = "filler ".repeat(2 * 1024 * 1024 / 7);
+        writeln!(
+            out,
+            r#"{{"url":"https://ex.org/long","ts":"2026","text":"zygomorphic {filler} xylophonist"}}"#
+        )
+        .unwrap();
+        out.finish().unwrap();
+    }
+    indice_lib::index::index_path(&wacz, tmp.path(), None, "test").unwrap();
+
+    let idx = indice_lib::search::SearchIndex::open_read_only(
+        tmp.path().join("index").join("full_text").as_path(),
+    )
+    .unwrap();
+    let hits = idx.search("zygomorphic", 10).unwrap();
+    assert!(
+        hits.iter().any(|h| h.url == "https://ex.org/long"),
+        "the text before the limit is searchable"
+    );
+    assert!(
+        idx.search("xylophonist", 10).unwrap().is_empty(),
+        "the text past the limit is not"
+    );
+}
+
 /// A WACZ whose member inflates past `index.max_member_mb` is refused whole:
 /// the ingest fails, naming the member and the setting, and the crawl is not
 /// added, rather than added without the text it would not read.
