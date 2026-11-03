@@ -122,3 +122,19 @@ fn meta_content(doc: &scraper::Html, selector: &str) -> Option<String> {
         .map(|c| c.trim().to_string())
         .filter(|c| !c.is_empty())
 }
+
+/// At most `max` bytes of `bytes`, cut back to the start of a UTF-8 character
+/// so that text cut there doesn't end in a broken one. A character is at most
+/// four bytes, so no more than three are dropped, even from bytes that aren't
+/// UTF-8 at all.
+pub(crate) fn utf8_prefix(bytes: &[u8], max: usize) -> &[u8] {
+    if bytes.len() <= max {
+        return bytes;
+    }
+    let mut end = max;
+    // A continuation byte (0b10xxxxxx) is never the start of a character.
+    while end > max.saturating_sub(3) && end > 0 && bytes[end] & 0xC0 == 0x80 {
+        end -= 1;
+    }
+    &bytes[..end]
+}
