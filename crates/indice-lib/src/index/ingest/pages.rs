@@ -718,13 +718,13 @@ struct Run<'a> {
 /// extraction as well as its fetch. Nearly every page is far smaller, so
 /// records are read in parallel; one that is not waits its turn.
 ///
-/// It is this low because extraction, not the bytes, is what costs: a PDF can
-/// take 65 times its size to read (a 13 MB one peaked at 840 MB) and HTML 23
-/// times. At 16 MiB, four workers could each be extracting a PDF just under
-/// it, and PDFs that size took up to 1.2 GB each, more than a 4 GB server
-/// could hold (rustyweb-63jk). At 2 MiB the parallel workers hold a few hundred
-/// MB between them, and only the largest few percent of records, all PDFs in a
-/// crawl of mostly PDFs, wait their turn.
+/// It is this low because extraction, not the bytes, is what costs: HTML takes
+/// 23 times its size to read, and a PDF up to 225 times (a 3.3 MB one peaked
+/// at 750 MB, a 12 MB one at 1 GB). At 16 MiB, four workers could each be
+/// extracting a PDF just under it, and PDFs that size took up to 1.2 GB each,
+/// more than a 4 GB server could hold (rustyweb-63jk). At 2 MiB the parallel
+/// workers hold a few hundred MB between them, and only the largest few
+/// percent of records, all PDFs in a crawl of mostly PDFs, wait their turn.
 const SMALL_RECORD: u64 = 2 * 1024 * 1024;
 
 /// The shared lock a worker takes for a large record, and its hold on it,

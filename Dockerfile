@@ -14,6 +14,15 @@ RUN cargo build --release --locked --bin indice
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /src/target/release/indice /usr/local/bin/indice
 
+# glibc's allocator keeps memory that reading a large PDF has freed rather than
+# handing it back, so each one raises the process's footprint and the next
+# stacks on top. Under a container memory limit that is what kills an ingest
+# that would otherwise fit: a crawl of large PDFs was killed at a 2.5 GB limit
+# with glibc's defaults, and with these peaked at 1.3 to 2.1 GB over three runs
+# (rustyweb-63jk). Two arenas, and low trim and mmap thresholds, return freed
+# memory promptly.
+ENV GLIBC_TUNABLES=glibc.malloc.arena_max=2:glibc.malloc.trim_threshold=131072:glibc.malloc.mmap_threshold=131072
+
 # The indice home (archive/ + index/) lives here; mount a volume for persistence.
 WORKDIR /data
 # 8080 is the app, 8081 replay, which runs on an origin of its own.
