@@ -37,7 +37,13 @@ A WACZ is a zip, and a file inside a zip can inflate to a thousand times its sto
 
 The default leaves plenty of room for a genuine crawl. The largest file in one is usually `pages/extraPages.jsonl`, which holds the rendered text of every page. If a crawl you trust is refused, raise the limit to fit it. Indexing reads a WACZ a page at a time, so the memory it needs does not grow with the crawl; raising the limit only lets a single file or record be larger.
 
-Finding a page's text costs far more memory than the page itself: a PDF can take 65 times its size to read, and HTML around 20 times. So indice reads no more than `max_extract_mb` of any page for its text. HTML and rendered text past it are not searchable. A PDF can't be read in part, so a larger one is indexed by its file name alone, and a warning names it; it still replays. A page over 2 MiB is also read on its own rather than alongside others, so only one large page is in memory at a time. Raise the limit only on a machine with memory to match.
+Finding a page's text costs far more memory than the page itself. HTML takes around 20 times its size to read, and a PDF's cost barely follows its size: one of 3.3 MB took 750 MB, one of 12 MB took 1 GB, and one of 33 MB took 107 MB. So indice reads no more than `max_extract_mb` of any page for its text. HTML and rendered text past it are not searchable. A PDF can't be read in part, so a larger one is indexed by its file name alone, and a warning names it; it still replays. A page over 2 MiB is also read on its own rather than alongside others, so only one large page is in memory at a time. Raise the limit only on a machine with memory to match.
+
+On Linux, the system's memory allocator holds on to memory that reading a large page has freed, so each one can leave the process bigger. The Docker image sets `GLIBC_TUNABLES` so that memory is handed back. If you run the `indice` binary directly on a Linux machine with little memory to spare, set the same in its environment:
+
+```sh
+export GLIBC_TUNABLES=glibc.malloc.arena_max=2:glibc.malloc.trim_threshold=131072:glibc.malloc.mmap_threshold=131072
+```
 
 ## Upload limits
 

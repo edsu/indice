@@ -1191,9 +1191,14 @@ and for a hostile one is whatever it asks for. Measured on Linux with 4 workers,
 headings, 8 KiB of description, 2 KiB of title) since it may wait in memory, and no
 more than `index.max_extract_mb` (default 16 MiB) of any page is read for text,
 since finding the text costs many times the page's size: parsing HTML builds a DOM
-around 20 times it, and a PDF took up to 65 times it to extract. HTML and rendered
+around 20 times it, and a PDF's cost barely follows its size (a 3.3 MB PDF
+peaked at 750 MB to extract, a 33 MB one at 107 MB). HTML and rendered
 text past the cap are not indexed; a PDF can't be read in part, so a larger one is
 indexed by its file name alone. Below the cap the body is indexed in full.
+On Linux, glibc's allocator keeps memory a large extraction freed, so the Docker
+image sets `GLIBC_TUNABLES` to hand it back. A crawl of large PDFs that peaked at
+1.3 to 2.1 GB with them, over three runs, was killed at a 2.5 GB container limit
+without them (`rustyweb-63jk`).
 
 Collapsing to one document per URL deduplicates repeat captures *within a WACZ*;
 repeat captures of the same URL *across* WACZs stay as separate documents and are
