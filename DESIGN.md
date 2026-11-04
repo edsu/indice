@@ -1064,7 +1064,7 @@ looks up the crawl or collection, and fills the page with what the viewer needs 
 `<script type="application/json">`: the `source` ReplayWeb.page loads (the crawl's
 `/files/{id}`, or a `replay.json` for a collection or a crawl in several files), the page and time, and the names for the
 banner. A link therefore can't name a source of its own. The viewer renders the banner and the
-annotations panel, embeds the replay frame, and keeps its address following the page in view
+annotations panel, embeds the replay frame, says the page is loading until the frame's agent reports that the first page's document has loaded (stylesheets included, which a page waits for before it paints anything; the notice gives up after two minutes), and keeps its address following the page in view
 (`history.replaceState`), so the address bar always opens what the reader sees. A link to a
 note names it in the fragment (`#note={id}`), since the query belongs to the archived URL. The
 viewer does not load ReplayWeb.page. The request log records a replay path only as far as the

@@ -74,5 +74,30 @@ body { display: flex; flex-direction: column; font-family: var(--sans); }
 #stage { flex: 1 1 auto; display: flex; min-height: 0; position: relative; }
 #replay-container { flex: 1 1 auto; position: relative; min-height: 0; min-width: 0; }
 #replay-frame { display: block; width: 100%; height: 100%; border: 0; }
+
+/* Shown over the frame until the page in it has loaded (viewer.js), which
+   for a page whose stylesheets are in a large crawl can take a while, with
+   nothing painted meanwhile. It takes no clicks, so it never blocks the
+   page, or a message from ReplayWeb.page, beneath it. */
+#replay-loading {
+  position: absolute; top: 30%; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: var(--s-3);
+  max-width: calc(100% - 2 * var(--s-4));
+  padding: var(--s-3) var(--s-4);
+  background: var(--page); border: 1px solid var(--rule); border-radius: var(--radius);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  color: var(--text-2); font-size: var(--t-sm);
+  pointer-events: none;
+}
+#replay-loading[hidden] { display: none; }
+#replay-loading .spinner {
+  flex: none; width: 1rem; height: 1rem;
+  border: 2px solid var(--rule); border-top-color: var(--read); border-radius: 50%;
+  animation: replay-spin 0.8s linear infinite;
+}
+@keyframes replay-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #replay-loading .spinner { animation: none; border-top-color: var(--rule); }
+}
 #error { padding: 2rem; color: var(--danger); }
 

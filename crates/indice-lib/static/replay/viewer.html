@@ -33,7 +33,12 @@
     <button type="button" id="anno-toggle" aria-expanded="true">Notes</button>
   </div>
   <div id="stage">
-    <div id="replay-container"></div>
+    <div id="replay-container">
+      <div id="replay-loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="replay-loading-text">Loading the archived page…</span>
+      </div>
+    </div>
     <aside id="anno-panel"></aside>
   </div>
 

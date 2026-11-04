@@ -2,9 +2,9 @@
 //
 // indice replay frame agent: the half of page annotations that has to touch
 // the replayed document. It runs in /replay-frame beside <replay-web-page>,
-// finds the replayed page's document, reports the curator's text selection
-// and the current URL to the viewer, and draws the highlights the viewer
-// sends. It never talks to the API; the viewer does that.
+// finds the replayed page's document, reports the curator's text selection,
+// the current URL and when the first page has loaded to the viewer, and draws
+// the highlights the viewer sends. It never talks to the API; the viewer does that.
 //
 // Why split: the replayed page's own JavaScript runs in this frame's origin.
 // Anything this agent can do, archived script can do too, including sending
@@ -283,8 +283,27 @@
     window.setInterval(check, 1000);
   }
 
+  // ── Loading ───────────────────────────────────────────────────────────────
+  // Tell the viewer once the page replay opened on has loaded, stylesheets and
+  // images included (its document's readyState is "complete" only after its
+  // load event), so it can stop saying the page is loading. Until then the
+  // page may show nothing at all. Only that first page: by the time the
+  // reader moves on, the crawl's files are open and the next page is quick.
+  // Polled, because the document is ReplayWeb.page's to replace, and only
+  // until it has loaded, so a long read of the page doesn't pay for the walk.
+  function watchFirstLoad() {
+    const timer = window.setInterval(() => {
+      const doc = findReplayDoc(document, 0);
+      if (doc && doc.readyState === "complete") {
+        window.clearInterval(timer);
+        send("loaded", {});
+      }
+    }, 500);
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────
   function init() {
+    watchFirstLoad();
     const rp = document.querySelector("replay-web-page");
     if (rp) {
       // ReplayWeb.page dispatches rwp-url-change on the element itself, and it

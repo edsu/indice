@@ -105,6 +105,32 @@
     window.dispatchEvent(new CustomEvent('indice-replay', { detail: d }));
   });
 
+  // Until the page in the frame has loaded, say so. ReplayWeb.page's own
+  // spinner goes as soon as the page's HTML arrives, but a page shows nothing
+  // until its stylesheets have loaded too, and in a large crawl finding them
+  // can take many seconds, which looked like a page that would never come.
+  // The frame's agent says when the page's document has loaded (only the
+  // first page's: by then the crawl's files are open, and later pages are
+  // quick). Its word is only a suggestion (above), and at worst hides this
+  // notice early. With no word at all, the notice gives up after two minutes
+  // rather than sit over the frame for good.
+  const loading = document.getElementById('replay-loading');
+  const loadingText = document.getElementById('replay-loading-text');
+  const loadingTimers = [
+    setTimeout(function () {
+      loadingText.textContent =
+        'Still loading the archived page. Pages from large crawls can take a while.';
+    }, 30000),
+    setTimeout(hideLoading, 120000),
+  ];
+  function hideLoading() {
+    loadingTimers.forEach(clearTimeout);
+    loading.hidden = true;
+  }
+  window.addEventListener('indice-replay', function (e) {
+    if (e.detail.type === 'loaded') hideLoading();
+  });
+
   // The archived URL as the tail of this page's address, as the server
   // writes it (`url_in_path` in server/util.rs): parsed by the URL standard,
   // which resolves `.` and `..` segments, and without its fragment.

@@ -144,6 +144,10 @@ async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Resu
     if !deep_contains(driver, "storymaps.arcgis.com").await? {
         return Err("viewer banner (current URL) did not appear".into());
     }
+    // And says the page is loading, until it has.
+    if !loading_shown(driver).await? {
+        return Err("the viewer did not say the page was loading".into());
+    }
 
     // wabac must install its service worker, read the WACZ over byte-range,
     // load its CDX, and render the page inside the viewer's replay frame. Poll
@@ -170,7 +174,28 @@ async fn drive_and_check(driver: &WebDriver, addr: SocketAddr, id: &str) -> Resu
         .await
         .map_err(|e| e.to_string())?;
 
+    // Once the page has loaded, the viewer stops saying it is loading.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while loading_shown(driver).await? {
+        if Instant::now() > deadline {
+            return Err("the viewer still said the page was loading after it rendered".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     check_banner_tracks_navigation(driver).await
+}
+
+/// Whether the viewer is showing its notice that the page is loading.
+async fn loading_shown(driver: &WebDriver) -> Result<bool, String> {
+    let shown = driver
+        .execute(
+            "const el = document.getElementById('replay-loading'); return !!el && !el.hidden;",
+            vec![],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(shown.json().as_bool().unwrap_or(false))
 }
 
 /// Verify the banner updates when ReplayWeb.page fires `rwp-url-change`. wabac
