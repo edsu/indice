@@ -104,9 +104,10 @@ pub struct SiteConfig {
     /// is a demo". Rendered by [`crate::markdown::render`], which escapes raw
     /// HTML and keeps links to safe schemes.
     pub banner: Option<String>,
-    /// How to ask for more than read access, in Markdown, e.g. "Email
-    /// [the archivist](mailto:…)". Shown to someone signed in but not on the
-    /// roster, under the header and on the page refusing them a workroom page.
+    /// A note for someone signed in but not on the roster, in Markdown, e.g.
+    /// "You can read this archive but not change it. Email [the
+    /// archivist](mailto:…) to curate." Shown under the header, including on
+    /// the page refusing them a workroom page. Unset, there is no note.
     pub request_access: Option<String>,
 }
 

@@ -77,13 +77,12 @@ site:
   # A notice under the header on every page, in Markdown. Omit for none.
   banner: |
     This is a **demo**. Read about it on [indice.page](https://indice.page).
-  # How to ask for more than read access, in Markdown. Shown to anyone signed
-  # in but not listed in users.yaml. Omit to tell them only that they can read.
-  # A mailto: link can set the subject; write spaces as %20.
-  request_access: Email [the archivist](mailto:archivist@example.org?subject=Curator%20access) to curate.
+  # A note for anyone signed in but not listed in users.yaml, in Markdown.
+  # Omit for no note. A mailto: link can set the subject; write spaces as %20.
+  request_access: You can read this archive but not change it. Email [the archivist](mailto:archivist@example.org?subject=Curator%20access) to curate.
 ```
 
-Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. They see a note under the header saying so, followed by `request_access` if you set it, and a workroom page they open answers with the same explanation rather than a bare refusal.
+Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. If you set `request_access`, they see it as a note under the header, set apart from the banner in the reading colour, so it is the place to say what they can do and how to ask for more. A workroom page they open answers with an explanation rather than a bare refusal, with the note above it.
 
 The banner and `request_access` use the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 

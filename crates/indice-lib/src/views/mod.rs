@@ -58,7 +58,7 @@ pub struct Site {
     pub tagline: String,
     /// The banner, already rendered from Markdown.
     pub banner: Option<maud::PreEscaped<String>>,
-    /// How to ask for more access, already rendered from Markdown.
+    /// The note for a signed-in reader, already rendered from Markdown.
     pub request_access: Option<maud::PreEscaped<String>>,
 }
 
@@ -160,14 +160,12 @@ pub fn layout(
                 @if let Some(b) = &site.banner {
                     div.site-banner { (b) }
                 }
-                // Signed in but on nobody's roster: say what that means, and
-                // how to ask for more, rather than leaving them to wonder why
-                // nothing can be changed.
-                @if chrome.signed_in.is_some() && !manage {
-                    div.site-banner.access-note {
-                        p { "You can read this archive, but not change it." }
-                        @if let Some(r) = &site.request_access { (r) }
-                    }
+                // Signed in but on nobody's roster: the operator's word on
+                // what that means and how to ask for more, when they give one.
+                @if let (Some(_), false, Some(r)) =
+                    (&chrome.signed_in, manage, &site.request_access)
+                {
+                    div.site-banner.access-note { (r) }
                 }
                 main.wrap { (body) }
             }
@@ -177,7 +175,8 @@ pub fn layout(
 
 /// The page a signed-in reader gets when they open a workroom page: a 403
 /// that explains itself. `what` is what the page needed, e.g. "curating this
-/// archive". The notice under the header carries `site.request_access`.
+/// archive". The note under the header carries `site.request_access`, when
+/// it is set.
 pub fn access_denied(chrome: &Chrome, what: &str) -> Markup {
     let body = html! {
         h1.page-title { "You can't change this archive" }

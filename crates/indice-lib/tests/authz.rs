@@ -456,8 +456,24 @@ async fn only_an_admin_is_offered_the_import_tabs() {
     server.abort();
 }
 
-/// Someone signed in but not on the roster is told they can read and how to
-/// ask for more, on every page; a curator isn't.
+/// Without `site.request_access` there is nothing to tell a signed-in reader,
+/// so there is no note: the operator writes all of it, or none.
+#[tokio::test]
+async fn a_signed_in_reader_sees_no_note_unless_the_operator_writes_one() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        USER_HEADER,
+        SECRET,
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let (_, reader) = get_as(format!("{base}/"), "eve@x.edu", None).await;
+    assert!(!reader.contains("access-note"), "{reader}");
+    assert!(!reader.contains("not change it"), "{reader}");
+    server.abort();
+}
+
+/// Someone signed in but not on the roster is told what the operator wrote
+/// for them, on every page; a curator isn't.
 #[tokio::test]
 async fn a_signed_in_reader_is_told_how_to_request_access() {
     let tmp = home_with_roster();
