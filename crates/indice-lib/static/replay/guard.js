@@ -37,12 +37,22 @@
       return null;
     }
     if (url.origin !== window.location.origin || url.search || url.hash) return null;
-    var m =
-      url.pathname.match(/^\/files\/([^/]+)$/) ||
-      url.pathname.match(/^\/collection\/([^/]+)\/replay\.json$/);
+    // A crawl written into several WACZs replays from its own manifest,
+    // cached apart from its /files/{id} (which its id names) so a reader's
+    // cache of the one file is not taken for all of them. Collection slugs
+    // and crawl ids hold no `_`, so the prefix names nothing else.
+    var prefix = "";
+    var m = url.pathname.match(/^\/crawl\/([^/]+)\/replay\.json$/);
+    if (m) {
+      prefix = "crawl_";
+    } else {
+      m =
+        url.pathname.match(/^\/files\/([^/]+)$/) ||
+        url.pathname.match(/^\/collection\/([^/]+)\/replay\.json$/);
+    }
     if (!m) return null;
     try {
-      return { path: url.pathname, coll: decodeURIComponent(m[1]) };
+      return { path: url.pathname, coll: prefix + decodeURIComponent(m[1]) };
     } catch (e) {
       return null; // a malformed escape: not one of ours
     }

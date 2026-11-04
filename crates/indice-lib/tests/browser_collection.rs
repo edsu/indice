@@ -251,6 +251,171 @@ async fn collection_replay_follows_a_redirect_through_the_lookup() {
     result.unwrap();
 }
 
+/// A page of a Browsertrix crawl replays with a stylesheet that Browsertrix
+/// wrote into another of the crawl's WACZs: the crawl's replay loads every
+/// file the crawl was written into, not just the one holding the page.
+///
+/// The same browser first replays the page as a crawl of one file, where the
+/// stylesheet is missing, and then as one Browsertrix crawl. The second
+/// replay has a cache of its own, so the first one's is not reused for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn a_crawls_page_replays_with_a_stylesheet_from_another_of_its_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let coll = "Split Crawl";
+    let warcs = tmp.path().join("warcs");
+    std::fs::create_dir_all(&warcs).unwrap();
+    // Fetched first, so in the crawl's first file, as a crawler fetches what
+    // every page shares.
+    let css = warcs.join("first.warc");
+    std::fs::write(
+        &css,
+        warc_response(
+            "https://split.example/style.css",
+            "2025-01-25T22:32:01Z",
+            "text/css",
+            "#probe { color: rgb(1, 2, 3); }",
+        ),
+    )
+    .unwrap();
+    let page = warcs.join("later.warc");
+    std::fs::write(
+        &page,
+        warc_response(
+            PAGE,
+            "2025-01-25T22:32:02Z",
+            "text/html",
+            r#"<html><head><link rel="stylesheet" href="/style.css"></head><body><p id="probe">split crawl</p></body></html>"#,
+        ),
+    )
+    .unwrap();
+    let mut ids = Vec::new();
+    for (warc, name) in [(&css, "first"), (&page, "later")] {
+        let built = indice_lib::wacz_build::build_wacz(
+            std::slice::from_ref(warc),
+            &indice_lib::wacz_build::WaczBuildMeta::default(),
+            &tmp.path().join("archive"),
+            name,
+        )
+        .unwrap();
+        indice_lib::index::index_path(&built.path, tmp.path(), None, coll).unwrap();
+        let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+        let w = manifest
+            .waczs
+            .iter()
+            .find(|w| w.source.location().ends_with(&format!("{name}.wacz")));
+        ids.push(w.unwrap().id.clone());
+    }
+    let page_file = &ids[1];
+    let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
+    let viewer = format!("http://{addr}/crawl/{page_file}/20250125223202/{PAGE}");
+    let driver = connect_driver().await;
+
+    let alone = probe_color(&driver, &viewer).await;
+    // The manifest is read per request, so this takes effect at once.
+    let waczs = tmp.path().join("index").join("waczs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    for w in v.as_array_mut().unwrap() {
+        w["browsertrix"] = serde_json::json!({
+            "host": "https://app.browsertrix.com",
+            "item_id": "manual-20250125223202-f7a72d33-167",
+        });
+    }
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+    let together = probe_color(&driver, &viewer).await;
+    let _ = driver.quit().await;
+    server.abort();
+
+    let alone = alone.unwrap();
+    assert_ne!(alone, STYLED, "one file holds no stylesheet to apply");
+    assert_eq!(together.unwrap(), STYLED, "the crawl's other file was read");
+}
+
+const PAGE: &str = "https://split.example/page.html";
+
+/// The colour the split crawl's stylesheet gives the probe.
+const STYLED: &str = "rgb(1, 2, 3)";
+
+/// One WARC `response` record: `url` answering 200 with `body`.
+fn warc_response(url: &str, date: &str, content_type: &str, body: &str) -> String {
+    let http = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    format!(
+        "WARC/1.1\r\nWARC-Type: response\r\nWARC-Record-ID: <urn:uuid:{}>\r\n\
+         WARC-Date: {date}\r\nWARC-Target-URI: {url}\r\n\
+         Content-Type: application/http; msgtype=response\r\nContent-Length: {}\r\n\r\n{http}\r\n\r\n",
+        uuid_for(url),
+        http.len()
+    )
+}
+
+/// A record id that differs per URL, which is all a test WARC needs.
+fn uuid_for(url: &str) -> String {
+    let n = url
+        .bytes()
+        .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b.into()));
+    format!("00000000-0000-4000-8000-{:012x}", n & 0xffff_ffff_ffff)
+}
+
+/// Open `viewer` and return the probe's colour once the stylesheet has had a
+/// moment to apply, searching the replay frame's same-origin frames.
+async fn probe_color(driver: &WebDriver, viewer: &str) -> Result<String, String> {
+    driver.goto(viewer).await.map_err(|e| e.to_string())?;
+    driver
+        .find(By::Id("replay-frame"))
+        .await
+        .map_err(|e| format!("the viewer has no replay frame: {e}"))?
+        .enter_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+    let script = r#"
+        function find(doc) {
+            if (!doc) return null;
+            const el = doc.getElementById && doc.getElementById('probe');
+            if (el) return el;
+            const nodes = doc.querySelectorAll ? doc.querySelectorAll('*') : [];
+            for (const n of nodes) {
+                if (n.shadowRoot) { const f = find(n.shadowRoot); if (f) return f; }
+                if (n.tagName === 'IFRAME') {
+                    try { const f = find(n.contentDocument); if (f) return f; } catch (e) {}
+                }
+            }
+            return null;
+        }
+        const el = find(document);
+        if (!el) return null;
+        const sheetsDone = el.ownerDocument.readyState === 'complete';
+        return sheetsDone ? el.ownerDocument.defaultView.getComputedStyle(el).color : null;
+    "#;
+    let read = || async {
+        let ret = driver
+            .execute(script, vec![])
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(ret.json().as_str().map(str::to_string))
+    };
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut color = None;
+    while color.is_none() && Instant::now() <= deadline {
+        color = read().await?;
+        if color.is_none() {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    // Rendered but unstyled: a moment more for a stylesheet still on its way.
+    if color.as_deref().is_some_and(|c| c != STYLED) {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        color = read().await?.or(color);
+    }
+    driver
+        .enter_default_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+    color.ok_or_else(|| format!("the probe never rendered ({viewer})"))
+}
+
 /// Everything this test binary logs, for a test to read back which paths were
 /// requested. One global subscriber for the binary; each test's homes give
 /// its crawls ids of their own, so lines from other tests don't match.

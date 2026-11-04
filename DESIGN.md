@@ -140,6 +140,8 @@ it still resolves.
 | `GET /files/{id}` | Stream a registered WACZ file with byte-range support |
 | `GET /collection/{id}/replay.json` | wabac multi-WACZ manifest for replaying a whole collection |
 | `GET /collection/{id}/pages` | Collection page list + exact-URL→WACZ resolution (wabac `pagesQueryUrl`), from the index |
+| `GET /crawl/{id}/replay.json` | wabac multi-WACZ manifest of every WACZ one crawl was written into (see *Crawl replay across a crawl's files*) |
+| `GET /crawl/{id}/pages` | The same page lookup as a collection's, over that crawl's files |
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
 | `GET /crawl/{id}/{ts}/{url}` | The replay viewer on one page of a crawl, as captured at `ts`: banner, notes panel, and the replay frame (see *Replay Viewer*) |
 | `GET /collection/{id}/{ts}/{url}` | The same, replaying the whole collection's crawls as one |
@@ -152,7 +154,7 @@ The replay listener, on its own origin (see *Replay Viewer*), serves only these:
 | `GET /replay-frame` | Replay frame: mounts `<replay-web-page>` and the annotation agent. Must stay outside `/replay/` |
 | `GET /replay/` | ReplayWeb.page's app shell, for its inner frame |
 | `GET /replay/{ui,sw,agent}.js` | ReplayWeb.page, its service worker, and the frame's agent |
-| `GET /files/{id}`, `GET /collection/{id}/replay.json`, `GET /collection/{id}/pages` | Replay data, as on the app listener |
+| `GET /files/{id}`, `GET /{collection,crawl}/{id}/replay.json`, `GET /{collection,crawl}/{id}/pages` | Replay data, as on the app listener |
 | `GET /health` | Liveness, as on the app listener |
 
 ---
@@ -1059,7 +1061,7 @@ moves its address only within its own crawl or collection. The server reads the 
 from the raw path and query (axum's extractors would decode its escapes and drop its query),
 looks up the crawl or collection, and fills the page with what the viewer needs as JSON in a
 `<script type="application/json">`: the `source` ReplayWeb.page loads (the crawl's
-`/files/{id}` or the collection's `replay.json`), the page and time, and the names for the
+`/files/{id}`, or a `replay.json` for a collection or a crawl in several files), the page and time, and the names for the
 banner. A link therefore can't name a source of its own. The viewer renders the banner and the
 annotations panel, embeds the replay frame, and keeps its address following the page in view
 (`history.replaceState`), so the address bar always opens what the reader sees. A link to a
@@ -1120,9 +1122,18 @@ In WACZ-direct mode the component reads the WACZ from `/files/{id}` via byte-ran
 
 A whole collection can be replayed at once (the "Replay collection" affordance on the homepage card and the collection page), not just a single crawl. The viewer points wabac.js at `GET /collection/{id}/replay.json` — a wabac multi-WACZ manifest (`{ resources: [{ name, path, hash, crawlId }], metadata }`) listing every member crawl, each `path` reusing the same `/files/{id}` byte-serving as single-WACZ replay (so File/Browsertrix members work identically, remote-URL members point at their URL). A generic whole-collection entry opens on a default landing page (the first member's first seed page); a specific-context entry (a crawl's Replay button, a search result) carries its own `url`/`ts` instead.
 
-The manifest also names `pagesQueryUrl`: `GET /collection/{id}/pages`, answered from the Tantivy index (`SearchIndex::collection_pages`). It sits at the manifest's top level, not under `metadata`, because that is where wabac's `loadFromJSON` reads it. With it, wabac asks indice which member holds a page before opening anything, and opens only that member. Without it, wabac opens and indexes every member WACZ before it can show any page, which for a collection of streamed crawls is hundreds of remote reads: replaying one page of a 9-crawl collection opened all 9 WACZs in 152 reads without it, and 3 in 88 with it (the others hold the page's own stylesheets and scripts). `collection_replay_opens_only_the_member_holding_the_page` in `tests/browser_collection.rs` pins it from the server's request log. The response is wabac's shape (`{ total, items: [{ url, ts, title, filename }] }`), where `filename` is the member WACZ id (`== resources[].name`) and `ts` is ISO 8601 (the index stores a 14-digit timestamp). wabac tries the members in the order given, so an HTTP 2xx capture is boosted in the query itself and comes first across the whole result set, ahead of an archived 404 of the same URL; wabac's lookup carries no timestamp to choose by. The exact-URL mode is a direct term query on the raw `url` field, with no URL collapsing, so totals are exact; a page list stops at `MAX_PAGES_OFFSET`.
+The manifest also names `pagesQueryUrl`: `GET /collection/{id}/pages`, answered from the Tantivy index (`SearchIndex::pages`). It sits at the manifest's top level, not under `metadata`, because that is where wabac's `loadFromJSON` reads it. With it, wabac asks indice which member holds a page before opening anything, and opens only that member. Without it, wabac opens and indexes every member WACZ before it can show any page, which for a collection of streamed crawls is hundreds of remote reads: replaying one page of a 9-crawl collection opened all 9 WACZs in 152 reads without it, and 3 in 88 with it (the others hold the page's own stylesheets and scripts). `collection_replay_opens_only_the_member_holding_the_page` in `tests/browser_collection.rs` pins it from the server's request log. The response is wabac's shape (`{ total, items: [{ url, ts, title, filename }] }`), where `filename` is the member WACZ id (`== resources[].name`) and `ts` is ISO 8601 (the index stores a 14-digit timestamp). wabac tries the members in the order given, so an HTTP 2xx capture is boosted in the query itself and comes first across the whole result set, ahead of an archived 404 of the same URL; wabac's lookup carries no timestamp to choose by. The exact-URL mode is a direct term query on the raw `url` field, with no URL collapsing, so totals are exact; a page list stops at `MAX_PAGES_OFFSET`.
 
 **Resolution is scoped to the collection** — a deliberate decision (`rustyweb-cross-wacz-replay-dk4`, closed won't-fix). A link from one member crawl to a page archived in *another member of the same collection* resolves and lands on that crawl's capture. This is *within-collection* only: there is no archive-wide or cross-collection resolution, and no explicit "open in another crawl" prompt — within-collection resolution is accepted as-is. Page **sub-resources** (images/CSS/JS) always come from the page's own crawl: wabac's per-URL `pagesQueryUrl` lookup is gated to top-level page navigations (`document`/`iframe` destinations), so a page is never stitched together from resources captured at different times — preserving per-page temporal coherence (the ODU/WS-DL temporal-violation concern).
+
+
+### Crawl replay across a crawl's files
+
+Browsertrix writes a long crawl into several WACZs, starting a new one as each grows, and fetches each URL once per crawl. What every page shares (stylesheets, scripts, fonts) is fetched on the crawl's first pages and lands in its first file, so a page in a later file usually has its sub-resources in another. Replaying that page from its own `/files/{id}` alone leaves it unstyled.
+
+So a crawl's replay loads every file the crawl was written into. `Manifest::crawl_files` finds them: the WACZs in the same collection with the same `BrowsertrixRef` host and item id, which both Browsertrix import paths record and all of one crawl's files share. Files in another collection are a separate import and are left out. A crawl from anywhere else (an upload, a URL, an Archive-It import, which builds one WACZ per crawl) is its one file. For a crawl of several files the viewer's `source` is `GET /crawl/{id}/replay.json`, the same manifest shape as a collection's with `crawl_files` as its resources, earliest capture first, and `pagesQueryUrl` set to `GET /crawl/{id}/pages`, the collection lookup scoped to those files (`PagesScope::Crawls`). Earliest first, because when wabac can't tell which file holds a resource it tries the first few it was given. A crawl of one file keeps `/files/{id}`.
+
+ReplayWeb.page caches a source under the collection name the frame gives it (`guard.js`). A crawl's manifest is cached as `crawl_{id}`, apart from the `{id}` its single file is cached under, so a reader who replayed the file alone before does not keep that cache for the whole crawl. Collection slugs and crawl ids hold no `_`, so the name can't be another source's. `a_crawls_page_replays_with_a_stylesheet_from_another_of_its_files` in `tests/browser_collection.rs` pins both: a page whose stylesheet is in the crawl's other file is styled, in a browser that has replayed it unstyled as one file first.
 
 ---
 

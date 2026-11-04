@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-use indice_lib::search::{Page, SearchIndex};
+use indice_lib::search::{Page, PagesScope, SearchIndex};
 
 const VOCAB: &[&str] = &[
     "archive",
@@ -185,11 +185,20 @@ fn main() -> anyhow::Result<()> {
     });
     // Collection page listing + exact-URL resolution (the replay sidebar path).
     bench("collection_pages: listing (25)", iters, || {
-        Ok(idx.collection_pages("c3", None, None, 0, 25)?.1.len())
+        Ok(idx
+            .pages(PagesScope::Collection("c3"), None, None, 0, 25)?
+            .1
+            .len())
     });
     bench("collection_pages: exact url", iters, || {
         Ok(idx
-            .collection_pages("c3", Some("https://site3.example.com/path/3"), None, 0, 25)?
+            .pages(
+                PagesScope::Collection("c3"),
+                Some("https://site3.example.com/path/3"),
+                None,
+                0,
+                25,
+            )?
             .1
             .len())
     });

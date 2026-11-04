@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::annotations::{self};
 use crate::collections::{Manifest, Wacz};
+use crate::search::PagesScope;
 use crate::views;
 
 use super::*;
@@ -240,9 +241,6 @@ pub(super) async fn collection_annotations(
 /// same byte-serving endpoint single-WACZ replay already uses (`viewer_source`):
 /// `/files/{id}` for local/Browsertrix sources, the remote URL for a plain URL.
 ///
-/// `name`/`crawlId` are the WACZ id, the same id `collection_pages` returns as
-/// `filename`, so wabac can match a looked-up page to its member. `hash`
-/// carries the `sha256:` prefix wabac expects.
 pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -254,8 +252,27 @@ pub(super) async fn collection_replay_json(
     let Some(c) = manifest.collection_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
     };
-    let resources: Vec<serde_json::Value> = manifest
-        .members_of(&id)
+    replay_manifest(
+        manifest.members_of(&id),
+        format!("/collection/{}/pages", url_encode(&c.id)),
+        &c.name,
+        c.description.as_deref(),
+    )
+}
+
+/// A wabac multi-WACZ manifest of `waczs`, for a collection's replay or for
+/// one crawl written into several WACZs (`crawl_replay_json`).
+///
+/// `name`/`crawlId` are the WACZ id, the same id the pages endpoint at
+/// `pages_url` returns as `filename`, so wabac can match a looked-up page to
+/// its member. `hash` carries the `sha256:` prefix wabac expects.
+pub(super) fn replay_manifest<'a>(
+    waczs: impl Iterator<Item = &'a Wacz>,
+    pages_url: String,
+    title: &str,
+    desc: Option<&str>,
+) -> Response {
+    let resources: Vec<serde_json::Value> = waczs
         .map(|w| {
             let mut res = serde_json::json!({
                 "name": w.id,
@@ -298,7 +315,7 @@ pub(super) async fn collection_replay_json(
         })
         .collect();
     if resources.is_empty() {
-        return (StatusCode::NOT_FOUND, "collection has no crawls to replay").into_response();
+        return (StatusCode::NOT_FOUND, "nothing to replay").into_response();
     }
     let body = serde_json::json!({
         "resources": resources,
@@ -309,10 +326,10 @@ pub(super) async fn collection_replay_json(
         // page being read. Top-level, not under `metadata`, because that is
         // where wabac's `loadFromJSON` reads it. Relative, so it resolves on
         // whichever origin serves replay.
-        "pagesQueryUrl": format!("/collection/{}/pages", url_encode(&c.id)),
+        "pagesQueryUrl": pages_url,
         "metadata": {
-            "title": c.name,
-            "desc": c.description,
+            "title": title,
+            "desc": desc,
         },
     });
     (StatusCode::OK, axum::Json(body)).into_response()
@@ -341,6 +358,23 @@ pub(super) async fn collection_pages(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(params): Query<PagesParams>,
 ) -> Response {
+    pages_response(&state, PagesFor::Collection(id), params).await
+}
+
+/// What a pages endpoint answers for: [`crate::search::PagesScope`], owned, so
+/// it can move to the thread that reads the index.
+pub(super) enum PagesFor {
+    Collection(String),
+    Crawls(Vec<String>),
+}
+
+/// The body of a wabac `pagesQueryUrl` endpoint, for a collection's replay or
+/// for one crawl's (`crawl_pages`).
+pub(super) async fn pages_response(
+    state: &AppState,
+    scope: PagesFor,
+    params: PagesParams,
+) -> Response {
     if let Some(refusal) = params.search.as_deref().and_then(query_too_long) {
         return refusal;
     }
@@ -349,16 +383,14 @@ pub(super) async fn collection_pages(
     // Saturating, so an absurd `page` can't overflow; the index caps how
     // deep it will go (`MAX_PAGES_OFFSET`).
     let offset = (page - 1).saturating_mul(page_size);
-    let (pages_id, url, search) = (id.clone(), params.url.clone(), params.search.clone());
+    let PagesParams { url, search, .. } = params;
     match state
         .read_index(move |s| {
-            s.collection_pages(
-                &pages_id,
-                url.as_deref(),
-                search.as_deref(),
-                offset,
-                page_size,
-            )
+            let scope = match &scope {
+                PagesFor::Collection(id) => PagesScope::Collection(id),
+                PagesFor::Crawls(ids) => PagesScope::Crawls(ids),
+            };
+            s.pages(scope, url.as_deref(), search.as_deref(), offset, page_size)
         })
         .await
     {

@@ -759,6 +759,40 @@ impl Manifest {
             .filter(move |w| w.collection == collection_id)
     }
 
+    /// Every WACZ the crawl `w` was written into, earliest first: `w` alone,
+    /// unless it came from Browsertrix, which starts a new WACZ as a long
+    /// crawl grows and fetches each URL once per crawl. A page in one of those
+    /// files often has its stylesheets and scripts in another, so replaying
+    /// the page needs them all. The files are the ones in `w`'s collection
+    /// with the same Browsertrix crawl (`BrowsertrixRef` host and item id).
+    ///
+    /// Earliest first because a crawl fetches what every page shares on its
+    /// first pages, and wabac.js, when it can't tell which file holds a
+    /// resource, tries the first few it was given.
+    pub fn crawl_files<'a>(&'a self, w: &'a Wacz) -> Vec<&'a Wacz> {
+        let Some(bt) = &w.browsertrix else {
+            return vec![w];
+        };
+        let mut files: Vec<&Wacz> = self
+            .members_of(&w.collection)
+            .filter(|o| {
+                o.browsertrix
+                    .as_ref()
+                    .is_some_and(|b| b.host == bt.host && b.item_id == bt.item_id)
+            })
+            .collect();
+        // A file with no recorded capture time sorts after those with one.
+        files.sort_by(|a, b| {
+            (a.capture_start.is_none(), &a.capture_start, &a.name, &a.id).cmp(&(
+                b.capture_start.is_none(),
+                &b.capture_start,
+                &b.name,
+                &b.id,
+            ))
+        });
+        files
+    }
+
     /// Remove the WACZ entry with `id`, returning it if present. Touches only the
     /// manifest — not the index, the WACZ file, or thumbnails.
     pub fn remove_wacz(&mut self, id: &str) -> Option<Wacz> {
@@ -1976,6 +2010,56 @@ mod tests {
         let json = serde_json::to_string(&w).unwrap();
         let back: Wacz = serde_json::from_str(&json).unwrap();
         assert_eq!(w.browsertrix, back.browsertrix);
+    }
+
+    #[test]
+    fn a_browsertrix_crawl_replays_from_every_file_it_was_written_into() {
+        let tmp = TempDir::new().unwrap();
+        let mut m = Manifest::open(tmp.path()).unwrap();
+        // One file of a Browsertrix crawl, in collection `cdc`.
+        let part = |id: &str, item: &str, start: Option<&str>| {
+            let mut w = wacz(id, id, None);
+            w.collection = cid("cdc");
+            w.capture_start = start.map(str::to_string);
+            w.browsertrix = Some(BrowsertrixRef {
+                host: "https://app.browsertrix.com".to_string(),
+                item_id: item.to_string(),
+                resource_hash: String::new(),
+                review_status: None,
+            });
+            w
+        };
+        m.upsert_wacz(part("third", "crawl-1", Some("20250127000000")));
+        m.upsert_wacz(part("first", "crawl-1", Some("20250125000000")));
+        m.upsert_wacz(part("undated", "crawl-1", None));
+        m.upsert_wacz(part("second", "crawl-1", Some("20250126000000")));
+        // Another crawl in the same collection.
+        m.upsert_wacz(part("other", "crawl-2", Some("20250101000000")));
+        // The same crawl id in another collection: a separate import.
+        let mut elsewhere = part("elsewhere", "crawl-1", Some("20240101000000"));
+        elsewhere.collection = cid("not-cdc");
+        m.upsert_wacz(elsewhere);
+        // The same crawl id from another Browsertrix host.
+        let mut other_host = part("other-host", "crawl-1", Some("20240101000000"));
+        other_host.browsertrix.as_mut().unwrap().host = "https://bt.example".to_string();
+        m.upsert_wacz(other_host);
+        // A crawl from anywhere else.
+        let mut file = wacz("file", "file", None);
+        file.collection = cid("cdc");
+        m.upsert_wacz(file);
+
+        let ids = |id: &str| -> Vec<String> {
+            let w = m.wacz_by_id(id).unwrap();
+            m.crawl_files(w).iter().map(|f| f.id.clone()).collect()
+        };
+        // Earliest capture first, from whichever file is asked about.
+        let crawl_1 = ["first", "second", "third", "undated"];
+        assert_eq!(ids("third"), crawl_1);
+        assert_eq!(ids("undated"), crawl_1);
+        assert_eq!(ids("other"), ["other"]);
+        assert_eq!(ids("elsewhere"), ["elsewhere"]);
+        assert_eq!(ids("other-host"), ["other-host"]);
+        assert_eq!(ids("file"), ["file"]);
     }
 
     #[test]

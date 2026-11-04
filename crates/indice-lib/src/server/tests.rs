@@ -737,6 +737,8 @@ fn a_replay_path_is_logged_without_the_page() {
         ("/collection/c/pages", "/collection/c/pages"),
         ("/collection/c/replay.json", "/collection/c/replay.json"),
         ("/collection/c/annotations", "/collection/c/annotations"),
+        ("/crawl/aeea520d/pages", "/crawl/aeea520d/pages"),
+        ("/crawl/aeea520d/replay.json", "/crawl/aeea520d/replay.json"),
     ] {
         assert_eq!(loggable_path(path), logged, "{path}");
     }

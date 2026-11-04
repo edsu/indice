@@ -1,12 +1,13 @@
-//! The crawl detail page: one WACZ's provenance, fixity, and captures.
+//! The crawl detail page: one WACZ's provenance, fixity, and captures; and
+//! the replay manifest and page list for a crawl written into several WACZs.
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 
-use crate::collections::Manifest;
+use crate::collections::{Manifest, Wacz};
 use crate::views;
 
 use super::*;
@@ -196,4 +197,61 @@ pub(super) async fn crawl_page(
     };
 
     views::crawl(&page).into_response()
+}
+
+/// `GET /crawl/{id}/replay.json`: a wabac multi-WACZ manifest of every WACZ
+/// the crawl was written into (`Manifest::crawl_files`), for replaying a page
+/// of a Browsertrix crawl whose stylesheets and scripts sit in another of its
+/// files. A crawl in one WACZ replays its `/files/{id}` directly instead
+/// (`crawl_replay_source`), but is answered here too.
+pub(super) async fn crawl_replay_json(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e),
+    };
+    let Some(w) = manifest.wacz_by_id(&id) else {
+        return (StatusCode::NOT_FOUND, "crawl not found").into_response();
+    };
+    replay_manifest(
+        manifest.crawl_files(w).into_iter(),
+        format!("/crawl/{}/pages", url_encode(&w.id)),
+        &w.display_name(),
+        w.description.as_deref(),
+    )
+}
+
+/// `GET /crawl/{id}/pages`: where wabac asks which of a crawl's WACZs holds a
+/// page, for `crawl_replay_json`. Answers only for the crawl's own files.
+pub(super) async fn crawl_pages(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(params): Query<PagesParams>,
+) -> Response {
+    let manifest = match Manifest::open(&state.index_dir) {
+        Ok(m) => m,
+        Err(e) => return error_response(e),
+    };
+    let Some(w) = manifest.wacz_by_id(&id) else {
+        return (StatusCode::NOT_FOUND, "crawl not found").into_response();
+    };
+    let ids = manifest
+        .crawl_files(w)
+        .into_iter()
+        .map(|f| f.id.clone())
+        .collect();
+    pages_response(&state, PagesFor::Crawls(ids), params).await
+}
+
+/// What replay loads for a page of crawl `w`: its own `/files/{id}` when the
+/// crawl is in that one WACZ, else the crawl's `replay.json`, which lists
+/// every file the crawl was written into.
+pub(super) fn crawl_replay_source(manifest: &Manifest, w: &Wacz) -> String {
+    if manifest.crawl_files(w).len() > 1 {
+        format!("/crawl/{}/replay.json", url_encode(&w.id))
+    } else {
+        viewer_source(w)
+    }
 }

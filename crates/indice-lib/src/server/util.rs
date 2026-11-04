@@ -117,6 +117,9 @@ pub(super) struct ReplayTarget {
 /// The sub-pages of a collection that sit where a replay path's time would.
 const COLLECTION_PAGES: &[&str] = &["replay.json", "pages", "annotations"];
 
+/// The same for a crawl.
+const CRAWL_PAGES: &[&str] = &["replay.json", "pages"];
+
 /// The kind, id and the rest of a path under `/crawl/{id}/` or
 /// `/collection/{id}/` that could be a replay path: anything beyond the
 /// crawl's or collection's own pages. Ids are slugs or hex, so they are used
@@ -130,7 +133,11 @@ fn replay_shaped(path: &str) -> Option<(ReplayKind, &str, &str)> {
         _ => return None,
     };
     let (id, rest) = rest.split_once('/')?;
-    if kind == ReplayKind::Collection && COLLECTION_PAGES.contains(&rest) {
+    let own_pages = match kind {
+        ReplayKind::Crawl => CRAWL_PAGES,
+        ReplayKind::Collection => COLLECTION_PAGES,
+    };
+    if own_pages.contains(&rest) {
         return None;
     }
     (!id.is_empty()).then_some((kind, id, rest))
