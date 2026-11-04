@@ -377,3 +377,290 @@ async fn a_crawl_in_one_file_replays_that_file() {
     let (status, _) = get_text(app, "/crawl/nope/replay.json").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ── Streamed Browsertrix crawls: read from presigned URLs ────────────────────
+
+/// A resolver standing in for Browsertrix. A lookup returns a presigned URL,
+/// valid for `valid`, for each of `files` that the lookup covers, as
+/// Browsertrix's `replay.json` does: a whole public collection, or one
+/// authenticated item. It counts how often it is asked.
+struct FakeBrowsertrix {
+    calls: std::sync::atomic::AtomicUsize,
+    files: Vec<indice_lib::collections::Source>,
+    valid: std::time::Duration,
+    fail: bool,
+}
+
+impl FakeBrowsertrix {
+    fn new(files: &[indice_lib::collections::Source]) -> Self {
+        Self {
+            calls: Default::default(),
+            files: files.to_vec(),
+            valid: std::time::Duration::from_secs(48 * 3600),
+            fail: false,
+        }
+    }
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A source's location but for its file name: what one lookup covers.
+fn lookup_of(source: &indice_lib::collections::Source) -> String {
+    let location = source.location();
+    location.rsplit_once('|').unwrap().0.to_string()
+}
+
+fn public_source(resource: &str) -> indice_lib::collections::Source {
+    indice_lib::collections::Source::BrowsertrixPublic {
+        host: "https://bt.example".into(),
+        org: "o".into(),
+        collection: "c".into(),
+        resource: resource.into(),
+    }
+}
+
+fn item_source(item: &str, resource: &str) -> indice_lib::collections::Source {
+    indice_lib::collections::Source::Browsertrix {
+        host: "https://bt.example".into(),
+        org: "o".into(),
+        item: item.into(),
+        resource: resource.into(),
+    }
+}
+
+fn presigned(source: &indice_lib::collections::Source) -> String {
+    let file = source.location().rsplit_once('|').unwrap().1.to_string();
+    format!("https://s3.example/{file}?X-Amz-Signature=sig")
+}
+
+impl indice_lib::index::SourceResolver for FakeBrowsertrix {
+    fn resolve(&self, _: &indice_lib::collections::Source) -> anyhow::Result<String> {
+        unreachable!("replay asks for every URL at once")
+    }
+    fn resolve_all(
+        &self,
+        source: &indice_lib::collections::Source,
+    ) -> anyhow::Result<Vec<indice_lib::index::Resolved>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        anyhow::ensure!(!self.fail, "Browsertrix is down");
+        let expires = Some(std::time::SystemTime::now() + self.valid);
+        Ok(self
+            .files
+            .iter()
+            .filter(|f| lookup_of(f) == lookup_of(source))
+            .map(|f| indice_lib::index::Resolved {
+                source: f.clone(),
+                url: presigned(f),
+                expires,
+            })
+            .collect())
+    }
+}
+
+/// Make the collection's two members streamed Browsertrix files, from
+/// `sources` in order, as `indice import browsertrix --stream` records them.
+/// Returns each member's id with its source.
+fn make_streamed(
+    home: &Path,
+    sources: [indice_lib::collections::Source; 2],
+) -> Vec<(String, indice_lib::collections::Source)> {
+    let waczs = home.join("index").join("waczs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    let mut out = Vec::new();
+    for (w, source) in v.as_array_mut().unwrap().iter_mut().zip(sources) {
+        w["source"] = serde_json::json!(source.location());
+        out.push((w["id"].as_str().unwrap().to_string(), source));
+    }
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+    out
+}
+
+/// Both members as files of one public Browsertrix crawl.
+fn make_one_streamed_crawl(home: &Path) -> Vec<(String, indice_lib::collections::Source)> {
+    make_one_browsertrix_crawl(home);
+    make_streamed(
+        home,
+        [public_source("part-0.wacz"), public_source("part-1.wacz")],
+    )
+}
+
+fn router_resolving(home: &Path, resolver: std::sync::Arc<FakeBrowsertrix>) -> axum::Router {
+    let roster = home.join("users.yaml");
+    if !roster.exists() {
+        std::fs::write(&roster, "users: []\n").unwrap();
+    }
+    let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "X-Forwarded-Email",
+        "test-secret-not-sent",
+    ));
+    config.set_site_url("http://indice.test").unwrap();
+    config.replay_origin =
+        Some(indice_lib::server::ReplayOrigin::parse("http://replay.indice.test").unwrap());
+    indice_lib::server::router_with_resolver(home, Some(resolver), config).unwrap()
+}
+
+/// The paths a manifest lists, by WACZ id.
+fn paths_by_id(json: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    json["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let name = r["name"].as_str().unwrap();
+            let id = name.split_once('-').map_or(name, |(_, id)| id);
+            (id.to_string(), r["path"].as_str().unwrap().to_string())
+        })
+        .collect()
+}
+
+async fn get_response(app: axum::Router, uri: &str) -> axum::response::Response {
+    app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// A streamed Browsertrix crawl's manifest sends wabac straight to each
+/// file's presigned URL, sparing every range read a redirect through
+/// `/files/{id}`, and one lookup gives the URLs of all the files. The
+/// manifest isn't cached, since the URLs expire.
+#[tokio::test]
+async fn a_streamed_crawl_replays_straight_from_its_presigned_urls() {
+    let (tmp, id) = home_with_collection();
+    let files = make_one_streamed_crawl(tmp.path());
+    let sources: Vec<_> = files.iter().map(|(_, s)| s.clone()).collect();
+    let bt = std::sync::Arc::new(FakeBrowsertrix::new(&sources));
+    let app = router_resolving(tmp.path(), bt.clone());
+
+    let crawl = &files[0].0;
+    let resp = get_response(app.clone(), &format!("/crawl/{crawl}/replay.json")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["cache-control"], "no-store");
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let paths = paths_by_id(&serde_json::from_slice(&bytes).unwrap());
+    for (wacz, source) in &files {
+        assert_eq!(paths[wacz], presigned(source));
+    }
+    assert_eq!(bt.calls(), 1, "one lookup for both files");
+
+    // The collection's manifest, from the same cache.
+    let (_, json) = get_json(app.clone(), &format!("/collection/{id}/replay.json")).await;
+    let paths = paths_by_id(&json);
+    for (wacz, source) in &files {
+        assert_eq!(paths[wacz], presigned(source));
+    }
+    // `/files/{id}` still redirects, for anything that asks it.
+    let resp = get_response(app, &format!("/files/{crawl}")).await;
+    assert_eq!(resp.headers()["location"], presigned(&files[0].1));
+    assert_eq!(bt.calls(), 1, "all from the cache");
+}
+
+/// A streamed crawl of one file replays through its manifest too, so it is
+/// also read from its presigned URL.
+#[tokio::test]
+async fn a_streamed_crawl_of_one_file_replays_through_its_manifest() {
+    let (tmp, _id) = home_with_collection();
+    let files = make_streamed(
+        tmp.path(),
+        [public_source("part-0.wacz"), public_source("part-1.wacz")],
+    );
+    let sources: Vec<_> = files.iter().map(|(_, s)| s.clone()).collect();
+    let app = router_resolving(
+        tmp.path(),
+        std::sync::Arc::new(FakeBrowsertrix::new(&sources)),
+    );
+
+    let (crawl, source) = &files[0];
+    let (_, html) = get_text(app.clone(), &format!("/crawl/{crawl}/2025/{GH_PAGE}")).await;
+    assert!(
+        html.contains(&format!(r#""source":"/crawl/{crawl}/replay.json""#)),
+        "{html}"
+    );
+    let (_, json) = get_json(app, &format!("/crawl/{crawl}/replay.json")).await;
+    let paths = paths_by_id(&json);
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[crawl], presigned(source));
+}
+
+/// Crawls imported with credentials are each a Browsertrix item of their own,
+/// a lookup each. A crawl's manifest makes only its own. A collection's,
+/// which may span hundreds, makes none: it lists the URLs already cached and
+/// `/files/{id}` for the rest, which resolves a file, and its item, when wabac
+/// opens it.
+#[tokio::test]
+async fn a_collection_of_items_makes_no_lookups_for_its_manifest() {
+    let (tmp, id) = home_with_collection();
+    let files = make_streamed(
+        tmp.path(),
+        [
+            item_source("item-1", "a.wacz"),
+            item_source("item-2", "b.wacz"),
+        ],
+    );
+    let sources: Vec<_> = files.iter().map(|(_, s)| s.clone()).collect();
+    let bt = std::sync::Arc::new(FakeBrowsertrix::new(&sources));
+    let app = router_resolving(tmp.path(), bt.clone());
+    let [(first, first_source), (second, second_source)] = &files[..] else {
+        unreachable!()
+    };
+
+    let (_, json) = get_json(app.clone(), &format!("/collection/{id}/replay.json")).await;
+    let paths = paths_by_id(&json);
+    assert_eq!(paths[first], format!("/files/{first}"));
+    assert_eq!(paths[second], format!("/files/{second}"));
+    assert_eq!(bt.calls(), 0, "the collection's manifest looked nothing up");
+
+    let (_, json) = get_json(app.clone(), &format!("/crawl/{first}/replay.json")).await;
+    assert_eq!(paths_by_id(&json)[first], presigned(first_source));
+    assert_eq!(bt.calls(), 1, "the crawl looked up its own item");
+
+    // wabac opens the other crawl's file through `/files/{id}`.
+    let resp = get_response(app.clone(), &format!("/files/{second}")).await;
+    assert_eq!(resp.headers()["location"], presigned(second_source));
+    let (_, json) = get_json(app, &format!("/collection/{id}/replay.json")).await;
+    let paths = paths_by_id(&json);
+    assert_eq!(paths[first], presigned(first_source));
+    assert_eq!(paths[second], presigned(second_source));
+    assert_eq!(bt.calls(), 2);
+}
+
+/// A URL past its time is not handed out again: the next manifest asks
+/// Browsertrix afresh. And when Browsertrix can't be reached, the manifest
+/// still answers, with `/files/{id}` for the crawl's files, after one call.
+#[tokio::test]
+async fn a_manifest_never_hands_out_an_expired_url() {
+    let (tmp, id) = home_with_collection();
+    let files = make_one_streamed_crawl(tmp.path());
+    let sources: Vec<_> = files.iter().map(|(_, s)| s.clone()).collect();
+    let crawl = &files[0].0;
+
+    let expired = std::sync::Arc::new(FakeBrowsertrix {
+        valid: std::time::Duration::ZERO,
+        ..FakeBrowsertrix::new(&sources)
+    });
+    let app = router_resolving(tmp.path(), expired.clone());
+    for round in 1..=2 {
+        let (status, json) = get_json(app.clone(), &format!("/crawl/{crawl}/replay.json")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(paths_by_id(&json)[crawl], presigned(&files[0].1));
+        assert_eq!(expired.calls(), round, "asked afresh each time");
+    }
+
+    let down = std::sync::Arc::new(FakeBrowsertrix {
+        fail: true,
+        ..FakeBrowsertrix::new(&sources)
+    });
+    let app = router_resolving(tmp.path(), down.clone());
+    let (status, json) = get_json(app.clone(), &format!("/crawl/{crawl}/replay.json")).await;
+    assert_eq!(status, StatusCode::OK);
+    for (wacz, _) in &files {
+        assert_eq!(paths_by_id(&json)[wacz], format!("/files/{wacz}"));
+    }
+    assert_eq!(down.calls(), 1, "not asked again for the other file");
+    // A collection's manifest doesn't wait on Browsertrix at all.
+    let (status, _) = get_json(app, &format!("/collection/{id}/replay.json")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(down.calls(), 1);
+}

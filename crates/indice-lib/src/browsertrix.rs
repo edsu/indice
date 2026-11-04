@@ -265,6 +265,17 @@ pub struct Resource {
     pub size: u64,
     #[serde(rename = "crawlId", default)]
     pub crawl_id: String,
+    /// When `path` stops working, e.g. `2026-11-05T09:12:54Z`, when given.
+    #[serde(rename = "expireAt", default)]
+    pub expire_at: Option<String>,
+}
+
+impl Resource {
+    /// When `path` stops working, if Browsertrix said and the time parses.
+    pub fn expires(&self) -> Option<std::time::SystemTime> {
+        let at = chrono::DateTime::parse_from_rfc3339(self.expire_at.as_deref()?).ok()?;
+        Some(at.with_timezone(&chrono::Utc).into())
+    }
 }
 
 /// Browsertrix's paginated list envelope.

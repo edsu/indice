@@ -24,13 +24,10 @@ struct ReplayAssets;
 #[folder = "static/assets"]
 struct SiteAssets;
 
-/// Resolve a Browsertrix crawl's WACZ to a fresh presigned URL (cached well
-/// under its ~48h expiry) and 302-redirect to it, so wabac.js reads the archived
-/// copy directly. 503 if the server has no credentials; 502 if resolution fails.
-fn browsertrix_redirect(state: &AppState, col: &Wacz) -> Response {
-    // Cache TTL: comfortably under Browsertrix's ~48h presigned-URL expiry.
-    const TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
-
+/// Redirect to a fresh presigned URL for a Browsertrix crawl's WACZ
+/// (`presigned::url_for`), so wabac.js reads the archived copy directly. 503
+/// if the server has no credentials; 502 if resolution fails.
+async fn browsertrix_redirect(state: &AppState, col: &Wacz) -> Response {
     let Some(resolver) = &state.resolver else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -38,20 +35,8 @@ fn browsertrix_redirect(state: &AppState, col: &Wacz) -> Response {
         )
             .into_response();
     };
-    if let Some((url, at)) = state.signed_cache.lock().unwrap().get(&col.id) {
-        if at.elapsed() < TTL {
-            return axum::response::Redirect::temporary(url).into_response();
-        }
-    }
-    match resolver.resolve(&col.source) {
-        Ok(url) => {
-            state
-                .signed_cache
-                .lock()
-                .unwrap()
-                .insert(col.id.clone(), (url.clone(), std::time::Instant::now()));
-            axum::response::Redirect::temporary(&url).into_response()
-        }
+    match super::presigned::url_for(&state.presigned, resolver, col).await {
+        Ok(url) => axum::response::Redirect::temporary(&url).into_response(),
         Err(e) => failure(
             StatusCode::BAD_GATEWAY,
             "The archived copy could not be fetched from Browsertrix",
@@ -77,12 +62,8 @@ pub(super) async fn serve_file(
     }
     // A Browsertrix source has no stable URL (its presigned URLs expire), so
     // re-resolve a fresh one (cached) and redirect wabac.js to it.
-    if matches!(
-        &col.source,
-        crate::collections::Source::Browsertrix { .. }
-            | crate::collections::Source::BrowsertrixPublic { .. }
-    ) {
-        return browsertrix_redirect(&state, col);
+    if super::presigned::is_presigned(col) {
+        return browsertrix_redirect(&state, col).await;
     }
     // File source: resolve relative paths against home.
     let path = col.source.resolve(&state.home).unwrap();

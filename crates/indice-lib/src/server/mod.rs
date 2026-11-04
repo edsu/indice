@@ -47,6 +47,7 @@ mod imports;
 mod limits;
 mod manage;
 mod pages;
+mod presigned;
 mod util;
 
 // Re-imported here so every submodule can reach its siblings' handlers and
@@ -364,9 +365,9 @@ struct AppState {
     /// Resolves refreshable remote sources (Browsertrix) to fresh presigned URLs
     /// for replay. `None` if the server was started without credentials.
     resolver: Option<Arc<dyn crate::index::SourceResolver>>,
-    /// Cache of resolved presigned URLs by crawl id, with when they were fetched
-    /// — Browsertrix URLs expire (~48h), so this is refreshed well before that.
-    signed_cache: std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
+    /// Presigned URLs for streamed Browsertrix crawls, kept until shortly
+    /// before they expire (`presigned`).
+    presigned: Arc<presigned::PresignedUrls>,
     /// Serializes management writes: [`crate::index::index_location`] takes
     /// Tantivy's exclusive write lock, so two concurrent adds would contend. One
     /// in-flight add at a time is plenty for a workstation, and for the handful
@@ -697,7 +698,7 @@ fn build_routers(
         home: home.to_path_buf(),
         index_dir,
         resolver,
-        signed_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        presigned: Arc::default(),
         write_lock: std::sync::Mutex::new(()),
         jobs: std::sync::Mutex::new(HashMap::new()),
         job_counter: AtomicU64::new(0),

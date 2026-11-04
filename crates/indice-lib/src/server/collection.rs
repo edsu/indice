@@ -238,9 +238,10 @@ pub(super) async fn collection_annotations(
 
 /// A wabac (ReplayWeb.page) multi-WACZ collection manifest for a collection: the
 /// JSON that `<replay-web-page source="…/replay.json">` loads to replay every
-/// member crawl as one collection. Each member maps to a resource pointing at the
-/// same byte-serving endpoint single-WACZ replay already uses (`viewer_source`):
-/// `/files/{id}` for local/Browsertrix sources, the remote URL for a plain URL.
+/// member crawl as one collection (`replay_manifest`). A streamed Browsertrix
+/// member's path is its presigned URL when one is cached, and every other
+/// member's is its `/files/{id}`: the collection may span many Browsertrix
+/// items, a lookup each, so it resolves none (`presigned::cached_urls`).
 ///
 pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
@@ -257,8 +258,10 @@ pub(super) async fn collection_replay_json(
         .members_of(&id)
         .map(|w| (w.id.clone(), w))
         .collect();
+    let waczs: Vec<&Wacz> = files.iter().map(|(_, w)| *w).collect();
     replay_manifest(
         &files,
+        &super::presigned::cached_urls(&state.presigned, &waczs),
         format!("/collection/{}/pages", url_encode(&c.id)),
         &c.name,
         c.description.as_deref(),
@@ -273,8 +276,16 @@ pub(super) async fn collection_replay_json(
 /// looked-up page to its member: a collection names a file by its WACZ id, a
 /// crawl by its place in the crawl (`crawl_file_names`). `hash` carries the
 /// `sha256:` prefix wabac expects.
+///
+/// A streamed Browsertrix file's `path` is its URL in `presigned`, by source
+/// location, so wabac reads its bytes directly instead of through
+/// `/files/{id}`, which would add a redirect to every one of a page's hundreds
+/// of range reads. A file not in `presigned` goes by `/files/{id}`. A
+/// presigned URL expires, so the manifest is not to be cached: each visit
+/// fetches it again, and wabac takes the fresh URLs from it.
 pub(super) fn replay_manifest(
     files: &[(String, &Wacz)],
+    presigned: &HashMap<String, String>,
     pages_url: String,
     title: &str,
     desc: Option<&str>,
@@ -282,9 +293,13 @@ pub(super) fn replay_manifest(
     let resources: Vec<serde_json::Value> = files
         .iter()
         .map(|(name, w)| {
+            let path = presigned
+                .get(&w.source.location())
+                .cloned()
+                .unwrap_or_else(|| viewer_source(w));
             let mut res = serde_json::json!({
                 "name": name,
-                "path": viewer_source(w),
+                "path": path,
                 "crawlId": name,
             });
             // The member hash. wabac uses it as the member's identity, so every
@@ -340,7 +355,12 @@ pub(super) fn replay_manifest(
             "desc": desc,
         },
     });
-    (StatusCode::OK, axum::Json(body)).into_response()
+    (
+        StatusCode::OK,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::Json(body),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
