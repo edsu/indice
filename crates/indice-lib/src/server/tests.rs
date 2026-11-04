@@ -636,20 +636,16 @@ fn a_time_axis_is_scaled_to_the_months_it_shows() {
 }
 
 /// A blank `site:` value is unset, so the header always has a name to link home
-/// with; a blank banner is no banner.
+/// with, and the homepage a line under it.
 #[test]
 fn blank_site_text_falls_back_to_the_defaults() {
     let cfg = crate::config::SiteConfig {
         name: Some("  ".into()),
-        tagline: Some(String::new()),
-        banner: Some("\n".into()),
-        request_access: Some(" ".into()),
+        tagline: Some("\n".into()),
     };
     let site = views::Site::new(&cfg);
     assert_eq!(site.name, "indice");
-    assert_eq!(site.tagline, views::Site::default().tagline);
-    assert!(site.banner.is_none());
-    assert!(site.request_access.is_none());
+    assert_eq!(site.tagline.0, views::Site::default().tagline.0);
 
     let named = views::Site::new(&crate::config::SiteConfig {
         name: Some(" Ada's archive ".into()),

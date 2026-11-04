@@ -412,7 +412,7 @@ struct AppState {
     /// The model for drafting finding aids. `None` when no `llm:` section is
     /// configured, which hides the editor's Draft button.
     drafting: Option<Arc<Drafting>>,
-    /// The archive's name, tagline and banner from `site:` in config.yaml,
+    /// The archive's name and tagline from `site:` in config.yaml,
     /// resolved at startup and shared by every page's chrome.
     site: Arc<crate::views::Site>,
 }

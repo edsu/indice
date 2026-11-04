@@ -24,8 +24,12 @@ h1 { font-size: var(--t-3xl); margin: 0.3rem 0 0.25rem; letter-spacing: -0.01em;
 h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-bottom: 0.4rem; }
 /* Homepage hero title (the tool's one-line purpose; the brand is in the header) */
 .home-hero { font-size: var(--t-2xl); font-weight: var(--w-bold); margin: 0.6rem 0 var(--s-1); }
-/* What the archive holds, in its own words: the serif, as for curators' text. */
-.home-tagline { font-family: var(--serif); font-size: var(--t-lg); color: var(--text-2); max-width: var(--measure); margin: 0 0 var(--s-5); }
+/* What the archive holds, in its own words: the serif, as for curators' text.
+   Markdown, so it may run to a few paragraphs; as wide as the search box. */
+.home-tagline { font-family: var(--serif); font-size: var(--t-lg); color: var(--text-2); margin: 0 0 var(--s-5); }
+.home-tagline > * { margin: 0; }
+.home-tagline > * + * { margin-top: var(--s-2); }
+.home-tagline a { text-decoration: underline; }
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); font-size: var(--t-sm); word-break: break-all; }
 .ok { color: var(--ok); }
@@ -65,17 +69,6 @@ h2 { font-size: var(--t-xl); border-bottom: 1px solid var(--rule); padding-botto
 .appbar .logout:hover { color: var(--ink); text-decoration: underline; }
 /* Workroom: the same bar as a manila band with a top rule. */
 .mode-manage .appbar { background: var(--work-wash); border-top: 3px solid var(--work); }
-/* The operator's notice under the header (`site.banner`), e.g. "This is a
-   demo". A quiet panel, not an alert: it is standing information. */
-.site-banner { background: var(--panel); border-bottom: 1px solid var(--rule); padding: var(--s-1) 1.25rem; font-size: var(--t-sm); color: var(--text-2); }
-.site-banner > * { margin: 0; }
-.site-banner > * + * { margin-top: var(--s-1); }
-/* The signed-in reader's note, in the reading accent: it speaks to the reader
-   about their own access, so it stands apart from the grey site banner. Not
-   manila, which would say the reader is in the workroom. */
-.access-note { background: var(--read-wash); color: var(--read-dk); }
-/* Its links are in the accent too, so the underline is what marks them. */
-.access-note a { text-decoration: underline; }
 /* The things that edit, in the workroom accent: a collection's Edit and Add
    crawls, New collection, and every button on a workroom form. Reading actions
    (Replay, Search) stay in the reading accent beside them. */

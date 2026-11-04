@@ -44,7 +44,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
     let body = html! {
         // The archive's name and what it holds, from `site:` in config.yaml.
         h1.home-hero { (chrome.site.name) }
-        p.home-tagline { (chrome.site.tagline) }
+        div.home-tagline { (chrome.site.tagline) }
         form.search-form.home action="/search" method="get" {
             input type="search" name="q" placeholder="Search archived pages…" autofocus;
             button.btn type="submit" { "Search" }

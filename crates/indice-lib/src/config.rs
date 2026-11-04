@@ -9,7 +9,7 @@
 //! It carries index tuning — the stored-body cap that trades snippet depth for
 //! on-disk size (the "frugality" knob), see the size/scale model in DESIGN.md —
 //! the limits on what the browser write surface may add to the archive, and
-//! the site's name, tagline and banner.
+//! the site's name and tagline.
 
 use std::path::{Path, PathBuf};
 
@@ -91,24 +91,18 @@ pub struct DescribeConfig {
 
 /// The archive's own words for the pages indice serves. Every field is
 /// optional; [`crate::views::Site`] supplies the defaults and renders the
-/// banner. Read once at startup, so a change takes a restart.
+/// tagline. Read once at startup, so a change takes a restart.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SiteConfig {
     /// The archive's name: the header wordmark, the homepage heading, and the
     /// end of every page title. Defaults to `indice`.
     pub name: Option<String>,
-    /// One line under the homepage heading saying what the archive holds.
+    /// What the archive holds, under the homepage heading, in Markdown: the
+    /// place to say, say, that the archive is a demo or whom to email for a
+    /// curator's account. Rendered by [`crate::markdown::render`], which
+    /// escapes raw HTML and keeps links to safe schemes.
     pub tagline: Option<String>,
-    /// A notice shown under the header on every page, in Markdown, e.g. "This
-    /// is a demo". Rendered by [`crate::markdown::render`], which escapes raw
-    /// HTML and keeps links to safe schemes.
-    pub banner: Option<String>,
-    /// A note for someone signed in but not on the roster, in Markdown, e.g.
-    /// "You can read this archive but not change it. Email [the
-    /// archivist](mailto:…) to curate." Shown under the header, including on
-    /// the page refusing them a workroom page. Unset, there is no note.
-    pub request_access: Option<String>,
 }
 
 /// Index tuning — currently the stored-body cap (the "frugality" lever).
