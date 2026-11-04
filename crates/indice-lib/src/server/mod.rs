@@ -724,8 +724,11 @@ fn build_routers(
         .route("/collection/{id}/pages", get(collection_pages))
         .route("/collection/{id}/annotations", get(collection_annotations))
         .route("/crawl/{id}", get(crawl_page))
+        .route("/crawl/{id}/replay.json", get(crawl_replay_json))
+        .route("/crawl/{id}/pages", get(crawl_pages))
         // Replay: `/crawl/{id}/{ts}/{url}`, `/collection/{id}/{ts}/{url}`.
-        // The routes above under `/collection/{id}/` are matched first.
+        // The routes above under `/crawl/{id}/` and `/collection/{id}/` are
+        // matched first.
         .route("/crawl/{id}/{*page}", get(replay_page))
         .route("/collection/{id}/{*page}", get(replay_page))
         .route("/thumb/{id}", get(thumb_handler))
@@ -901,6 +904,8 @@ fn build_routers(
         .route("/replay/{*path}", get(replay_asset))
         .route("/collection/{id}/replay.json", get(collection_replay_json))
         .route("/collection/{id}/pages", get(collection_pages))
+        .route("/crawl/{id}/replay.json", get(crawl_replay_json))
+        .route("/crawl/{id}/pages", get(crawl_pages))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
             REQUEST_TIMEOUT,

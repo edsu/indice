@@ -256,3 +256,124 @@ async fn pages_endpoint_resolves_exact_url_to_its_member() {
         assert_eq!(it["filename"], gh, "resolves to the member that holds it");
     }
 }
+
+// ── A crawl written into several WACZs ───────────────────────────────────────
+
+/// The app and replay routers, with a replay origin so the viewer renders.
+fn routers(home: &Path) -> indice_lib::server::Routers {
+    let roster = home.join("users.yaml");
+    if !roster.exists() {
+        std::fs::write(&roster, "users: []\n").unwrap();
+    }
+    let mut config = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "X-Forwarded-Email",
+        "test-secret-not-sent",
+    ));
+    config.set_site_url("http://indice.test").unwrap();
+    config.replay_origin =
+        Some(indice_lib::server::ReplayOrigin::parse("http://replay.indice.test").unwrap());
+    indice_lib::server::routers(home, config).unwrap()
+}
+
+/// The ids of the collection's two members: `(github, other)`.
+fn member_ids(home: &Path, id: &str) -> (String, String) {
+    let manifest = indice_lib::collections::Manifest::open(&home.join("index")).unwrap();
+    let (gh, other): (Vec<_>, Vec<_>) = manifest
+        .members_of(id)
+        .partition(|w| w.name.contains("GitHub"));
+    (gh[0].id.clone(), other[0].id.clone())
+}
+
+/// Record both members as files of one Browsertrix crawl, as an import of a
+/// crawl that Browsertrix wrote into two WACZs does.
+fn make_one_browsertrix_crawl(home: &Path) {
+    let waczs = home.join("index").join("waczs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    for w in v.as_array_mut().unwrap() {
+        w["browsertrix"] = serde_json::json!({
+            "host": "https://app.browsertrix.com",
+            "item_id": "manual-20250125223202-f7a72d33-167",
+        });
+    }
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+}
+
+const GH_PAGE: &str = "https://github.com/DocNow/hydrator/pull/78/files";
+
+/// A page of a crawl Browsertrix wrote into several WACZs replays from all of
+/// them, so a stylesheet fetched into another of the crawl's files is found.
+#[tokio::test]
+async fn a_crawl_in_several_files_replays_from_all_of_them() {
+    let (tmp, id) = home_with_collection();
+    let (gh, other) = member_ids(tmp.path(), &id);
+    make_one_browsertrix_crawl(tmp.path());
+    let indice_lib::server::Routers { app, replay } = routers(tmp.path());
+
+    let (status, html) = get_text(app.clone(), &format!("/crawl/{other}/2025/{GH_PAGE}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(&format!(r#""source":"/crawl/{other}/replay.json""#)),
+        "the viewer replays the crawl's manifest"
+    );
+
+    // Served by both origins: the viewer's frame reads it from the replay one.
+    for router in [app, replay] {
+        let (status, json) = get_json(router.clone(), &format!("/crawl/{other}/replay.json")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["pagesQueryUrl"], format!("/crawl/{other}/pages"));
+        // Every file of the crawl, named by its place in the crawl so wabac
+        // sorts them in the crawl's order, and read from its own path.
+        let resources = json["resources"].as_array().unwrap();
+        let mut ids: Vec<&str> = Vec::new();
+        for (i, r) in resources.iter().enumerate() {
+            let name = r["name"].as_str().unwrap();
+            let (place, id) = name.split_once('-').unwrap();
+            assert_eq!(place, i.to_string(), "{name}");
+            assert_eq!(r["path"].as_str().unwrap(), format!("/files/{id}"));
+            ids.push(id);
+        }
+        let mut sorted = ids.clone();
+        sorted.sort();
+        let mut want = [gh.as_str(), other.as_str()];
+        want.sort();
+        assert_eq!(sorted, want, "every file of the crawl");
+
+        // The crawl's lookup finds the page in the crawl's other file, by the
+        // name the manifest gives it.
+        let gh_name = resources
+            .iter()
+            .map(|r| r["name"].as_str().unwrap())
+            .find(|n| n.ends_with(&format!("-{gh}")))
+            .unwrap();
+        let (status, json) = get_json(router, &format!("/crawl/{other}/pages?url={GH_PAGE}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let items = json["items"].as_array().unwrap();
+        assert!(!items.is_empty(), "the page is in the crawl's other file");
+        assert!(items.iter().all(|it| it["filename"] == gh_name), "{json}");
+    }
+}
+
+/// Any other crawl is one WACZ, and replays it, as it always has. Its lookup
+/// answers from that file alone, not the rest of the collection.
+#[tokio::test]
+async fn a_crawl_in_one_file_replays_that_file() {
+    let (tmp, id) = home_with_collection();
+    let (_gh, other) = member_ids(tmp.path(), &id);
+    let indice_lib::server::Routers { app, .. } = routers(tmp.path());
+
+    let (status, html) = get_text(app.clone(), &format!("/crawl/{other}/2025/{GH_PAGE}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(&format!(r#""source":"/files/{other}""#)));
+
+    let (status, json) = get_json(app.clone(), &format!("/crawl/{other}/replay.json")).await;
+    assert_eq!(status, StatusCode::OK);
+    let resources = json["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["name"], format!("0-{other}"));
+
+    let (_, json) = get_json(app.clone(), &format!("/crawl/{other}/pages?url={GH_PAGE}")).await;
+    assert_eq!(json["total"], 0, "the page is in another crawl");
+
+    let (status, _) = get_text(app, "/crawl/nope/replay.json").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

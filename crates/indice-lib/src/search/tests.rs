@@ -515,7 +515,13 @@ fn collection_pages_url_prefers_2xx_capture() {
     idx.commit().unwrap();
 
     let (total, hits) = idx
-        .collection_pages("c", Some("https://ex.com/lgbt/"), None, 0, 25)
+        .pages(
+            PagesScope::Collection("c"),
+            Some("https://ex.com/lgbt/"),
+            None,
+            0,
+            25,
+        )
         .unwrap();
     assert_eq!(total, 2, "both captures matched");
     assert_eq!(
@@ -555,11 +561,57 @@ fn collection_pages_puts_a_2xx_capture_first_however_many_errors_precede_it() {
     idx.commit().unwrap();
 
     let (total, hits) = idx
-        .collection_pages("c", Some("https://ex.com/page"), None, 0, 25)
+        .pages(
+            PagesScope::Collection("c"),
+            Some("https://ex.com/page"),
+            None,
+            0,
+            25,
+        )
         .unwrap();
     assert_eq!(total, 41);
     assert_eq!(hits.len(), 25);
     assert_eq!(hits[0].crawl_id, "good", "indexed last, ranked first");
+}
+
+/// A crawl's page lookup answers only from that crawl's files, whatever else
+/// in its collection captured the URL.
+#[test]
+fn crawl_pages_resolve_only_within_the_crawls_files() {
+    let tmp = TempDir::new().unwrap();
+    let mut idx = SearchIndex::open(tmp.path()).unwrap();
+    for crawl_id in ["part-1", "part-2", "another-crawl"] {
+        idx.index_page(&Page {
+            url: "https://ex.com/page",
+            status: Some(200),
+            crawl_id,
+            collection: "c",
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    idx.commit().unwrap();
+
+    let files = ["part-1".to_string(), "part-2".to_string()];
+    let (total, hits) = idx
+        .pages(
+            PagesScope::Crawls(&files),
+            Some("https://ex.com/page"),
+            None,
+            0,
+            25,
+        )
+        .unwrap();
+    assert_eq!(total, 2);
+    let mut found: Vec<_> = hits.iter().map(|h| h.crawl_id.as_str()).collect();
+    found.sort();
+    assert_eq!(found, ["part-1", "part-2"]);
+
+    // No files, no pages: not every page in the index.
+    let (total, hits) = idx
+        .pages(PagesScope::Crawls(&[]), None, None, 0, 25)
+        .unwrap();
+    assert_eq!((total, hits.len()), (0, 0));
 }
 
 /// A page list can't be paged arbitrarily deep: past the cap there are no
@@ -578,7 +630,7 @@ fn collection_pages_stops_at_its_deepest_offset() {
     .unwrap();
     idx.commit().unwrap();
     let (total, hits) = idx
-        .collection_pages("c", None, None, usize::MAX - 10, 25)
+        .pages(PagesScope::Collection("c"), None, None, usize::MAX - 10, 25)
         .unwrap();
     assert_eq!((total, hits.len()), (1, 0));
 }

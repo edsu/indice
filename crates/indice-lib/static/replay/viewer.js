@@ -29,9 +29,9 @@
     document.getElementById('collection-sep').style.display = 'none';
   }
   const nameEl = document.getElementById('collection-name');
-  // Without a name, the id in the source's path, as the frame names its
-  // cache: the crawl's for /files/{id}, the collection's for its manifest.
-  const fromPath = source.match(/^\/(?:files|collection)\/([^/]+)/);
+  // Without a name, the id in the source's path: the crawl's for /files/{id}
+  // and its manifest, the collection's for its manifest.
+  const fromPath = source.match(/^\/(?:files|crawl|collection)\/([^/]+)/);
   nameEl.textContent = name || (fromPath ? fromPath[1] : source);
   if (crawlId) nameEl.href = '/crawl/' + encodeURIComponent(crawlId);
   // A collection's replay has no one crawl to name, and is given the

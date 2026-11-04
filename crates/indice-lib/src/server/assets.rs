@@ -173,8 +173,8 @@ struct ReplayContext {
     /// The scope's page (`/crawl/{id}` or `/collection/{id}`), which the
     /// viewer's address follows as the reader moves between pages.
     base: String,
-    /// What ReplayWeb.page loads: a crawl's `/files/{id}`, or a collection's
-    /// `replay.json`.
+    /// What ReplayWeb.page loads: a crawl's `/files/{id}`, or a `replay.json`
+    /// for a collection or for a crawl written into several WACZs.
     source: String,
     url: String,
     ts: String,
@@ -223,7 +223,7 @@ pub(super) async fn replay_page(
         let col = manifest.collection_by_id(&w.collection);
         ReplayContext {
             base: ReplayScope::Crawl(&w.id).base(),
-            source: viewer_source(w),
+            source: crawl_replay_source(&manifest, w),
             url: target.url,
             ts: target.ts,
             name: w.display_name(),

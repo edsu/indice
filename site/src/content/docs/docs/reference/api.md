@@ -109,6 +109,7 @@ These serve ReplayWeb.page's in-browser player, and tooling can use them too. Th
 - **`GET /files/{id}`**: the raw WACZ for a crawl, honoring HTTP `Range` requests (partial fetches). This is how replay reads archived resources without downloading the whole file.
 - **`GET /collection/{id}/replay.json`**: a multi-WACZ replay manifest for a collection (every member crawl), handed to wabac.js so cross-crawl links resolve.
 - **`GET /collection/{id}/pages`**: the collection's page list and URL→capture resolution, scoped to the collection.
+- **`GET /crawl/{id}/replay.json`** and **`GET /crawl/{id}/pages`**: the same for one crawl that Browsertrix wrote into several WACZs, listing every file of the crawl, so a page replays with the stylesheets and scripts stored in the crawl's other files.
 
 See [How indice works](/docs/reference/how-it-works/) for how these fit together.
 

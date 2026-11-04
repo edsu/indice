@@ -1,7 +1,7 @@
 //! The public input and result types callers hand in and get back.
 
-/// One page from [`SearchIndex::collection_pages`]. `crawl_id` is the WACZ id
-/// (`Wacz.id`), which the collection replay manifest emits as `resources[].name`
+/// One page from [`SearchIndex::pages`]. `crawl_id` is the WACZ id
+/// (`Wacz.id`), which a replay manifest emits as `resources[].name`
 /// — so it maps directly onto wabac's `item.filename`.
 #[derive(Debug, Clone)]
 pub struct PageHit {
@@ -10,6 +10,17 @@ pub struct PageHit {
     pub timestamp: String,
     pub title: String,
     pub crawl_id: String,
+}
+
+/// Which pages [`SearchIndex::pages`] looks among: what one multi-WACZ replay
+/// was given to replay.
+#[derive(Debug, Clone, Copy)]
+pub enum PagesScope<'a> {
+    /// Every crawl in a collection (by id), for collection replay.
+    Collection(&'a str),
+    /// These WACZs (by id), for replaying one crawl written into several
+    /// (`Manifest::crawl_files`).
+    Crawls(&'a [String]),
 }
 
 /// A page's stored text and metadata, for building a description of the

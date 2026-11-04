@@ -1643,7 +1643,15 @@ fn a_rebuild_and_an_ingest_do_not_destroy_each_other() {
     )
     .unwrap();
     for slug in ["seeded-coll", "added-coll"] {
-        let (total, _) = idx.collection_pages(slug, None, None, 0, 1).unwrap();
+        let (total, _) = idx
+            .pages(
+                indice_lib::search::PagesScope::Collection(slug),
+                None,
+                None,
+                0,
+                1,
+            )
+            .unwrap();
         assert!(
             total > 0,
             "{slug} has a manifest entry but no documents: the rebuild's swap \

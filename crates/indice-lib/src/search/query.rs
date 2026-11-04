@@ -385,9 +385,9 @@ impl SearchIndex {
         Ok(out)
     }
 
-    /// Page documents within one collection, for the wabac `pagesQueryUrl`
-    /// endpoint that backs multi-WACZ collection replay (the pages sidebar and
-    /// on-demand URL→WACZ resolution). Three modes:
+    /// Page documents within `scope`, for the wabac `pagesQueryUrl` endpoint
+    /// that backs multi-WACZ replay (the pages sidebar and on-demand URL→WACZ
+    /// resolution). Three modes:
     /// - `url = Some(u)`: exact-match resolution — which member(s) hold that URL
     ///   (a direct term query on the raw `url` field; robust, no grouping/cap).
     /// - `search = Some(q)`: free-text page search within the collection.
@@ -399,9 +399,9 @@ impl SearchIndex {
     /// The deepest offset `collection_pages` will page to.
     pub const MAX_PAGES_OFFSET: usize = 10_000;
 
-    pub fn collection_pages(
+    pub fn pages(
         &self,
-        collection_id: &str,
+        scope: PagesScope,
         url: Option<&str>,
         search: Option<&str>,
         offset: usize,
@@ -419,15 +419,24 @@ impl SearchIndex {
         let reader = self.index.reader()?;
         let searcher = reader.searcher();
 
-        // Always scope to page docs in this collection.
+        let term = |field, text: &str| -> Box<dyn Query> {
+            Box::new(TermQuery::new(
+                Term::from_field_text(field, text),
+                IndexRecordOption::Basic,
+            ))
+        };
+        // Always scope to page docs in the collection or crawls. No crawls
+        // match nothing: a `BooleanQuery` with no clauses matches no document.
+        let in_scope: Box<dyn Query> = match scope {
+            PagesScope::Collection(id) => term(collection_f, id),
+            PagesScope::Crawls(ids) => Box::new(BooleanQuery::new(
+                ids.iter()
+                    .map(|id| (Occur::Should, term(crawl_id_f, id)))
+                    .collect(),
+            )),
+        };
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![
-            (
-                Occur::Must,
-                Box::new(TermQuery::new(
-                    Term::from_field_text(collection_f, collection_id),
-                    IndexRecordOption::Basic,
-                )),
-            ),
+            (Occur::Must, in_scope),
             (
                 Occur::Must,
                 Box::new(TermQuery::new(

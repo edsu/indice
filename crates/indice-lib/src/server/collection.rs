@@ -1,6 +1,7 @@
 //! Collection routes: the finding-aid page, its annotations index, and the
 //! machine-readable replay manifest + page list wabac.js consumes.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -10,6 +11,7 @@ use serde::Deserialize;
 
 use crate::annotations::{self};
 use crate::collections::{Manifest, Wacz};
+use crate::search::PagesScope;
 use crate::views;
 
 use super::*;
@@ -240,9 +242,6 @@ pub(super) async fn collection_annotations(
 /// same byte-serving endpoint single-WACZ replay already uses (`viewer_source`):
 /// `/files/{id}` for local/Browsertrix sources, the remote URL for a plain URL.
 ///
-/// `name`/`crawlId` are the WACZ id, the same id `collection_pages` returns as
-/// `filename`, so wabac can match a looked-up page to its member. `hash`
-/// carries the `sha256:` prefix wabac expects.
 pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -254,13 +253,39 @@ pub(super) async fn collection_replay_json(
     let Some(c) = manifest.collection_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
     };
-    let resources: Vec<serde_json::Value> = manifest
+    let files: Vec<(String, &Wacz)> = manifest
         .members_of(&id)
-        .map(|w| {
+        .map(|w| (w.id.clone(), w))
+        .collect();
+    replay_manifest(
+        &files,
+        format!("/collection/{}/pages", url_encode(&c.id)),
+        &c.name,
+        c.description.as_deref(),
+    )
+}
+
+/// A wabac multi-WACZ manifest of `files`, for a collection's replay or for
+/// one crawl written into several WACZs (`crawl_replay_json`).
+///
+/// Each file is listed under the name paired with it, which the pages
+/// endpoint at `pages_url` returns as `filename`, so wabac can match a
+/// looked-up page to its member: a collection names a file by its WACZ id, a
+/// crawl by its place in the crawl (`crawl_file_names`). `hash` carries the
+/// `sha256:` prefix wabac expects.
+pub(super) fn replay_manifest(
+    files: &[(String, &Wacz)],
+    pages_url: String,
+    title: &str,
+    desc: Option<&str>,
+) -> Response {
+    let resources: Vec<serde_json::Value> = files
+        .iter()
+        .map(|(name, w)| {
             let mut res = serde_json::json!({
-                "name": w.id,
+                "name": name,
                 "path": viewer_source(w),
-                "crawlId": w.id,
+                "crawlId": name,
             });
             // The member hash. wabac uses it as the member's identity, so every
             // member MUST have a distinct one (or none) — giving several members
@@ -298,7 +323,7 @@ pub(super) async fn collection_replay_json(
         })
         .collect();
     if resources.is_empty() {
-        return (StatusCode::NOT_FOUND, "collection has no crawls to replay").into_response();
+        return (StatusCode::NOT_FOUND, "nothing to replay").into_response();
     }
     let body = serde_json::json!({
         "resources": resources,
@@ -309,10 +334,10 @@ pub(super) async fn collection_replay_json(
         // page being read. Top-level, not under `metadata`, because that is
         // where wabac's `loadFromJSON` reads it. Relative, so it resolves on
         // whichever origin serves replay.
-        "pagesQueryUrl": format!("/collection/{}/pages", url_encode(&c.id)),
+        "pagesQueryUrl": pages_url,
         "metadata": {
-            "title": c.name,
-            "desc": c.description,
+            "title": title,
+            "desc": desc,
         },
     });
     (StatusCode::OK, axum::Json(body)).into_response()
@@ -341,6 +366,24 @@ pub(super) async fn collection_pages(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(params): Query<PagesParams>,
 ) -> Response {
+    pages_response(&state, PagesFor::Collection(id), params).await
+}
+
+/// What a pages endpoint answers for: [`crate::search::PagesScope`], owned, so
+/// it can move to the thread that reads the index.
+pub(super) enum PagesFor {
+    Collection(String),
+    /// Each file's WACZ id, and the name its crawl's manifest lists it under.
+    Crawls(Vec<(String, String)>),
+}
+
+/// The body of a wabac `pagesQueryUrl` endpoint, for a collection's replay or
+/// for one crawl's (`crawl_pages`).
+pub(super) async fn pages_response(
+    state: &AppState,
+    scope: PagesFor,
+    params: PagesParams,
+) -> Response {
     if let Some(refusal) = params.search.as_deref().and_then(query_too_long) {
         return refusal;
     }
@@ -349,16 +392,31 @@ pub(super) async fn collection_pages(
     // Saturating, so an absurd `page` can't overflow; the index caps how
     // deep it will go (`MAX_PAGES_OFFSET`).
     let offset = (page - 1).saturating_mul(page_size);
-    let (pages_id, url, search) = (id.clone(), params.url.clone(), params.search.clone());
+    let PagesParams { url, search, .. } = params;
+    // What each hit's file is called in the manifest: its id, unless renamed.
+    let names: HashMap<String, String> = match &scope {
+        PagesFor::Collection(_) => HashMap::new(),
+        PagesFor::Crawls(files) => files.iter().cloned().collect(),
+    };
     match state
-        .read_index(move |s| {
-            s.collection_pages(
-                &pages_id,
+        .read_index(move |s| match &scope {
+            PagesFor::Collection(id) => s.pages(
+                PagesScope::Collection(id),
                 url.as_deref(),
                 search.as_deref(),
                 offset,
                 page_size,
-            )
+            ),
+            PagesFor::Crawls(files) => {
+                let ids: Vec<String> = files.iter().map(|(id, _)| id.clone()).collect();
+                s.pages(
+                    PagesScope::Crawls(&ids),
+                    url.as_deref(),
+                    search.as_deref(),
+                    offset,
+                    page_size,
+                )
+            }
         })
         .await
     {
@@ -370,7 +428,7 @@ pub(super) async fn collection_pages(
                         "url": h.url,
                         "ts": ts_to_iso(&h.timestamp),
                         "title": h.title,
-                        "filename": h.crawl_id,
+                        "filename": names.get(&h.crawl_id).unwrap_or(&h.crawl_id),
                     })
                 })
                 .collect();
