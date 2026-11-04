@@ -202,8 +202,10 @@ pub(super) async fn crawl_page(
 /// `GET /crawl/{id}/replay.json`: a wabac multi-WACZ manifest of every WACZ
 /// the crawl was written into (`Manifest::crawl_files`), for replaying a page
 /// of a Browsertrix crawl whose stylesheets and scripts sit in another of its
-/// files. A crawl in one WACZ replays its `/files/{id}` directly instead
-/// (`crawl_replay_source`), but is answered here too.
+/// files, and for a streamed Browsertrix crawl of one file, which is read
+/// through it from a presigned URL (`replay_manifest`). Any other crawl in one
+/// WACZ replays its `/files/{id}` directly instead (`crawl_replay_source`),
+/// but is answered here too.
 pub(super) async fn crawl_replay_json(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -216,11 +218,13 @@ pub(super) async fn crawl_replay_json(
         return (StatusCode::NOT_FOUND, "crawl not found").into_response();
     };
     replay_manifest(
+        &state,
         &crawl_file_names(&manifest.crawl_files(w)),
         format!("/crawl/{}/pages", url_encode(&w.id)),
         &w.display_name(),
         w.description.as_deref(),
     )
+    .await
 }
 
 /// `GET /crawl/{id}/pages`: where wabac asks which of a crawl's WACZs holds a
@@ -263,11 +267,12 @@ pub(super) fn crawl_file_names<'a>(files: &[&'a Wacz]) -> Vec<(String, &'a Wacz)
         .collect()
 }
 
-/// What replay loads for a page of crawl `w`: its own `/files/{id}` when the
-/// crawl is in that one WACZ, else the crawl's `replay.json`, which lists
-/// every file the crawl was written into.
+/// What replay loads for a page of crawl `w`: the crawl's `replay.json`, which
+/// lists every file the crawl was written into, for a crawl of several files
+/// or a streamed Browsertrix one (read from presigned URLs); else its own
+/// `/files/{id}`.
 pub(super) fn crawl_replay_source(manifest: &Manifest, w: &Wacz) -> String {
-    if manifest.crawl_files(w).len() > 1 {
+    if manifest.crawl_files(w).len() > 1 || super::presigned::is_presigned(w) {
         format!("/crawl/{}/replay.json", url_encode(&w.id))
     } else {
         viewer_source(w)

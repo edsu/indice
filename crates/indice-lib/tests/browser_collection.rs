@@ -365,6 +365,166 @@ async fn a_crawls_page_replays_with_a_stylesheet_from_another_of_its_files() {
     assert_eq!(together.unwrap(), STYLED, "the crawl's first file was read");
 }
 
+/// A streamed Browsertrix crawl replays on a reader's later visit, after the
+/// presigned URL their browser stored has stopped working: each visit fetches
+/// the crawl's manifest, and wabac takes the fresh URL from it in place of the
+/// one it stored.
+///
+/// The crawl's bytes are a real fixture, served from either of two local
+/// copies. The first visit reads the first copy; then that copy goes, and the
+/// resolver gives the second, as Browsertrix would give a fresh URL. wabac
+/// keeps the records it has read, so the later visit opens a page the first
+/// didn't read, which it can only get from the WACZ.
+///
+/// wabac does not recover when a file's first read fails during a visit, by
+/// fetching the manifest again then: it does that only for reads after it has
+/// opened the file. So a presigned URL must still work for as long as a
+/// reader may stay on the page (`presigned::MARGIN`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn a_streamed_crawl_replays_from_a_fresh_url_on_a_later_visit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "Streamed").unwrap();
+    let copy = tmp.path().join("copy.wacz");
+    std::fs::copy(fixture("a.wacz"), &copy).unwrap();
+    // A second local copy, and the fixture again as a streamed Browsertrix
+    // crawl, whose bytes come from whatever URL the resolver gives.
+    let waczs = tmp.path().join("index").join("waczs.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    let first = v[0]["id"].as_str().unwrap().to_string();
+    let mut second = v[0].clone();
+    second["id"] = serde_json::json!("c0b1e500");
+    second["source"] = serde_json::json!(copy.to_string_lossy());
+    let mut streamed = v[0].clone();
+    streamed["id"] = serde_json::json!("5eeded00");
+    streamed["source"] = serde_json::json!(stream_source().location());
+    v.as_array_mut().unwrap().extend([second, streamed]);
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+
+    let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (addr, replay_addr) = (app.local_addr().unwrap(), replay.local_addr().unwrap());
+    let resolver = std::sync::Arc::new(SwitchingBrowsertrix {
+        url: std::sync::Mutex::new(format!("http://{replay_addr}/files/{first}")),
+    });
+    let mut config = public_config(tmp.path());
+    config.set_site_url(&format!("http://{addr}")).unwrap();
+    config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(replay_addr));
+    let home = tmp.path().to_path_buf();
+    let served: std::sync::Arc<dyn indice_lib::index::SourceResolver> = resolver.clone();
+    let server = tokio::spawn(async move {
+        indice_lib::server::serve_on_listeners(
+            app,
+            replay,
+            &home,
+            Some(served),
+            config,
+            indice_lib::server::Providers::default(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let driver = connect_driver().await;
+    let story = "https://storymaps.arcgis.com/stories/278e1b5c18a3474082e583e889705179";
+    let ts = "20260609213407";
+    let first_visit = render_crawl(&driver, addr, "5eeded00", story, ts, "2Tone").await;
+    // Days later: the browser keeps only what it stored, wabac's IndexedDB
+    // with the URL it was given. Its HTTP cache and the service worker's
+    // memory, which would answer without reading the URL, are gone.
+    let cdp = driver.cdp();
+    driver.goto("about:blank").await.unwrap();
+    for method in [
+        "Network.clearBrowserCache",
+        "ServiceWorker.enable",
+        "ServiceWorker.stopAllWorkers",
+    ] {
+        cdp.send_raw(method, serde_json::json!({})).await.unwrap();
+    }
+    // The first copy goes, so its URL stops working, and the resolver gives
+    // the second.
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+    v.as_array_mut()
+        .unwrap()
+        .retain(|w| w["id"] != first.as_str());
+    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+    *resolver.url.lock().unwrap() = format!("http://{replay_addr}/files/c0b1e500");
+    // A page the first visit didn't read: the story's short link, a redirect
+    // record of its own, which wabac can only read from the WACZ.
+    let short = "https://arcg.is/1zLCSC4";
+    let later_visit =
+        render_crawl(&driver, addr, "5eeded00", short, "20260609213406", "2Tone").await;
+    let _ = driver.quit().await;
+    server.abort();
+    first_visit.unwrap();
+    later_visit.unwrap();
+}
+
+/// Open the crawl viewer on `url`/`ts` and wait for `needle` in the frame.
+async fn render_crawl(
+    driver: &WebDriver,
+    addr: SocketAddr,
+    crawl: &str,
+    url: &str,
+    ts: &str,
+    needle: &str,
+) -> Result<(), String> {
+    driver
+        .goto(&format!("http://{addr}/crawl/{crawl}/{ts}/{url}"))
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .find(By::Id("replay-frame"))
+        .await
+        .map_err(|e| e.to_string())?
+        .enter_frame()
+        .await
+        .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while Instant::now() <= deadline {
+        if deep_contains(driver, needle).await? {
+            return driver
+                .enter_default_frame()
+                .await
+                .map_err(|e| e.to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let diag = diagnostics(driver).await.unwrap_or_else(|e| e);
+    Err(format!("'{needle}' never rendered ({url}).\nDIAG: {diag}"))
+}
+
+fn stream_source() -> indice_lib::collections::Source {
+    indice_lib::collections::Source::BrowsertrixPublic {
+        host: "https://bt.example".into(),
+        org: "o".into(),
+        collection: "c".into(),
+        resource: "a.wacz".into(),
+    }
+}
+
+/// A resolver standing in for Browsertrix, giving whichever URL the test has
+/// set, said to expire now, so the server never hands one out twice.
+struct SwitchingBrowsertrix {
+    url: std::sync::Mutex<String>,
+}
+
+impl indice_lib::index::SourceResolver for SwitchingBrowsertrix {
+    fn resolve(&self, _: &indice_lib::collections::Source) -> anyhow::Result<String> {
+        Ok(self.url.lock().unwrap().clone())
+    }
+    fn resolve_all(
+        &self,
+        source: &indice_lib::collections::Source,
+    ) -> anyhow::Result<Vec<indice_lib::index::Resolved>> {
+        Ok(vec![indice_lib::index::Resolved {
+            source: stream_source(),
+            url: self.resolve(source)?,
+            expires: Some(std::time::SystemTime::now()),
+        }])
+    }
+}
+
 const PAGE: &str = "https://split.example/page.html";
 
 /// The colour the split crawl's stylesheet gives the probe.

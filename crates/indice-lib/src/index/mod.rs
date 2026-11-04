@@ -95,6 +95,27 @@ pub fn no_progress() -> &'static dyn IndexProgress {
 /// while indexing and held in the server's shared state for replay.
 pub trait SourceResolver: Send + Sync {
     fn resolve(&self, source: &Source) -> Result<String>;
+
+    /// `source`'s URL, with every other the same lookup turned up. One
+    /// Browsertrix lookup returns the URLs of a whole collection or item, so
+    /// replay can cache them all from one call rather than make one per file.
+    /// The default knows only `source`'s, with no expiry.
+    fn resolve_all(&self, source: &Source) -> Result<Vec<Resolved>> {
+        Ok(vec![Resolved {
+            source: source.clone(),
+            url: self.resolve(source)?,
+            expires: None,
+        }])
+    }
+}
+
+/// A URL a [`SourceResolver`] found for a source, and when it stops working,
+/// if the service said.
+#[derive(Debug, Clone)]
+pub struct Resolved {
+    pub source: Source,
+    pub url: String,
+    pub expires: Option<std::time::SystemTime>,
 }
 
 #[cfg(test)]

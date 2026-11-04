@@ -3451,81 +3451,105 @@ impl BrowsertrixResolver {
         }
     }
 
-    /// Resolve using the cached client for `host` (logging in if there's none),
-    /// find the named resource, and return its fresh presigned URL.
-    fn try_resolve(&self, host: &str, org: &str, item: &str, resource: &str) -> Result<String> {
+    /// The item's WACZ resources, with fresh presigned URLs, using the cached
+    /// client for `host` (logging in if there's none).
+    fn try_item(
+        &self,
+        host: &str,
+        org: &str,
+        item: &str,
+    ) -> Result<Vec<indice_lib::browsertrix::Resource>> {
         let mut clients = self.clients.lock().unwrap();
         if !clients.contains_key(host) {
             clients.insert(host.to_string(), connect(host)?);
         }
-        let resources = clients.get(host).unwrap().item_resources(org, item)?;
-        resources
-            .into_iter()
-            .find(|r| r.name == resource)
-            .map(|r| r.path)
-            .ok_or_else(|| {
-                anyhow::anyhow!("WACZ resource {resource:?} not found in Browsertrix item {item}")
-            })
-    }
-}
-
-impl BrowsertrixResolver {
-    /// Re-resolve a **public** collection resource to a fresh presigned URL with
-    /// no credentials: hit the collection's public replay.json and match the
-    /// resource by filename. A new public client per call is cheap (no login).
-    fn try_resolve_public(
-        &self,
-        host: &str,
-        org: &str,
-        collection: &str,
-        resource: &str,
-    ) -> Result<String> {
-        let client = indice_lib::browsertrix::Client::public(host);
-        let resources = client.public_collection_resources(org, collection)?;
-        resources
-            .into_iter()
-            .find(|r| r.name == resource)
-            .map(|r| r.path)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "WACZ resource {resource:?} not found in public collection {collection}"
-                )
-            })
+        clients.get(host).unwrap().item_resources(org, item)
     }
 }
 
 impl indice_lib::index::SourceResolver for BrowsertrixResolver {
     fn resolve(&self, source: &indice_lib::collections::Source) -> Result<String> {
+        self.resolve_all(source)?
+            .into_iter()
+            .find(|r| &r.source == source)
+            .map(|r| r.url)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "WACZ resource {} not found in Browsertrix",
+                    source.location()
+                )
+            })
+    }
+
+    /// Every WACZ of the item or public collection `source` is in: one
+    /// Browsertrix lookup returns them all, so the server caches them all.
+    fn resolve_all(
+        &self,
+        source: &indice_lib::collections::Source,
+    ) -> Result<Vec<indice_lib::index::Resolved>> {
         use indice_lib::collections::Source;
+        let resolved =
+            |r: indice_lib::browsertrix::Resource, source: Source| indice_lib::index::Resolved {
+                source,
+                expires: r.expires(),
+                url: r.path,
+            };
         match source {
             Source::Browsertrix {
-                host,
-                org,
-                item,
-                resource,
-            } => match self.try_resolve(host, org, item, resource) {
-                Ok(url) => Ok(url),
-                // The cached login may have gone stale (Browsertrix JWTs expire
-                // well under a long-lived server's lifetime). Drop it and retry
-                // once with a fresh login before giving up. Any non-auth failure
-                // just fails again and surfaces here.
-                Err(first) => {
-                    tracing::debug!(%host, error = %first, "Browsertrix resolve failed; re-authenticating and retrying");
-                    self.clients.lock().unwrap().remove(host);
-                    self.try_resolve(host, org, item, resource)
-                        .with_context(|| format!("resolving Browsertrix item {item}"))
-                }
-            },
-            // Public sources need no credentials and no cached client, so resolve
-            // directly (a stale presigned URL just means fetching a fresh one).
+                host, org, item, ..
+            } => {
+                let resources = match self.try_item(host, org, item) {
+                    Ok(r) => r,
+                    // The cached login may have gone stale (Browsertrix JWTs
+                    // expire well under a long-lived server's lifetime). Drop it
+                    // and retry once with a fresh login before giving up. Any
+                    // non-auth failure just fails again and surfaces here.
+                    Err(first) => {
+                        tracing::debug!(%host, error = %first, "Browsertrix resolve failed; re-authenticating and retrying");
+                        self.clients.lock().unwrap().remove(host);
+                        self.try_item(host, org, item)
+                            .with_context(|| format!("resolving Browsertrix item {item}"))?
+                    }
+                };
+                Ok(resources
+                    .into_iter()
+                    .map(|r| {
+                        let source = Source::Browsertrix {
+                            host: host.clone(),
+                            org: org.clone(),
+                            item: item.clone(),
+                            resource: r.name.clone(),
+                        };
+                        resolved(r, source)
+                    })
+                    .collect())
+            }
+            // Public sources need no credentials and no cached client: a new
+            // public client per call is cheap (no login).
             Source::BrowsertrixPublic {
                 host,
                 org,
                 collection,
-                resource,
-            } => self
-                .try_resolve_public(host, org, collection, resource)
-                .with_context(|| format!("resolving public Browsertrix collection {collection}")),
+                ..
+            } => {
+                let resources = indice_lib::browsertrix::Client::public(host)
+                    .public_collection_resources(org, collection)
+                    .with_context(|| {
+                        format!("resolving public Browsertrix collection {collection}")
+                    })?;
+                Ok(resources
+                    .into_iter()
+                    .map(|r| {
+                        let source = Source::BrowsertrixPublic {
+                            host: host.clone(),
+                            org: org.clone(),
+                            collection: collection.clone(),
+                            resource: r.name.clone(),
+                        };
+                        resolved(r, source)
+                    })
+                    .collect())
+            }
             _ => anyhow::bail!("resolver only handles Browsertrix sources"),
         }
     }
