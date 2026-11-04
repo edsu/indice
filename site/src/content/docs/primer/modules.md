@@ -60,7 +60,7 @@ pub struct Ingest<'a> {
 ```
 
 and yet `ingest::acquire`, `ingest::pages` and `ingest::record` read them
-directly, because they are *inside* `ingest`. No getters, no ceremony. Meanwhile
+directly, without getters, because they are *inside* `ingest`. Meanwhile
 `index::reindex`, a sibling of `ingest` rather than a child, cannot, and goes
 through `home_dir()` and `progress_sink()`. The module tree is doing access
 control, and laying the phases out as children of `ingest` is what makes that

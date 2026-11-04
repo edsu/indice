@@ -5,7 +5,7 @@ description: Pull WARC crawls from an Archive-It account over WASAPI; indice bui
 
 If your crawls live in an [Archive-It](https://archive-it.org/) account (the Internet Archive's subscription web-archiving service), `indice import archive-it` pulls them in. Unlike Browsertrix, Archive-It serves **WARC files** (via WASAPI), not WACZ, so indice downloads each crawl's WARCs, **builds a WACZ from them** (one WACZ per crawl, the same builder as `wacz build`), and indexes it.
 
-At the moment an indice server can only be associated with one Archive-It account. Credentials come from the **environment**, never the command line:
+An indice server works with one Archive-It account. Credentials come from the **environment**, never the command line:
 
 ```sh
 export ARCHIVEIT_USER='you@example.org'
@@ -28,7 +28,7 @@ indice import archive-it --crawl 2626199 --into "Stephen Ratcliffe Papers" --hom
 
 ## Notes
 
-- **One WACZ per crawl.** WASAPI groups WARC files by crawl (job); indice bundles each crawl's WARCs into a single WACZ, preserving per-crawl temporality and giving a clean incremental unit. `--dry-run` lists the individual WARC files.
+- **One WACZ per crawl.** WASAPI groups WARC files by crawl (job); indice bundles each crawl's WARCs into a single WACZ, so each WACZ keeps one crawl's capture dates and a re-run can skip whole crawls. `--dry-run` lists the individual WARC files.
 - **Finished, non-deleted crawls only.** A crawl Archive-It marks deleted, or one that didn't finish, is skipped (indice checks the Partner API's crawl status). `--include-deleted` overrides the deletion skip.
 - **Selection.** `--collection <ID>` (the numeric Archive-It collection id) limits to one collection; `--crawl <ID>` to a single crawl; `--crawl-time-after` / `--crawl-time-before` filter by crawl date. The default is every collection in the account (including inactive ones, which still hold importable crawls).
 - **Incremental.** Re-running skips crawls already imported (matched by host + collection + crawl id), so syncing is cheap; `--force` re-imports anyway.

@@ -24,8 +24,8 @@ looks like ordinary correct code.
 ## Making it unskippable
 
 You could document it. A comment saying "take the lock before opening the
-manifest" holds until someone adds a sixth call site at 5pm. So indice does not
-document it. It makes the correct shape the only one available:
+manifest" holds until someone adds a sixth call site at 5pm. indice makes the
+correct shape the only one available instead:
 
 ```rust
 pub(crate) fn manifest_write<T>(
@@ -100,8 +100,8 @@ if super::lock::held_by_this_thread(home, Scope::Manifest) {
 }
 ```
 
-An error, rather than a hang or a quiet loss. The refactor that introduces
-nesting should be the thing that breaks, not the archive.
+It returns an error instead of hanging or losing data, so a refactor that
+introduces nesting fails on its first run, before it can damage the archive.
 
 ## When this shape is worth it
 

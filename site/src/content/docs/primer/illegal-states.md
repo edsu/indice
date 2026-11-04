@@ -10,11 +10,10 @@ A collection id becomes a directory name:
 ```
 
 So an id of `../../etc` is a path traversal. The obvious defence is to check
-before using it, but checking has to happen at *every* use, by everyone, forever.
-Miss one and the bug is back.
+before using it, but then every use has to check, and the first one that misses
+reopens the bug.
 
-Rust offers a different move: make the bad value impossible to hold in the first
-place.
+Rust lets you make the bad value impossible to hold in the first place.
 
 ## The newtype
 
@@ -42,7 +41,7 @@ Now look at what that buys downstream:
 pub fn collection_dir(home: &Path, slug: &CollectionId) -> PathBuf
 ```
 
-This function does no validation, and it does not need any. Its signature says
+This function does no validation. Its signature says
 the caller already has a value that was checked, because there is no other way
 to have one. Code that tries to build a collection path out of raw request input
 does not compile.
@@ -50,8 +49,7 @@ does not compile.
 That is the idea usually called **parse, don't validate**. Instead of checking a
 `String` and passing the same `String` on, leaving the next function no way to
 know whether anyone checked it, you turn it into a type that can only exist if
-the check passed. The knowledge lives in the type instead of in everyone's
-memory.
+the check passed.
 
 ## The back door, and closing it
 
@@ -74,10 +72,9 @@ impl<'de> Deserialize<'de> for CollectionId {
 }
 ```
 
-Read a `String`, then go through the same front door as everyone else. The rule
-becomes "every `CollectionId` in the process went through `parse`", with no
-exceptions to remember, and that is the property that makes `collection_dir` safe
-to write without a check.
+Read a `String`, then go through the same front door as everyone else. Every
+`CollectionId` in the process went through `parse`, and that property is what
+makes `collection_dir` safe to write without a check.
 
 One wrinkle shows where the pure version meets an existing archive. The manifest
 has a *lenient* deserializer for one field: an invalid id in `waczs.json` logs a
@@ -106,7 +103,7 @@ call.
 `#[serde(transparent)]` means it serializes as the bare string rather than
 `{"0": "…"}`, so the wrapper is invisible on disk. A separate `parse_remote`
 exists on purpose, because an identity arriving from a proxy header must never
-resolve to the local operator. Same type, different door, different rules.
+resolve to the local operator, so it applies stricter rules to the same type.
 
 ## When it is worth it
 
@@ -115,8 +112,8 @@ and what forgetting it costs. Here an unchecked id is a filesystem escape, and a
 uncanonicalized identity is a permission check against the wrong person, so both
 answers came out yes.
 
-The tell that you need one is a comment saying "callers must validate this
-first". That comment is a type waiting to be written.
+A comment saying "callers must validate this first" is the usual sign you need
+one.
 
 ## What to take forward
 

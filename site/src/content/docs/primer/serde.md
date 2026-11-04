@@ -56,12 +56,9 @@ pub source: Source,
 ```
 
 `alias` accepts the old key on read while writing only the new one. Old files
-load; the next save modernises them. No migration script, no version
-field, no flag day.
-
-Notice what this buys in a tool people run on their own laptops at their own
-pace: you cannot require everyone to upgrade in order. A format that tolerates
-its own history is doing real work.
+load; the next save modernises them. There is no migration script, version
+field or flag day, which matters in a tool people run on their own laptops at
+their own pace: you cannot require everyone to upgrade in order.
 
 ## Storing an enum as one string
 
@@ -79,8 +76,7 @@ as one flat string, `browsertrix|host|org|item|resource`.
 The reason is the human reading the file. A curator scanning `waczs.json` sees a
 line they can understand and grep; nested objects for a value that is
 conceptually "where this came from" would be worse to read for no benefit. The
-type stays rich in Rust and flat on disk, which is the trade this whole approach
-is about.
+type stays rich in Rust and flat on disk.
 
 ## How strict should reading be?
 
@@ -96,9 +92,9 @@ for most files and wrong for one, and indice picks on purpose in three places.
 #[serde(deny_unknown_fields)]
 ```
 
-This is the argument for strictness in one sentence. Permissiveness usually
-costs you a shrug. Here it would grant privilege the operator never wrote down,
-and say nothing about it. A misspelled key has to be an error.
+Ignoring an unknown key usually costs little. Here it would grant privilege the
+operator never wrote down, without a word, so a misspelled key has to be an
+error.
 
 **Strict by construction.** `CollectionId` hand-writes `Deserialize` so every
 value goes through `parse`, as
@@ -116,22 +112,22 @@ placeholder, which `Manifest::open` then heals, instead of failing the whole
 load. Refusing to open an archive's entire ledger because one entry is malformed
 would be the worse outcome, since it takes away the tool they need to fix it.
 
-So the rule is not "be strict" or "be lenient" but: **be strict where a mistake
-grants something, and lenient where strictness would deny access to the data.**
-And when you choose lenient, say so out loud. That attribute is named
+The rule: **be strict where a mistake grants something, and lenient where
+strictness would deny access to the data.** When you choose lenient, say so in
+the name. That attribute is named
 `lenient_collection` rather than `collection_de`, and it warns when it fires.
 
 ## The cost of types-as-schema
 
-The trade-off cuts both ways. One definition, the compiler checks the code
-against it, and the files stay readable and diffable. Against that, the *file
+You get one definition, the compiler checks the code against it, and the files
+stay readable and diffable. In exchange, the *file
 format is now as stable as your structs*, so renaming a field is a compatibility
 decision rather than a refactor. `alias` and `default` make that survivable, and
 they only help if you remember to reach for them.
 
 There is also no version number anywhere. indice leans on additive fields and
 aliases instead, which works as long as every change stays
-backwards-compatible, and stops working the day one does not.
+backwards-compatible.
 
 ## What to take forward
 

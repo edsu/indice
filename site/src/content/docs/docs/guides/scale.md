@@ -3,11 +3,11 @@ title: Scale up
 description: How indice's footprint and query latency hold up from a laptop to institutional collections.
 ---
 
-indice is built to run the same way on a laptop with a handful of WACZs and on a server holding an institution's collections: one binary, an embedded index, no Solr/Elasticsearch cluster to operate. Two things make that hold up as a corpus grows: a **frugal, predictable on-disk footprint** and **query latency that grows sub-linearly**.
+indice runs the same way on a laptop with a handful of WACZs and on a server holding an institution's collections: one binary, an embedded index, no Solr/Elasticsearch cluster to operate. As a corpus grows, indice keeps a **predictable on-disk footprint**, and **query latency grows sub-linearly**.
 
 ## Footprint
 
-Only a capped prefix of each page's body is *stored* (for snippets); the full text is indexed for search but not stored, so the doc store stays bounded. On a real corpus that works out to **~1.7 KB per document**. Two commands make the footprint legible:
+Only a capped prefix of each page's body is *stored* (for snippets); the full text is indexed for search but not stored, so the doc store stays bounded. On a real corpus that works out to **~1.7 KB per document**. Two commands report the footprint:
 
 ```sh
 indice stats            # size by index file type, bytes/doc, projections to 1M/100M docs
@@ -18,7 +18,7 @@ At ~1.7 KB/doc the index projects to roughly **1.6 GB at 1M docs** and **~160 GB
 
 ## Query latency
 
-Search stays interactive as the corpus grows because the result-grouping and snippet work is bounded (a fixed candidate window), not proportional to the corpus. Measured on a laptop with the `scale_bench` example (single binary, one process):
+Search stays interactive as the corpus grows because indice does the result-grouping and snippet work over a fixed candidate window, whatever the corpus size. Measured on a laptop with the `scale_bench` example (single binary, one process):
 
 | corpus | full-text search | facet overview | collection page lookup |
 |--------|-----------------:|---------------:|-----------------------:|
@@ -33,4 +33,4 @@ cargo run --release --example scale_bench -- 1000000   # docs, [iters], [segment
 
 ## Index health
 
-A search fans out across every segment, so a fragmented index is a slow one. indice keeps the index compact automatically: `index` and the management-mode import **auto-compact** when they detect fragmentation, `serve` warns at startup if the index it opens is fragmented, and `indice optimize` merges segments on demand, which reclaims disk from deleted crawls *and* sweeps orphaned segment files left behind by an interrupted (Ctrl-C'd) run. So an interrupted ingest self-heals on the next `index`.
+A search fans out across every segment, so a fragmented index is a slow one. indice compacts the index on its own: `index` and the management-mode import **auto-compact** when they detect fragmentation, `serve` warns at startup if the index it opens is fragmented, and `indice optimize` merges segments on demand, which reclaims disk from deleted crawls *and* sweeps orphaned segment files left behind by an interrupted (Ctrl-C'd) run. The next `index` run cleans up after an interrupted ingest.
