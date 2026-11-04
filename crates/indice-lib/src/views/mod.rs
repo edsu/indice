@@ -46,7 +46,7 @@ pub struct Chrome {
     /// Forward-auth is configured but this request is anonymous: show a
     /// "Log in" link in place of the signed-in name.
     pub can_login: bool,
-    /// The archive's name, tagline and banner, the same on every page.
+    /// The archive's name and tagline, the same on every page.
     pub site: std::sync::Arc<Site>,
 }
 
@@ -55,15 +55,15 @@ pub struct Chrome {
 #[derive(Debug)]
 pub struct Site {
     pub name: String,
-    pub tagline: String,
-    /// The banner, already rendered from Markdown.
-    pub banner: Option<maud::PreEscaped<String>>,
-    /// The note for a signed-in reader, already rendered from Markdown.
-    pub request_access: Option<maud::PreEscaped<String>>,
+    /// The tagline, already rendered from Markdown.
+    pub tagline: maud::PreEscaped<String>,
 }
 
+/// The tagline when `site.tagline` is unset.
+pub const DEFAULT_TAGLINE: &str = "Web archive search and replay";
+
 impl Site {
-    /// Fill in the defaults and render the banner. A blank value counts as
+    /// Fill in the defaults and render the tagline. A blank value counts as
     /// unset, so `name: ""` can't leave the header with no way home.
     pub fn new(cfg: &crate::config::SiteConfig) -> Site {
         let given = |v: &Option<String>| {
@@ -75,9 +75,9 @@ impl Site {
         let default = Site::default();
         Site {
             name: given(&cfg.name).unwrap_or(default.name),
-            tagline: given(&cfg.tagline).unwrap_or(default.tagline),
-            banner: given(&cfg.banner).map(|md| crate::markdown::render(&md)),
-            request_access: given(&cfg.request_access).map(|md| crate::markdown::render(&md)),
+            tagline: given(&cfg.tagline)
+                .map(|md| crate::markdown::render(&md))
+                .unwrap_or(default.tagline),
         }
     }
 }
@@ -86,16 +86,13 @@ impl Default for Site {
     fn default() -> Site {
         Site {
             name: "indice".to_string(),
-            tagline: "Web archive search and replay".to_string(),
-            banner: None,
-            request_access: None,
+            tagline: crate::markdown::render(DEFAULT_TAGLINE),
         }
     }
 }
 
 /// The shared page shell. Renders one full-bleed app header (`.appbar`) on every
-/// page — wordmark + (optional) search — then the site banner, if any, then the
-/// page `body` centered in `.wrap`, dressed for `chrome`. `title` is the page's
+/// page — wordmark + (optional) search — then the page `body` centered in `.wrap`, dressed for `chrome`. `title` is the page's
 /// own title, which gets the site name appended (`None` is the homepage, titled
 /// by the name alone). `search` is the header search box (`None` omits it — the
 /// homepage, whose hero carries the search instead).
@@ -157,16 +154,6 @@ pub fn layout(
                         a.login href="/manage/login" { "Log in" }
                     }
                 }
-                @if let Some(b) = &site.banner {
-                    div.site-banner { (b) }
-                }
-                // Signed in but on nobody's roster: the operator's word on
-                // what that means and how to ask for more, when they give one.
-                @if let (Some(_), false, Some(r)) =
-                    (&chrome.signed_in, manage, &site.request_access)
-                {
-                    div.site-banner.access-note { (r) }
-                }
                 main.wrap { (body) }
             }
         }
@@ -175,8 +162,7 @@ pub fn layout(
 
 /// The page a signed-in reader gets when they open a workroom page: a 403
 /// that explains itself. `what` is what the page needed, e.g. "curating this
-/// archive". The note under the header carries `site.request_access`, when
-/// it is set.
+/// archive".
 pub fn access_denied(chrome: &Chrome, what: &str) -> Markup {
     let body = html! {
         h1.page-title { "You can't change this archive" }

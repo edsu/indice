@@ -101,7 +101,7 @@ indice speaks to no identity provider and stores no passwords. oauth2-proxy brok
    docker compose cp users.yaml indice:/data/users.yaml
    ```
    Editing it later needs no restart: indice notices the file has changed and re-reads it on the next request, so approving a colleague is `docker compose cp` again.
-4. Optionally, name the archive. Without this, the header and homepage say "indice". A [`config.yaml`](/docs/reference/configuration/#site-name-tagline-and-banner) beside `users.yaml` sets the name, a line saying what the archive holds, and a notice for the top of every page:
+4. Optionally, name the archive. Without this, the header and homepage say "indice". A [`config.yaml`](/docs/reference/configuration/#site-name-and-tagline) beside `users.yaml` sets the name and a line for the homepage saying what the archive holds:
    ```sh
    cat > config.yaml <<'YAML'
    site:

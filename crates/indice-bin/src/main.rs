@@ -2047,24 +2047,15 @@ fn run_config(home: &std::path::Path) -> Result<()> {
     println!(
         "site.tagline:             {}  ->  {}",
         set(&cfg.site.tagline),
-        site.tagline
-    );
-    println!(
-        "site.banner:              {}  ->  {}",
-        set(&cfg.site.banner),
-        if site.banner.is_some() {
-            "shown under the header on every page"
+        if cfg
+            .site
+            .tagline
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+        {
+            "shown under the homepage heading"
         } else {
-            "none"
-        }
-    );
-    println!(
-        "site.request_access:      {}  ->  {}",
-        set(&cfg.site.request_access),
-        if site.request_access.is_some() {
-            "shown to signed-in readers"
-        } else {
-            "none (readers are told only that they can read)"
+            indice_lib::views::DEFAULT_TAGLINE
         }
     );
 

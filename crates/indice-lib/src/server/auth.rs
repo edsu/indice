@@ -448,7 +448,7 @@ pub(super) enum Denied {
     StaleEvidence,
     Insufficient(&'static str),
     /// [`Denied::Insufficient`] for someone opening a page in a browser: the
-    /// same 403, as a page with the site's chrome and its request-access text.
+    /// same 403, as a page with the site's chrome that says why.
     Page(maud::Markup),
 }
 

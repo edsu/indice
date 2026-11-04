@@ -64,27 +64,24 @@ The accession desk shows both numbers, and refuses a file that won't fit before 
 
 These limits apply to the browser only. `indice index` on the command line is you at the machine, and isn't limited. When the server starts it refuses an `uploads:` section that would quietly mean "no limit": a key it doesn't recognise, a key with no value, or `0`. Leave the key out if you want no limit. The file is read at startup, so a change needs a restart.
 
-## Site name, tagline and banner
+## Site name and tagline
 
 ```yaml
 site:
   # The archive's name: the header, the homepage heading, the replay viewer's
   # link home, and the end of every page title. Omit for "indice".
   name: Riverside Library Web Archive
-  # One line under the homepage heading saying what the archive holds. Omit
-  # for "Web archive search and replay".
-  tagline: Local news and community sites since 2019
-  # A notice under the header on every page, in Markdown. Omit for none.
-  banner: |
-    This is a **demo**. Read about it on [indice.page](https://indice.page).
-  # A note for anyone signed in but not listed in users.yaml, in Markdown.
-  # Omit for no note. A mailto: link can set the subject; write spaces as %20.
-  request_access: You can read this archive but not change it. Email [the archivist](mailto:archivist@example.org?subject=Curator%20access) to curate.
+  # What the archive holds, under the homepage heading, in Markdown. Omit for
+  # "Web archive search and replay". A mailto: link can set the subject;
+  # write spaces as %20.
+  tagline: |
+    Local news and community sites since 2019. This is a **demo**: to curate,
+    email [the archivist](mailto:archivist@example.org?subject=Curator%20access).
 ```
 
-Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. If you set `request_access`, they see it as a note under the header, set apart from the banner in the reading colour, so it is the place to say what they can do and how to ask for more. A workroom page they open answers with an explanation rather than a bare refusal, with the note above it.
+The tagline is the homepage's only text from you, so it is the place to say anything a visitor should read first, such as that the archive is a demo, or that someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read, and how to ask for more. A workroom page such a reader opens answers with an explanation rather than a bare refusal.
 
-The banner and `request_access` use the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
+The tagline uses the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
 ## Drafting descriptions with a language model
 
@@ -120,7 +117,7 @@ If the service needs an API key, put it in the `INDICE_LLM_API_KEY` environment 
 - **The prompt:** `indice collection draft <name> --show-prompt` prints exactly what would be sent, which is the place to start when writing a `prompt_file`. Whatever your prompt says, indice asks for JSON and accepts only the four descriptive fields from the answer.
 - **Provenance:** a finding aid records which fields hold a model's drafted text, which model and which service (the endpoint's host), in a `drafted:` entry in its front matter. A field leaves the entry when someone rewrites it.
 
-The `notice` uses the same safe Markdown as the site banner. `indice config` shows the model and service in force, and whether a notice is set. A mistake in either section, such as `describe:` without `llm:`, a missing endpoint or model, or a `prompt_file` that can't be read, is reported when you use it.
+The `notice` uses the same safe Markdown as the site tagline. `indice config` shows the model and service in force, and whether a notice is set. A mistake in either section, such as `describe:` without `llm:`, a missing endpoint or model, or a `prompt_file` that can't be read, is reported when you use it.
 
 ## `users.yaml`
 

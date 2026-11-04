@@ -1634,14 +1634,14 @@ async fn serve_with_config(
     (tmp, base, server)
 }
 
-/// `site:` names the archive on every page and in the viewer, and its banner
-/// goes through the safe Markdown renderer. The name and tagline carry markup
-/// to show they are escaped, not interpreted.
+/// `site:` names the archive on every page and in the viewer, and its tagline
+/// goes through the safe Markdown renderer. Both carry markup to show it is
+/// escaped, not interpreted.
 #[tokio::test]
 async fn site_text_names_the_archive_everywhere() {
     let (tmp, base, server) = serve_with_config(
-        "site:\n  name: Ada & Co <Archive>\n  tagline: Pages <i>we</i> kept\n  banner: |\n    \
-         **Demo**: see [about](https://example.org).\n    \
+        "site:\n  name: Ada & Co <Archive>\n  tagline: |\n    \
+         Pages <i>we</i> kept. **Demo**: see [about](https://example.org).\n    \
          <script>alert(1)</script> [x](javascript:alert(1))\n",
     )
     .await;
@@ -1681,12 +1681,12 @@ async fn site_text_names_the_archive_everywhere() {
     );
     assert!(
         home.contains("<strong>Demo</strong>"),
-        "banner Markdown: {home}"
+        "tagline Markdown: {home}"
     );
     assert!(home.contains(r#"href="https://example.org""#), "{home}");
     assert!(
         !home.contains("<script>"),
-        "raw HTML in the banner must be escaped"
+        "raw HTML in the tagline must be escaped"
     );
     // Escaped hostile text may still spell the scheme; no live link may carry it.
     assert!(
@@ -1694,13 +1694,14 @@ async fn site_text_names_the_archive_everywhere() {
         "an unsafe link must be dropped"
     );
 
-    // Every page, not just the homepage: the banner and the name in the title.
+    // Every page, not just the homepage: the name in the title. The tagline
+    // is the homepage's alone.
     let (_, search) = get(format!("{base}/search?q=anything")).await;
     assert!(
         search.contains(&format!("<title>anything - {name}</title>")),
         "{search}"
     );
-    assert!(search.contains(r#"class="site-banner""#), "{search}");
+    assert!(!search.contains("home-tagline"), "{search}");
 
     // The viewer, on a page of a collection: a finding aid is enough.
     std::fs::create_dir_all(tmp.path().join("collections/demo")).unwrap();
@@ -1729,14 +1730,13 @@ async fn site_text_names_the_archive_everywhere() {
     server.abort();
 }
 
-/// With no `site:` section, the archive is called indice and has no banner.
+/// With no `site:` section, the archive is called indice and says what it is.
 #[tokio::test]
 async fn site_text_defaults_without_config() {
     let (_tmp, base, server) = serve_with_config("").await;
     let (_, home) = get(format!("{base}/")).await;
     assert!(home.contains("<title>indice</title>"), "{home}");
     assert!(home.contains("Web archive search and replay"), "{home}");
-    assert!(!home.contains("site-banner"), "{home}");
     server.abort();
 }
 
