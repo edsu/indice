@@ -5,18 +5,18 @@ description: A reading room for web archives
 
 **indice** is a web archive server written in Rust that functions like a [reading room](https://inkdroid.org/2026/06/03/jan6-doj-archive/) for web archives. When you point it at a pile of local or remote [WACZ](https://specs.webrecorder.net/wacz/latest/) files it gives you:
 
-- **Full-text search and faceting** that provides hit-highlighted snippets, then narrow by collection, site, date, type, or language, with a timeline for navigating through time.
+- **Full-text search and faceting** with hit-highlighted snippets: narrow results by collection, site, date, type, or language, with a timeline for navigating through time.
 - **Provenance** that lets you see how each crawl was made (software, operator, dates, seeds, page counts).
 - **In-browser replay** of archived pages via Webrecorder's [ReplayWeb.page](https://replayweb.page/).
 - **A management workroom** where authenticated users can edit collection metadata and descriptions using Markdown.
 - **Page annotations** where signed-in users can attach Markdown notes to a whole page or a selected passage.
 - **Care with archived code.** Replayed pages run their own JavaScript, so indice replays them on an origin of their own, where that script cannot act as the person reading. On a server, changes need a sign-in through your identity provider and a role you grant. [Deploy](/docs/guides/deploy/) covers the setup, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) says what indice defends and what it does not.
 
-It ships as a single self-contained binary, so there is no Solr, no Elasticsearch, and no separate database server. indice is built for **small, local, and private** use (a person indexing a handful of their own WACZ files on their laptop, with nothing sent to a hosted service) and uses the same architecture to **scale up** toward institutional collections. It prioritizes local ease of use, but aims to fit both ends of that range, rather than assuming the infrastructure of a large web archive.
+It ships as a single self-contained binary, so there is no Solr, no Elasticsearch, and no separate database server. indice is built for **small, local, and private** use (a person indexing a handful of their own WACZ files on their laptop, with nothing sent to a hosted service) and uses the same architecture to **scale up** toward institutional collections. It puts local ease of use first and does not assume the infrastructure of a large web archive.
 
 :::note[Replay is Webrecorder's work]
-The web-archive replay is entirely [Webrecorder](https://webrecorder.net/)'s work. indice bundles and serves [ReplayWeb.page](https://replayweb.page/) and [wabac.js](https://github.com/webrecorder/wabac.js) which is the browser-side engine that does all the actual replay, 
-and adds a thin Rust layer for indexing, search, and serving. Webrecorder did the heavy lifting; please 
+The web-archive replay is entirely [Webrecorder](https://webrecorder.net/)'s work. indice bundles and serves [ReplayWeb.page](https://replayweb.page/) and [wabac.js](https://github.com/webrecorder/wabac.js) (the browser-side engine that does the replay) 
+and adds a thin Rust layer for indexing, search, and serving. Please 
 [support](https://opencollective.com/webrecorder) them.
 :::
 
@@ -31,4 +31,4 @@ and adds a thin Rust layer for indexing, search, and serving. Webrecorder did th
 
 ## Why "indice"?
 
-An *indice* is a sign that points beyond itself, and the name gathers three senses of the same idea. [Suzanne Briet](https://en.wikipedia.org/wiki/Suzanne_Briet) argued that a wild antelope becomes a *document* once it is captured, catalogued, and set aside as evidence. She defined a document as *"un indice concret ou symbolique, conservé ou enregistré"* (a concrete or symbolic sign, preserved or recorded). [Charles Sanders Peirce](https://plato.stanford.edu/entries/peirce-semiotics/) used *index* for the same family of sign: one bound to its object by a real, existential connection like smoke to fire, or a weathervane to the wind. Squint a little and a web capture is like that too: a trace connected to a moment of the live web. And, of course, indice builds a full-text **index** over the archives it serves, so the simplest meaning applies too.
+An *indice* is a sign that points beyond itself, and the name gathers three senses of the same idea. [Suzanne Briet](https://en.wikipedia.org/wiki/Suzanne_Briet) argued that a wild antelope becomes a *document* once it is captured, catalogued, and set aside as evidence. She defined a document as *"un indice concret ou symbolique, conservé ou enregistré"* (a concrete or symbolic sign, preserved or recorded). [Charles Sanders Peirce](https://plato.stanford.edu/entries/peirce-semiotics/) used *index* for the same family of sign: one bound to its object by a real, existential connection like smoke to fire, or a weathervane to the wind. A web capture is a trace connected to a moment of the live web. indice also builds a full-text **index** over the archives it serves.

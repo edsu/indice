@@ -19,7 +19,7 @@ index:
   writer_heap_mb: 50
 ```
 
-These apply on `index` and `reindex`; use `indice stats` to see their effect on the footprint. After **upgrading** to a version that changes the index schema or these defaults, run `indice reindex` to rebuild. That's how existing homes pick up footprint improvements (a stale index built by an older version is detected, and indice tells you to reindex).
+These apply on `index` and `reindex`; use `indice stats` to see their effect on the footprint. After **upgrading** to a version that changes the index schema or these defaults, run `indice reindex` to rebuild, so an existing home picks up the new layout. indice detects an index built by an older version and tells you to reindex.
 
 ## Reading a WACZ
 
@@ -35,7 +35,7 @@ index:
 
 A WACZ is a zip, and a file inside a zip can inflate to a thousand times its stored size, so a WACZ of a few megabytes can contain gigabytes of page list or index. indice reads no single file inside a WACZ past this limit. A WACZ whose metadata, page lists or index ask for more is refused, naming the file and this setting, and is not added. A single archived page or record over it is skipped with a warning, and the rest of the crawl is indexed. This applies to `indice index` and `reindex` as well as to the browser, since it protects the machine doing the indexing whoever started it.
 
-The default leaves plenty of room for a genuine crawl. The largest file in one is usually `pages/extraPages.jsonl`, which holds the rendered text of every page. If a crawl you trust is refused, raise the limit to fit it. Indexing reads a WACZ a page at a time, so the memory it needs does not grow with the crawl; raising the limit only lets a single file or record be larger.
+The default leaves room for a legitimate crawl. The largest file in one is usually `pages/extraPages.jsonl`, which holds the rendered text of every page. If a crawl you trust is refused, raise the limit to fit it. Indexing reads a WACZ a page at a time, so the memory it needs does not grow with the crawl; raising the limit only lets a single file or record be larger.
 
 Finding a page's text costs far more memory than the page itself. HTML takes around 20 times its size to read, and a PDF's cost barely follows its size: one of 3.3 MB took 750 MB, one of 12 MB took 1 GB, and one of 33 MB took 107 MB. So indice reads no more than `max_extract_mb` of any page for its text. HTML and rendered text past it are not searchable. A PDF can't be read in part, so a larger one is indexed by its file name alone, and a warning names it; it still replays. A page over 2 MiB is also read on its own rather than alongside others, so only one large page is in memory at a time. Raise the limit only on a machine with memory to match.
 
@@ -77,13 +77,12 @@ site:
   # A notice under the header on every page, in Markdown. Omit for none.
   banner: |
     This is a **demo**. Read about it on [indice.page](https://indice.page).
-  # How to ask for more than read access, in Markdown. Shown to anyone signed
-  # in but not listed in users.yaml. Omit to tell them only that they can read.
-  # A mailto: link can set the subject; write spaces as %20.
-  request_access: Email [the archivist](mailto:archivist@example.org?subject=Curator%20access) to curate.
+  # A note for anyone signed in but not listed in users.yaml, in Markdown.
+  # Omit for no note. A mailto: link can set the subject; write spaces as %20.
+  request_access: You can read this archive but not change it. Email [the archivist](mailto:archivist@example.org?subject=Curator%20access) to curate.
 ```
 
-Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. They see a note under the header saying so, followed by `request_access` if you set it, and a workroom page they open answers with the same explanation rather than a bare refusal.
+Someone who signs in but isn't in [`users.yaml`](#usersyaml) can only read. If you set `request_access`, they see it as a note under the header, set apart from the banner in the reading colour, so it is the place to say what they can do and how to ask for more. A workroom page they open answers with an explanation rather than a bare refusal, with the note above it.
 
 The banner and `request_access` use the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
@@ -125,7 +124,7 @@ The `notice` uses the same safe Markdown as the site banner. `indice config` sho
 
 ## `users.yaml`
 
-This file is important because it describes who may do what, when running behind an auth proxy. It is separate from `config.yaml` because it's a different kind of decision: `config.yaml` tunes the index, `users.yaml` grants privilege. If you are using version control you'll probably want to include it alongside your finding aids.
+This file says who may do what when indice runs behind an auth proxy. It is separate from `config.yaml` because `config.yaml` tunes the index and `users.yaml` grants privilege. If you use version control, commit it alongside your finding aids.
 
 ```yaml
 users:

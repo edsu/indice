@@ -20,7 +20,7 @@ of thing:
   doesn't replace them.
 - **`indexes/`**: a CDX index over those WARCs, mapping each archived URL and capture time to a
   byte offset and length inside a named WARC.
-- **`pages/`**: a JSON Lines list of the pages a human or crawler actually visited, with titles,
+- **`pages/`**: a JSON Lines list of the pages a human or crawler visited, with titles,
   timestamps, and (usually) the browser-extracted text of the page.
 - **`datapackage.json`**: a manifest, in the
   [Frictionless Data Package](https://specs.frictionlessdata.io/data-package/) shape, listing every
@@ -61,16 +61,16 @@ a migration plan.
 
 :::note[WACZ is not a lock-in]
 The WARC bytes inside are untouched and standard. `unzip yourfile.wacz` gets you your WARCs back,
-readable by every other web archive tool. indice depends on the *arrangement*, not on a proprietary
-container.
+readable by every other web archive tool. indice depends only on how the WACZ arranges those standard
+files.
 :::
 
 ## Making a WACZ
 
-indice reads WACZ files but does not create web archives itself: there is no built in crawler. That is
-deliberate: capture is legitimately hard, Webrecorder and others do it very well, and the format is the seam that
-lets those tools and this one meet. Which capture tool you want depends mostly on how much of the
-web you're after and how much of a human needs to be in the loop.
+indice reads WACZ files but does not create web archives itself: it has no built-in crawler. You
+make the WACZ with a capture tool from Webrecorder or elsewhere, and the format is where that tool and
+indice meet. Pick the tool by how much of the web you're after and how much a person needs to be
+in the loop.
 
 | Tool | Shape of the work | Reach for it when |
 |---|---|---|
@@ -89,18 +89,16 @@ clicked it. When you're done you download the session as a `.wacz`.
 
 Use it when the page can't be crawled without a person: sites behind a login you hold, content that
 appears only after a search or a form submission, infinite feeds you want to scroll a specific
-distance, or a one-off "capture this before it changes" errand. It is the least automatable and the
-most faithful to intent: you archived exactly what you looked at.
-
-The catch is that it doesn't scale, and it doesn't repeat. For a whole site, or for the same site
-every month, you probably want a crawler.
+distance, or a one-off "capture this before it changes" errand. You archive exactly what you looked
+at, but you can't automate it, and it won't repeat on a schedule. For a whole site, or for the same
+site every month, you probably want a crawler.
 
 ### Scoop
 
 [Scoop](https://github.com/harvard-lil/scoop) is Harvard Library Innovation Lab's capture engine:
 "a high fidelity, browser-based, web archiving capture engine for witnessing the web." It is the
-engine behind [Perma.cc](https://perma.cc/), and its framing is the giveaway: *witnessing*. Scoop
-captures **one URL per run** and puts its effort into making that single capture defensible.
+engine behind [Perma.cc](https://perma.cc/). Scoop captures **one URL per run** and puts its effort
+into making that single capture defensible.
 
 ```sh
 npm install -g @harvard-lil/scoop     # needs Node.js 22+
@@ -120,13 +118,13 @@ later.
 
 [Browsertrix](https://browsertrix.com/) is Webrecorder's hosted crawling service: you point it at
 seeds, set scope rules, give it a schedule, and it runs real browsers in the cloud and hands back
-WACZs. Since it is open source you can also run it relatively easily using Docker Desktop.
+WACZs. It is open source, so you can also run it yourself with Docker Desktop.
 
 On top of the crawling it adds the things a team needs, including organizations and user roles,
 collections, browser profiles for authenticated sites, and a QA workflow where a reviewer rates a
 finished crawl before it counts as good.
 
-This is the path of least infrastructure for recurring crawls, and indice imports directly from it:
+Browsertrix runs recurring crawls without servers of your own, and indice imports directly from it:
 
 ```sh
 indice import browsertrix --collection us-govarchive --home ~/webarchive
@@ -139,7 +137,7 @@ honors the QA review status by default, so only crawls a human has vetted get in
 ### browsertrix-crawler
 
 [browsertrix-crawler](https://github.com/webrecorder/browsertrix-crawler) is the crawler underneath
-the hosted service, and it runs perfectly well on its own machine as a Docker container. You
+the hosted service, and it runs on your own machine as a Docker container. You
 describe a crawl in YAML (seeds, scope, depth, page limits, worker count, custom behaviors) and it
 writes a WACZ into a collection directory:
 
@@ -153,16 +151,16 @@ indice index crawls/collections/example/example.wacz --collection "Example"
 
 Choose this over the hosted service when the crawl should stay on your hardware, when you want it in
 a cron job or a CI pipeline, or when you need to write a **custom behavior** (a snippet of
-JavaScript that performs custom clicks that feed back into the crawl queue. 
-Behaviors are where crawling stops being declarative, and they're the main reason
-to be running the crawler yourself. Although you can also use these behaviors in the Browsertrix service itself.
+JavaScript that clicks through a page and feeds the links it finds back into the crawl queue).
+Behaviors are the main reason to run the crawler yourself, though the Browsertrix service can run
+them too.
 
 ### btrix
 
 [btrix](https://edsu.github.io/btrix/) puts a conversational front end on browsertrix-crawler: you
 describe what you want archived, and it writes the config, runs the crawl, and tells you what it
-actually captured. The crawl still runs in Webrecorder's container, so the fidelity is the crawler's;
-what btrix supplies is the awkward middle.
+captured. The crawl still runs in Webrecorder's container, so the fidelity is the crawler's; btrix
+handles the configuration and the checking around it.
 
 ```sh
 npm install -g @edsu/btrix
@@ -175,18 +173,18 @@ Then `cd` to a working directory, run `btrix`, and say what you want:
 |---|---|
 | "archive the news section of library.stanford.edu" | Writes a config, settling the scope with you first |
 | "crawl sulnews" | Starts the crawl in the background, with a live progress widget |
-| "did that crawl work?" | Reports what was actually captured, flagging anything suspicious |
+| "did that crawl work?" | Reports what was captured, flagging anything suspicious |
 | "this site needs a login" | Opens a browser for *you* to sign into; btrix never sees the password |
 | "why did this site only give me one page?" | Opens a real browser to work out a custom behavior |
 
 Archives land in `./btrix/out/<name>.wacz`, ready for `indice index`, beside a
-`<name>.btrix.json` recording how each one was made. The real advantage is describing scope in a
-sentence instead of remembering whether you want `prefix` or `host`, and getting help writing the
-behavior for the one site whose content only appears after three clicks.
+`<name>.btrix.json` recording how each one was made. You describe scope in a sentence instead of
+remembering whether you want `prefix` or `host`, and btrix helps you write the behavior for the one
+site whose content only appears after three clicks.
 
 It needs Docker or Podman, since the crawler is still a container, plus Node 22.19+; on Windows run
-it inside WSL2. It talks to whichever model you connect on first run — a Claude, ChatGPT or Copilot
-subscription, an API key, or a model running on your own machine — and crawling itself needs no
+it inside WSL2. It talks to whichever model you connect on first run (a Claude, ChatGPT or Copilot
+subscription, an API key, or a model running on your own machine). Crawling itself needs no
 account.
 
 ## I have WARCs, not WACZs
@@ -214,8 +212,7 @@ What `wacz build` does, and doesn't do:
 - **The output is shaped to match Webrecorder's own tools.** The CDX generation mirrors
   [warcio.js](https://github.com/webrecorder/warcio.js)'s indexer, including its SURT
   canonicalization, which is pinned by a conformance test against warcio.js itself, and the
-  packaging mirrors browsertrix-crawler. That matters because it means the WACZ doesn't just index
-  here, it replays in ReplayWeb.page like any other.
+  packaging mirrors browsertrix-crawler, so the WACZ also replays in ReplayWeb.page like any other.
 - **Metadata comes from flags, or a prompt.** `--title`, `--description`, `--creator`, `--keyword`,
   `--license`, `--main-page-url`, `--software`. On an interactive terminal indice asks for anything
   missing; `--yes` skips the prompting for scripts and CI, and errors instead.
@@ -223,8 +220,8 @@ What `wacz build` does, and doesn't do:
   one indexable record, so you get an error rather than a WACZ that's quietly broken.
 - **It does not extract rendered text.** A WARC from a non-browser crawler has no browser-extracted
   page text to carry, so `pages.jsonl` is written with `hasText: false` and indice indexes the text
-  of the HTML response bodies instead. This is the real fidelity difference between a wget crawl and
-  a browser-based one, and no amount of repackaging fixes it.
+  of the HTML response bodies instead. This is the fidelity difference between a wget crawl and a
+  browser-based one, and repackaging can't add the missing text.
 
 This same packaging is what the [Archive-It importer](/docs/guides/import-archive-it/) uses
 internally, since Archive-It serves WARCs rather than WACZs; there, the source crawl and collection
@@ -252,7 +249,7 @@ $ unzip -l apod.wacz
 
 ### `archive/`: the WARCs
 
-Note that there are three, not one, and that the split is meaningful. The big
+There are three WARCs, each holding a different kind of record. The big
 `rec-…-apod-….warc.gz` holds the HTTP traffic: requests and responses for the page and every
 subresource. `screenshots-….warc.gz` holds page screenshots, and `text-….warc.gz` holds the text the
 browser extracted after rendering. Both are written as WARC `resource` records under synthetic
@@ -271,9 +268,8 @@ $ unzip -v apod.wacz | head -4
  5622021  Stored  5622021   0% 08-28-2026 21:12 39f787ba  archive/rec-…-0.warc.gz
 ```
 
-That `Stored` is important, because the WARC sits in the ZIP at a fixed offset with no ZIP-level
-compression, a byte range in the WACZ maps directly onto a byte range in the WARC, and each record's
-gzip member decompresses on its own. Range-request a record out of a 5 MB, or 5 GB file, and you
+Because the WARC sits in the ZIP at a fixed offset with no ZIP-level compression, a byte range in the WACZ maps directly onto a byte range in the WARC, and each record's
+gzip member decompresses on its own. Range-request a record out of a 5 MB or a 5 GB file, and you
 get that record. The spec says `archive/` members *should* be stored this way; a few tools deflate
 them anyway, and when indice meets one it falls back to downloading the whole file.
 
@@ -300,7 +296,7 @@ even the CDX doesn't have to be read whole. And older or hand-made WACZs may nam
 ### `pages/`: what counts as a page
 
 `pages/pages.jsonl` is a header line followed by one JSON object per page. Its first line declares
-the format and, crucially, whether the entries carry text:
+the format and whether the entries carry text:
 
 ```json
 {"format":"json-pages-1.0","id":"pages","title":"Seed Pages","hasText":"true"}
@@ -313,9 +309,9 @@ the format and, crucially, whether the entries carry text:
 ```
 
 `pages/extraPages.jsonl` has the same shape and holds pages that were reached but weren't seeds. The
-distinction matters to a crawler's own bookkeeping; indice reads both, since a page is a page.
+distinction matters to a crawler's own bookkeeping; indice reads both and treats them the same.
 
-This file is what lets indice tell pages from everything else. The CDX knows that a URL was
+indice uses this file to tell pages from everything else. The CDX knows that a URL was
 fetched with status 200 and MIME `text/html`; it has no idea whether that URL was a page a person
 would read or a fragment loaded by a script.
 
@@ -334,10 +330,10 @@ would read or a fragment loaded by a script.
 }
 ```
 
-Every other member of the ZIP is listed here with its byte count and hash, which is what makes a
-WACZ verifiable rather than merely well-organized. `software` and `created` are where a crawl page in
-indice gets "made by Browsertrix-Crawler 1.14.3 on 28 August 2026". Being a Frictionless Data
-Package, custom top-level properties are legal, and indice uses that when it packages WARCs itself:
+Every other member of the ZIP is listed here with its byte count and hash, so you can
+verify a WACZ against it. `software` and `created` are where a crawl page in
+indice gets "made by Browsertrix-Crawler 1.14.3 on 28 August 2026". A Frictionless Data
+Package allows custom top-level properties, and indice uses that when it packages WARCs itself:
 an Archive-It import carries the source crawl and collection records along in an `archiveit` object,
 so the provenance lives in the file indice already parses rather than in a sidecar that can get
 separated from it.
@@ -376,8 +372,7 @@ and its `datapackage.json` declares `"wacz_version": "1.0.0"`, nests descriptive
 `metadata` object, and hashes resources with **MD5** under a `stats` key rather than the flat
 `sha256:` of 1.1.1. There's no `datapackage-digest.json`, no `extraPages.jsonl`, no `logs/`.
 
-indice reads all of these variants, which is worth knowing so that an old WACZ not matching the
-description above isn't a surprise. When something is missing, indice degrades rather than refusing:
+indice reads all of these variants. When something is missing, indice degrades rather than refusing:
 no `pages.jsonl` means it falls back to the CDX and the response bodies, no CDX means a full scan of
 the WARCs. See [How indice works](/docs/reference/how-it-works/#how-indexing-reads-a-wacz) for the
 fallback ladder.
@@ -397,4 +392,4 @@ unzip -p  yourfile.wacz indexes/index.cdxj | wc -l         # how many records
 indice can tell you some of this too, without unzipping: `indice collection list` and
 `indice crawl list` show what's indexed, and `indice verify` re-hashes every indexed WACZ to check
 it against the fixity recorded at index time. To look at a WACZ in a browser before
-indexing it, drop it on [replayweb.page](https://replayweb.page/), it never leaves your machine.
+indexing it, drop it on [replayweb.page](https://replayweb.page/); the file never leaves your machine.

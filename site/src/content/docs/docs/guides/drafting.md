@@ -33,7 +33,7 @@ A site's menu, which opens nearly every page, is sent once at most, so the sampl
 That text goes to the service you configure. With a hosted service, archived pages leave your machine and are processed under that service's terms. With a local model they stay on your machine. Choose with your collections' sensitivity in mind.
 :::
 
-Archived pages are treated as material, not instructions: each is fenced off in the message, and the model is told to ignore any instructions a page contains. Whatever comes back, indice keeps only the four fields above, and only as a draft for you to review.
+indice sends archived pages as material to describe: it fences off each one in the message and tells the model to ignore any instructions a page contains. Whatever comes back, indice keeps only the four fields above, and only as a draft for you to review.
 
 ## Setting it up
 
@@ -114,13 +114,13 @@ The form comes back with the draft in it:
 
 Nothing is saved until you press **Save changes**, and you can edit any of it first, or press **Draft again** for another attempt. A model can take a minute to answer. If it can't be reached, or answers with nothing usable, the form comes back with your text intact and says what went wrong.
 
-On the collection page, a quiet line then says which fields hold drafted text, with which model, and who saved them, for example *"Description and subjects drafted with llama3.1:8b (localhost:11434), reviewed by Ed."* A draft applied with `indice collection draft --apply` has no reviewer to name, so the line leaves that part out.
+On the collection page, a line then says which fields hold drafted text, with which model, and who saved them, for example *"Description and subjects drafted with llama3.1:8b (localhost:11434), reviewed by Ed."* A draft applied with `indice collection draft --apply` has no reviewer to name, so the line leaves that part out.
 
 Anyone who can edit a finding aid can ask for a draft. Each request is recorded in the [audit trail](/docs/reference/home-directory/#events-the-audit-trail), with the model and service, since it sends archived text to that service.
 
 ## Provenance
 
-When fields come from a draft, the finding aid records it in its front matter: which model, which service (the endpoint's host, never the key), which fields and when. The collection page shows it, as above. A reader can then tell a description that is a machine draft from one a curator wrote, in the same spirit as the crawl provenance indice records.
+When fields come from a draft, the finding aid records it in its front matter: which model, which service (the endpoint's host, never the key), which fields and when. The collection page shows it, as above. A reader can then tell a machine draft from a description a curator wrote.
 
 The record follows the text. Edit a drafted field before or after you save it and it's yours: it leaves the record, and the collection page stops calling it drafted. Fields you leave as the model wrote them stay in the record, across later saves and later drafts. When no drafted field is left, the record goes. Press **Draft again** and fields still holding the earlier draft's text are drafted afresh, not treated as yours.
 

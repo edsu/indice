@@ -89,9 +89,8 @@ Notice what is *not* derived. `CollectionId` takes `Serialize` from the
 macro but writes `Deserialize` by hand, so that a value arriving from JSON goes
 through `CollectionId::parse` like every other one. A derived `Deserialize` would
 have built the type straight from any string in the file, which is the back door
-the type exists to close. Writing an impl yourself, rather than deriving it, is
-sometimes the whole point. See [Making illegal states
-unrepresentable](/primer/illegal-states/).
+the type exists to close. [Making illegal states
+unrepresentable](/primer/illegal-states/) covers that type in full.
 
 ## What to take forward
 
@@ -99,4 +98,5 @@ unrepresentable](/primer/illegal-states/).
   implementors.
 - Generic when the types are known and closed; `dyn` when the value gets stored.
 - Default method bodies let "do nothing" be a real implementation.
-- A missing `derive` can be as deliberate as a present one.
+- Leaving out a `derive` and writing the impl by hand keeps a constructor's
+  checks on every path in.

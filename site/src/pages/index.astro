@@ -73,12 +73,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
           </h1>
           <p class="lede">
              indice turns your collection of <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> files
-             into an archive you can actually use: full-text search with
+             into a searchable archive: full-text search with
              faceted, temporal browsing; the provenance of every crawl; and
-             in-browser replay using trusted <a href="https://webrecorder.net">Webrecorder</a> tooling.
-             Import straight from your file system, cloud storage, <a href="https://browsertrix.com/">Browsertrix</a> or <a href="https://archive.org">Archive-It</a>. You can even annotate the pages you find.
-             One self-contained binary that scales from your laptop to
-             multiuser organizational setups.</p>
+             in-browser replay using <a href="https://webrecorder.net">Webrecorder</a>'s ReplayWeb.page.
+             Import from your file system, cloud storage, <a href="https://browsertrix.com/">Browsertrix</a> or <a href="https://archive.org">Archive-It</a>, and annotate the pages you find.
+             It runs as one self-contained binary, on your laptop or for a
+             multiuser organization.</p>
           <div class="cta-row">
             <a class="btn primary" href="#install">Get started</a>
             <a class="btn" href={repo}>View on GitHub</a>
@@ -118,8 +118,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
             <div class="feature">
               <h3>Faithful in-browser replay</h3>
               <p>
-                Archived pages replay client-side, exactly as captured, right in the reader's
-                browser.
+                Archived pages replay client-side, in the reader's browser.
               </p>
               <p class="credit">Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s work (ReplayWeb.page / wabac.js).</p>
             </div>
@@ -127,7 +126,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <h3>Import from Browsertrix &amp; Archive-It</h3>
               <p>
                 Bring collections in from <a href="https://browsertrix.com/">Browsertrix</a> or
-                Archive-It, or index any WACZ over HTTP, and descriptive metadata carries straight
+                Archive-It, or index any WACZ over HTTP, and their descriptive metadata goes
                 into a finding aid. <a href="#sources">See the sources ↓</a>
               </p>
             </div>
@@ -181,7 +180,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <div class="frame">
                   <Image src={readingRoom} alt="indice homepage: search box, browse-by-year and top-sites, and a collection card" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
-                <figcaption><b>Search &amp; browse.</b> A calm front page: search, browse by year or site, and collection cards.</figcaption>
+                <figcaption><b>Search &amp; browse.</b> The front page: search, browse by year or site, and collection cards.</figcaption>
               </figure>
             </div>
             <div class="shot">
@@ -189,7 +188,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <div class="frame">
                   <Image src={findingAid} alt="A collection page rendered as a finding aid with creator, dates, rights, subjects, and crawl provenance" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
-                <figcaption><b>Finding aids, not folders.</b> Each collection reads like an archival description, with fixity and crawl provenance stored as Markdown files you can edit.</figcaption>
+                <figcaption><b>Finding aids.</b> Each collection reads like an archival description, with fixity and crawl provenance stored as Markdown files you can edit.</figcaption>
               </figure>
             </div>
             <div class="shot">
@@ -205,7 +204,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <div class="frame">
                   <Image src={replay} alt="The webrecorder.net homepage replaying inside indice via ReplayWeb.page" widths={[520, 1040]} sizes={shotSizes} />
                 </div>
-                <figcaption><b>Replay in place.</b> Archived pages replay exactly as captured. Here is webrecorder.net being replayed, wrapped in indice's chrome.</figcaption>
+                <figcaption><b>Replay in place.</b> webrecorder.net replaying inside indice's chrome.</figcaption>
               </figure>
             </div>
             <div class="shot">
@@ -254,16 +253,16 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <p>
                 Browse your <a href="https://browsertrix.com/">Browsertrix</a> org and import
                 collections and crawls in a few clicks, or index and replay them
-                <strong>straight from Browsertrix's cloud storage, without downloading a thing</strong>.
-                indice serves the very same ReplayWeb.page engine Browsertrix does, so replay is
-                identical.
+                <strong>from Browsertrix's cloud storage, without downloading them</strong>.
+                indice serves the same ReplayWeb.page engine Browsertrix uses, so pages replay
+                the same way in both.
               </p>
             </div>
             <div class="feature">
               <h3>Archive-It</h3>
               <p>
                 Pull a collection's WARCs from Archive-It over WASAPI; indice builds the WACZ,
-                indexes it, and carries the descriptive metadata straight into a finding aid.
+                indexes it, and carries the descriptive metadata into a finding aid.
               </p>
             </div>
             <div class="feature">
@@ -286,16 +285,16 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <p class="eyebrow">Built for range</p>
               <h2>One tool, laptop to institution.</h2>
               <p>
-                indice ships as a single self-contained binary that uses the embedded <a href="https://github.com/quickwit-oss/tantivy">Tantivy</a> search engine library.
-                So there's no Solr, Elasticsearch, or separate database to keep online. The same model that indexes a handful of your own WACZ files
-                on a laptop should scale up towards institution sized collections. It aims to fit both ends
-                of that range, rather than assuming the infrastructure of a large web archive.
+                indice ships as a single self-contained binary built on the embedded <a href="https://github.com/quickwit-oss/tantivy">Tantivy</a> search engine library,
+                so you have no Solr, Elasticsearch, or separate database to keep online. The setup that indexes a handful of your own WACZ files
+                on a laptop is meant to scale to institution-sized collections, without the infrastructure
+                of a large web archive.
               </p>
             </div>
             <div class="endpoints">
               <div class="endpoint">
                 <p class="eyebrow">Small &amp; private</p>
-                <p>Index a few crawls on your laptop. Nothing is sent to a hosted service; it runs offline.</p>
+                <p>Index a few crawls on your laptop, offline, with no hosted service involved.</p>
                 <p class="stat">
                   One binary, no database. WACZ files index in seconds,
                    and search results return in milliseconds. <a href={`${base}/docs/quickstart/`}>Try it &rarr;</a>
@@ -305,7 +304,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
                 <p class="eyebrow">Scaled up</p>
                 <p>Serve an institutional reading room behind a proxy, with the same single binary.</p>
                 <p class="stat">
-                   The index is compact. Adding a million pages results in an index that is about 1.5 GB on 
+                   A million pages take about 1.5 GB of index on
                    disk. <a href={`${base}/docs/guides/scale/`}>How it scales &rarr;</a>
                 </p>
               </div>
@@ -322,10 +321,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <p class="eyebrow">Curate in the workroom</p>
               <h2 style="font-size:1.8rem;margin:0 0 0.8rem;">Turn the reading room into a workroom.</h2>
               <p style="color:#3a3a3a;">
-                Run in management mode or behind a SSO provider
+                Run in management mode or behind an SSO provider
                 and a manila band marks write mode: add archives, import from
-                Browsertrix or Archive-It, and write finding aids in place. No command line
-                needed.
+                Browsertrix or Archive-It, and write finding aids in place, without
+                the command line.
               </p>
               <a class="btn" href={`${base}/docs/guides/manage/`}>Management docs →</a>
             </div>
@@ -357,11 +356,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // no trailing slash
               <cite>Suzanne Briet, <em>Qu'est-ce que la documentation ?</em> (1951)</cite>
             </blockquote>
             <p>
-              Charles Sanders Peirce used <em>index</em> for the same family of sign — one bound
-              to its object by a real connection, like smoke to fire. A web capture is like that
-              too: a trace connected to a moment of the live web. And, of course, indice builds a
-              full-text <strong>index</strong> over the archives it serves. Three senses of the
-              same idea.
+              Charles Sanders Peirce used <em>index</em> for the same family of sign: one bound
+              to its object by a real connection, like smoke to fire. A web capture is a trace of
+              that kind, connected to a moment of the live web. indice also builds a
+              full-text <strong>index</strong> over the archives it serves.
             </p>
           </div>
         </div>
@@ -411,12 +409,11 @@ Download from the releases page</pre>
               indice has been built in the open over the course of 2026, in small increments,
               with substantial help from <a href="https://www.anthropic.com/claude-code">Claude
               Code</a>, Anthropic's AI coding assistant. It is the work of a single developer
-              working alongside a language model, not the product of an institution or a large
-              team. It is alpha software: expect rough edges, and know that careful technical
-              review is genuinely welcome.
+              working alongside a language model. It is alpha software: expect rough edges.
+              Careful technical review is welcome.
             </p>
             <p>
-              It stands on the web archiving community's shoulders. Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s ReplayWeb.page and wabac.js;
+              It builds on the web archiving community's work. Replay is entirely <a href="https://webrecorder.net/">Webrecorder</a>'s ReplayWeb.page and wabac.js;
               the <a href="https://specs.webrecorder.net/wacz/latest/">WACZ</a> format, <a href="https://browsertrix.com/">Browsertrix</a>, and Archive-It's WASAPI shape
               how archives come in. Its framing is borrowed from documentation theory: Suzanne
               Briet's antelope, Peirce's index, and from the archival tradition of the finding aid.

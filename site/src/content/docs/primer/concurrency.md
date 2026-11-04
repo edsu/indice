@@ -12,8 +12,8 @@ Each one does a job the others are bad at:
 | The web server | **tokio**, async | Thousands of mostly-idle connections |
 | Between them | **`spawn_blocking`** | Indexing must not run on an async thread |
 
-The reason it holds together is that Rust makes the boundary a type error rather
-than a convention.
+Rust keeps them apart by making a value that crosses the boundary wrongly a type
+error.
 
 ## `Send` and `Sync`, in one paragraph
 
@@ -75,8 +75,8 @@ guards nothing but a turn. A worker whose record grows large takes that lock and
 keeps the `MutexGuard` until its page is written, so only one large record is in
 memory at once; dropping the guard is what hands the turn on.
 
-The `Mutex` deserves a precise explanation, because the obvious guess about it is
-wrong. `SearchIndex` *is* `Sync`, so sharing a `&SearchIndex` across threads
+The obvious guess about the `Mutex` is wrong. `SearchIndex` *is* `Sync`, so
+sharing a `&SearchIndex` across threads
 would be fine. The problem is that writing a document takes `&mut self`, and
 several workers cannot each hold an exclusive borrow at once. `Mutex` turns "one
 exclusive borrow, statically" into "one at a time, checked at runtime". That is

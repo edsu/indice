@@ -3,10 +3,10 @@ title: Deleting an `Option` that asserts nothing
 description: Default trait methods, the null object, and a rule for when `Option` earns its place.
 ---
 
-`Option<T>` is how Rust says "this might not be there", and it is one of the
-language's better ideas: there is no null, so the compiler makes you handle the
-absent case. The failure mode differs from null's. Instead of a crash you get
-*ceremony*, code that keeps asking a question whose answer never mattered.
+`Option<T>` is how Rust says "this might not be there". There is no null, so the
+compiler makes you handle the absent case. Misused, an `Option` does not crash;
+it produces *ceremony*, code that keeps asking a question whose answer never
+mattered.
 
 indice had a clear case of that. Progress reporting used to be threaded as:
 
@@ -22,8 +22,8 @@ if let Some(p) = progress {
 }
 ```
 
-Twelve such parameters and twenty-five such conditionals. Every one of them
-correct, and every one asking the same question: *is there a UI?*
+There were twelve such parameters and twenty-five such conditionals, each of them
+correct and each asking the same question: *is there a UI?*
 
 ## The wrong question, asked twelve times
 
@@ -72,8 +72,7 @@ a bar, stops in the binary where the terminal is.
 
 > An `Option` in a signature should assert something about the domain.
 
-Applied to `Ingest`'s own fields, that rule keeps some and removes others, which
-is what makes it useful rather than a slogan:
+Applied to `Ingest`'s own fields, that rule keeps some and removes others:
 
 | Field | Kept? | Why |
 |---|---|---|
