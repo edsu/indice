@@ -320,28 +320,36 @@ async fn a_crawl_in_several_files_replays_from_all_of_them() {
     for router in [app, replay] {
         let (status, json) = get_json(router.clone(), &format!("/crawl/{other}/replay.json")).await;
         assert_eq!(status, StatusCode::OK);
-        let mut names: Vec<&str> = json["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| {
-                let name = r["name"].as_str().unwrap();
-                assert_eq!(r["path"].as_str().unwrap(), format!("/files/{name}"));
-                name
-            })
-            .collect();
-        names.sort();
+        assert_eq!(json["pagesQueryUrl"], format!("/crawl/{other}/pages"));
+        // Every file of the crawl, named by its place in the crawl so wabac
+        // sorts them in the crawl's order, and read from its own path.
+        let resources = json["resources"].as_array().unwrap();
+        let mut ids: Vec<&str> = Vec::new();
+        for (i, r) in resources.iter().enumerate() {
+            let name = r["name"].as_str().unwrap();
+            let (place, id) = name.split_once('-').unwrap();
+            assert_eq!(place, i.to_string(), "{name}");
+            assert_eq!(r["path"].as_str().unwrap(), format!("/files/{id}"));
+            ids.push(id);
+        }
+        let mut sorted = ids.clone();
+        sorted.sort();
         let mut want = [gh.as_str(), other.as_str()];
         want.sort();
-        assert_eq!(names, want, "every file of the crawl");
-        assert_eq!(json["pagesQueryUrl"], format!("/crawl/{other}/pages"));
+        assert_eq!(sorted, want, "every file of the crawl");
 
-        // The crawl's lookup finds the page in the crawl's other file.
+        // The crawl's lookup finds the page in the crawl's other file, by the
+        // name the manifest gives it.
+        let gh_name = resources
+            .iter()
+            .map(|r| r["name"].as_str().unwrap())
+            .find(|n| n.ends_with(&format!("-{gh}")))
+            .unwrap();
         let (status, json) = get_json(router, &format!("/crawl/{other}/pages?url={GH_PAGE}")).await;
         assert_eq!(status, StatusCode::OK);
         let items = json["items"].as_array().unwrap();
         assert!(!items.is_empty(), "the page is in the crawl's other file");
-        assert!(items.iter().all(|it| it["filename"] == gh.as_str()));
+        assert!(items.iter().all(|it| it["filename"] == gh_name), "{json}");
     }
 }
 
@@ -361,7 +369,7 @@ async fn a_crawl_in_one_file_replays_that_file() {
     assert_eq!(status, StatusCode::OK);
     let resources = json["resources"].as_array().unwrap();
     assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0]["name"], other.as_str());
+    assert_eq!(resources[0]["name"], format!("0-{other}"));
 
     let (_, json) = get_json(app.clone(), &format!("/crawl/{other}/pages?url={GH_PAGE}")).await;
     assert_eq!(json["total"], 0, "the page is in another crawl");

@@ -766,9 +766,8 @@ impl Manifest {
     /// the page needs them all. The files are the ones in `w`'s collection
     /// with the same Browsertrix crawl (`BrowsertrixRef` host and item id).
     ///
-    /// Earliest first because a crawl fetches what every page shares on its
-    /// first pages, and wabac.js, when it can't tell which file holds a
-    /// resource, tries the first few it was given.
+    /// Earliest first, the order they were written in, which the crawl's
+    /// replay manifest keeps in the files' names (`server::crawl_file_names`).
     pub fn crawl_files<'a>(&'a self, w: &'a Wacz) -> Vec<&'a Wacz> {
         let Some(bt) = &w.browsertrix else {
             return vec![w];

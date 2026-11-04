@@ -1,6 +1,7 @@
 //! Collection routes: the finding-aid page, its annotations index, and the
 //! machine-readable replay manifest + page list wabac.js consumes.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -252,32 +253,39 @@ pub(super) async fn collection_replay_json(
     let Some(c) = manifest.collection_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
     };
+    let files: Vec<(String, &Wacz)> = manifest
+        .members_of(&id)
+        .map(|w| (w.id.clone(), w))
+        .collect();
     replay_manifest(
-        manifest.members_of(&id),
+        &files,
         format!("/collection/{}/pages", url_encode(&c.id)),
         &c.name,
         c.description.as_deref(),
     )
 }
 
-/// A wabac multi-WACZ manifest of `waczs`, for a collection's replay or for
+/// A wabac multi-WACZ manifest of `files`, for a collection's replay or for
 /// one crawl written into several WACZs (`crawl_replay_json`).
 ///
-/// `name`/`crawlId` are the WACZ id, the same id the pages endpoint at
-/// `pages_url` returns as `filename`, so wabac can match a looked-up page to
-/// its member. `hash` carries the `sha256:` prefix wabac expects.
-pub(super) fn replay_manifest<'a>(
-    waczs: impl Iterator<Item = &'a Wacz>,
+/// Each file is listed under the name paired with it, which the pages
+/// endpoint at `pages_url` returns as `filename`, so wabac can match a
+/// looked-up page to its member: a collection names a file by its WACZ id, a
+/// crawl by its place in the crawl (`crawl_file_names`). `hash` carries the
+/// `sha256:` prefix wabac expects.
+pub(super) fn replay_manifest(
+    files: &[(String, &Wacz)],
     pages_url: String,
     title: &str,
     desc: Option<&str>,
 ) -> Response {
-    let resources: Vec<serde_json::Value> = waczs
-        .map(|w| {
+    let resources: Vec<serde_json::Value> = files
+        .iter()
+        .map(|(name, w)| {
             let mut res = serde_json::json!({
-                "name": w.id,
+                "name": name,
                 "path": viewer_source(w),
-                "crawlId": w.id,
+                "crawlId": name,
             });
             // The member hash. wabac uses it as the member's identity, so every
             // member MUST have a distinct one (or none) — giving several members
@@ -365,7 +373,8 @@ pub(super) async fn collection_pages(
 /// it can move to the thread that reads the index.
 pub(super) enum PagesFor {
     Collection(String),
-    Crawls(Vec<String>),
+    /// Each file's WACZ id, and the name its crawl's manifest lists it under.
+    Crawls(Vec<(String, String)>),
 }
 
 /// The body of a wabac `pagesQueryUrl` endpoint, for a collection's replay or
@@ -384,13 +393,30 @@ pub(super) async fn pages_response(
     // deep it will go (`MAX_PAGES_OFFSET`).
     let offset = (page - 1).saturating_mul(page_size);
     let PagesParams { url, search, .. } = params;
+    // What each hit's file is called in the manifest: its id, unless renamed.
+    let names: HashMap<String, String> = match &scope {
+        PagesFor::Collection(_) => HashMap::new(),
+        PagesFor::Crawls(files) => files.iter().cloned().collect(),
+    };
     match state
-        .read_index(move |s| {
-            let scope = match &scope {
-                PagesFor::Collection(id) => PagesScope::Collection(id),
-                PagesFor::Crawls(ids) => PagesScope::Crawls(ids),
-            };
-            s.pages(scope, url.as_deref(), search.as_deref(), offset, page_size)
+        .read_index(move |s| match &scope {
+            PagesFor::Collection(id) => s.pages(
+                PagesScope::Collection(id),
+                url.as_deref(),
+                search.as_deref(),
+                offset,
+                page_size,
+            ),
+            PagesFor::Crawls(files) => {
+                let ids: Vec<String> = files.iter().map(|(id, _)| id.clone()).collect();
+                s.pages(
+                    PagesScope::Crawls(&ids),
+                    url.as_deref(),
+                    search.as_deref(),
+                    offset,
+                    page_size,
+                )
+            }
         })
         .await
     {
@@ -402,7 +428,7 @@ pub(super) async fn pages_response(
                         "url": h.url,
                         "ts": ts_to_iso(&h.timestamp),
                         "title": h.title,
-                        "filename": h.crawl_id,
+                        "filename": names.get(&h.crawl_id).unwrap_or(&h.crawl_id),
                     })
                 })
                 .collect();

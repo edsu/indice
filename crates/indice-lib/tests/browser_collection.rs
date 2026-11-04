@@ -252,8 +252,14 @@ async fn collection_replay_follows_a_redirect_through_the_lookup() {
 }
 
 /// A page of a Browsertrix crawl replays with a stylesheet that Browsertrix
-/// wrote into another of the crawl's WACZs: the crawl's replay loads every
-/// file the crawl was written into, not just the one holding the page.
+/// wrote into another of the crawl's WACZs.
+///
+/// As in a real crawl, the stylesheet is in the crawl's first file, with its
+/// seed page, and the page is in a later one. Three more files hold neither.
+/// For a resource its page's file lacks, wabac tries the first three files by
+/// name in sorted order, so the first file is given the id that sorts last:
+/// only the crawl's manifest naming its files in the crawl's order puts it
+/// among the three.
 ///
 /// The same browser first replays the page as a crawl of one file, where the
 /// stylesheet is missing, and then as one Browsertrix crawl. The second
@@ -265,34 +271,52 @@ async fn a_crawls_page_replays_with_a_stylesheet_from_another_of_its_files() {
     let coll = "Split Crawl";
     let warcs = tmp.path().join("warcs");
     std::fs::create_dir_all(&warcs).unwrap();
-    // Fetched first, so in the crawl's first file, as a crawler fetches what
-    // every page shares.
-    let css = warcs.join("first.warc");
-    std::fs::write(
-        &css,
-        warc_response(
-            "https://split.example/style.css",
-            "2025-01-25T22:32:01Z",
-            "text/css",
-            "#probe { color: rgb(1, 2, 3); }",
+    let mut files: Vec<(&str, String)> = vec![
+        (
+            "first",
+            [
+                warc_response(
+                    "https://split.example/",
+                    "2025-01-25T22:32:00Z",
+                    "text/html",
+                    r#"<html><head><link rel="stylesheet" href="/style.css"></head><body>home</body></html>"#,
+                ),
+                warc_response(
+                    "https://split.example/style.css",
+                    "2025-01-25T22:32:01Z",
+                    "text/css",
+                    "#probe { color: rgb(1, 2, 3); }",
+                ),
+            ]
+            .concat(),
         ),
-    )
-    .unwrap();
-    let page = warcs.join("later.warc");
-    std::fs::write(
-        &page,
-        warc_response(
-            PAGE,
-            "2025-01-25T22:32:02Z",
-            "text/html",
-            r#"<html><head><link rel="stylesheet" href="/style.css"></head><body><p id="probe">split crawl</p></body></html>"#,
+        (
+            "later",
+            warc_response(
+                PAGE,
+                "2025-01-25T22:32:02Z",
+                "text/html",
+                r#"<html><head><link rel="stylesheet" href="/style.css"></head><body><p id="probe">split crawl</p></body></html>"#,
+            ),
         ),
-    )
-    .unwrap();
-    let mut ids = Vec::new();
-    for (warc, name) in [(&css, "first"), (&page, "later")] {
+    ];
+    for n in 1..=3 {
+        files.push((
+            ["other-1", "other-2", "other-3"][n - 1],
+            warc_response(
+                &format!("https://split.example/other-{n}.txt"),
+                "2025-01-25T22:32:03Z",
+                "text/plain",
+                "neither",
+            ),
+        ));
+    }
+    let mut ids = std::collections::HashMap::new();
+    for (name, records) in &files {
+        let warc = warcs.join(format!("{name}.warc"));
+        std::fs::write(&warc, records).unwrap();
         let built = indice_lib::wacz_build::build_wacz(
-            std::slice::from_ref(warc),
+            &[warc],
             &indice_lib::wacz_build::WaczBuildMeta::default(),
             &tmp.path().join("archive"),
             name,
@@ -303,32 +327,42 @@ async fn a_crawls_page_replays_with_a_stylesheet_from_another_of_its_files() {
         let w = manifest
             .waczs
             .iter()
-            .find(|w| w.source.location().ends_with(&format!("{name}.wacz")));
-        ids.push(w.unwrap().id.clone());
+            .find(|w| w.source.location().ends_with(&format!("/{name}.wacz")));
+        ids.insert(*name, w.unwrap().id.clone());
     }
-    let page_file = &ids[1];
+    // The manifest is read per request, so each rewrite takes effect at once.
+    let waczs = tmp.path().join("index").join("waczs.json");
+    let rewrite = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
+        v.as_array_mut().unwrap().iter_mut().for_each(f);
+        std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+    };
+    let first = ids["first"].clone();
+    rewrite(&|w| {
+        if w["id"] == first.as_str() {
+            w["id"] = serde_json::json!("ffffffff");
+        }
+    });
+    let page_file = &ids["later"];
     let (addr, server) = serve(tmp.path(), public_config(tmp.path())).await;
     let viewer = format!("http://{addr}/crawl/{page_file}/20250125223202/{PAGE}");
     let driver = connect_driver().await;
 
     let alone = probe_color(&driver, &viewer).await;
-    // The manifest is read per request, so this takes effect at once.
-    let waczs = tmp.path().join("index").join("waczs.json");
-    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&waczs).unwrap()).unwrap();
-    for w in v.as_array_mut().unwrap() {
+    rewrite(&|w| {
         w["browsertrix"] = serde_json::json!({
             "host": "https://app.browsertrix.com",
             "item_id": "manual-20250125223202-f7a72d33-167",
         });
-    }
-    std::fs::write(&waczs, serde_json::to_vec(&v).unwrap()).unwrap();
+    });
     let together = probe_color(&driver, &viewer).await;
     let _ = driver.quit().await;
     server.abort();
 
     let alone = alone.unwrap();
     assert_ne!(alone, STYLED, "one file holds no stylesheet to apply");
-    assert_eq!(together.unwrap(), STYLED, "the crawl's other file was read");
+    assert_eq!(together.unwrap(), STYLED, "the crawl's first file was read");
 }
 
 const PAGE: &str = "https://split.example/page.html";

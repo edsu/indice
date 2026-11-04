@@ -530,6 +530,44 @@ async fn a_timed_out_request_answers_503() {
 /// Every crawl replays through its own `/files/{id}`, whatever its source,
 /// because the replay origin replays nothing else (`static/replay/guard.js`).
 /// A remote URL handed to the viewer directly would be refused there.
+/// A crawl's files are named by their place in it, padded so that the names
+/// sort in that order (`10-` after `09-`, not after `1-`), and none looks like
+/// an integer, which JavaScript would put first.
+#[test]
+fn a_crawls_files_are_named_to_sort_in_the_crawls_order() {
+    let file = |id: &str| -> crate::collections::Wacz {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "collection": "c",
+            "source": "archive/c/a.wacz",
+            "name": "n",
+            "date_indexed": "2026-01-01T00:00:00Z",
+            "file_size": 1,
+            "sha256": "0",
+        }))
+        .unwrap()
+    };
+    // In the crawl's order, with ids that sort another way, some all digits.
+    let ids = [
+        "ffffffff", "23469625", "0d9b54be", "88634329", "a0000000", "b0000000", "c0000000",
+        "d0000000", "e0000000", "f0000000", "00000001",
+    ];
+    let files: Vec<_> = ids.iter().map(|id| file(id)).collect();
+    let refs: Vec<&crate::collections::Wacz> = files.iter().collect();
+    let names: Vec<String> = crawl_file_names(&refs)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names[0], "00-ffffffff");
+    assert_eq!(names[10], "10-00000001");
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(sorted, names, "sorting keeps the crawl's order");
+    assert!(names.iter().all(|n| n.parse::<u64>().is_err()));
+    // One file needs no padding.
+    assert_eq!(crawl_file_names(&refs[..1])[0].0, "0-ffffffff");
+}
+
 #[test]
 fn every_crawl_replays_through_its_own_files_path() {
     let crawl = |source: serde_json::Value| -> crate::collections::Wacz {

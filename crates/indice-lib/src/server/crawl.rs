@@ -216,7 +216,7 @@ pub(super) async fn crawl_replay_json(
         return (StatusCode::NOT_FOUND, "crawl not found").into_response();
     };
     replay_manifest(
-        manifest.crawl_files(w).into_iter(),
+        &crawl_file_names(&manifest.crawl_files(w)),
         format!("/crawl/{}/pages", url_encode(&w.id)),
         &w.display_name(),
         w.description.as_deref(),
@@ -237,12 +237,30 @@ pub(super) async fn crawl_pages(
     let Some(w) = manifest.wacz_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "crawl not found").into_response();
     };
-    let ids = manifest
-        .crawl_files(w)
+    let files = crawl_file_names(&manifest.crawl_files(w))
         .into_iter()
-        .map(|f| f.id.clone())
+        .map(|(name, f)| (f.id.clone(), name))
         .collect();
-    pages_response(&state, PagesFor::Crawls(ids), params).await
+    pages_response(&state, PagesFor::Crawls(files), params).await
+}
+
+/// The names a crawl's files go by in its manifest: each file's place in
+/// `crawl_files`, zero-padded, then its id (`00-6bdd2cb1`, `01-…`).
+///
+/// For a resource that isn't in its page's file, wabac tries the first three
+/// files by name, in sorted order, which is how it reads them back from its
+/// cache whatever order the manifest gives; and it puts a name that looks like
+/// an integer before all the others. A file's bare id is eight hex digits,
+/// sometimes all digits. Named by place, the files sort in the crawl's own
+/// order, earliest first, so the first three are the crawl's first files,
+/// where a crawl fetches the stylesheets and scripts every page shares.
+pub(super) fn crawl_file_names<'a>(files: &[&'a Wacz]) -> Vec<(String, &'a Wacz)> {
+    let width = files.len().saturating_sub(1).to_string().len();
+    files
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (format!("{i:0width$}-{}", w.id), *w))
+        .collect()
 }
 
 /// What replay loads for a page of crawl `w`: its own `/files/{id}` when the
