@@ -238,9 +238,10 @@ pub(super) async fn collection_annotations(
 
 /// A wabac (ReplayWeb.page) multi-WACZ collection manifest for a collection: the
 /// JSON that `<replay-web-page source="…/replay.json">` loads to replay every
-/// member crawl as one collection. Each member maps to a resource pointing at the
-/// same byte-serving endpoint single-WACZ replay already uses (`viewer_source`):
-/// `/files/{id}` for local/Browsertrix sources, the remote URL for a plain URL.
+/// member crawl as one collection (`replay_manifest`). A streamed Browsertrix
+/// member's path is its presigned URL when one is cached, and every other
+/// member's is its `/files/{id}`: the collection may span many Browsertrix
+/// items, a lookup each, so it resolves none (`presigned::cached_urls`).
 ///
 pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
@@ -257,14 +258,14 @@ pub(super) async fn collection_replay_json(
         .members_of(&id)
         .map(|w| (w.id.clone(), w))
         .collect();
+    let waczs: Vec<&Wacz> = files.iter().map(|(_, w)| *w).collect();
     replay_manifest(
-        &state,
         &files,
+        &super::presigned::cached_urls(&state.presigned, &waczs),
         format!("/collection/{}/pages", url_encode(&c.id)),
         &c.name,
         c.description.as_deref(),
     )
-    .await
 }
 
 /// A wabac multi-WACZ manifest of `files`, for a collection's replay or for
@@ -276,27 +277,19 @@ pub(super) async fn collection_replay_json(
 /// crawl by its place in the crawl (`crawl_file_names`). `hash` carries the
 /// `sha256:` prefix wabac expects.
 ///
-/// A streamed Browsertrix file's `path` is a presigned URL to its bytes, so
-/// wabac reads them directly instead of through `/files/{id}`, which would
-/// add a redirect to every one of a page's hundreds of range reads. If the URL
-/// can't be had, the file falls back to `/files/{id}`, which tries again and
-/// says why it can't. A presigned URL expires, so the manifest is not to be
-/// cached; when a read is refused once it has, wabac fetches the manifest
-/// again.
-pub(super) async fn replay_manifest(
-    state: &AppState,
+/// A streamed Browsertrix file's `path` is its URL in `presigned`, by source
+/// location, so wabac reads its bytes directly instead of through
+/// `/files/{id}`, which would add a redirect to every one of a page's hundreds
+/// of range reads. A file not in `presigned` goes by `/files/{id}`. A
+/// presigned URL expires, so the manifest is not to be cached: each visit
+/// fetches it again, and wabac takes the fresh URLs from it.
+pub(super) fn replay_manifest(
     files: &[(String, &Wacz)],
+    presigned: &HashMap<String, String>,
     pages_url: String,
     title: &str,
     desc: Option<&str>,
 ) -> Response {
-    let presigned = match &state.resolver {
-        Some(resolver) => {
-            let waczs: Vec<&Wacz> = files.iter().map(|(_, w)| *w).collect();
-            super::presigned::urls_for(&state.presigned, resolver, &waczs).await
-        }
-        None => HashMap::new(),
-    };
     let resources: Vec<serde_json::Value> = files
         .iter()
         .map(|(name, w)| {

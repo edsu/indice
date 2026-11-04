@@ -1,6 +1,7 @@
 //! The crawl detail page: one WACZ's provenance, fixity, and captures; and
 //! the replay manifest and page list for a crawl written into several WACZs.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -217,14 +218,19 @@ pub(super) async fn crawl_replay_json(
     let Some(w) = manifest.wacz_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "crawl not found").into_response();
     };
+    let files = manifest.crawl_files(w);
+    // One crawl is one Browsertrix item or collection: one lookup at most.
+    let presigned = match &state.resolver {
+        Some(resolver) => super::presigned::urls_for(&state.presigned, resolver, &files).await,
+        None => HashMap::new(),
+    };
     replay_manifest(
-        &state,
-        &crawl_file_names(&manifest.crawl_files(w)),
+        &crawl_file_names(&files),
+        &presigned,
         format!("/crawl/{}/pages", url_encode(&w.id)),
         &w.display_name(),
         w.description.as_deref(),
     )
-    .await
 }
 
 /// `GET /crawl/{id}/pages`: where wabac asks which of a crawl's WACZs holds a

@@ -3441,7 +3441,9 @@ fn run_archiveit(
 /// caches the client, so no login happens unless a Browsertrix source is
 /// actually encountered.
 struct BrowsertrixResolver {
-    clients: std::sync::Mutex<std::collections::HashMap<String, indice_lib::browsertrix::Client>>,
+    clients: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<indice_lib::browsertrix::Client>>,
+    >,
 }
 
 impl BrowsertrixResolver {
@@ -3453,17 +3455,30 @@ impl BrowsertrixResolver {
 
     /// The item's WACZ resources, with fresh presigned URLs, using the cached
     /// client for `host` (logging in if there's none).
+    ///
+    /// The lock is held only to look the client up or put it in, never across
+    /// a request to Browsertrix, so one slow host or item doesn't hold up the
+    /// lookups for others. Two first lookups at once may each log in; the
+    /// later login is the one kept.
     fn try_item(
         &self,
         host: &str,
         org: &str,
         item: &str,
     ) -> Result<Vec<indice_lib::browsertrix::Resource>> {
-        let mut clients = self.clients.lock().unwrap();
-        if !clients.contains_key(host) {
-            clients.insert(host.to_string(), connect(host)?);
-        }
-        clients.get(host).unwrap().item_resources(org, item)
+        let cached = self.clients.lock().unwrap().get(host).cloned();
+        let client = match cached {
+            Some(client) => client,
+            None => {
+                let client = std::sync::Arc::new(connect(host)?);
+                self.clients
+                    .lock()
+                    .unwrap()
+                    .insert(host.to_string(), client.clone());
+                client
+            }
+        };
+        client.item_resources(org, item)
     }
 }
 
