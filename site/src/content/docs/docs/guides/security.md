@@ -140,6 +140,10 @@ These are filed and not yet fixed. The tracker is in the repository: `grep <id> 
 
 - A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume (`rustyweb-6vjz`).
 
+## How it has been tested
+
+Each promise above has a test that pins it, listed in the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model), and CodeQL scans every change. All of that review comes from inside the project, much of it AI-assisted. indice has had no independent security review, its parsers have not been fuzzed, and no one has attacked a running instance to test it. The plan for fuzzing, penetration testing and an outside review is public, in [issue #223](https://github.com/edsu/indice/issues/223).
+
 ## Checklist
 
 - [ ] A second hostname for replay, passed as `--replay-url` (`REPLAY_ADDRESS` in the shipped stack).

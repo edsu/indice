@@ -7,6 +7,10 @@ nothing behind it to backport them to.
 If you *are* running indice somewhere, please tell me, in an issue or privately.
 It changes how I weigh everything below.
 
+indice has had no independent security review, and its parsers have not been
+fuzzed. Its testing is the test suite, which pins each guarantee in the threat
+model, CodeQL on every change, and AI-assisted review.
+
 ## Reporting
 
 Use GitHub's private vulnerability reporting:
@@ -88,9 +92,10 @@ is not a finding.
 
 ## Disclosure
 
-Coordinated, and the bar is deliberately low while nobody is running this: for
-most things I will just file the issue publicly and fix it in the open, because
-that is how the rest of the project works and there is no deployed population to
-protect in the meantime. Tell me if you would rather wait, and we will wait.
+Coordinated. A finding that someone could use against a running instance,
+including the demo at app.indice.page, stays in a private advisory until the
+fix is merged, and is written up publicly after that, with the test that pins
+it. A hardening idea that is not an exploitable weakness today can go straight
+into a public issue. Tell me if you would rather wait longer, and we will wait.
 
 Happy to credit you by whatever name you prefer, or not at all.
