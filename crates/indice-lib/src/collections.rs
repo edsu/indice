@@ -986,7 +986,7 @@ struct FrontMatter {
     updated_by: Option<crate::identity::SubjectId>,
     // The DACS/EAD curatorial fields are written as `String`/`Vec` (not skipped
     // when empty) so an unset field appears as a blank the curator can fill in —
-    // `creator: ''`, `subjects: []`. On read, blanks map back to `None`/empty in
+    // `creator: ""`, `subjects: []`. On read, blanks map back to `None`/empty in
     // `parse_finding_aid`, so ingest still seeds them and the "still needed"
     // nudge still fires; the blanks are a display scaffold, not real values.
     #[serde(default)]
@@ -1214,13 +1214,13 @@ fn parse_finding_aid(id: &CollectionId, text: &str) -> Result<Collection> {
     let fm: FrontMatter = if fm_src.trim().is_empty() {
         FrontMatter::default()
     } else {
-        serde_yaml_ng::from_str(fm_src).context("parsing YAML front-matter")?
+        serde_saphyr::from_str(fm_src).context("parsing YAML front-matter")?
     };
     let narrative = {
         let b = body.trim();
         (!b.is_empty()).then(|| b.to_string())
     };
-    // A blank scaffold field (`creator: ''`) reads back as unset, so ingest
+    // A blank scaffold field (`creator: ""`) reads back as unset, so ingest
     // still seeds it and the "still needed" nudge still fires.
     let blank_none = |s: String| {
         let t = s.trim();
@@ -1290,7 +1290,7 @@ pub fn write_finding_aid(home: &Path, c: &Collection) -> Result<()> {
         curator: c.curator.clone(),
         drafted: c.drafted.clone(),
     };
-    let yaml = serde_yaml_ng::to_string(&fm).context("serializing YAML front-matter")?;
+    let yaml = serde_saphyr::to_string(&fm).context("serializing YAML front-matter")?;
     let mut out = String::from("---\n");
     out.push_str(&yaml);
     if !yaml.ends_with('\n') {
@@ -2174,7 +2174,12 @@ mod tests {
         let text = std::fs::read_to_string(tmp.path().join("collections/news/README.md")).unwrap();
 
         // The DACS front-matter fields appear as blanks for the curator to fill.
-        for blank in ["creator: ''", "dates: ''", "rights: ''", "description: ''"] {
+        for blank in [
+            r#"creator: """#,
+            r#"dates: """#,
+            r#"rights: """#,
+            r#"description: """#,
+        ] {
             assert!(
                 text.contains(blank),
                 "expected scaffold {blank:?} in:\n{text}"

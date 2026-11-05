@@ -378,7 +378,7 @@ impl Draft {
 
     /// The draft as YAML, in the shape of a finding aid's front matter.
     pub fn to_yaml(&self) -> Result<String> {
-        serde_yaml_ng::to_string(self).context("writing the draft as YAML")
+        serde_saphyr::to_string(self).context("writing the draft as YAML")
     }
 
     pub fn is_empty(&self) -> bool {

@@ -24,9 +24,9 @@ tower-http = { version = "0.7", features = ["compression-full", "fs", "timeout",
 maud = { version = "0.27", features = ["axum"] }
 
 # Curator finding-aid prose: Markdown rendering (safe subset) + YAML front-matter.
-# serde_yaml_ng is the maintained fork of the archived serde_yaml.
+# serde-saphyr is pure Rust (no unsafe-libyaml); see RUSTSEC-2024-0449.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
-serde_yaml_ng = "0.10"
+serde-saphyr = "2"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

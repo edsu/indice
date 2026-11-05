@@ -192,7 +192,7 @@ impl Config {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        serde_yaml_ng::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        serde_saphyr::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
     /// Check the `uploads:` section strictly, for the server to call at startup.
@@ -213,16 +213,18 @@ impl Config {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Ok(());
         };
-        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        // serde-saphyr has no YAML value type of its own; any serde tree will
+        // do for inspecting keys, and serde_json's is already a dependency.
+        let doc: serde_json::Value =
+            serde_saphyr::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         let Some(uploads) = doc.get("uploads") else {
             return Ok(());
         };
-        let Some(section) = uploads.as_mapping() else {
+        let Some(section) = uploads.as_object() else {
             anyhow::bail!("{}: uploads: must be a mapping of limits", path.display());
         };
         for (key, value) in section {
-            let key = key.as_str().unwrap_or("?");
+            let key = key.as_str();
             if !matches!(key, "max_mb" | "max_total_gb") {
                 anyhow::bail!(
                     "{}: uploads.{key} is not a setting; the upload limits are \
@@ -437,7 +439,7 @@ mod tests {
     #[test]
     fn max_extract_mb_resolves_to_bytes() {
         assert_eq!(Config::default().max_extract_bytes(), DEFAULT_EXTRACT_BYTES);
-        let parse = |yaml: &str| -> Config { serde_yaml_ng::from_str(yaml).unwrap() };
+        let parse = |yaml: &str| -> Config { serde_saphyr::from_str(yaml).unwrap() };
         assert_eq!(
             parse("index:\n  max_extract_mb: 4\n").max_extract_bytes(),
             4 * 1024 * 1024

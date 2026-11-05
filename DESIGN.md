@@ -786,7 +786,7 @@ re-sync. A legacy `index/collections.json`, or an earlier flat `collections/<slu
 migrated to the `collections/<slug>/README.md` form on open/save.
 
 The DACS front-matter fields are **scaffolded as empty blanks** rather than omitted when unset —
-a freshly-created finding aid writes `creator: ''`, `dates: ''`, `rights: ''`, `description: ''`,
+a freshly-created finding aid writes `creator: ""`, `dates: ""`, `rights: ""`, `description: ""`,
 `subjects: []` — so a curator opening the file sees exactly what to fill in (fill-in-the-blank,
 not a guess-the-schema). The blanks are a *display scaffold only*: `parse_finding_aid` maps a
 blank back to unset, so ingest still seeds it (fill-gaps) and the collection page's "Still needed"

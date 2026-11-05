@@ -7,6 +7,5 @@
 
 [advisories]
 ignore = [
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml (via serde_yaml_ng) is unmaintained; no known vulnerability. Replacing the YAML crate: https://github.com/edsu/indice/issues/237" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser (via pdf-extract -> lopdf) is unmaintained; no known vulnerability. Replacing the PDF extractor: https://github.com/edsu/indice/issues/238" },
 ]
