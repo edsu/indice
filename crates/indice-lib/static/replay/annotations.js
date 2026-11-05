@@ -23,6 +23,9 @@
   // than cut, so a saved quote is always the passage the curator saw.
   const MAX_QUOTE = 2000;
 
+  // A note's own page, as `annotation_path` on the server writes it.
+  const NOTE_PATH = /^\/collection\/[^/?#]+\/annotations\/[0-9a-f]{32}$/;
+
   /** @typedef {{exact:string, prefix?:string, suffix?:string}} Selector */
   /** @typedef {{id:string, created:string, modified?:string, author?:string,
    *             url:string, timestamp:string, selector?:Selector,
@@ -146,8 +149,11 @@
     li.append(meta, body);
 
     // The note's own page, which is the link to share or cite for it. Spelled
-    // out rather than hung on the date, where nobody would look for it.
-    if (a.href) {
+    // out rather than hung on the date, where nobody would look for it. Only
+    // ever a path to a note's page on this site: the server builds `href`
+    // that way, and the panel takes nothing else into a link whatever the
+    // API sends.
+    if (typeof a.href === "string" && NOTE_PATH.test(a.href)) {
       const link = document.createElement("a");
       link.className = "anno-link";
       link.href = a.href;
