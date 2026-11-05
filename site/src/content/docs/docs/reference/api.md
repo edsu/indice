@@ -78,7 +78,46 @@ curl 'http://127.0.0.1:8080/api/annotations?collection=example-collection'
 
 **Response** (abbreviated): `{ "can_annotate": false, "annotations": [ … ] }`, where each note carries its `id`, `author` (a [display name](/docs/guides/annotations/#authorship-and-privacy), never the login identity, since this endpoint is public), `created`/`modified`, the target `url` + `timestamp`, the `selector` (the quoted passage, for a passage note), and the note body as both `note_md` (Markdown) and `note_html` (sanitized). `can_annotate` reflects whether the current request is allowed to write.
 
+Each note also carries `href`, the path of [its own page](#get-collectionidannotationskey).
+
 Creating, editing, and deleting notes are management-gated write endpoints (`POST /api/annotations`, `POST /api/annotations/{id}`, `POST /api/annotations/{id}/delete`). See the [management write API](#management-write-api) below.
+
+## `GET /collection/{id}/annotations/{key}`
+
+One [note](/docs/guides/annotations/), at the URL that identifies it. `key` is the hex after `urn:indice:annotation:` in its `id`. Public, like the notes themselves.
+
+With an `Accept` header that ranks `application/ld+json` or `application/json` above HTML, it answers with the note as a [W3C Web Annotation](https://www.w3.org/TR/annotation-model/), as `application/ld+json; profile="http://www.w3.org/ns/anno.jsonld"`. A browser gets a page showing the note, with the same JSON-LD in a `<script type="application/ld+json">`.
+
+The JSON-LD is also at `/collection/{id}/annotations/{key}.jsonld`, whatever the request asks for, so it works as a plain link. The note's page links to it with `rel="alternate"`, in the page and in a `Link` header. Its `id` is still the URL without `.jsonld`.
+
+```sh
+curl -H 'Accept: application/ld+json' \
+  'http://127.0.0.1:8080/collection/example-collection/annotations/3f9c0d2e8b7a41c6a5d0e9f8b7c6a5d4'
+```
+
+**Response** (abbreviated):
+
+```json
+{
+  "@context": "http://www.w3.org/ns/anno.jsonld",
+  "id": "http://127.0.0.1:8080/collection/example-collection/annotations/3f9c0d2e8b7a41c6a5d0e9f8b7c6a5d4",
+  "type": "Annotation",
+  "created": "2026-11-05T15:04:05Z",
+  "creator": { "type": "Person", "name": "alice" },
+  "body": { "type": "TextualBody", "format": "text/markdown", "value": "Worth reading." },
+  "target": {
+    "source": "https://example.org/",
+    "selector": { "type": "TextQuoteSelector", "exact": "Example Domain" },
+    "state": {
+      "type": "TimeState",
+      "sourceDate": "2026-01-01T00:00:00Z",
+      "cached": "http://127.0.0.1:8080/collection/example-collection/20260101000000/https://example.org/"
+    }
+  }
+}
+```
+
+`id` is built from the site's URL (`--site-url`), or on a workstation from `http://localhost:` and its port. The JSON-LD is sent with `Access-Control-Allow-Origin: *`, so annotation tools on other sites can read it. `creator` is the author's display name only, never the login identity. A whole-page note has no `selector`. `state` says when the page was captured and where the archived copy replays. An unknown note, or a key that isn't one, is a 404. A note whose id indice didn't create (in a hand-edited `annotations.jsonl`, say) has no page of its own, and `/api/annotations` gives it no `href`.
 
 ## `GET /health`
 

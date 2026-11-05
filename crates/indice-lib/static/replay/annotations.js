@@ -23,10 +23,15 @@
   // than cut, so a saved quote is always the passage the curator saw.
   const MAX_QUOTE = 2000;
 
+  // A note's own page, as `annotation_path` on the server writes it, with its
+  // key captured.
+  const NOTE_PATH = /^\/collection\/[^/?#]+\/annotations\/([0-9a-f]{32})$/;
+
   /** @typedef {{exact:string, prefix?:string, suffix?:string}} Selector */
   /** @typedef {{id:string, created:string, modified?:string, author?:string,
    *             url:string, timestamp:string, selector?:Selector,
-   *             note_md:string, note_html:string, editable:boolean}} Anno */
+   *             note_md:string, note_html:string, href?:string,
+   *             editable:boolean}} Anno */
 
   const state = {
     collection: "",
@@ -144,10 +149,31 @@
 
     li.append(meta, body);
 
+    // The note's own page, which is the link to share or cite for it. Spelled
+    // out rather than hung on the date, where nobody would look for it.
+    //
+    // Only ever a path to a note's page on this site. The server's `href` says
+    // whether the note has one, but the link is rebuilt here from a fixed
+    // prefix, this page's collection and the key's hex, rather than taken as
+    // sent: whatever the API returns, it can't become another site's address
+    // or a `javascript:` URL.
+    const keyed = typeof a.href === "string" ? NOTE_PATH.exec(a.href) : null;
+    if (keyed) {
+      const link = document.createElement("a");
+      link.className = "anno-link";
+      link.href =
+        "/collection/" +
+        encodeURIComponent(state.collection) +
+        "/annotations/" +
+        encodeURIComponent(keyed[1]);
+      link.textContent = "Link to this note";
+      li.append(link);
+    }
+
     if (a.selector) {
       li.classList.add("has-region");
       li.addEventListener("click", (e) => {
-        if (/** @type {HTMLElement} */ (e.target).closest("button")) return;
+        if (/** @type {HTMLElement} */ (e.target).closest("button, a")) return;
         focusRange(a.id);
       });
     }
@@ -309,28 +335,41 @@
       .filter((a) => a.url === state.url && a.selector)
       .map((a) => ({ id: a.id, selector: a.selector }));
     toFrame("highlight", { notes });
-    // Open on the note the link named, once, and only if it is on this page,
-    // and only once the frame is listening: this is sent a single time, so it
-    // must not be posted to a frame that is still loading. (The highlights are
-    // safe to send early, since they are sent again whenever the frame reports.)
-    if (state.frameReady && state.openOn && notes.some((n) => n.id === state.openOn)) {
-      const id = state.openOn;
+    // Open on the note the link named, once, and only if it is on this page.
+    // A note on a passage waits until the frame is listening, since its focus
+    // is sent a single time and must not be posted to a frame still loading.
+    // (The highlights are safe to send early: they are sent again whenever the
+    // frame reports.) A note on the whole page has no passage, so it is only
+    // marked in the panel, which needs no frame.
+    const named = state.openOn
+      ? state.items.find((a) => a.url === state.url && a.id === state.openOn)
+      : null;
+    if (named && (!named.selector || state.frameReady)) {
       state.openOn = "";
-      focusRange(id);
+      if (named.selector) {
+        focusRange(named.id);
+      } else {
+        // The panel is all there is to show, and on a phone it starts closed.
+        togglePanel(true);
+        markCard(named.id);
+      }
     }
   }
 
   function focusRange(id) {
     // Mark the note in the panel too, so the reader can see which one the
     // emphasised passage belongs to.
-    if (els.list) {
-      for (const li of els.list.querySelectorAll(".anno-item")) {
-        li.classList.toggle("focused", /** @type {HTMLElement} */ (li).dataset.id === id);
-      }
-      const card = els.list.querySelector('.anno-item[data-id="' + CSS.escape(id) + '"]');
-      if (card) card.scrollIntoView({ block: "nearest" });
-    }
+    markCard(id);
     toFrame("focus", { id });
+  }
+
+  function markCard(id) {
+    if (!els.list) return;
+    for (const li of els.list.querySelectorAll(".anno-item")) {
+      li.classList.toggle("focused", /** @type {HTMLElement} */ (li).dataset.id === id);
+    }
+    const card = els.list.querySelector('.anno-item[data-id="' + CSS.escape(id) + '"]');
+    if (card) card.scrollIntoView({ block: "nearest" });
   }
 
   function clearSelection() {

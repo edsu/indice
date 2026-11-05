@@ -198,6 +198,13 @@
 .anno-item:has(.anno-composer) .anno-actions {
   display: none;
 }
+/* The link to the note's own page, under its text. */
+.anno-link {
+  display: inline-block;
+  margin-top: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--accent-dk);
+}
 .anno-actions {
   display: flex;
   gap: var(--s-2);

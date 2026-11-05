@@ -262,10 +262,13 @@ pub(super) async fn search_page(
             let href = if is_annotation {
                 // Notes carry no crawl; open the annotated page in the collection
                 // replay (where the note re-anchors + highlights via the panel).
-                match replay_href(ReplayScope::Collection(&r.collection), &r.timestamp, &r.url) {
-                    Some(href) => format!("{href}#note={}", url_encode(&r.annotation_id)),
-                    None => format!("/collection/{coll_href}"),
-                }
+                super::collection::note_replay_href(
+                    &r.collection,
+                    &r.timestamp,
+                    &r.url,
+                    &r.annotation_id,
+                )
+                .unwrap_or_else(|| format!("/collection/{coll_href}"))
             } else if is_collection {
                 // A crawl's own record: its page, which has the Replay button.
                 crawl_page

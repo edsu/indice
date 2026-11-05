@@ -42,10 +42,11 @@ Notes are written in Markdown and saved immediately, with no rebuild or restart.
 
 ## Where notes show up
 
-A note you write shows up in three places:
+A note you write shows up in four places:
 
 - **The replay panel** includes every note on the current capture, with passage notes highlighted in the page. Click a passage note to scroll to its passage and mark it more strongly.
 - **The collection annotations index** at `/collection/<id>/annotations`, linked from the collection page, lists every note with its author, quoted passage, and a link that opens the page at that note.
+- **Its own page**, at `/collection/<id>/annotations/<key>`, linked as "Link to this note" from the note in the panel and on the annotations index. That is the link to share or cite for one note. It shows the note and links to the archived page it is on.
 - **Full-text search** indexes each note as its own result (a "Note by …" row), so a search over the archive turns up relevant notes alongside pages, and a note's result opens the page at that note. See [Searching](/docs/guides/searching/).
 
 ![The per-collection annotations index: a page titled "Annotations" with a count of 2 notes on pages in this collection, listing each note with its author and date, the quoted passage for a passage note, the rendered Markdown body, and an "Open page" link back into replay](../../../../assets/docs/annotations-index.png)
@@ -71,3 +72,5 @@ One [W3C Web Annotation](https://www.w3.org/TR/annotation-model/) (JSON-LD) per 
 ## API
 
 Reading notes is part of the public [REST API](/docs/reference/api/) (`GET /api/annotations`); creating, editing, and deleting them are management-gated write endpoints.
+
+A note's own page is also its identifier for software: asked for `application/ld+json`, the same URL answers with the note as a [W3C Web Annotation](https://www.w3.org/TR/annotation-model/), whose `id` is that URL. The page a browser gets carries the same JSON-LD, and links to it on its own at the same URL plus `.jsonld`. See [`GET /collection/{id}/annotations/{key}`](/docs/reference/api/#get-collectionidannotationskey).

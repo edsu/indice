@@ -951,6 +951,263 @@ async fn public_annotation_api_never_exposes_a_login_address() {
     server.abort();
 }
 
+/// What [`get_accepting`] returns.
+struct Fetched {
+    status: u16,
+    content_type: String,
+    vary: String,
+    link: String,
+    cors: String,
+    body: String,
+}
+
+/// GET with an `Accept` header, or none for `""`.
+async fn get_accepting(url: String, accept: &'static str) -> Fetched {
+    tokio::task::spawn_blocking(move || {
+        let mut req = agent().get(&url);
+        if !accept.is_empty() {
+            req = req.header("accept", accept);
+        }
+        let mut res = req.call().unwrap();
+        let header = |name: &str| {
+            res.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (content_type, vary, link) = (header("content-type"), header("vary"), header("link"));
+        let cors = header("access-control-allow-origin");
+        Fetched {
+            status: res.status().as_u16(),
+            content_type,
+            vary,
+            link,
+            cors,
+            body: res.body_mut().read_to_string().unwrap(),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// A note has a URL of its own, which its JSON-LD names as its `id`: asked for
+/// JSON-LD, it answers with the note as a W3C Web Annotation; asked by a
+/// browser, with a page carrying the same JSON-LD and a link into the
+/// archive. Both are public, so neither may carry the author's login address,
+/// and a note's text can't close the page's `<script>`.
+#[tokio::test]
+async fn a_note_has_a_url_of_its_own() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        "name=Notes",
+        vec![
+            ("x-indice-auth-secret", "s3cret".to_string()),
+            ("x-forwarded-email", "alice@x.edu".to_string()),
+        ],
+    )
+    .await;
+    assert_eq!(status, 303);
+
+    let text = "Worth reading. </script><script>alert(1)</script>";
+    let url = format!("{base}/api/annotations");
+    let body = serde_json::json!({
+        "collection": "notes",
+        "url": "https://example.org/",
+        "timestamp": "20260101000000",
+        "selector": { "exact": "Example Domain" },
+        "note": text,
+    })
+    .to_string();
+    let created: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-indice-auth-secret", "s3cret")
+            .header("x-forwarded-email", "alice@x.edu")
+            .send(body)
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let id = created["id"].as_str().unwrap();
+    let key = id.strip_prefix("urn:indice:annotation:").unwrap();
+    let href = created["href"].as_str().unwrap();
+    assert_eq!(href, format!("/collection/notes/annotations/{key}"));
+
+    // As JSON-LD, by content negotiation.
+    let r = get_accepting(format!("{base}{href}"), "application/ld+json").await;
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(
+        r.content_type,
+        r#"application/ld+json; profile="http://www.w3.org/ns/anno.jsonld""#
+    );
+    assert!(r.vary.to_ascii_lowercase().contains("accept"), "{}", r.vary);
+    // Public, so any site's annotation client may read it.
+    assert_eq!(r.cors, "*");
+    assert!(
+        !r.body.contains("x.edu"),
+        "a login address leaked: {}",
+        r.body
+    );
+    let ld: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(ld["@context"], "http://www.w3.org/ns/anno.jsonld");
+    assert_eq!(ld["id"], format!("{base}{href}"));
+    assert_eq!(ld["type"], "Annotation");
+    assert_eq!(ld["creator"]["name"], "alice");
+    assert_eq!(ld["body"]["value"], text);
+    assert_eq!(ld["body"]["format"], "text/markdown");
+    assert_eq!(ld["target"]["source"], "https://example.org/");
+    assert_eq!(ld["target"]["selector"]["type"], "TextQuoteSelector");
+    assert_eq!(ld["target"]["selector"]["exact"], "Example Domain");
+    assert_eq!(ld["target"]["state"]["type"], "TimeState");
+    assert_eq!(ld["target"]["state"]["sourceDate"], "2026-01-01T00:00:00Z");
+    assert_eq!(
+        ld["target"]["state"]["cached"],
+        format!("{base}/collection/notes/20260101000000/https://example.org/")
+    );
+    // Plain JSON, from a client that doesn't name HTML, gets it too.
+    let r = get_accepting(format!("{base}{href}"), "application/json").await;
+    assert!(
+        r.content_type.starts_with("application/ld+json"),
+        "{}",
+        r.content_type
+    );
+    // And at its own URL whatever is asked, with the same id: the note's
+    // name is still the URL without the suffix.
+    let jsonld = format!("{href}.jsonld");
+    for accept in ["", "text/html"] {
+        let r = get_accepting(format!("{base}{jsonld}"), accept).await;
+        assert_eq!(r.status, 200, "{accept:?}");
+        assert!(
+            r.content_type.starts_with("application/ld+json"),
+            "{accept:?}: {}",
+            r.content_type
+        );
+        assert_eq!(r.cors, "*", "{accept:?}");
+        let same: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(same, ld, "{accept:?}");
+    }
+
+    // As a page, for a browser, with the same JSON-LD in it.
+    let r = get_accepting(
+        format!("{base}{href}"),
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    )
+    .await;
+    let page = r.body;
+    assert_eq!(r.status, 200);
+    assert!(
+        r.content_type.starts_with("text/html"),
+        "{}",
+        r.content_type
+    );
+    assert!(r.vary.to_ascii_lowercase().contains("accept"), "{}", r.vary);
+    // It says where the JSON-LD is, to a reader and in a header.
+    assert!(
+        page.contains(&format!(
+            r#"href="{jsonld}" rel="alternate" type="application/ld+json""#
+        )),
+        "{page}"
+    );
+    assert_eq!(
+        r.link,
+        format!(r#"<{jsonld}>; rel="alternate"; type="application/ld+json""#)
+    );
+    assert!(!page.contains("x.edu"), "a login address leaked: {page}");
+    assert!(
+        !page.contains("<script>alert"),
+        "a note closed the script: {page}"
+    );
+    let embedded = page
+        .split(r#"<script type="application/ld+json">"#)
+        .nth(1)
+        .and_then(|rest| rest.split("</script>").next())
+        .unwrap_or_else(|| panic!("no JSON-LD in the page: {page}"));
+    let embedded: serde_json::Value = serde_json::from_str(embedded).unwrap();
+    assert_eq!(embedded, ld, "the page's JSON-LD is the note's");
+    assert!(
+        page.contains(&format!(
+            "/collection/notes/20260101000000/https://example.org/#note={}",
+            id.replace(':', "%3A")
+        )),
+        "the page links into the archive: {page}"
+    );
+
+    // Its crumb goes back to its place on the Annotations page.
+    assert!(
+        page.contains(&format!(r#"href="/collection/notes/annotations#{key}""#)),
+        "{page}"
+    );
+
+    // Found from the Annotations page, anchored by its key.
+    let (_, index) = get(format!("{base}/collection/notes/annotations")).await;
+    assert!(index.contains(&format!(r#"href="{href}""#)), "{index}");
+    assert!(index.contains(&format!(r#"id="{key}""#)), "{index}");
+
+    // Nothing else answers.
+    for missing in [
+        "/collection/notes/annotations/not-a-key".to_string(),
+        format!("/collection/notes/annotations/{}", "0".repeat(32)),
+        format!("/collection/notes/annotations/{}.jsonld", "0".repeat(32)),
+        format!("{href}.jsonld.jsonld"),
+        format!("/collection/elsewhere/annotations/{key}"),
+    ] {
+        let (status, _) = get(format!("{base}{missing}")).await;
+        assert_eq!(status, 404, "{missing}");
+    }
+    server.abort();
+}
+
+/// On a workstation a note's id is under `http://localhost:{port}`, the
+/// address its browser opens, rather than the listener's `127.0.0.1`.
+#[tokio::test]
+async fn a_workstations_note_is_named_under_localhost() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    let port = base.rsplit(':').next().unwrap().to_string();
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        "name=Notes",
+        vec![("origin", base.clone())],
+    )
+    .await;
+    assert_eq!(status, 303);
+    let url = format!("{base}/api/annotations");
+    let origin = base.clone();
+    let created: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("origin", &origin)
+            .send(
+                serde_json::json!({
+                    "collection": "notes",
+                    "url": "https://example.org/",
+                    "timestamp": "20260101000000",
+                    "note": "a note",
+                })
+                .to_string(),
+            )
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let href = created["href"].as_str().unwrap();
+    let r = get_accepting(format!("{base}{href}"), "application/ld+json").await;
+    let ld: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(ld["id"], format!("http://localhost:{port}{href}"));
+    server.abort();
+}
+
 /// Saving a finding aid must not erase a concurrent ingest's manifest entry.
 ///
 /// `Manifest::save` rewrites `waczs.json` wholesale whatever changed, so a

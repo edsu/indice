@@ -27,7 +27,23 @@ use sha2::{Digest, Sha256};
 use crate::collections::{collection_dir, CollectionId};
 
 /// The JSON-LD context every annotation carries.
-const ANNO_CONTEXT: &str = "http://www.w3.org/ns/anno.jsonld";
+pub const ANNO_CONTEXT: &str = "http://www.w3.org/ns/anno.jsonld";
+
+/// What every minted id starts with; the rest is its key.
+const ID_PREFIX: &str = "urn:indice:annotation:";
+
+/// The part of an annotation's id that its URL carries: the hex after
+/// `urn:indice:annotation:`.
+pub fn key(id: &str) -> &str {
+    id.strip_prefix(ID_PREFIX).unwrap_or(id)
+}
+
+/// The id a URL's key names, or `None` for a key no minted id could have.
+/// Checked here so a path segment reaches the store only as hex.
+pub fn id_for_key(key: &str) -> Option<String> {
+    let hex = key.len() == 32 && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    hex.then(|| format!("{ID_PREFIX}{key}"))
+}
 
 /// A single page annotation, shaped as a W3C Web Annotation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,7 +373,7 @@ fn mint_id() -> String {
     h.update(n.to_le_bytes());
     let digest = h.finalize();
     let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-    format!("urn:indice:annotation:{hex}")
+    format!("{ID_PREFIX}{hex}")
 }
 
 fn now_rfc3339() -> String {
@@ -539,6 +555,21 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let a = Annotation::page("https://example.org/a", "2026", "   ", creator());
         assert!(create(home.path(), &cid("example"), &a).is_err());
+    }
+
+    #[test]
+    fn a_key_names_its_id_and_nothing_else() {
+        let id = mint_id();
+        assert_eq!(id_for_key(key(&id)).as_deref(), Some(id.as_str()));
+        for bad in [
+            "",
+            "../annotations",
+            "ABCDEF0123456789abcdef0123456789",
+            "abcdef0123456789abcdef012345678",
+            "abcdef0123456789abcdef01234567890",
+        ] {
+            assert_eq!(id_for_key(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

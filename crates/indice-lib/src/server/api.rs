@@ -122,6 +122,10 @@ struct AnnotationView {
     selector: Option<SelectorDto>,
     note_md: String,
     note_html: String,
+    /// The note's own page (see `collection_annotation`); absent for a note
+    /// whose id indice did not mint, which has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    href: Option<String>,
     /// Whether the current request's author may edit/delete this note.
     editable: bool,
 }
@@ -145,7 +149,11 @@ fn annotation_viewer(state: &AppState, headers: &HeaderMap) -> Option<Principal>
         .filter(|p| p.role().can_annotate())
 }
 
-fn annotation_view(a: &annotations::Annotation, viewer: Option<&Principal>) -> AnnotationView {
+fn annotation_view(
+    a: &annotations::Annotation,
+    collection: &str,
+    viewer: Option<&Principal>,
+) -> AnnotationView {
     let selector = a.target.selector.as_ref().map(|s| match s {
         annotations::Selector::TextQuoteSelector {
             exact,
@@ -173,6 +181,7 @@ fn annotation_view(a: &annotations::Annotation, viewer: Option<&Principal>) -> A
         selector,
         note_md: a.body.value.clone(),
         note_html: crate::markdown::render(&a.body.value).0,
+        href: super::collection::annotation_path(collection, &a.id),
         editable,
     }
 }
@@ -202,6 +211,7 @@ pub(super) async fn list_annotations(
         url,
         ts,
     } = q;
+    let scope = collection.to_string();
     let loaded = tokio::task::spawn_blocking(move || match (url.as_deref(), ts.as_deref()) {
         (Some(u), Some(t)) => annotations::list_by_page(&st.home, &collection, u, t),
         _ => annotations::load(&st.home, &collection),
@@ -211,7 +221,7 @@ pub(super) async fn list_annotations(
         Ok(Ok(list)) => {
             let views = list
                 .iter()
-                .map(|a| annotation_view(a, viewer.as_ref()))
+                .map(|a| annotation_view(a, &scope, viewer.as_ref()))
                 .collect();
             Json(AnnotationListResp {
                 can_annotate: viewer.is_some(),
@@ -266,7 +276,7 @@ pub(super) async fn create_annotation(
     };
     let audit_target = ann.id.clone();
     let audit_actor = author.clone();
-    let view = annotation_view(&ann, Some(&author));
+    let view = annotation_view(&ann, &req.collection, Some(&author));
     let st = state.clone();
     let collection = req.collection;
     let saved = tokio::task::spawn_blocking(move || {
@@ -320,6 +330,7 @@ pub(super) async fn update_annotation(
     let audit_target = id.clone();
     let st = state.clone();
     let AnnotationUpdateReq { collection, note } = req;
+    let scope = collection.to_string();
     let author_key = author.clone();
     let done = tokio::task::spawn_blocking(move || {
         // Index lock before the in-process one: `index_annotation_upsert`
@@ -355,7 +366,7 @@ pub(super) async fn update_annotation(
     .await;
     match done {
         Ok(Ok(Write::Done(UpdateResult::Updated(a)))) => {
-            Json(annotation_view(&a, Some(&author))).into_response()
+            Json(annotation_view(&a, &scope, Some(&author))).into_response()
         }
         Ok(Ok(Write::Done(UpdateResult::NotFound))) => {
             (StatusCode::NOT_FOUND, "no such annotation").into_response()

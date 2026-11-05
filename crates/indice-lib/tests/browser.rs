@@ -592,7 +592,126 @@ async fn annotate_through_viewer(
         "indice-anno-active",
         "a link to the note did not open on it",
     )
-    .await
+    .await?;
+
+    // A note on the whole page has no passage to emphasise, so a link to it
+    // marks it in the panel instead. The card links to the note's own page.
+    driver
+        .find(By::Id("anno-add"))
+        .await
+        .map_err(|e| e.to_string())?
+        .click()
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .find(By::Css(".anno-composer textarea"))
+        .await
+        .map_err(|e| e.to_string())?
+        .send_keys("a note on the whole page")
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .find(By::Css(".anno-composer button[type=submit]"))
+        .await
+        .map_err(|e| e.to_string())?
+        .click()
+        .await
+        .map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let whole = loop {
+        let body = tokio::task::spawn_blocking({
+            let url = url.clone();
+            move || {
+                ureq::get(&url)
+                    .call()
+                    .ok()
+                    .and_then(|mut r| r.body_mut().read_to_string().ok())
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap_or_default();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        if let Some(a) = json["annotations"]
+            .as_array()
+            .and_then(|a| a.iter().find(|a| a["selector"].is_null()))
+            .cloned()
+        {
+            break a;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("the whole-page note was not saved: {body}"));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let whole_id = whole["id"].as_str().unwrap_or_default();
+    let whole_href = whole["href"].as_str().unwrap_or_default();
+    driver
+        .goto(&format!("http://{addr}/"))
+        .await
+        .map_err(|e| e.to_string())?;
+    driver
+        .goto(&format!("{viewer}#note={whole_id}"))
+        .await
+        .map_err(|e| e.to_string())?;
+    let card = format!(r#".anno-item.focused[data-id="{whole_id}"] a.anno-link"#);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let link = loop {
+        if let Ok(a) = driver.find(By::Css(&card)).await {
+            break a.attr("href").await.map_err(|e| e.to_string())?;
+        }
+        if Instant::now() > deadline {
+            return Err("a link to a whole-page note did not mark it in the panel".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    if link.as_deref() != Some(whole_href)
+        || !whole_href.starts_with("/collection/notes/annotations/")
+    {
+        return Err(format!(
+            "the note should link to its own page {whole_href:?}, got {link:?}"
+        ));
+    }
+
+    // On a phone the panel starts closed, and it is all a link to a
+    // whole-page note has to show, so the link opens it.
+    let rect = driver.get_window_rect().await.map_err(|e| e.to_string())?;
+    let (width, height) = (
+        u32::try_from(rect.width).unwrap_or(1280),
+        u32::try_from(rect.height).unwrap_or(800),
+    );
+    driver
+        .set_window_rect(rect.x, rect.y, 480, height)
+        .await
+        .map_err(|e| e.to_string())?;
+    let narrow = async {
+        driver
+            .goto(&format!("http://{addr}/"))
+            .await
+            .map_err(|e| e.to_string())?;
+        driver
+            .goto(&format!("{viewer}#note={whole_id}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        let shown =
+            format!(r#"#anno-panel:not([hidden]) .anno-item.focused[data-id="{whole_id}"]"#);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while driver.find(By::Css(&shown)).await.is_err() {
+            if Instant::now() > deadline {
+                return Err(
+                    "on a phone, a link to a whole-page note left the panel closed".to_string(),
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Ok(())
+    }
+    .await;
+    driver
+        .set_window_rect(rect.x, rect.y, width, height)
+        .await
+        .map_err(|e| e.to_string())?;
+    narrow
 }
 
 /// Wait for the replayed page to carry the named Custom Highlight, entering
