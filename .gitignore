@@ -37,3 +37,6 @@ env.sh
 
 # overriding the stock compose
 compose.override.yaml
+
+# beads (br) is a local tracker; issues live on GitHub
+.beads/

@@ -45,22 +45,21 @@ unpinned, so it can regress without CI noticing.
 
 ### Already known
 
-Filed, documented, and not news. The tracker is in this repo, so
-`grep <id> .beads/issues.jsonl` gets you the whole writeup.
+Filed, documented, and not news. Each linked issue has the whole writeup.
 
 - Every capture a browser replays shares the replay origin, so a hostile
   capture's script can read the others replayed in that browser.
   See *Not defended* in the threat model.
 - What a WACZ inflates to on disk is not bounded: a deflated WARC or inner
   WACZ extracted to a temp file can fill the temp volume. (What it inflates to
-  in memory is: `index.max_member_mb`.) `rustyweb-6vjz`
+  in memory is: `index.max_member_mb`.) [#231](https://github.com/edsu/indice/issues/231)
 - Upload size and total archive size are limited only when `uploads.max_mb`
   and `uploads.max_total_gb` are set in `config.yaml`; both are unset by default.
   The limits apply to the whole archive, not to each curator.
-  `rustyweb-upload-quota-hryt`
+  [#232](https://github.com/edsu/indice/issues/232)
 - A failed upload leaves its file in `archive/`. It counts against
   `uploads.max_total_gb` but appears nowhere in the workroom, so only someone
-  with a shell can remove it. `rustyweb-failed-ingest-leaves-file-d1dw`
+  with a shell can remove it. [#233](https://github.com/edsu/indice/issues/233)
 
 A report that one of these is worse than I have described, or reachable from a
 principal I did not consider, is worth sending.

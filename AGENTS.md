@@ -74,27 +74,11 @@ written up publicly with the test that pins it.
 
 ### Beads (older issues)
 
-Older work is tracked in **beads** (`br`, at `~/.local/bin/br`; SQLite-backed,
-exported to `.beads/issues.jsonl` which *is* committed), and is moving to GitHub
-Issues where possible. Until an item has moved, beads is where it lives. Work
-there is organized into epics with numbered child tasks (e.g.
-`rustyweb-streaming-index-r0n.7`). Close tasks as their work lands, and file
-follow-ups rather than expanding a PR's scope, in either tracker.
-
-**Beads commits are handled out of band by the maintainer.** Run `br` operations
-freely (create/close/comment on issues), but **do not commit `.beads/issues.jsonl`**
-— leave it dirty in the working tree; Ed commits it separately (typically straight
-to `main`). Keep it out of your feature branches and PRs. If you need to move
-branches while it's dirty, stash just that file (`git stash push .beads/issues.jsonl`)
-and restore it after. This side-steps the bundling problem below.
-
-Why the maintainer batches it: `br` auto-flushes the *entire* DB to
-`.beads/issues.jsonl` on every write, so whichever branch commits the JSONL sweeps
-in *all* pending tracker changes — not just "this branch's" issue. Splitting beads
-changes across parallel PRs therefore doesn't work: the first to merge carries
-everything, and the rest conflict on the single JSONL file. The DB is the source of
-truth if things get out of sync (`br sync --status`; `br sync --flush-only` exports
-DB → JSONL).
+Older work lives in **beads** (`br`, at `~/.local/bin/br`), the maintainer's
+local tracker. `.beads/` is gitignored, so it is not in the repo. Identifiers
+like `rustyweb-63jk` in code comments and DESIGN.md refer to it; ask Ed if you
+need one looked up. An item that someone outside the project needs to read
+moves to a GitHub issue, and whatever cites it links the issue instead.
 
 ## Code review checklist
 
