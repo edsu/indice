@@ -19,6 +19,12 @@ are revision control ready.
 > See [DESIGN.md](DESIGN.md) for the overall design principles. Technical reviews
 > of the code and design are always welcome!*
 
+> **Security:** indice has had no independent security review, and its parsers
+> have not been fuzzed. Its testing is its own test suite, CodeQL on every
+> change, and AI-assisted review. Read [Securing a server] before putting it on
+> the open web. The plan for fuzzing, penetration testing and an outside review
+> is in [#223](https://github.com/edsu/indice/issues/223).
+
 > **The web archive replay is entirely [Webrecorder]'s work.** indice bundles and
 > serves [ReplayWeb.page] and [wabac.js] — the browser-side engine that does all
 > the actual replay — and adds a thin Rust layer for indexing, search, and
@@ -122,3 +128,4 @@ components it bundles. See [LICENSE](LICENSE) for the full text and
 [please support]: https://www.w3.org/TR/annotation-vocab/
 [Making a WACZ]: https://indice.page/docs/guides/wacz/#making-a-wacz
 [apod.wacz]: https://github.com/edsu/indice/raw/refs/heads/main/apod.wacz
+[Securing a server]: https://indice.page/docs/guides/security/
