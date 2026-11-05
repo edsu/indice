@@ -385,8 +385,8 @@ impl Users {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let parsed: UsersFile = serde_yaml_ng::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let parsed: UsersFile =
+            serde_saphyr::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         let mut roster = Vec::new();
         for entry in parsed.users {
             let id = SubjectId::parse(&entry.id)

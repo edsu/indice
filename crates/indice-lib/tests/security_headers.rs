@@ -359,7 +359,7 @@ fn hash_source(script: &str) -> String {
 #[tokio::test]
 async fn an_analytics_snippet_is_let_in_on_the_app_origin_only() {
     let tmp = TempDir::new().unwrap();
-    let yaml = serde_yaml_ng::to_string(&serde_json::json!({
+    let yaml = serde_saphyr::to_string(&serde_json::json!({
         "analytics": {
             "head": SNIPPET,
             "origins": ["https://plausible.io/js/script.js", "https://stats.example.test:8443"],
