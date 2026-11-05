@@ -2059,6 +2059,20 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         }
     );
 
+    match indice_lib::analytics::Analytics::from_config(&cfg.analytics) {
+        Ok(Some(a)) => println!(
+            "analytics:                set  ->  a snippet on every app page, {} inline script(s), talking to {}",
+            a.script_hashes.len(),
+            if a.origins.is_empty() {
+                "no other origin".to_string()
+            } else {
+                a.origins.join(", ")
+            }
+        ),
+        Ok(None) => println!("analytics:                unset  ->  none"),
+        Err(e) => println!("analytics:                invalid  ->  {e:#}"),
+    }
+
     match cfg.llm_settings(home) {
         Ok(Some((llm, describe))) => {
             println!(

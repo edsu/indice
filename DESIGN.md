@@ -372,6 +372,18 @@ only who may frame it.
 - Every page indice serves works under that policy, which a browser checks by
   reporting nothing but a probe of the test's own.
   `browser.rs::every_page_runs_under_its_content_security_policy`
+- An operator's analytics snippet (`analytics:` in config.yaml, checked by
+  `analytics::Analytics`) is the one addition. It goes as written into the
+  `<head>` of every app page, the viewer's included, and the app's policy adds
+  its origins to `script-src`, `connect-src` and `img-src` and a `sha256-`
+  hash for each of its inline scripts, never `'unsafe-inline'`. The operator
+  is trusted with what the snippet does, as with `users.yaml`; indice keeps
+  the policy's shape and keeps the snippet off the replay origin. Unset, the
+  policy is unchanged. An origin that can't be a policy source stops the
+  server.
+  `security_headers.rs::an_analytics_snippet_is_let_in_on_the_app_origin_only`,
+  `security_headers.rs::an_analytics_origin_a_policy_cant_name_stops_the_server`,
+  `browser.rs::an_analytics_snippet_runs_beside_replay`
 - Replay may be framed only by itself and the site, when the site is known.
   `security_headers.rs::the_replay_origin_says_only_who_may_frame_it`,
   `security_headers.rs::a_workstations_replay_may_be_framed_only_by_its_viewer`

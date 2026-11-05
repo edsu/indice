@@ -6,6 +6,9 @@
 //! no framing by anyone. No framing because of clickjacking: a page that frames
 //! the workroom under a decoy turns a curator's click into a Delete, and the
 //! CSRF check cannot see that, since the click lands on indice's own page.
+//! The one addition is the operator's: an analytics snippet (`analytics:` in
+//! config.yaml) adds the origins it talks to and the hashes of its inline
+//! scripts, and adds nothing when it is unset.
 //!
 //! The replay origin exists to run archived pages' code, whatever it is, so a
 //! script policy there would protect nothing and break replay; it gets only a
@@ -136,7 +139,10 @@ const REFERRER_POLICY: &str = "same-origin";
 
 impl SecurityHeaders {
     /// For the app origin. `replay` is the one origin its pages may frame; the
-    /// viewer frames it, and nothing else frames anything.
+    /// viewer frames it, and nothing else frames anything. `analytics`, when
+    /// configured, may load script from its origins, run its own inline
+    /// scripts, and send to and load images from its origins, since trackers
+    /// report by `fetch`, `sendBeacon` or an image.
     ///
     /// No `form-action`. Browsers check it on every redirect a form's
     /// submission follows, and logout is a form whose POST redirects to the
@@ -144,14 +150,29 @@ impl SecurityHeaders {
     /// provider indice cannot name. Restricting it would break single
     /// sign-out to guard against a form injected into a page, and no markup a
     /// visitor supplies reaches a page unsanitized.
-    pub(super) fn app(replay: Option<&ReplayOrigin>) -> Self {
+    pub(super) fn app(
+        replay: Option<&ReplayOrigin>,
+        analytics: Option<&crate::analytics::Analytics>,
+    ) -> Self {
         let frame_src = replay.map_or("'none'", ReplayOrigin::as_str);
+        // `'self'` and then whatever the operator's snippet needs.
+        let sources = |extra: &[&[String]]| {
+            std::iter::once("'self'")
+                .chain(extra.iter().flat_map(|s| s.iter().map(String::as_str)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let (origins, hashes) = analytics.map_or((&[][..], &[][..]), |a| {
+            (a.origins.as_slice(), a.script_hashes.as_slice())
+        });
+        let script_src = sources(&[origins, hashes]);
+        let other_src = sources(&[origins]);
         let csp = format!(
             "default-src 'self'; \
-             script-src 'self'; \
+             script-src {script_src}; \
              style-src 'self'; \
-             img-src 'self'; \
-             connect-src 'self'; \
+             img-src {other_src}; \
+             connect-src {other_src}; \
              frame-src {frame_src}; \
              frame-ancestors 'none'; \
              base-uri 'none'; \
