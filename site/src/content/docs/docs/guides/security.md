@@ -142,7 +142,7 @@ These are filed and not yet fixed. Each linked issue has the whole writeup.
 
 ## How it has been tested
 
-Each promise above has a test that pins it, listed in the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model), and CodeQL scans every change. All of that review comes from inside the project, much of it AI-assisted. indice has had no independent security review, its parsers have not been fuzzed, and no one has attacked a running instance to test it. The plan for fuzzing, penetration testing and an outside review is public, in [issue #223](https://github.com/edsu/indice/issues/223).
+Each promise above has a test that pins it, listed in the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model), and CodeQL scans every change. `cargo deny` checks every dependency against the [RustSec advisory database](https://rustsec.org/) on every change and once a week, and an advisory fails the build until it is fixed or explicitly accepted in `deny.toml`. All of that review comes from inside the project, much of it AI-assisted. indice has had no independent security review, its parsers have not been fuzzed, and no one has attacked a running instance to test it. The plan for fuzzing, penetration testing and an outside review is public, in [issue #223](https://github.com/edsu/indice/issues/223).
 
 ## Checklist
 
