@@ -625,7 +625,12 @@ pub(super) fn ts_to_14digit(ts: &str) -> String {
 /// it (the index stores the 14-digit form). Anything not 14 digits is returned
 /// unchanged (already ISO, or empty).
 pub(super) fn ts_to_iso(ts: &str) -> String {
-    if ts.len() == 14 && ts.bytes().all(|b| b.is_ascii_digit()) {
+    ts_iso(ts).unwrap_or_else(|| ts.to_string())
+}
+
+/// A 14-digit timestamp as ISO 8601, or `None` for any other form.
+pub(super) fn ts_iso(ts: &str) -> Option<String> {
+    (ts.len() == 14 && ts.bytes().all(|b| b.is_ascii_digit())).then(|| {
         format!(
             "{}-{}-{}T{}:{}:{}Z",
             &ts[0..4],
@@ -635,9 +640,7 @@ pub(super) fn ts_to_iso(ts: &str) -> String {
             &ts[10..12],
             &ts[12..14],
         )
-    } else {
-        ts.to_string()
-    }
+    })
 }
 
 pub(super) fn format_timestamp(ts: &str) -> String {

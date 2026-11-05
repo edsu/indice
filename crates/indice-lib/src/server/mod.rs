@@ -416,6 +416,11 @@ struct AppState {
     /// analytics snippet from `analytics:`, resolved at startup and shared by
     /// every page's chrome.
     site: Arc<crate::views::Site>,
+    /// Where readers reach this site, e.g. `https://archive.example.org`: what
+    /// `--site-url` says on a server, `http://localhost:{port}` on a
+    /// workstation, which is the address its browser opens. An annotation's id
+    /// is a URL under it.
+    origin: String,
 }
 
 /// Import providers wired in by the binary (used only by the management UI).
@@ -729,6 +734,13 @@ fn build_routers(
         replay_origin: config.replay_origin.clone(),
         drafting,
         site: Arc::new(site),
+        // As `ancestors` below. A router built without listeners or a site URL,
+        // as tests build, names localhost.
+        origin: match (access_is_local, config.app_addr, &config.site) {
+            (true, Some(addr), _) => format!("http://localhost:{}", addr.port()),
+            (false, _, Some(site)) => site.0.clone(),
+            _ => "http://localhost".to_string(),
+        },
     });
 
     // Everything here answers from memory, the index, or an embedded asset, so
@@ -740,6 +752,10 @@ fn build_routers(
         .route("/collection/{id}/replay.json", get(collection_replay_json))
         .route("/collection/{id}/pages", get(collection_pages))
         .route("/collection/{id}/annotations", get(collection_annotations))
+        .route(
+            "/collection/{id}/annotations/{key}",
+            get(collection_annotation),
+        )
         .route("/crawl/{id}", get(crawl_page))
         .route("/crawl/{id}/replay.json", get(crawl_replay_json))
         .route("/crawl/{id}/pages", get(crawl_pages))

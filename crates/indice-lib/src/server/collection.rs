@@ -193,40 +193,16 @@ pub(super) async fn collection_annotations(
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
     };
     let chrome = chrome(&state, &headers);
-    let anns = annotations::load(&state.home, &c.id).unwrap_or_default();
-    let items = anns
-        .iter()
-        .map(|a| {
-            let region = a.target.selector.as_ref().map(|s| match s {
-                annotations::Selector::TextQuoteSelector { exact, .. } => exact.clone(),
-            });
-            views::AnnoLink {
-                // This page is public, so the sanitized name — never the stored
-                // login identity (see `Creator::public_name`).
-                author: a.creator.public_name().unwrap_or("anonymous").to_string(),
-                date: a
-                    .modified
-                    .clone()
-                    .unwrap_or_else(|| a.created.clone())
-                    .chars()
-                    .take(10)
-                    .collect(),
-                note_html: crate::markdown::render(&a.body.value),
-                page_url: a.target.source.clone(),
-                // Names the note, so the page opens on its passage.
-                replay_href: match replay_href(
-                    ReplayScope::Collection(&id),
-                    &a.target.timestamp,
-                    &a.target.source,
-                ) {
-                    Some(href) => format!("{href}#note={}", url_encode(&a.id)),
-                    // A page replay can't open: the collection instead.
-                    None => format!("/collection/{}", url_encode(&id)),
-                },
-                region,
-            }
-        })
-        .collect();
+    // Reads and parses the whole store, so off the async workers.
+    let anns = {
+        let (home, cid) = (state.home.clone(), c.id.clone());
+        tokio::task::spawn_blocking(move || annotations::load(&home, &cid))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    };
+    let items = anns.iter().map(|a| anno_link(a, &id)).collect();
     let page = views::AnnotationsIndexPage {
         collection_name: c.name.clone(),
         collection_id: id.clone(),
@@ -234,6 +210,210 @@ pub(super) async fn collection_annotations(
         chrome,
     };
     views::annotations_index(&page).into_response()
+}
+
+/// A note as the public pages show it, in collection `collection`.
+fn anno_link(a: &annotations::Annotation, collection: &str) -> views::AnnoLink {
+    let region = a.target.selector.as_ref().map(|s| match s {
+        annotations::Selector::TextQuoteSelector { exact, .. } => exact.clone(),
+    });
+    views::AnnoLink {
+        // These pages are public, so the sanitized name — never the stored
+        // login identity (see `Creator::public_name`).
+        author: a.creator.public_name().unwrap_or("anonymous").to_string(),
+        date: a
+            .modified
+            .clone()
+            .unwrap_or_else(|| a.created.clone())
+            .chars()
+            .take(10)
+            .collect(),
+        note_html: crate::markdown::render(&a.body.value),
+        page_url: a.target.source.clone(),
+        replay_href: note_replay_href(collection, &a.target.timestamp, &a.target.source, &a.id)
+            // A page replay can't open: the collection instead.
+            .unwrap_or_else(|| format!("/collection/{}", url_encode(collection))),
+        permalink: annotation_path(collection, &a.id),
+        key: annotations::key(&a.id).to_string(),
+        region,
+    }
+}
+
+/// A note's page in collection replay, naming the note (`id`) so the viewer
+/// opens on it. `None` for a page replay can't open. The one place the
+/// viewer's `#note=` form is written: the Annotations page, a note's page and
+/// search results all link this way.
+pub(super) fn note_replay_href(collection: &str, ts: &str, url: &str, id: &str) -> Option<String> {
+    replay_href(ReplayScope::Collection(collection), ts, url)
+        .map(|href| format!("{href}#note={}", url_encode(id)))
+}
+
+/// A note's own address, `/collection/{collection}/annotations/{key}`, or
+/// `None` for a note whose id indice did not mint (a hand-edited store, say),
+/// which that address could not find: no link is better than a dead one.
+pub(super) fn annotation_path(collection: &str, id: &str) -> Option<String> {
+    let key = annotations::key(id);
+    annotations::id_for_key(key)?;
+    Some(format!(
+        "/collection/{}/annotations/{key}",
+        url_encode(collection)
+    ))
+}
+
+/// The media type of an annotation as the Web Annotation Protocol serves it.
+const ANNO_MEDIA_TYPE: &str = r#"application/ld+json; profile="http://www.w3.org/ns/anno.jsonld""#;
+
+/// Whether a request asks for an annotation as JSON-LD rather than as a page:
+/// it ranks JSON-LD or JSON above HTML, by the q-values in `Accept`. A tie,
+/// a wildcard (`*/*` from curl, beside `text/html` from a browser) or no
+/// `Accept` at all is the page; `q=0` refuses a type.
+pub(super) fn wants_json_ld(headers: &HeaderMap) -> bool {
+    let accept = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let (mut json, mut html) = (0.0_f32, 0.0_f32);
+    for range in accept.split(',') {
+        let mut parts = range.split(';');
+        let media = parts.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let q = parts
+            .filter_map(|p| p.trim().strip_prefix("q="))
+            .find_map(|q| q.trim().parse::<f32>().ok())
+            .unwrap_or(1.0);
+        match media.as_str() {
+            "application/ld+json" | "application/json" => json = json.max(q),
+            "text/html" | "application/xhtml+xml" => html = html.max(q),
+            _ => {}
+        }
+    }
+    json > 0.0 && json > html
+}
+
+/// A note as a W3C Web Annotation, for anyone to read: built field by field
+/// rather than serialized from the stored record, whose `creator.id` may be a
+/// login address. Its `id` is its URL under `origin`. The capture it is on is
+/// a `TimeState`: when the page was captured, and where its archived copy
+/// replays.
+fn annotation_json_ld(
+    a: &annotations::Annotation,
+    collection: &str,
+    origin: &str,
+) -> serde_json::Value {
+    let mut state = serde_json::json!({ "type": "TimeState" });
+    if let Some(date) = ts_iso(&a.target.timestamp) {
+        state["sourceDate"] = date.into();
+    }
+    if let Some(href) = note_replay_href(collection, &a.target.timestamp, &a.target.source, &a.id) {
+        // The fragment names the note to the viewer; the copy is the page.
+        let page = href.split('#').next().unwrap_or(&href);
+        state["cached"] = format!("{origin}{page}").into();
+    }
+    let mut target = serde_json::json!({ "source": a.target.source, "state": state });
+    if let Some(s) = &a.target.selector {
+        target["selector"] = serde_json::to_value(s).unwrap_or_default();
+    }
+    let mut ld = serde_json::json!({
+        "@context": annotations::ANNO_CONTEXT,
+        "type": "Annotation",
+        "created": a.created,
+        "body": {
+            "type": "TextualBody",
+            "format": a.body.format,
+            "value": a.body.value,
+        },
+        "target": target,
+    });
+    // Every note served has a path, since it was found by it.
+    if let Some(path) = annotation_path(collection, &a.id) {
+        ld["id"] = format!("{origin}{path}").into();
+    }
+    if let Some(m) = &a.modified {
+        ld["modified"] = m.clone().into();
+    }
+    if let Some(name) = a.creator.public_name() {
+        ld["creator"] = serde_json::json!({ "type": "Person", "name": name });
+    }
+    ld
+}
+
+/// What a note's JSON-LD is also served at, after its URL: the same document
+/// without content negotiation, for a link or a browser.
+const JSON_LD_SUFFIX: &str = ".jsonld";
+
+/// GET /collection/{id}/annotations/{key} — one note, public: a page for a
+/// browser, or the note as a W3C Web Annotation in JSON-LD for a request that
+/// asks for it. Its JSON-LD names this URL as its `id`, and the page carries
+/// the same JSON-LD, so a reader of either finds the other.
+///
+/// GET /collection/{id}/annotations/{key}.jsonld — the JSON-LD, whatever the
+/// request asks for. The note's id stays the URL without the suffix: this is
+/// one way to fetch the note, not another name for it.
+pub(super) async fn collection_annotation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path((id, key)): axum::extract::Path<(String, String)>,
+) -> Response {
+    let (key, json_ld_url) = match key.strip_suffix(JSON_LD_SUFFIX) {
+        Some(k) => (k.to_string(), true),
+        None => (key, false),
+    };
+    let not_found = || (StatusCode::NOT_FOUND, "annotation not found").into_response();
+    let Some(note_id) = annotations::id_for_key(&key) else {
+        return not_found();
+    };
+    // The manifest and the whole store are read and parsed for one note, so
+    // off the async workers: note pages are open to crawlers.
+    let found = {
+        let (state, id) = (state.clone(), id.clone());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let manifest = Manifest::open(&state.index_dir)?;
+            let Some(c) = manifest.collection_by_id(&id) else {
+                return Ok(None);
+            };
+            Ok(annotations::get(&state.home, &c.id, &note_id)?.map(|a| (c.name.clone(), a)))
+        })
+        .await
+    };
+    let (collection_name, a) = match found {
+        Ok(Ok(Some(found))) => found,
+        Ok(Ok(None)) => return not_found(),
+        Ok(Err(e)) => return error_response(e),
+        Err(e) => return error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+    };
+    let ld = annotation_json_ld(&a, &id, &state.origin);
+    // Public, and free of anything that identifies a login, so any site's
+    // annotation client may read it, as any site may read a public WACZ.
+    let ld_headers = [
+        (axum::http::header::CONTENT_TYPE, ANNO_MEDIA_TYPE),
+        (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+    ];
+    if json_ld_url {
+        return (ld_headers, ld.to_string()).into_response();
+    }
+    // One URL, two representations: a cache must keep them apart.
+    let vary = [(axum::http::header::VARY, "Accept")];
+    if wants_json_ld(&headers) {
+        return (vary, ld_headers, ld.to_string()).into_response();
+    }
+    let Some(path) = annotation_path(&id, &a.id) else {
+        return not_found();
+    };
+    let json_ld_href = format!("{path}{JSON_LD_SUFFIX}");
+    // Where the JSON-LD is, for a client that reads headers and not pages.
+    let link = [(
+        axum::http::header::LINK,
+        format!(r#"<{json_ld_href}>; rel="alternate"; type="application/ld+json""#),
+    )];
+    let page = views::AnnotationPage {
+        json_ld_href,
+        collection_name,
+        collection_id: id.clone(),
+        note: anno_link(&a, &id),
+        // In a `<script>`, so `<` is escaped and no note can close it.
+        json_ld: ld.to_string().replace('<', "\\u003c"),
+        chrome: chrome(&state, &headers),
+    };
+    (vary, link, views::annotation_page(&page)).into_response()
 }
 
 /// A wabac (ReplayWeb.page) multi-WACZ collection manifest for a collection: the

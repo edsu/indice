@@ -145,6 +145,7 @@ it still resolves.
 | `GET /assets/*` | Embedded site assets (the shared `app.css` stylesheet) |
 | `GET /crawl/{id}/{ts}/{url}` | The replay viewer on one page of a crawl, as captured at `ts`: banner, notes panel, and the replay frame (see *Replay Viewer*) |
 | `GET /collection/{id}/{ts}/{url}` | The same, replaying the whole collection's crawls as one |
+| `GET /collection/{id}/annotations/{key}` | One note: a page, or with `Accept: application/ld+json` the note as a W3C Web Annotation whose `id` is this URL (see *Annotations as provenance*) |
 | `GET /replay/annotations.{js,css}` | The viewer's notes panel. Nothing else under `/replay/` is served on this origin |
 
 The replay listener, on its own origin (see *Replay Viewer*), serves only these:
@@ -1001,7 +1002,31 @@ migration.
 Stored as W3C Web Annotation JSON-LD, one per line, at `collections/<slug>/annotations.jsonl`,
 keyed by URL + timestamp so annotations survive reindexing. Surfaced beside the replay (with
 the passage highlighted), on crawl/collection pages, in search (a distinct annotation result
-type), and in a per-collection annotations index. The panel beside the replay
+type), and in a per-collection annotations index.
+
+Each note has a URL of its own, `/collection/{id}/annotations/{key}`, where `key` is the hex
+of its stored `urn:indice:annotation:` id; stored ids stay URNs, and the URL is built from the
+site's origin (`--site-url`, or `http://localhost:{port}` on a workstation, the address its
+browser opens) when the note is served. A note whose id indice did not mint has no URL, rather
+than one that cannot find it. By content negotiation it is a page for a browser, or, for an
+`Accept` that ranks JSON-LD or JSON above HTML by q-value, the note as a Web Annotation, served
+as the Protocol's `application/ld+json; profile="http://www.w3.org/ns/anno.jsonld"` with
+`Vary: Accept` and `Access-Control-Allow-Origin: *`. Reading the store happens in
+`spawn_blocking`, since crawlers may fetch every note. The
+JSON-LD is built field by field (`server::collection::annotation_json_ld`) rather than
+serialized from the stored record, whose `creator.id` may be a login address: its `id` is
+the note's URL, its `creator` only the display name, and its target's capture a `TimeState`
+(`sourceDate` from the timestamp, `cached` the collection-replay URL). The page embeds the
+same JSON-LD in a `<script type="application/ld+json">`, with `<` escaped so no note can
+close it, and links (`rel="alternate"`, in the page and a `Link` header) to
+`/collection/{id}/annotations/{key}.jsonld`, which serves the JSON-LD without negotiation.
+Its `id` stays the URL without the suffix: that is one way to fetch the note, not another
+name for it. Each note links to its page ("Link to this note") on the Annotations page and in the viewer's panel,
+and the page is listable by crawlers like the Annotations page, though a replay `noindex`
+pattern would catch its shape (`CrawlPolicy::listed`).
+`manage.rs::a_note_has_a_url_of_its_own`
+
+The panel beside the replay
 (`annotations.js`, in the viewer) makes every API call; an agent in the replay frame
 (`agent.js`) reaches into ReplayWeb.page's nested frames to report the curator's selection
 and draw highlights with the CSS Custom Highlight API, and talks to the panel only by
@@ -1123,7 +1148,8 @@ drives the banner), and `selection {selector}`. From the viewer: `highlight {not
 `focus {id}`, and `clear-selection`. A `note=<id>` parameter on the viewer URL, which the
 annotations index and note search results add, makes the viewer send `focus` for that note
 once the frame is `ready` and the note is on the page; the agent keeps the focused note
-across redraws. Everything the frame sends is untrusted, since archived
+across redraws. A note on the whole page has no passage, so the link only marks it in the
+panel, which needs no frame (`browser.rs::a_note_is_made_and_highlighted_through_the_viewer`). Everything the frame sends is untrusted, since archived
 script shares its origin and can forge any of it. A message can move the banner or pre-fill
 the note composer; saving a note takes a click in the viewer, whose composer names the page
 URL and the quoted passage.

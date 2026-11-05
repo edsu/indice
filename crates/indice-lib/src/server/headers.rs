@@ -50,9 +50,26 @@ use super::ReplayOrigin;
 /// all is disallowed.
 ///
 /// Patterns are `robots.txt` prefixes, with `*` for any run of characters.
+/// `listed` names pages a `noindex` pattern would catch that are to be listed
+/// anyway, checked exactly rather than as a pattern, since a `*` can run across
+/// an archived URL's own slashes.
 pub(super) struct CrawlPolicy {
     disallow: &'static [&'static str],
     noindex: &'static [&'static str],
+    listed: fn(&str) -> bool,
+}
+
+/// A note's own page, `/collection/{id}/annotations/{key}`: a finding aid, like
+/// the Annotations page, though its shape is a replayed page's.
+fn note_page(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/collection/") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(c), Some("annotations"), Some(k), None) if !c.is_empty() && !k.is_empty()
+    )
 }
 
 const APP_CRAWL: CrawlPolicy = CrawlPolicy {
@@ -72,6 +89,7 @@ const APP_CRAWL: CrawlPolicy = CrawlPolicy {
         "/api/",
         "/manage/",
     ],
+    listed: note_page,
 };
 
 /// The replay origin serves nothing to list, and its WACZs are not to be
@@ -79,6 +97,7 @@ const APP_CRAWL: CrawlPolicy = CrawlPolicy {
 const REPLAY_CRAWL: CrawlPolicy = CrawlPolicy {
     disallow: &["/files/"],
     noindex: &["/"],
+    listed: |_| false,
 };
 
 impl CrawlPolicy {
@@ -91,7 +110,7 @@ impl CrawlPolicy {
     }
 
     fn noindex(&self, path: &str) -> bool {
-        self.noindex.iter().any(|p| robots_match(p, path))
+        !(self.listed)(path) && self.noindex.iter().any(|p| robots_match(p, path))
     }
 }
 
@@ -292,6 +311,13 @@ mod tests {
         assert!(!noindex("/crawl/aeea520d"));
         assert!(!noindex("/collection/climate-gov"));
         assert!(!noindex("/collection/climate-gov/annotations"));
+        assert!(!noindex(
+            "/collection/climate-gov/annotations/0123456789abcdef0123456789abcdef"
+        ));
+        // An archived URL with the same words in it is still a replayed page.
+        assert!(noindex(
+            "/collection/climate-gov/20250421/https://example.org/annotations/x"
+        ));
         assert!(noindex("/collection/climate-gov/pages"));
     }
 }

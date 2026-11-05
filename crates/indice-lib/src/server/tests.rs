@@ -771,9 +771,65 @@ fn a_replay_path_is_logged_without_the_page() {
         ("/collection/c/pages", "/collection/c/pages"),
         ("/collection/c/replay.json", "/collection/c/replay.json"),
         ("/collection/c/annotations", "/collection/c/annotations"),
+        // A note's own page is cut like a replayed page: it is what someone
+        // read.
+        (
+            "/collection/c/annotations/0123456789abcdef0123456789abcdef",
+            "/collection/c/…",
+        ),
         ("/crawl/aeea520d/pages", "/crawl/aeea520d/pages"),
         ("/crawl/aeea520d/replay.json", "/crawl/aeea520d/replay.json"),
     ] {
         assert_eq!(loggable_path(path), logged, "{path}");
+    }
+}
+
+/// A note's JSON-LD goes to whoever ranks JSON above HTML, by q-value; a
+/// browser, curl's `*/*`, a tie and a refusal all get the page.
+#[test]
+fn a_note_is_json_ld_only_for_a_client_that_ranks_it_first() {
+    let asks = |accept: &str| {
+        let mut h = HeaderMap::new();
+        if !accept.is_empty() {
+            h.insert(axum::http::header::ACCEPT, accept.parse().unwrap());
+        }
+        super::collection::wants_json_ld(&h)
+    };
+    for json in [
+        "application/ld+json",
+        "application/json",
+        r#"application/ld+json; profile="http://www.w3.org/ns/anno.jsonld""#,
+        "application/json, text/html;q=0.1",
+        "text/html;q=0.5, APPLICATION/LD+JSON",
+    ] {
+        assert!(asks(json), "{json:?} asks for JSON-LD");
+    }
+    for page in [
+        "",
+        "*/*",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "application/json, text/html",
+        "application/ld+json;q=0, text/html",
+        "application/ld+json;q=0",
+    ] {
+        assert!(!asks(page), "{page:?} gets the page");
+    }
+}
+
+/// A note indice didn't mint, in a hand-edited store say, has no address of its
+/// own, since that address couldn't find it: no link rather than a dead one.
+#[test]
+fn only_a_minted_note_has_an_address() {
+    use super::collection::annotation_path;
+    assert_eq!(
+        annotation_path(
+            "c",
+            "urn:indice:annotation:0123456789abcdef0123456789abcdef"
+        )
+        .as_deref(),
+        Some("/collection/c/annotations/0123456789abcdef0123456789abcdef")
+    );
+    for id in ["urn:uuid:7b1f", "urn:indice:annotation:0123ABCD", "x"] {
+        assert_eq!(annotation_path("c", id), None, "{id:?}");
     }
 }
