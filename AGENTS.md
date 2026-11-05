@@ -60,12 +60,26 @@ focused test alongside the code it covers.
   explicitly rather than `git add -A` so scratch doesn't sneak in.
 - Keep the PR description in sync with the work as it evolves.
 
-## Issue tracking (beads)
+## Issue tracking
 
-We track work with **beads** (`br`, at `~/.local/bin/br`; SQLite-backed, exported
-to `.beads/issues.jsonl` which *is* committed). Work is organized into epics with
-numbered child tasks (e.g. `rustyweb-streaming-index-r0n.7`). Close tasks as their
-work lands, and file follow-ups rather than expanding a PR's scope.
+**New work goes in GitHub Issues**, where anyone looking at the project can
+read and follow it. An epic is a parent issue with native sub-issues, one per
+piece of work that lands as its own PR, so `Closes #N` in the PR closes it.
+Label security work `security`.
+
+**Exploitable security findings never go in a public issue.** Anything someone
+could use against a running instance (app.indice.page included) goes in a
+private GitHub security advisory until the fix is merged; after that it can be
+written up publicly with the test that pins it.
+
+### Beads (older issues)
+
+Older work is tracked in **beads** (`br`, at `~/.local/bin/br`; SQLite-backed,
+exported to `.beads/issues.jsonl` which *is* committed), and is moving to GitHub
+Issues where possible. Until an item has moved, beads is where it lives. Work
+there is organized into epics with numbered child tasks (e.g.
+`rustyweb-streaming-index-r0n.7`). Close tasks as their work lands, and file
+follow-ups rather than expanding a PR's scope, in either tracker.
 
 **Beads commits are handled out of band by the maintainer.** Run `br` operations
 freely (create/close/comment on issues), but **do not commit `.beads/issues.jsonl`**
