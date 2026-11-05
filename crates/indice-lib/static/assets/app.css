@@ -216,7 +216,10 @@ table.results td { padding: 0.8rem 0.4rem; vertical-align: top; }
 .result-title { font-family: var(--serif); font-size: var(--t-lg); font-weight: var(--w-regular); max-width: var(--measure); }
 .result-title a { color: var(--accent); }
 /* An identifier, so monospace, and quiet beside the title it belongs to. */
-.result-url { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); margin: 0.15rem 0; }
+/* An archived URL can run on with nowhere to break (a long query string), so
+   it breaks anywhere rather than push the results under the facets.
+   `anywhere`, not `break-word`, because only it lets the table cell shrink. */
+.result-url { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); margin: 0.15rem 0; overflow-wrap: anywhere; }
 .result-ts { font-size: var(--t-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
 .capture-count { color: var(--accent); }
 .result-status { display: inline-block; font-size: var(--t-xs); font-weight: var(--w-bold); background: var(--danger-wash); color: var(--danger); border: 1px solid var(--danger-line); padding: 0.05rem 0.35rem; border-radius: 3px; margin-top: 0.15rem; }
@@ -426,7 +429,6 @@ nav.pagination .page-info { color: var(--muted); }
   table.results, table.results tbody, table.results tr, table.results td { display: block; }
   table.results td { padding: 0.8rem 0 0; }
   table.results td.replay-col { width: auto; text-align: left; padding: 0.5rem 0 0.8rem; }
-  .result-url { overflow-wrap: anywhere; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
