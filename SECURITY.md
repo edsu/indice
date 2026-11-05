@@ -9,7 +9,8 @@ It changes how I weigh everything below.
 
 indice has had no independent security review, and its parsers have not been
 fuzzed. Its testing is the test suite, which pins each guarantee in the threat
-model, CodeQL on every change, and AI-assisted review.
+model, CodeQL and a RustSec advisory check on every change, and AI-assisted
+review.
 
 ## Reporting
 

@@ -1,0 +1,12 @@
+# cargo-deny configuration. CI runs `cargo deny check advisories`
+# (.github/workflows/advisories.yml), which checks Cargo.lock against the
+# RustSec advisory database.
+#
+# Every entry in `ignore` needs a reason and a linked issue. An ignore without
+# both is not a handled advisory.
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml (via serde_yaml_ng) is unmaintained; no known vulnerability. Replacing the YAML crate: https://github.com/edsu/indice/issues/237" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser (via pdf-extract -> lopdf) is unmaintained; no known vulnerability. Replacing the PDF extractor: https://github.com/edsu/indice/issues/238" },
+]
