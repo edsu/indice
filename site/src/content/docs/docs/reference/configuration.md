@@ -83,6 +83,28 @@ The tagline is the homepage's only text from you, so it is the place to say anyt
 
 The tagline uses the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
+## Web analytics
+
+indice can add a web analytics service's snippet, such as Plausible, Matomo, GoatCounter or Google Analytics, to its pages. It is off unless you set `head`:
+
+```yaml
+analytics:
+  # The HTML your analytics service gives you to paste into your pages.
+  head: |
+    <script defer data-domain="archive.example.org" src="https://plausible.io/js/script.js"></script>
+  # The origins that HTML loads script from and sends to.
+  origins:
+    - https://plausible.io
+```
+
+The snippet goes, exactly as you write it, into the `<head>` of every page on the site: the homepage, search, collections, the workroom and the replay viewer. It never goes on the replay host, so it can't see or change the archived page in the viewer's frame, only the page around it.
+
+indice's pages refuse script, requests and images from anywhere else (see [the security guide](/docs/guides/security/#what-indice-tells-the-browser)), so `origins` lists what the snippet needs: the host its script comes from and the host it reports to, when they differ. A full URL is fine; only its origin is used. An inline `<script>` in the snippet is allowed by its hash, which indice works out, so you can paste the snippet as your service gives it. Script in attributes, such as `onload="…"`, is still refused.
+
+A tracker sees what its script can see, which is each page's full address. On indice that includes what a reader searched for (`/search?q=…`) and the archived address of each page they replay, which indice itself keeps out of its logs. Check what your service records and keeps, and say so to your readers.
+
+The file is read at startup, so a change needs a restart; `indice config` shows the origins and how many inline scripts the policy allows.
+
 ## Drafting descriptions with a language model
 
 indice can ask a language model for a first draft of a collection's description, as a starting point the curator reviews and edits; the [Drafting descriptions](/docs/guides/drafting/) guide explains it. It is off unless you configure a model:

@@ -53,6 +53,8 @@ pub struct Config {
     pub llm: Option<LlmConfig>,
     /// How the model drafts a finding aid's description.
     pub describe: Option<DescribeConfig>,
+    /// A web analytics service's snippet, for the app origin's pages.
+    pub analytics: AnalyticsConfig,
     // Future sections (CSS override, theming, …) slot in here; older/newer
     // homes ignore keys they don't know.
 }
@@ -103,6 +105,21 @@ pub struct SiteConfig {
     /// curator's account. Rendered by [`crate::markdown::render`], which
     /// escapes raw HTML and keeps links to safe schemes.
     pub tagline: Option<String>,
+}
+
+/// A web analytics service, such as Plausible, Matomo or GoatCounter. Off
+/// unless `head` is set; [`crate::analytics::Analytics`] checks it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalyticsConfig {
+    /// The HTML the service gives you to paste into your pages, added as it is
+    /// to the `<head>` of every page on the app origin, the replay viewer's
+    /// included, and never to the replay origin's.
+    pub head: Option<String>,
+    /// The origins the snippet loads script from and sends to, e.g.
+    /// `https://plausible.io`, which the app's Content-Security-Policy then
+    /// allows.
+    pub origins: Vec<String>,
 }
 
 /// Index tuning — currently the stored-body cap (the "frugality" lever).

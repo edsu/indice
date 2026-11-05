@@ -57,6 +57,9 @@ pub struct Site {
     pub name: String,
     /// The tagline, already rendered from Markdown.
     pub tagline: maud::PreEscaped<String>,
+    /// The operator's analytics snippet (`analytics.head`), for every page's
+    /// `<head>`, as they wrote it.
+    pub head: Option<maud::PreEscaped<String>>,
 }
 
 /// The tagline when `site.tagline` is unset.
@@ -78,6 +81,7 @@ impl Site {
             tagline: given(&cfg.tagline)
                 .map(|md| crate::markdown::render(&md))
                 .unwrap_or(default.tagline),
+            head: None,
         }
     }
 }
@@ -87,6 +91,7 @@ impl Default for Site {
         Site {
             name: "indice".to_string(),
             tagline: crate::markdown::render(DEFAULT_TAGLINE),
+            head: None,
         }
     }
 }
@@ -121,6 +126,7 @@ pub fn layout(
                 link rel="icon" type="image/svg+xml" href="/assets/favicon.svg";
                 link rel="stylesheet" href="/assets/tokens.css";
                 link rel="stylesheet" href="/assets/app.css";
+                @if let Some(h) = &site.head { (h) }
             }
             body class=[manage.then_some("mode-manage")] {
                 header.appbar {

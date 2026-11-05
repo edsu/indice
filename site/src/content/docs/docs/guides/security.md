@@ -63,7 +63,7 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 
 | Header | Site | Replay host |
 |---|---|---|
-| `Content-Security-Policy` | Script, style and images from the site only; may frame only the replay host; framed by nobody | Framed only by itself and the site; no script policy, since running archived script is replay's job |
+| `Content-Security-Policy` | Script, style and images from the site only, plus your [analytics](/docs/reference/configuration/#web-analytics) origins if you set them; may frame only the replay host; framed by nobody | Framed only by itself and the site; no script policy, since running archived script is replay's job |
 | `X-Content-Type-Options: nosniff` | Yes | Yes |
 | `X-Robots-Tag: noindex` | On everything but indice's own pages (below) | Yes |
 | `Referrer-Policy: same-origin` | Yes | Yes |
@@ -121,6 +121,8 @@ A reader's searches and the pages they replay are a record of what they read, an
 - **Docker** rotates each container's log at 20 MB, keeping five, as `compose.yaml` sets. Without that it keeps them forever.
 
 If you put another proxy, a CDN or a load balancer in front, its logs are yours to decide on: most record addresses and full URLs by default.
+
+If you configure [web analytics](/docs/reference/configuration/#web-analytics), its script runs on every page of the site, the replay viewer included, and sends the service what it collects, which is usually each page's full address: what a reader searched for and which archived page they are reading. That record is kept by the service, under its terms, not by indice.
 
 If you configure a [language model for drafting descriptions](/docs/guides/drafting/), a curator's draft request sends a sample of a collection's archived text to the model's service. With a hosted service, that text leaves your server under the service's terms; with a local model it doesn't. Each request is in the audit trail with the model and service. Use `https://` for any service not on your own network: indice warns at startup about plain `http://` to a public host, since the API key travels with every request.
 

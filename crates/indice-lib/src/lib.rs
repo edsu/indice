@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod annotations;
 pub mod archiveit;
 pub mod browsertrix;

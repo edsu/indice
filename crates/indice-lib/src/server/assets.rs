@@ -142,6 +142,10 @@ const REPLAY_ORIGIN_SLOT: &str = "{{replay_origin}}";
 /// site name (`site.name`), for the title and the link home.
 const SITE_NAME_SLOT: &str = "{{site_name}}";
 
+/// The placeholder in `viewer.html` that [`replay_page`] fills with the
+/// operator's analytics snippet (`analytics.head`), or nothing.
+const HEAD_SLOT: &str = "{{analytics_head}}";
+
 /// The placeholder in `viewer.html` that [`replay_page`] fills with what to
 /// replay, as JSON (see [`ReplayContext`]).
 const REPLAY_CONTEXT_SLOT: &str = "{{replay_context}}";
@@ -236,7 +240,13 @@ pub(super) async fn replay_page(
     let json = serde_json::to_string(&context)
         .unwrap_or_default()
         .replace('<', "\\u003c");
+    // The snippet goes in first, so the slots filled after it are filled in
+    // the template's text and not in whatever the snippet happens to contain,
+    // and the archived URL, in the context, goes in last, so it can't fill a
+    // slot either.
+    let head = state.site.head.as_ref().map_or("", |h| h.0.as_str());
     let html = String::from_utf8_lossy(&file.data)
+        .replace(HEAD_SLOT, head)
         .replace(REPLAY_ORIGIN_SLOT, &html_escape(origin.as_str()))
         .replace(SITE_NAME_SLOT, &html_escape(&state.site.name))
         .replace(REPLAY_CONTEXT_SLOT, &json);

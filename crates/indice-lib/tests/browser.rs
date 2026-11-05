@@ -913,6 +913,51 @@ async fn every_page_runs_under_its_content_security_policy() {
     rendered.unwrap();
 }
 
+/// An operator's analytics snippet runs on every app page, the viewer
+/// included, with nothing refused, and replay still works beside it. Its
+/// inline script runs only because the policy carries its hash, so this is
+/// also the check that indice hashes it as the browser does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn an_analytics_snippet_runs_beside_replay() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "csp").unwrap();
+    std::fs::write(
+        tmp.path().join("config.yaml"),
+        "analytics:\n  head: |\n    <script>window.__analytics = 'ran';</script>\n",
+    )
+    .unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), workstation()).await;
+
+    let driver = connect().await;
+    let result = async {
+        let found = collect_violations(&driver, addr, &id).await?;
+        // The viewer is the last page, and the check left us in its frame.
+        driver
+            .enter_default_frame()
+            .await
+            .map_err(|e| e.to_string())?;
+        let ran = driver
+            .execute("return window.__analytics || null;", vec![])
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((found, ran.json().clone()))
+    }
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    let ((violations, rendered), ran) = result.unwrap();
+    assert!(
+        violations.is_empty(),
+        "the browser refused:\n{}",
+        violations.join("\n")
+    );
+    rendered.unwrap();
+    assert_eq!(ran, "ran", "the snippet did not run in the viewer");
+}
+
 /// The violations each page reported, and whether the viewer, the last page,
 /// went on to replay. Kept apart so a refused page is reported as that, rather
 /// than as whatever it then failed to do.

@@ -412,8 +412,9 @@ struct AppState {
     /// The model for drafting finding aids. `None` when no `llm:` section is
     /// configured, which hides the editor's Draft button.
     drafting: Option<Arc<Drafting>>,
-    /// The archive's name and tagline from `site:` in config.yaml,
-    /// resolved at startup and shared by every page's chrome.
+    /// The archive's name and tagline from `site:` in config.yaml, and the
+    /// analytics snippet from `analytics:`, resolved at startup and shared by
+    /// every page's chrome.
     site: Arc<crate::views::Site>,
 }
 
@@ -634,6 +635,21 @@ fn build_routers(
         }
         Arc::new(Drafting { llm, settings })
     });
+    // Checked here too, so an origin that can't go into the policy stops the
+    // server rather than reaching a header.
+    let analytics = crate::analytics::Analytics::from_config(&home_config.analytics)?;
+    if let Some(a) = &analytics {
+        tracing::info!(
+            "analytics: a snippet on every app page, talking to {}",
+            if a.origins.is_empty() {
+                "no other origin".to_string()
+            } else {
+                a.origins.join(", ")
+            }
+        );
+    }
+    let mut site = crate::views::Site::new(&home_config.site);
+    site.head = analytics.as_ref().map(|a| maud::PreEscaped(a.head.clone()));
     let upload_limits = UploadLimits {
         per_upload: home_config.max_upload_bytes(),
         archive: home_config.max_archive_bytes(),
@@ -712,7 +728,7 @@ fn build_routers(
         archiveit: providers.archiveit,
         replay_origin: config.replay_origin.clone(),
         drafting,
-        site: Arc::new(crate::views::Site::new(&home_config.site)),
+        site: Arc::new(site),
     });
 
     // Everything here answers from memory, the index, or an embedded asset, so
@@ -929,7 +945,8 @@ fn build_routers(
         (false, _, Some(site)) => vec![site.0.clone()],
         _ => Vec::new(),
     };
-    let app_headers = headers::SecurityHeaders::app(config.replay_origin.as_ref());
+    let app_headers =
+        headers::SecurityHeaders::app(config.replay_origin.as_ref(), analytics.as_ref());
     let replay_headers = headers::SecurityHeaders::replay(&ancestors);
 
     Ok(Routers {

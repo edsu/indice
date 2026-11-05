@@ -336,3 +336,126 @@ async fn crawlers_list_only_indices_own_pages_and_skip_what_is_costly() {
         );
     }
 }
+
+const SNIPPET: &str = "<script defer data-domain=\"archive.example.test\" \
+    src=\"https://plausible.io/js/script.js\"></script>\n\
+    <script>window.plausible = window.plausible || function () {};</script>";
+
+/// The policy's `sha256-…` source for an inline script.
+fn hash_source(script: &str) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(script.as_bytes());
+    format!(
+        "'sha256-{}'",
+        base64::engine::general_purpose::STANDARD.encode(digest)
+    )
+}
+
+/// An analytics snippet in config.yaml goes into every page on the app origin,
+/// the replay viewer included, and the app's policy lets in exactly what it
+/// needs: its origins for script, requests and images, and its inline script
+/// by hash. The replay origin gets neither the snippet nor a looser policy.
+#[tokio::test]
+async fn an_analytics_snippet_is_let_in_on_the_app_origin_only() {
+    let tmp = TempDir::new().unwrap();
+    let yaml = serde_yaml_ng::to_string(&serde_json::json!({
+        "analytics": {
+            "head": SNIPPET,
+            "origins": ["https://plausible.io/js/script.js", "https://stats.example.test:8443"],
+        }
+    }))
+    .unwrap();
+    std::fs::write(tmp.path().join("config.yaml"), yaml).unwrap();
+    std::fs::create_dir_all(tmp.path().join("collections/demo")).unwrap();
+    std::fs::write(
+        tmp.path().join("collections/demo/README.md"),
+        "---\nname: demo\n---\n",
+    )
+    .unwrap();
+    let Routers { app, replay } = routers(tmp.path(), config());
+
+    let origins = "https://plausible.io https://stats.example.test:8443";
+    let inline = hash_source("window.plausible = window.plausible || function () {};");
+    for path in [
+        "/",
+        "/search?q=anything",
+        "/collection/demo",
+        "/collection/demo/2025/https://example.org/",
+    ] {
+        let policy = csp(&headers(&app, Method::GET, path, &[]).await);
+        assert_eq!(
+            directive(&policy, "script-src"),
+            Some(format!("'self' {origins} {inline}").as_str()),
+            "{path}: {policy}"
+        );
+        for d in ["connect-src", "img-src"] {
+            assert_eq!(
+                directive(&policy, d),
+                Some(format!("'self' {origins}").as_str()),
+                "{path}: {policy}"
+            );
+        }
+        assert_eq!(
+            directive(&policy, "style-src"),
+            Some("'self'"),
+            "{path}: {policy}"
+        );
+        let page = body(&app, path).await;
+        assert!(page.contains(SNIPPET), "{path}: {page}");
+        assert!(!page.contains("{{analytics_head}}"), "{path}: {page}");
+    }
+
+    for path in ["/replay-frame", "/replay/"] {
+        let h = headers(&replay, Method::GET, path, &[]).await;
+        assert_eq!(
+            csp(&h),
+            "frame-ancestors 'self' https://archive.example.test",
+            "{path}"
+        );
+        let page = body(&replay, path).await;
+        assert!(!page.contains("plausible"), "{path}: {page}");
+    }
+}
+
+/// Without `analytics:`, the policy lets in nothing but the app's own code,
+/// and the viewer's slot for a snippet is left empty.
+#[tokio::test]
+async fn without_analytics_the_policy_names_no_other_origin() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("collections/demo")).unwrap();
+    std::fs::write(
+        tmp.path().join("collections/demo/README.md"),
+        "---\nname: demo\n---\n",
+    )
+    .unwrap();
+    let Routers { app, .. } = routers(tmp.path(), config());
+    let policy = csp(&headers(&app, Method::GET, "/", &[]).await);
+    for d in ["script-src", "connect-src", "img-src"] {
+        assert_eq!(directive(&policy, d), Some("'self'"), "{policy}");
+    }
+    let viewer = body(&app, "/collection/demo/2025/https://example.org/").await;
+    assert!(!viewer.contains("{{analytics_head}}"), "{viewer}");
+}
+
+/// An origin that can't be written into a policy stops the server, rather
+/// than reaching a header.
+#[tokio::test]
+async fn an_analytics_origin_a_policy_cant_name_stops_the_server() {
+    for origins in ["[\"'unsafe-inline'\"]", "[\"plausible.io\"]"] {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!("analytics:\n  head: <script src=x></script>\n  origins: {origins}\n"),
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
+        let err = indice_lib::server::routers(tmp.path(), config())
+            .err()
+            .unwrap_or_else(|| panic!("{origins} must stop the server"));
+        assert!(
+            format!("{err:#}").contains("analytics.origins"),
+            "{origins}: {err:#}"
+        );
+    }
+}
