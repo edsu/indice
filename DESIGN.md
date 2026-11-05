@@ -439,7 +439,7 @@ is in memory, and being read for text, at a time. No more than
 `index.max_extract_mb` (default 16 MiB) of a page is read for text, since that
 costs many times the page's size. The limit applies on a workstation too, because it protects
 the indexing machine whoever started the ingest. What a WACZ inflates to on *disk*, a deflated WARC or
-inner WACZ extracted to a temp file, is not yet bounded (`rustyweb-6vjz`). Replay,
+inner WACZ extracted to a temp file, is not yet bounded (#231). Replay,
 where hostile input would otherwise matter most, isolates every capture alike; see
 *Guarantees*.
 
@@ -459,7 +459,7 @@ where hostile input would otherwise matter most, isolates every capture alike; s
 | ~~A browser will apply sensible defaults~~ | Closed: indice sets a policy per origin (`server::headers`). The app origin allows only its own script, style and images, frames only the replay origin and is framed by nothing; both origins refuse sniffing and send `Referer` only to themselves. The proxy sets HSTS. What is left loose is listed under *Not defended* | `u9y6.6` |
 | ~~The reader is a person~~ | Closed: crawlers may list only indice's own pages (`X-Robots-Tag: noindex` on the rest) and may fetch all but `/files/`, `/search`, `/api/` and `/manage/` (`robots.txt`), per origin in `server::headers::CrawlPolicy`. A crawler that ignores both is bounded by the rate limits, which never refuse `/robots.txt` | `u9y6.7` |
 | ~~Logs are not a privacy artefact~~ | Closed: indice logs a request's path, never its query string or the client's address; the one address it logs is a client a limit refused. The shipped stack turns off oauth2-proxy's per-request log and rotates container logs | `u9y6.8` |
-| ~~Curators supply well-formed WACZs~~ | Closed for memory: no WACZ member is inflated past `index.max_member_mb`, and a remote range is read no further than was asked. Open for disk: a deflated WARC or inner WACZ extracted to a temp file is not yet bounded (`rustyweb-6vjz`) | `rustyweb-wacz-read-caps-q39p` |
+| ~~Curators supply well-formed WACZs~~ | Closed for memory: no WACZ member is inflated past `index.max_member_mb`, and a remote range is read no further than was asked. Open for disk: a deflated WARC or inner WACZ extracted to a temp file is not yet bounded (#231) | `rustyweb-wacz-read-caps-q39p` |
 | ~~Archived captures do not script their host~~ | Closed: replay runs on an origin of its own, with no write route and no identity, and a server will not start without one. A capture's script still runs there and can forge the frame's messages to the viewer, which move the banner or pre-fill a note the reader must still save | `rustyweb-replay-origin-isolation-5h67` |
 
 A future premise change, a PaaS deployment, a multi-tenant host, or the

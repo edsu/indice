@@ -136,9 +136,9 @@ A server serves reads to anyone. To keep an archive off the open web, gate reads
 
 ## Known gaps
 
-These are filed and not yet fixed. The tracker is in the repository: `grep <id> .beads/issues.jsonl` shows the whole writeup.
+These are filed and not yet fixed. Each linked issue has the whole writeup.
 
-- A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume (`rustyweb-6vjz`).
+- A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume ([#231](https://github.com/edsu/indice/issues/231)).
 
 ## How it has been tested
 
