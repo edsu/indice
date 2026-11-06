@@ -341,8 +341,13 @@ mutates cannot be written without one and a forgotten gate is a compile error.
   forward-auth looks at credentials and the caller learns nothing about whether
   a forged identity would have been accepted.
   `manage.rs::csrf_guard_runs_before_forward_auth`
-- `/files/{id}` is readable cross-origin and never with credentials.
-  `authz.rs::files_allows_anonymous_cross_origin_reads_only`
+- On a server, `/files/{id}` and a note's JSON-LD are readable cross-origin and
+  never with credentials. On a workstation no other site may read them: its
+  archive may be private, a WACZ's id is a hash of its path and so guessable,
+  and its own replay reads `/files` from the replay origin itself.
+  `authz.rs::files_allows_anonymous_cross_origin_reads_only`,
+  `authz.rs::a_workstation_lets_no_other_site_read_its_files`,
+  `manage.rs::a_workstation_lets_no_other_site_read_its_notes`
 
 **Archived pages cannot act as the person replaying them.** Replay runs on an
 origin of its own, so the browser keeps a capture's script away from indice.
@@ -493,8 +498,9 @@ Saying so here is what stops these being re-litigated.
   and authorizes nothing, but other services on that domain may care. A
   separate registrable domain for replay removes that, which is why the deploy
   guide mentions it.
-- **`/files/{id}` sends `access-control-allow-origin: *` on purpose,** so any
-  page can replay a public archive. It never sends credentials with it.
+- **On a server, `/files/{id}` sends `access-control-allow-origin: *` on
+  purpose,** so any page can replay a public archive. It never sends
+  credentials with it. A workstation sends no such header.
 - **The host.** Anything with write access to `<home>` owns the instance.
 - **Availability under a determined attacker with many addresses.** Each client
   is limited, and the global caps keep the process alive, but a crowd large
@@ -1022,7 +1028,7 @@ browser opens) when the note is served. A note whose id indice did not mint has 
 than one that cannot find it. By content negotiation it is a page for a browser, or, for an
 `Accept` that ranks JSON-LD or JSON above HTML by q-value, the note as a Web Annotation, served
 as the Protocol's `application/ld+json; profile="http://www.w3.org/ns/anno.jsonld"` with
-`Vary: Accept` and `Access-Control-Allow-Origin: *`. Reading the store happens in
+`Vary: Accept` and, on a server, `Access-Control-Allow-Origin: *`. Reading the store happens in
 `spawn_blocking`, since crawlers may fetch every note. The
 JSON-LD is built field by field (`server::collection::annotation_json_ld`) rather than
 serialized from the stored record, whose `creator.id` may be a login address: its `id` is

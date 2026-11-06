@@ -87,8 +87,10 @@ is not a finding.
   Each client is limited, and global caps keep the process alive, but a crowd
   large enough to exhaust those caps degrades the site for everyone until it
   passes. Telling that crowd from real readers is a CDN's or a WAF's job.
-- **`/files/{id}` sends `access-control-allow-origin: *` on purpose,** so any
-  page can replay a public archive. It never sends credentials with it.
+- **On a server, `/files/{id}` sends `access-control-allow-origin: *` on
+  purpose,** so any page can replay a public archive. It never sends
+  credentials with it. A workstation sends no such header, so no other site
+  can read its archive.
 - **Anything with write access to the home directory owns the instance.** The
   roster governs users of the web interface, not users of the host.
 

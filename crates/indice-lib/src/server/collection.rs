@@ -382,11 +382,19 @@ pub(super) async fn collection_annotation(
     };
     let ld = annotation_json_ld(&a, &id, &state.origin);
     // Public, and free of anything that identifies a login, so any site's
-    // annotation client may read it, as any site may read a public WACZ.
-    let ld_headers = [
-        (axum::http::header::CONTENT_TYPE, ANNO_MEDIA_TYPE),
-        (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-    ];
+    // annotation client may read it, as any site may read a public WACZ; on a
+    // server only, as for the WACZ (`AppState::public_cors`).
+    let mut ld_headers = HeaderMap::new();
+    ld_headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(ANNO_MEDIA_TYPE),
+    );
+    if let Some(origin) = state.public_cors() {
+        ld_headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            axum::http::HeaderValue::from_static(origin),
+        );
+    }
     if json_ld_url {
         return (ld_headers, ld.to_string()).into_response();
     }

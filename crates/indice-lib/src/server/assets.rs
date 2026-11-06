@@ -81,6 +81,13 @@ pub(super) async fn serve_file(
         Ok(mut file) => {
             const CONTENT_TYPE: &str = "application/octet-stream";
             const CORS_EXPOSE: &str = "Content-Length, Content-Range, Accept-Ranges";
+            // Both branches start here, so neither can forget the CORS rule.
+            let mut builder = Response::builder();
+            if let Some(origin) = state.public_cors() {
+                builder = builder
+                    .header("access-control-allow-origin", origin)
+                    .header("access-control-expose-headers", CORS_EXPOSE);
+            }
             if let Some((start, end)) = range {
                 use tokio::io::AsyncSeekExt;
                 if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
@@ -89,25 +96,21 @@ pub(super) async fn serve_file(
                 let length = end - start + 1;
                 let limited = tokio::io::AsyncReadExt::take(file, length);
                 let body = Body::from_stream(ReaderStream::new(limited));
-                Response::builder()
+                builder
                     .status(StatusCode::PARTIAL_CONTENT)
                     .header("content-type", CONTENT_TYPE)
                     .header("content-length", length)
                     .header("content-range", format!("bytes {start}-{end}/{file_size}"))
                     .header("accept-ranges", "bytes")
-                    .header("access-control-allow-origin", "*")
-                    .header("access-control-expose-headers", CORS_EXPOSE)
                     .body(body)
                     .unwrap()
             } else {
                 let body = Body::from_stream(ReaderStream::new(file));
-                Response::builder()
+                builder
                     .status(StatusCode::OK)
                     .header("content-type", CONTENT_TYPE)
                     .header("content-length", file_size)
                     .header("accept-ranges", "bytes")
-                    .header("access-control-allow-origin", "*")
-                    .header("access-control-expose-headers", CORS_EXPOSE)
                     .body(body)
                     .unwrap()
             }

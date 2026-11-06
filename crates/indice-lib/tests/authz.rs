@@ -1089,6 +1089,58 @@ async fn logout_clears_the_cookie_for_a_same_origin_post() {
 /// it quietly later.
 #[tokio::test]
 async fn files_allows_anonymous_cross_origin_reads_only() {
+    let responses = files_cors(indice_lib::server::ServerConfig::new(
+        indice_lib::server::Access::proxy("x-forwarded-email", "secret-the-test-never-sends"),
+    ))
+    .await;
+    for (which, status, acao, acac) in responses {
+        assert_eq!(
+            status,
+            if which == "range" { 206 } else { 200 },
+            "{which} request"
+        );
+        assert_eq!(
+            acao.as_deref(),
+            Some("*"),
+            "{which}: replay reads these bytes from another origin"
+        );
+        assert_eq!(
+            acac, None,
+            "{which}: ACAO:* with credentials would let any site read the \
+             archive as the visitor; the pair must never appear"
+        );
+    }
+}
+
+/// A workstation's archive may be private, and with `ACAO: *` any page the
+/// operator visits could read it from `127.0.0.1` by its id, which is a hash
+/// of the file's path and so guessable. Its own replay reads `/files` from the
+/// replay origin itself, which needs no header, so a workstation sends none.
+#[tokio::test]
+async fn a_workstation_lets_no_other_site_read_its_files() {
+    let responses = files_cors(indice_lib::server::ServerConfig::new(
+        indice_lib::server::Access::local("127.0.0.1:0".parse().unwrap()).unwrap(),
+    ))
+    .await;
+    for (which, status, acao, _) in responses {
+        assert_eq!(
+            status,
+            if which == "range" { 206 } else { 200 },
+            "{which} request"
+        );
+        assert_eq!(acao, None, "{which}: no other site may read these bytes");
+    }
+}
+
+/// Fetch a WACZ from `/files/{id}` as another site's page would, whole and by
+/// range, and return each response's status, `Access-Control-Allow-Origin`
+/// and `Access-Control-Allow-Credentials`.
+///
+/// Both branches, because `serve_file` builds the 206 (range) and 200 (whole
+/// file) responses separately, and the range branch is the one replay uses.
+async fn files_cors(
+    config: indice_lib::server::ServerConfig,
+) -> Vec<(&'static str, u16, Option<String>, Option<String>)> {
     let tmp = home_with_roster();
     let home = tmp.path().to_path_buf();
     let archive = home.join("archive");
@@ -1102,21 +1154,9 @@ async fn files_allows_anonymous_cross_origin_reads_only() {
         .id
         .clone();
 
-    let (base, server) = serve(
-        home,
-        indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
-            "x-forwarded-email",
-            "secret-the-test-never-sends",
-        )),
-    )
-    .await;
+    let (base, server) = serve(home, config).await;
     let url = format!("{base}/files/{id}");
-
-    // Both branches. `serve_file` builds the 206 (range) and 200 (whole file)
-    // responses from two separate `Response::builder()` chains that each spell
-    // the CORS headers out, so testing one proves nothing about the other —
-    // and the range branch is the one replay actually uses, which makes it the
-    // one a credentialed-read feature would touch first.
+    let mut responses = Vec::new();
     for range in [None, Some("bytes=0-99")] {
         let url = url.clone();
         let (status, acao, acac) = tokio::task::spawn_blocking(move || {
@@ -1138,25 +1178,15 @@ async fn files_allows_anonymous_cross_origin_reads_only() {
         })
         .await
         .unwrap();
-
-        let which = if range.is_some() { "range" } else { "whole" };
-        assert_eq!(
+        responses.push((
+            if range.is_some() { "range" } else { "whole" },
             status,
-            if range.is_some() { 206 } else { 200 },
-            "{which} request"
-        );
-        assert_eq!(
-            acao.as_deref(),
-            Some("*"),
-            "{which}: replay reads these bytes from another origin"
-        );
-        assert_eq!(
-            acac, None,
-            "{which}: ACAO:* with credentials would let any site read the \
-             archive as the visitor; the pair must never appear"
-        );
+            acao,
+            acac,
+        ));
     }
     server.abort();
+    responses
 }
 
 /// A server compares every write's `Origin` with its own public URL, frames

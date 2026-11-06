@@ -991,6 +991,44 @@ async fn get_accepting(url: String, accept: &'static str) -> Fetched {
     .unwrap()
 }
 
+/// A workstation's notes are not readable by other sites: with `ACAO: *`, any
+/// page the operator visits could read one from `127.0.0.1` by its URL. A
+/// server's are public, as `a_note_has_a_url_of_its_own` pins.
+#[tokio::test]
+async fn a_workstation_lets_no_other_site_read_its_notes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    let (status, _) =
+        post_form_with_headers(format!("{base}/api/collections"), "name=Notes", vec![]).await;
+    assert_eq!(status, 303);
+    let url = format!("{base}/api/annotations");
+    let body = serde_json::json!({
+        "collection": "notes",
+        "url": "https://example.org/",
+        "timestamp": "20260101000000",
+        "selector": { "exact": "Example Domain" },
+        "note": "private",
+    })
+    .to_string();
+    let created: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header("content-type", "application/json")
+            .send(body)
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let href = created["href"].as_str().unwrap();
+    for accept in ["application/ld+json", ""] {
+        let r = get_accepting(format!("{base}{href}"), accept).await;
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(r.cors, "", "{accept:?}: no other site may read a note");
+    }
+    server.abort();
+}
+
 /// A note has a URL of its own, which its JSON-LD names as its `id`: asked for
 /// JSON-LD, it answers with the note as a W3C Web Annotation; asked by a
 /// browser, with a page carrying the same JSON-LD and a link into the

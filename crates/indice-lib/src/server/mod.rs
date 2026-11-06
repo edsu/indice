@@ -451,6 +451,16 @@ struct Job {
 }
 
 impl AppState {
+    /// `Access-Control-Allow-Origin` for what any site may read: the archive
+    /// bytes and a note's JSON-LD. `*` on a server, whose archive is public, so
+    /// that another site's ReplayWeb.page or annotation client can use it. None
+    /// on a workstation, whose archive may be private: with `*`, any page the
+    /// operator visits could read it from `127.0.0.1`, and the workstation's
+    /// own replay reads `/files` from its own origin and needs no header.
+    fn public_cors(&self) -> Option<&'static str> {
+        self.forward_auth.is_some().then_some("*")
+    }
+
     /// Register a job started by `owner`: mint its id and keep its progress
     /// receiver for the SSE endpoint, which hands it only to the owner.
     fn start_job(
