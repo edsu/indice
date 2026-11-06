@@ -183,6 +183,10 @@ pub struct Ingest<'a> {
     /// before indexing. `None` (the default, so the CLI is unchanged) is no
     /// limit. See [`Ingest::download_limit`].
     download_limit: Option<u64>,
+    /// The most indexing one WACZ may inflate to temp files. `None` (the
+    /// default, so the CLI is unchanged) is no limit. See
+    /// [`Ingest::scratch_limit`].
+    scratch_limit: Option<u64>,
 }
 
 impl<'a> Ingest<'a> {
@@ -201,6 +205,7 @@ impl<'a> Ingest<'a> {
             actor: None,
             fetch: crate::http_range::FetchPolicy::Unrestricted,
             download_limit: None,
+            scratch_limit: None,
         }
     }
 
@@ -239,6 +244,20 @@ impl<'a> Ingest<'a> {
     #[must_use]
     pub fn download_limit(mut self, bytes: Option<u64>) -> Self {
         self.download_limit = bytes;
+        self
+    }
+
+    /// Cap what indexing one WACZ may inflate to temp files.
+    ///
+    /// A WACZ whose WARCs are compressed inside the zip, or a nested WACZ
+    /// whose inner WACZ is, is inflated to temp files to be read, and a zip
+    /// entry can inflate to a thousand times its size. Without a limit a small
+    /// curator-supplied WACZ could fill the temp volume. The server sets this
+    /// to the archive's room under `uploads.max_total_gb`. See
+    /// [`crate::wacz::Scratch`].
+    #[must_use]
+    pub fn scratch_limit(mut self, bytes: Option<u64>) -> Self {
+        self.scratch_limit = bytes;
         self
     }
     /// Re-index sources already registered in the collection.
@@ -470,6 +489,8 @@ pub(super) fn index_one(
         .main_page_url
         .clone()
         .or_else(|| meta.seed_pages.first().map(|s| s.url.clone()));
+    // Per WACZ: its temp files are gone once it is indexed.
+    let scratch = crate::wacz::Scratch::new(cx.scratch_limit);
     let stats = pages::index(
         &access,
         &pages::Ctx {
@@ -480,6 +501,7 @@ pub(super) fn index_one(
                 search,
                 read_limit,
                 extract_limit,
+                scratch: &scratch,
             },
             workers: resolve_workers(concurrency, access.is_remote()),
             thumbs_dir: &thumbs_dir,

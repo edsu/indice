@@ -50,6 +50,8 @@ pub(super) struct Docs<'a> {
     /// The most of one page to read for its text (`index.max_extract_mb`).
     /// See [`record_to_raw`].
     pub extract_limit: usize,
+    /// What this WACZ may write to temp files. See [`crate::wacz::Scratch`].
+    pub scratch: &'a crate::wacz::Scratch,
 }
 
 /// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
@@ -263,10 +265,11 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
             // then full-scan it. Rare — not produced by Browsertrix.
             None => {
                 let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))?;
-                let mut tmp =
-                    tempfile::NamedTempFile::new().context("temp for compressed nested WACZ")?;
-                std::io::copy(&mut zip.by_name(&inner.name)?, tmp.as_file_mut())
-                    .with_context(|| format!("extracting nested {}", inner.name))?;
+                let entry = zip.by_name(&inner.name)?;
+                let declared = entry.size();
+                let tmp =
+                    crate::wacz::inflate_to_temp(entry, declared, &inner.name, "", docs.scratch)
+                        .with_context(|| format!("extracting nested {}", inner.name))?;
                 index_wacz(tmp.path(), docs)?
             }
         };
@@ -301,17 +304,24 @@ fn index_inner<F: RangeFetch + Clone + Send + Sync>(
     if streamable {
         index_wacz_streaming(fetch, docs, label, workers, progress)
     } else {
-        let tmp = materialize_fetch(&fetch).context("materializing nested WACZ for scan")?;
+        let tmp = materialize_fetch(&fetch, label, docs.scratch)
+            .context("materializing nested WACZ for scan")?;
         index_wacz(tmp.path(), docs)
     }
 }
 
 /// Copy an entire [`RangeFetch`] to a temp file (chunked), for the fallback
-/// paths that need a seekable local file.
-fn materialize_fetch<F: RangeFetch>(fetch: &F) -> Result<tempfile::NamedTempFile> {
+/// paths that need a seekable local file. Its length is known, so it is
+/// charged to `scratch` before anything is written.
+fn materialize_fetch<F: RangeFetch>(
+    fetch: &F,
+    label: &str,
+    scratch: &crate::wacz::Scratch,
+) -> Result<tempfile::NamedTempFile> {
     use std::io::Write;
     const CHUNK: u64 = 4 * 1024 * 1024;
     let total = fetch.total_len();
+    scratch.charge(total, label)?;
     let mut tmp = tempfile::NamedTempFile::new()?;
     let mut pos = 0u64;
     while pos < total {
@@ -358,7 +368,7 @@ pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
     let mut cdx = Vec::new();
     let mut warcinfo: Option<Warcinfo> = None;
     for (i, entry_name) in warc_paths.iter().enumerate() {
-        let tmp = extract_warc_from_wacz(wacz_path, entry_name)
+        let tmp = extract_warc_from_wacz(wacz_path, entry_name, docs.scratch)
             .with_context(|| format!("extracting {} from {}", entry_name, wacz_path.display()))?;
         let name = format!("warc-{i}");
         for record in iter_records(tmp.path(), limit)? {
@@ -1436,6 +1446,7 @@ mod tests {
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
             extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+            scratch: &crate::wacz::Scratch::new(None),
         };
         let err = index_pages(
             PageSource {

@@ -51,12 +51,11 @@ Filed, documented, and not news. Each linked issue has the whole writeup.
 - Every capture a browser replays shares the replay origin, so a hostile
   capture's script can read the others replayed in that browser.
   See *Not defended* in the threat model.
-- What a WACZ inflates to on disk is not bounded: a deflated WARC or inner
-  WACZ extracted to a temp file can fill the temp volume. (What it inflates to
-  in memory is: `index.max_member_mb`.) [#231](https://github.com/edsu/indice/issues/231)
 - Upload size and total archive size are limited only when `uploads.max_mb`
   and `uploads.max_total_gb` are set in `config.yaml`; both are unset by default.
-  The limits apply to the whole archive, not to each curator.
+  The archive limit also bounds what indexing a curator's WACZ inflates to temp
+  files, so without it a small hostile WACZ can fill the temp volume. The
+  limits apply to the whole archive, not to each curator.
   [#232](https://github.com/edsu/indice/issues/232)
 - A failed upload leaves its file in `archive/`. It counts against
   `uploads.max_total_gb` but appears nowhere in the workroom, so only someone

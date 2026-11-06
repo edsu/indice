@@ -172,7 +172,9 @@ pub struct UploadsConfig {
     pub max_mb: Option<u64>,
     /// The most the archive may hold, in GiB, counting the local WACZs the
     /// manifest records. A crawl indexed from a URL is streamed in place and
-    /// costs no local disk, so it does not count.
+    /// costs no local disk, so it does not count. The room it leaves also
+    /// bounds what indexing one WACZ may inflate to temp files; see
+    /// [`crate::wacz::Scratch`].
     pub max_total_gb: Option<u64>,
 }
 

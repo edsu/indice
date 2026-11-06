@@ -300,6 +300,15 @@ fn start_index_job(
                     return;
                 }
             }
+            let scratch = match scratch_room(&job_state, admit_bytes.unwrap_or(0)) {
+                Ok(room) => room,
+                Err(refused) => {
+                    let _ = tx.send(ProgressEvent::Error {
+                        message: refused.status_and_message().1,
+                    });
+                    return;
+                }
+            };
             // Custody travels with the ingest, so each crawl is attributed as
             // it is recorded. A multi-WACZ add that fails part way therefore
             // attributes exactly what committed — which are precisely the
@@ -309,6 +318,7 @@ fn start_index_job(
                 .actor(Some(&actor))
                 .fetch_policy(fetch)
                 .download_limit(job_state.upload_limits.per_upload)
+                .scratch_limit(scratch)
                 .progress(&progress)
                 .index_location(&location, &collection)
         };
@@ -662,6 +672,19 @@ pub(super) fn admit(state: &AppState, size: u64) -> Result<(), Refused> {
         }
         _ => Ok(()),
     }
+}
+
+/// What indexing an accession may inflate to temp files: the archive's room
+/// under its limit, less the `incoming` bytes it is about to file there.
+/// `None` when no archive limit is set. See `Ingest::scratch_limit`.
+///
+/// The temp files are not in the archive and are gone once the WACZ is
+/// indexed, but they are disk the operator did not grant, and a zip entry can
+/// inflate a thousandfold. The archive limit is the one number that says how
+/// much disk an accession may cost, so it is the bound here too. Measured
+/// under the write lock, like [`admit`].
+pub(super) fn scratch_room(state: &AppState, incoming: u64) -> Result<Option<u64>, Refused> {
+    Ok(archive_usage(state)?.map(|(used, cap)| cap.saturating_sub(used).saturating_sub(incoming)))
 }
 
 /// The most a text field in an upload may be. A collection name and a display
