@@ -378,6 +378,47 @@ async fn replay_data_is_served_on_both_origins() {
     }
 }
 
+/// On a workstation, both listeners refuse a request sent to a name that is
+/// not this machine's. A page that rebinds its own name to the replay port
+/// could otherwise read what is served there as same-origin. See
+/// `manage.rs::a_workstation_serves_a_tunnelled_caller_under_a_loopback_name`.
+/// A server is reached by its public name, so it has no such check.
+#[tokio::test]
+async fn a_workstation_refuses_a_rebound_name_on_both_listeners() {
+    let tmp = TempDir::new().unwrap();
+    indice_lib::index::index_path(&fixture("a.wacz"), tmp.path(), None, "test").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let wacz = manifest.waczs[0].id.clone();
+    let coll = manifest.collections[0].id.to_string();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let Routers { app, replay } = indice_lib::server::routers(tmp.path(), config).unwrap();
+    let paths = [
+        format!("/files/{wacz}"),
+        format!("/collection/{coll}/replay.json"),
+    ];
+    for router in [&app, &replay] {
+        for path in &paths {
+            let (status, _, _) =
+                call(router, Method::GET, path, &[("host", "evil.example:8081")]).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "rebound GET {path}");
+            let (status, _, _) =
+                call(router, Method::GET, path, &[("host", "127.0.0.1:8081")]).await;
+            assert_eq!(status, StatusCode::OK, "loopback GET {path}");
+        }
+    }
+    let Routers { app, replay } = server(tmp.path());
+    for router in [&app, &replay] {
+        let (status, _, _) = call(
+            router,
+            Method::GET,
+            "/health",
+            &[("host", "archive.example.test")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a server answers to its own name");
+    }
+}
+
 // ── Starting up ───────────────────────────────────────────────────────────────
 
 /// A server with no replay origin refuses to start: replay would otherwise

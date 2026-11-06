@@ -109,7 +109,9 @@ The secret's presence is what makes trusting the identity header safe. See
 
 A loopback bind keeps indice off the network and promises nothing about who reaches the port.
 Another account on the machine can write to it, as can anyone on the far side of an `ssh -L` or a
-`tailscale serve`. Sharing an archive is the server shape, not this one. See
+`tailscale serve`. It answers only to a loopback name (`localhost`, `127.0.0.1`, `[::1]`), so a
+web page cannot reach it by DNS rebinding, and a browser through `tailscale serve` is refused.
+Sharing an archive is the server shape, not this one. See
 [Manage &amp; curate](/docs/guides/manage/#on-a-workstation).
 
 Replay always runs on a listener of its own, because archived pages run their own JavaScript and

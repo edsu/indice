@@ -173,14 +173,10 @@ pub(super) fn same_site_request(
                 let Some(ours) = request_authority(headers, uri) else {
                     return false;
                 };
-                // Matching Host against Origin is not enough on its own when
-                // the browser chose the Host: DNS rebinding defeats it. An
-                // attacker who controls evil.example can point it at
-                // 127.0.0.1, and the browser then sends a *self-consistent*
-                // pair (Host and Origin both evil.example) at the loopback
-                // workroom. A workstation is loopback-only anyway, since it
-                // refuses to start otherwise, so any authority that isn't a
-                // loopback name is bogus by definition.
+                // Matching Host against Origin is not enough on its own: a
+                // rebound browser sends a self-consistent pair (both
+                // evil.example). [`loopback_only`] refuses that before this
+                // runs; checking here too keeps this function right on its own.
                 is_loopback_authority(ours) && ours.eq_ignore_ascii_case(theirs)
             }
         },
@@ -189,6 +185,62 @@ pub(super) fn same_site_request(
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v == "cross-site" || v == "same-site"),
     }
+}
+
+/// DNS-rebinding guard for a workstation, layered on both listeners: refuse
+/// any request, whatever its method, sent to a name other than this machine's.
+///
+/// An attacker who controls evil.example serves a page from it, then points
+/// the name at 127.0.0.1. The page's next request to `http://evil.example:8080`
+/// reaches the workstation, and the browser treats the answer as same-origin,
+/// so the page can read it. `Host` (and `Origin`, on a write) both say
+/// evil.example, so nothing but the name gives it away. A workstation is
+/// loopback-only, since it refuses to start otherwise, so a browser that is
+/// talking to it honestly always names a loopback address.
+///
+/// Reads are refused as well as writes, because the reads are what a
+/// rebinding page is after: search, the collection pages, the annotations.
+///
+/// It is a browser-only defence, not access control. Script cannot set `Host`,
+/// but `curl -H 'Host: localhost'` through a tunnel can, and DESIGN's
+/// *Principals* says why a workstation does not try to stop that.
+pub(super) async fn loopback_only(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !rebound_request(req.headers(), req.uri()) {
+        return next.run(req).await;
+    }
+    // Not logged: this sits outside the request log, as the CSRF guard does,
+    // and a rebinding page can send as many as it likes. The reply says why.
+    let host = request_authority(req.headers(), req.uri()).unwrap_or("(unreadable)");
+    (
+        StatusCode::FORBIDDEN,
+        format!(
+            "refused: this workstation answers only to a loopback address \
+             (localhost, 127.0.0.1 or [::1]), not {host}. To share an archive, \
+             run indice as a server."
+        ),
+    )
+        .into_response()
+}
+
+/// Whether a request was sent to a name that is not this machine's: see
+/// [`loopback_only`].
+///
+/// A request that names no authority at all is let through: a browser always
+/// sends `Host`, so its absence is not the case this guards. A `Host` that is
+/// present but empty or unreadable is refused, since it names nothing that
+/// could be this machine.
+pub(super) fn rebound_request(headers: &HeaderMap, uri: &Uri) -> bool {
+    if headers.contains_key(axum::http::header::HOST) {
+        return !headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(is_loopback_authority);
+    }
+    uri.authority()
+        .is_some_and(|a| !is_loopback_authority(a.as_str()))
 }
 
 /// What a write's `Origin` must match to count as this site's own.
@@ -201,33 +253,41 @@ pub(super) enum CsrfPolicy {
     /// one.
     Site(String),
     /// A workstation: the request's own `Host`, which must also be a loopback
-    /// name.
+    /// name. [`loopback_only`] requires that of every request, reads included.
     ///
     /// The loopback half is the DNS-rebinding defence and nothing more. It is
     /// not an access control, and indice does not try to make one out of
-    /// `Host`. Two versions of this guard refused a request whose authority was
-    /// not a loopback name, meaning to stop a tunnelled caller from inheriting
-    /// the operator's rights; both were bypassable with a header, because the
-    /// workstation shape promises nothing against a caller who reaches the port.
-    /// See the threat model in `DESIGN.md`.
+    /// `Host`. Two versions of this guard refused a non-loopback authority
+    /// *meaning* to stop a tunnelled caller from inheriting the operator's
+    /// rights; both were bypassable with a header, because the workstation
+    /// shape promises nothing against a caller who reaches the port. Refusing
+    /// the name is right against a browser, which cannot choose it, and that
+    /// is all it is for. See the threat model in `DESIGN.md`.
     Loopback,
 }
 
-/// Whether an authority names this machine. Accepts `localhost`, the IPv4
-/// loopback block (`127.0.0.0/8`), and IPv6 `::1` in its bracketed form.
+/// Whether an authority names this machine. Accepts `localhost` and its
+/// subdomains (RFC 6761: browsers resolve `*.localhost` to loopback
+/// themselves, and no public DNS can answer for it), either with a trailing
+/// dot, the IPv4 loopback block (`127.0.0.0/8`), and IPv6 `::1` in its
+/// bracketed form, IPv4-mapped included.
 fn is_loopback_authority(authority: &str) -> bool {
     // Strip the port. An IPv6 literal is bracketed, so split after the bracket.
-    // Borrowed rather than owned: there is no reason to allocate for a
-    // comparison.
     let host = match authority.rsplit_once(']') {
         Some((bracketed, _)) => bracketed.trim_start_matches('['),
         None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
     };
-    if host.eq_ignore_ascii_case("localhost") {
+    // Compared as bytes, borrowed: no allocation on every request, and no
+    // slicing a `str` mid-character.
+    let name = host.strip_suffix('.').unwrap_or(host).as_bytes();
+    let tld = b".localhost";
+    if name.eq_ignore_ascii_case(&tld[1..])
+        || (name.len() > tld.len() && name[name.len() - tld.len()..].eq_ignore_ascii_case(tld))
+    {
         return true;
     }
     host.parse::<std::net::IpAddr>()
-        .is_ok_and(|ip| ip.is_loopback())
+        .is_ok_and(|ip| ip.to_canonical().is_loopback())
 }
 
 /// The authority (`host[:port]`) this request was sent to: `Host`, or the

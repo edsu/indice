@@ -1447,65 +1447,85 @@ async fn anonymous_is_refused_from_every_management_route() {
     server.abort();
 }
 
-/// A workstation serves whoever reaches the port, including through a tunnel.
+/// A workstation serves whoever reaches the port, including through a tunnel,
+/// and answers only to this machine's names.
 ///
-/// This pins a decision rather than a defence, which is why it asserts 200 on a
-/// request that indice briefly refused. The workstation shape promises
-/// nothing about who reaches the port: a second shell on the same machine, a
-/// tunnel, `tailscale serve`, all of them get the operator's rights. Sharing an
-/// archive is the server shape.
+/// This pins two decisions, and they look as if they contradict each other, so
+/// both are written down here.
 ///
-/// There were two attempts at a guard here and both were bypassable. The
-/// first read the authority from `X-Forwarded-Host` in preference to `Host`, so `X-Forwarded-Host: localhost` walked through a header
-/// at a time. The second read `Host` only and held against a browser, because
-/// script cannot set `Host`, and fell to `curl -H 'Host: 127.0.0.1:8080'`
-/// through any Host-preserving proxy, which is what Go's
-/// `httputil.ReverseProxy` and therefore `tailscale serve` is. Header
-/// inspection cannot authenticate a caller, and a guard that stops the honest
-/// case while passing the dishonest one is worse than none: it reads as a
-/// boundary in the docs.
+/// The first is that `Host` is not access control. The workstation shape
+/// promises nothing about who reaches the port: a second shell on the same
+/// machine, an `ssh -L`, a tunnel that says `Host: localhost`, all of them get
+/// the operator's rights. There were two attempts at a guard against tunnelled
+/// callers and both were bypassable. The first read the authority from
+/// `X-Forwarded-Host` in preference to `Host`, so `X-Forwarded-Host: localhost`
+/// walked through. The second read `Host` only, and fell to
+/// `curl -H 'Host: 127.0.0.1:8080'` through any Host-preserving proxy, which is
+/// what Go's `httputil.ReverseProxy` and therefore `tailscale serve` is. Header
+/// inspection cannot authenticate a caller. Sharing an archive is the server
+/// shape.
 ///
-/// So if this test ever goes red, the fix is not to re-add the guard. It is to
-/// change the threat model in DESIGN first, and then to add something a caller
-/// must hold rather than something a caller can say.
+/// The second is that a workstation refuses any request, read or write, whose
+/// `Host` is not a loopback name. That is not the old guard back: it is aimed
+/// at DNS rebinding, where a page the operator visits points its own name at
+/// 127.0.0.1 and reads the archive as same-origin. A browser cannot choose
+/// `Host`, so for a browser the name is decisive, and a browser is the only
+/// thing that rebinds. The cost is that a browser reaching a workstation
+/// through `tailscale serve` is refused, which its writes already were (its
+/// `Origin` is not loopback).
+///
+/// So if the first half goes red, the fix is not a better header check. Change
+/// the threat model in DESIGN first, and then add something a caller must hold
+/// rather than something a caller can say.
 #[tokio::test]
-async fn a_workstation_serves_a_tunnelled_caller() {
+async fn a_workstation_serves_a_tunnelled_caller_under_a_loopback_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
 
-    // Arriving for a proxy's hostname reads the site.
-    let (status, _) = get_with_headers(format!("{base}/"), vec![("Host", "box.ts.net")]).await;
-    assert_eq!(status, 200, "a workstation does not inspect Host");
-
-    // And writes to it, which is the part worth being explicit about.
+    // A tunnel that keeps (or claims) `localhost`, as `ssh -L` does, reads the
+    // site and writes to it. No Origin: it is not a browser.
+    let (status, _) = get_with_headers(format!("{base}/"), vec![("Host", "localhost:8080")]).await;
+    assert_eq!(status, 200, "a loopback name is served whoever sends it");
     let tunnelled = post_headers(
         format!("{base}/api/collections"),
-        vec![("Host", "box.ts.net")],
+        vec![("Host", "localhost:8080")],
         "name=Tunnelled",
     )
     .await;
     // 200, not 303: the agent follows the post-redirect-get.
-    assert_eq!(tunnelled, 200, "a workstation write is not gated on Host");
+    assert_eq!(
+        tunnelled, 200,
+        "a workstation write is not access-controlled"
+    );
     assert!(
         tmp.path().join("collections").join("tunnelled").exists(),
         "the collection should have been created"
     );
 
-    // What does still hold is the DNS-rebinding case, because that is CSRF and
-    // CSRF is a browser problem. `evil.example` resolving to 127.0.0.1 makes the
-    // browser send a self-consistent Host and Origin pair; comparing the two
-    // would accept it, and requiring a loopback Origin is what does not.
+    // DNS rebinding: `evil.example` resolving to 127.0.0.1 makes the browser
+    // send a self-consistent Host and Origin pair. Refused for a write...
     let rebound = post_headers(
         format!("{base}/api/collections"),
         vec![("Host", "evil.example"), ("Origin", "http://evil.example")],
         "name=Rebound",
     )
     .await;
-    assert_eq!(rebound, 403, "a rebound browser must still be refused");
+    assert_eq!(rebound, 403, "a rebound browser must not write");
     assert!(
         !tmp.path().join("collections").join("rebound").exists(),
         "a refused write must not reach the archive"
     );
+    // ...and for the reads it was after. A same-origin GET carries no Origin.
+    for path in ["/", "/search?q=x", "/api/search?q=x", "/health"] {
+        let (status, _) =
+            get_with_headers(format!("{base}{path}"), vec![("Host", "evil.example:8080")]).await;
+        assert_eq!(status, 403, "a rebound browser must not read {path}");
+    }
+    // A tunnel that forwards its own name, as `tailscale serve` does, is refused
+    // the same way: indice cannot tell it from a rebound browser.
+    let (status, body) = get_with_headers(format!("{base}/"), vec![("Host", "box.ts.net")]).await;
+    assert_eq!(status, 403);
+    assert!(body.contains("run indice as a server"), "{body}");
 
     server.abort();
 }
