@@ -3,8 +3,8 @@ use crate::views;
 use axum::http::{HeaderMap, Method, Uri};
 // Internals these tests exercise directly, now that they live in sibling modules.
 use super::auth::{
-    clear_session_cookie, hmac_sha256, local_redirect_target, same_site_request, sign_session,
-    verify_session, CsrfPolicy,
+    clear_session_cookie, hmac_sha256, local_redirect_target, rebound_request, same_site_request,
+    sign_session, verify_session, CsrfPolicy,
 };
 use super::imports::imported_browsertrix_ids;
 use super::pages::{active_filters, query_with_filter, query_without_filter};
@@ -299,21 +299,41 @@ fn a_server_compares_with_its_site_url_whatever_the_headers_say() {
     ));
 }
 
+/// Whether the workstation guard treats a request as DNS rebinding. The
+/// method is not an argument: the guard refuses reads and writes alike.
+fn rebound_local(hdrs: &[(&str, &str)]) -> bool {
+    let (_, h, u) = csrf_case("GET", hdrs);
+    rebound_request(&h, &u)
+}
+
 #[test]
 fn local_mode_refuses_a_rebound_non_loopback_authority() {
     // DNS rebinding: the attacker points evil.example at 127.0.0.1, so the
     // browser sends a *self-consistent* pair — Host and Origin both name
     // evil.example — at the loopback workroom. Origin==Host alone would let
-    // this through; requiring a loopback authority is what stops it.
-    assert!(!same_site_local(
-        "POST",
-        &[
-            ("host", "evil.example:8080"),
-            ("origin", "http://evil.example:8080")
-        ]
-    ));
+    // this through; requiring a loopback authority is what stops it, both in
+    // the rebinding guard and, on its own, in the write check.
+    let pair = [
+        ("host", "evil.example:8080"),
+        ("origin", "http://evil.example:8080"),
+    ];
+    assert!(rebound_local(&pair));
+    assert!(!same_site_local("POST", &pair));
+    // A read is refused too, by the rebinding guard: reading a private archive
+    // is what a rebinding page is after, and a same-origin GET has no Origin.
+    assert!(rebound_local(&[("host", "evil.example:8080")]));
     // The genuine workroom, under every spelling of "this machine".
-    for host in ["127.0.0.1:8080", "localhost:8080", "[::1]:8080"] {
+    for host in [
+        "127.0.0.1:8080",
+        "127.1.2.3:8080",
+        "localhost:8080",
+        "LOCALHOST",
+        "localhost.:8080",
+        "indice.localhost:8080",
+        "[::1]:8080",
+        "[::ffff:127.0.0.1]:8080",
+    ] {
+        assert!(!rebound_local(&[("host", host)]), "{host} is this machine");
         assert!(
             same_site_local(
                 "POST",
@@ -322,6 +342,37 @@ fn local_mode_refuses_a_rebound_non_loopback_authority() {
             "{host} is this machine"
         );
     }
+    // Names that only look like it.
+    for host in [
+        "localhost.evil.example",
+        "evillocalhost:8080",
+        "127.0.0.1.evil.example",
+        "[::ffff:10.0.0.1]:8080",
+    ] {
+        assert!(
+            rebound_local(&[("host", host)]),
+            "{host} is not this machine"
+        );
+    }
+}
+
+#[test]
+fn the_rebinding_guard_reads_the_authority_a_browser_sent() {
+    // No authority at all is not a browser, which always sends Host, so it is
+    // not the case the guard is for.
+    assert!(!rebound_local(&[]));
+    // A Host that is there but names nothing is refused, not treated as absent.
+    assert!(rebound_local(&[("host", "")]));
+    let mut h = HeaderMap::new();
+    h.insert(
+        axum::http::header::HOST,
+        axum::http::HeaderValue::from_bytes(b"evil\xff.example").unwrap(),
+    );
+    assert!(rebound_request(&h, &"/".parse().unwrap()));
+    // Under HTTP/2 the authority is the URI's, not a header.
+    let h2 = |uri: &str| rebound_request(&HeaderMap::new(), &uri.parse().unwrap());
+    assert!(h2("http://evil.example:8080/search"));
+    assert!(!h2("http://127.0.0.1:8080/search"));
 }
 
 #[test]

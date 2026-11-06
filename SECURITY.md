@@ -78,15 +78,19 @@ is not a finding.
   institution already runs.
 - **A loopback bind promises nothing about who reaches the port.** On a
   workstation every caller is the operator: another account on the machine, an
-  `ssh -L`, a `tailscale serve`. indice does not try to narrow that by
-  inspecting `Host`, because header inspection cannot authenticate a caller.
-  Sharing an archive is the server shape.
+  `ssh -L`, a `tailscale serve`. Sharing an archive is the server shape.
+  A workstation answers only to a loopback `Host`, which stops a web page from
+  reaching it by DNS rebinding and refuses a browser through `tailscale serve`.
+  That is not access control: a client that sets its own `Host` gets through,
+  and header inspection cannot authenticate a caller.
 - **A crowd from many addresses can make a server answer `503` to everyone.**
   Each client is limited, and global caps keep the process alive, but a crowd
   large enough to exhaust those caps degrades the site for everyone until it
   passes. Telling that crowd from real readers is a CDN's or a WAF's job.
-- **`/files/{id}` sends `access-control-allow-origin: *` on purpose,** so any
-  page can replay a public archive. It never sends credentials with it.
+- **On a server, `/files/{id}` sends `access-control-allow-origin: *` on
+  purpose,** so any page can replay a public archive. It never sends
+  credentials with it. A workstation sends no such header, so no other site
+  can read its archive.
 - **Anything with write access to the home directory owns the instance.** The
   roster governs users of the web interface, not users of the host.
 

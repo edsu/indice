@@ -47,6 +47,8 @@ Replay runs on the next port, `127.0.0.1:8081`, because archived pages run their
 
 indice does not try to tell them apart, and the [threat model](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) explains why: a check on the `Host` header is bypassable, because any client that is not a browser sets `Host` to whatever it likes. Such a check would refuse an honest tunnel and let a dishonest client through.
 
+A workstation does check `Host` for one thing: a browser cannot set it, so a workstation answers only to `localhost`, `127.0.0.1` or `[::1]`. That stops a web page you visit from pointing its own name at your machine (DNS rebinding) and reading your archive. It also means a browser reaching the workstation through `tailscale serve`, which sends the tailnet name, is refused. Use `ssh -L`, which keeps `localhost`, or run a server.
+
 A loopback bind keeps indice off the network and promises nothing more. Run it as a server if the machine is shared, or if anything you do not control can reach that port.
 :::
 

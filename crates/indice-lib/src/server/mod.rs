@@ -451,6 +451,16 @@ struct Job {
 }
 
 impl AppState {
+    /// `Access-Control-Allow-Origin` for what any site may read: the archive
+    /// bytes and a note's JSON-LD. `*` on a server, whose archive is public, so
+    /// that another site's ReplayWeb.page or annotation client can use it. None
+    /// on a workstation, whose archive may be private: with `*`, any page the
+    /// operator visits could read it from `127.0.0.1`, and the workstation's
+    /// own replay reads `/files` from its own origin and needs no header.
+    fn public_cors(&self) -> Option<&'static str> {
+        self.forward_auth.is_some().then_some("*")
+    }
+
     /// Register a job started by `owner`: mint its id and keep its progress
     /// receiver for the SSE endpoint, which hands it only to the owner.
     fn start_job(
@@ -922,7 +932,8 @@ fn build_routers(
     // Cheap to apply broadly: for safe methods (GET/HEAD/OPTIONS/TRACE) the
     // cross-site half returns immediately, so a read request pays one `match`
     // and nothing else. On a workstation a write's `Host` must also be a
-    // loopback name; see [`CsrfPolicy::Loopback`].
+    // loopback name, and `loopback_only` (in `outer_layers`) asks that of
+    // every request, against DNS rebinding.
     let csrf = Arc::new(csrf);
 
     // Replay alone, on its own listener and so its own origin. Everything here
@@ -968,8 +979,9 @@ fn build_routers(
     Ok(Routers {
         app: outer_layers(app, csrf.clone(), app_headers).with_state(state.clone()),
         // The CSRF guard has nothing to refuse here, since every route is a
-        // GET and the guard checks only writes. It is applied anyway so the two
-        // listeners share one layer stack.
+        // GET and the guard checks only writes. The rebinding guard does: on a
+        // workstation, a page that rebinds its own name to the replay port
+        // could otherwise read the manifests and pages from here.
         replay: outer_layers(replay, csrf, replay_headers).with_state(state),
     })
 }
@@ -980,7 +992,7 @@ fn outer_layers(
     csrf: Arc<CsrfPolicy>,
     security: headers::SecurityHeaders,
 ) -> Router<Arc<AppState>> {
-    router
+    let router = router
         // Mark rendered HTML non-cacheable (it varies by auth); innermost so it
         // tags the handler's response before compression. Runs before with_state.
         .layer(axum::middleware::from_fn(html_no_cache))
@@ -1034,23 +1046,33 @@ fn outer_layers(
         )
         // Outside the trace layer, so the span it makes can carry the id.
         .layer(axum::middleware::from_fn(assign_request_id))
-        // Outermost: `Router::layer` wraps, so this runs FIRST. A cross-site
-        // POST is refused before anything else happens to it — before
+        // Outside the app's own layers: `Router::layer` wraps, so this runs
+        // before them. A cross-site POST is refused before anything else
+        // happens to it — before
         // forward-auth does any identity bookkeeping (notably before it
         // refreshes the display cookie), and before a body is read, which
         // matters given the disabled body limit on `/api/archives/upload`.
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn({
+            let csrf = csrf.clone();
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let csrf = csrf.clone();
                 async move { same_origin_guard(&csrf, req, next).await }
-            },
-        ))
-        // Outside the CSRF guard, so its refusals carry the headers too.
-        .layer(axum::middleware::from_fn(
-            move |req: axum::extract::Request, next: axum::middleware::Next| {
-                security.clone().apply(req, next)
-            },
-        ))
+            }
+        }));
+    // A workstation answers only to its own names, on every request: the
+    // DNS-rebinding guard, outside the CSRF guard so a rebound request is
+    // refused before anything else looks at it. A server is reached by its
+    // public name by design, so it has no such layer.
+    let router = match *csrf {
+        CsrfPolicy::Loopback => router.layer(axum::middleware::from_fn(loopback_only)),
+        CsrfPolicy::Site(_) => router,
+    };
+    // Outside both guards, so their refusals carry the headers too.
+    router.layer(axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            security.clone().apply(req, next)
+        },
+    ))
 }
 
 /// Bind and serve. `config` says who is trusted (see [`Access`]); `providers`

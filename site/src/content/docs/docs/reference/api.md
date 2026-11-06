@@ -117,7 +117,7 @@ curl -H 'Accept: application/ld+json' \
 }
 ```
 
-`id` is built from the site's URL (`--site-url`), or on a workstation from `http://localhost:` and its port. The JSON-LD is sent with `Access-Control-Allow-Origin: *`, so annotation tools on other sites can read it. `creator` is the author's display name only, never the login identity. A whole-page note has no `selector`. `state` says when the page was captured and where the archived copy replays. An unknown note, or a key that isn't one, is a 404. A note whose id indice didn't create (in a hand-edited `annotations.jsonl`, say) has no page of its own, and `/api/annotations` gives it no `href`.
+`id` is built from the site's URL (`--site-url`), or on a workstation from `http://localhost:` and its port. On a server the JSON-LD is sent with `Access-Control-Allow-Origin: *`, so annotation tools on other sites can read it; a workstation sends no such header, so its notes stay private to the machine. `creator` is the author's display name only, never the login identity. A whole-page note has no `selector`. `state` says when the page was captured and where the archived copy replays. An unknown note, or a key that isn't one, is a 404. A note whose id indice didn't create (in a hand-edited `annotations.jsonl`, say) has no page of its own, and `/api/annotations` gives it no `href`.
 
 ## `GET /health`
 
@@ -145,7 +145,7 @@ The operator sees a refusal in the server log twice: once when it starts, naming
 
 These serve ReplayWeb.page's in-browser player, and tooling can use them too. They answer on both the site and the replay origin; the player reads them from the replay origin:
 
-- **`GET /files/{id}`**: the raw WACZ for a crawl, honoring HTTP `Range` requests (partial fetches). This is how replay reads archived resources without downloading the whole file.
+- **`GET /files/{id}`**: the raw WACZ for a crawl, honoring HTTP `Range` requests (partial fetches). This is how replay reads archived resources without downloading the whole file. On a server it is sent with `Access-Control-Allow-Origin: *`, so another site's ReplayWeb.page can replay a public archive; a workstation sends no such header.
 - **`GET /collection/{id}/replay.json`**: a multi-WACZ replay manifest for a collection (every member crawl), handed to wabac.js so cross-crawl links resolve.
 - **`GET /collection/{id}/pages`**: the collection's page list and URL→capture resolution, scoped to the collection.
 - **`GET /crawl/{id}/replay.json`** and **`GET /crawl/{id}/pages`**: the same for one crawl that Browsertrix wrote into several WACZs, listing every file of the crawl, so a page replays with the stylesheets and scripts stored in the crawl's other files.
