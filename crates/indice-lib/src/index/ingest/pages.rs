@@ -261,8 +261,10 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
                 workers,
                 progress,
             )?,
-            // Compressed inner entry: extract it (decompressing) to a temp file,
-            // then full-scan it. Rare — not produced by Browsertrix.
+            // Compressed inner entry: inflate it to a temp file, then read
+            // that like a stored one, so its own stored WARCs are streamed
+            // rather than copied out a second time. Rare — not produced by
+            // Browsertrix.
             None => {
                 let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))?;
                 let entry = zip.by_name(&inner.name)?;
@@ -270,7 +272,13 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
                 let tmp =
                     crate::wacz::inflate_to_temp(entry, declared, &inner.name, "", docs.scratch)
                         .with_context(|| format!("extracting nested {}", inner.name))?;
-                index_wacz(tmp.path(), docs)?
+                index_inner(
+                    crate::http_range::FileFetch::open(tmp.path())?,
+                    &inner.name,
+                    docs,
+                    workers,
+                    progress,
+                )?
             }
         };
         agg.pages += stats.pages;
@@ -557,7 +565,11 @@ where
     // first, so the second read is from disk rather than a second download of
     // what is usually the crawl's largest member.
     let spooled = if fetch.is_remote() {
-        Some(wacz::spool_page_lists(&mut open_lists()?, limit)?)
+        Some(wacz::spool_page_lists(
+            &mut open_lists()?,
+            limit,
+            docs.scratch,
+        )?)
     } else {
         None
     };

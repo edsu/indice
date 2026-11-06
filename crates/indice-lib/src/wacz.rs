@@ -123,14 +123,16 @@ pub(crate) fn is_too_large(e: &anyhow::Error) -> bool {
     e.downcast_ref::<MemberTooLarge>().is_some()
 }
 
-/// How much indexing one WACZ may write to temp files: the WARCs of a WACZ
-/// that compresses them, and a nested WACZ that has to be read from a file.
+/// How much indexing one WACZ may write to temp files: the whole WACZ when a
+/// URL cannot be streamed and is downloaded, a remote WACZ's page lists, the
+/// WARCs of a WACZ that compresses them, and a nested WACZ that has to be read
+/// from a file.
 ///
 /// The member limit cannot bound these, because a genuine WARC is often far
 /// larger than any member indice holds in memory. What a hostile WACZ can do
 /// instead is name a zip entry that inflates a thousandfold and fill the temp
-/// volume, which on tmpfs is memory. So everything one WACZ inflates to disk
-/// is charged here, and the copy stops at the limit.
+/// volume, which on tmpfs is memory. So everything one WACZ writes to temp
+/// files is charged here, and the copy stops at the limit.
 ///
 /// The limit is the archive's room under `uploads.max_total_gb`, set by the
 /// server for a curator's accession (see `Ingest::scratch_limit`). `None`
@@ -158,11 +160,12 @@ impl std::fmt::Display for ScratchFull {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} in this WACZ inflates past {} MiB on disk, the room left in the archive \
-             under uploads.max_total_gb. If the archive is genuine, raise \
-             uploads.max_total_gb or index it with `indice index`.",
-            self.member,
-            self.limit / (1024 * 1024)
+            "indexing this WACZ would write more than {} to temp files, the room left \
+             in the archive under uploads.max_total_gb; it reached that at {}. If the \
+             archive is genuine, raise uploads.max_total_gb or index it with \
+             `indice index`.",
+            crate::server::human_size(self.limit),
+            self.member
         )
     }
 }
@@ -181,32 +184,25 @@ impl Scratch {
     /// Refuse writing `n` more bytes for `member` if that would go past the
     /// limit; otherwise count them.
     pub(crate) fn charge(&self, n: u64, member: &str) -> Result<(), ScratchFull> {
-        use std::sync::atomic::Ordering;
-        let Some(limit) = self.limit else {
-            return Ok(());
-        };
-        let before = self.used.fetch_add(n, Ordering::Relaxed);
-        if before.saturating_add(n) > limit {
-            return Err(ScratchFull {
-                member: member.to_string(),
-                limit,
-            });
-        }
-        Ok(())
+        let before = self.used.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        self.fits(before, n, member)
     }
 
     /// Refuse an entry whose header already says it will not fit, before any
     /// of it is written. Counts nothing: [`Scratch::charge`] counts what is
     /// actually written, whatever the header claimed.
     fn check_declared(&self, declared: u64, member: &str) -> Result<(), ScratchFull> {
-        use std::sync::atomic::Ordering;
+        let used = self.used.load(std::sync::atomic::Ordering::Relaxed);
+        self.fits(used, declared, member)
+    }
+
+    /// Whether `n` more bytes for `member` fit after `used`.
+    fn fits(&self, used: u64, n: u64, member: &str) -> Result<(), ScratchFull> {
         match self.limit {
-            Some(limit) if self.used.load(Ordering::Relaxed).saturating_add(declared) > limit => {
-                Err(ScratchFull {
-                    member: member.to_string(),
-                    limit,
-                })
-            }
+            Some(limit) if used.saturating_add(n) > limit => Err(ScratchFull {
+                member: member.to_string(),
+                limit,
+            }),
             _ => Ok(()),
         }
     }
@@ -214,7 +210,9 @@ impl Scratch {
 
 /// Copy `reader` to a new temp file named with `suffix`, charging every byte
 /// to `scratch`. `declared` is what the zip header says the entry inflates to,
-/// which refuses an honest oversized entry before any of it is written.
+/// which refuses an honest oversized entry before any of it is written; `0`
+/// when nothing says. A [`MemberTooLarge`] from a [`Limited`] reader is
+/// lifted, so callers can still tell it apart.
 pub(crate) fn inflate_to_temp(
     mut reader: impl Read,
     declared: u64,
@@ -227,7 +225,7 @@ pub(crate) fn inflate_to_temp(
     let mut tmp = tempfile::Builder::new().suffix(suffix).tempfile()?;
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = reader.read(&mut buf)?;
+        let n = reader.read(&mut buf).map_err(lift)?;
         if n == 0 {
             break;
         }
@@ -484,11 +482,13 @@ pub(crate) fn for_each_page_text<R: std::io::Read + std::io::Seek>(
 const PAGE_LISTS: [&str; 2] = ["pages/pages.jsonl", "pages/extraPages.jsonl"];
 
 /// The page lists copied out of the WACZ to local temp files, each read
-/// through [`Limited`] at `limit`. For a remote WACZ, which indexing reads the
-/// page lists of twice: the copy turns the second download into a disk read.
+/// through [`Limited`] at `limit` and charged to `scratch`. For a remote WACZ,
+/// which indexing reads the page lists of twice: the copy turns the second
+/// download into a disk read.
 pub(crate) fn spool_page_lists<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     limit: u64,
+    scratch: &Scratch,
 ) -> Result<Vec<(u8, tempfile::NamedTempFile)>> {
     let mut out = Vec::new();
     for (file, name) in PAGE_LISTS.into_iter().enumerate() {
@@ -496,10 +496,15 @@ pub(crate) fn spool_page_lists<R: std::io::Read + std::io::Seek>(
             continue;
         };
         check_declared(&entry, limit)?;
-        let mut tmp = tempfile::NamedTempFile::new().context("temp for a page list")?;
-        std::io::copy(&mut Limited::new(entry, limit, name), tmp.as_file_mut())
-            .map_err(lift)
-            .with_context(|| format!("copying {name}"))?;
+        let declared = entry.size();
+        let tmp = inflate_to_temp(
+            Limited::new(entry, limit, name),
+            declared,
+            name,
+            "",
+            scratch,
+        )
+        .with_context(|| format!("copying {name}"))?;
         out.push((file as u8, tmp));
     }
     Ok(out)
@@ -1172,7 +1177,7 @@ mod tests {
                 Ok(())
             };
             if via_spool {
-                let files = spool_page_lists(&mut zip, MIB).unwrap();
+                let files = spool_page_lists(&mut zip, MIB, &Scratch::new(None)).unwrap();
                 for_each_spooled_page_text(&files, &mut push).unwrap();
             } else {
                 for_each_page_text(&mut zip, MIB, &mut push).unwrap();

@@ -374,7 +374,7 @@ pub(super) async fn bx_import(
                         )?;
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                         // Already filed, so the room is what is left now.
-                        let scratch = super::manage::scratch_room(&job_state, 0)
+                        let scratch = super::manage::scratch_room(&job_state)
                             .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                         // force: honor the explicitly selected crawl. No
                         // download: it is already a local file.
@@ -420,7 +420,7 @@ pub(super) async fn bx_import(
                             item: item.id.clone(),
                             resource: res.name.clone(),
                         };
-                        let scratch = super::manage::scratch_room(&job_state, 0)
+                        let scratch = super::manage::scratch_room(&job_state)
                             .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                         // Streamed in place (no download), forced because the
                         // crawl was explicitly selected.
@@ -737,9 +737,7 @@ pub(super) async fn ait_import(
                     .flat_map(|p| p.files.iter())
                     .map(|f| f.size)
                     .sum();
-                super::manage::admit(&job_state, incoming)
-                    .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
-                let scratch = super::manage::scratch_room(&job_state, incoming)
+                let scratch = super::manage::admit(&job_state, incoming)
                     .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                 crate::archiveit::import_crawls(
                     &client,

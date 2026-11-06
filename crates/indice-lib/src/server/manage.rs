@@ -292,15 +292,12 @@ fn start_index_job(
             // every job that files into the archive is serialised, so the room
             // measured here is the room there is; the request-time check could
             // not know about uploads queued alongside this one.
-            if let Some(size) = admit_bytes {
-                if let Err(refused) = admit(&job_state, size) {
-                    let _ = tx.send(ProgressEvent::Error {
-                        message: refused.status_and_message().1,
-                    });
-                    return;
-                }
-            }
-            let scratch = match scratch_room(&job_state, admit_bytes.unwrap_or(0)) {
+            // The room it leaves is what indexing may write to temp files.
+            let room = match admit_bytes {
+                Some(size) => admit(&job_state, size),
+                None => scratch_room(&job_state),
+            };
+            let scratch = match room {
                 Ok(room) => room,
                 Err(refused) => {
                     let _ = tx.send(ProgressEvent::Error {
@@ -665,26 +662,33 @@ pub(super) fn accession_budget(state: &AppState) -> Result<Option<Budget>, Refus
 /// uploads that each passed [`accession_budget`] while queued behind a long
 /// import cannot all spend the same space. The size is known by then, so this
 /// is exact rather than a forecast.
-pub(super) fn admit(state: &AppState, size: u64) -> Result<(), Refused> {
+///
+/// Returns the room the archive has left once `size` is filed, which is what
+/// indexing the accession may write to temp files (see [`scratch_room`]), or
+/// `None` when no archive limit is set. Returned rather than measured again,
+/// since measuring walks `archive/` under the lock.
+pub(super) fn admit(state: &AppState, size: u64) -> Result<Option<u64>, Refused> {
     match archive_usage(state)? {
         Some((used, cap)) if used.saturating_add(size) > cap => {
             Err(Refused::ArchiveFull { used, cap })
         }
-        _ => Ok(()),
+        Some((used, cap)) => Ok(Some(cap - used - size)),
+        None => Ok(None),
     }
 }
 
-/// What indexing an accession may inflate to temp files: the archive's room
-/// under its limit, less the `incoming` bytes it is about to file there.
-/// `None` when no archive limit is set. See `Ingest::scratch_limit`.
+/// What indexing an accession that files nothing new may write to temp files:
+/// the archive's room under its limit, or `None` when no limit is set. See
+/// `Ingest::scratch_limit`; an accession that files bytes gets the room from
+/// [`admit`] instead.
 ///
 /// The temp files are not in the archive and are gone once the WACZ is
 /// indexed, but they are disk the operator did not grant, and a zip entry can
 /// inflate a thousandfold. The archive limit is the one number that says how
 /// much disk an accession may cost, so it is the bound here too. Measured
 /// under the write lock, like [`admit`].
-pub(super) fn scratch_room(state: &AppState, incoming: u64) -> Result<Option<u64>, Refused> {
-    Ok(archive_usage(state)?.map(|(used, cap)| cap.saturating_sub(used).saturating_sub(incoming)))
+pub(super) fn scratch_room(state: &AppState) -> Result<Option<u64>, Refused> {
+    Ok(archive_usage(state)?.map(|(used, cap)| cap.saturating_sub(used)))
 }
 
 /// The most a text field in an upload may be. A collection name and a display

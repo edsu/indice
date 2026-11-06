@@ -464,7 +464,10 @@ pub(super) fn index_one(
     progress.begin(&source.location());
 
     // 1. Acquire: where the WACZ lives, and how we'll read it.
-    let (effective_source, access) = acquire::open(cx, source, collection.0)?;
+    // Everything this WACZ writes to temp files, from a download to the WARCs
+    // it inflates, is charged here; they are gone once it is indexed.
+    let scratch = crate::wacz::Scratch::new(cx.scratch_limit);
+    let (effective_source, access) = acquire::open(cx, source, collection.0, &scratch)?;
 
     // Its datapackage metadata, read up front so the title can name the crawl.
     // Precedence: explicit --name, then the WACZ title, then the filename/URL stem.
@@ -489,8 +492,6 @@ pub(super) fn index_one(
         .main_page_url
         .clone()
         .or_else(|| meta.seed_pages.first().map(|s| s.url.clone()));
-    // Per WACZ: its temp files are gone once it is indexed.
-    let scratch = crate::wacz::Scratch::new(cx.scratch_limit);
     let stats = pages::index(
         &access,
         &pages::Ctx {

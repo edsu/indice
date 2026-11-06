@@ -2355,6 +2355,49 @@ async fn a_url_that_must_be_downloaded_is_bounded_by_the_upload_limit() {
     origin_task.abort();
 }
 
+/// The same download counts against the archive's room when only
+/// `uploads.max_total_gb` is set: it is temp disk the accession costs.
+#[tokio::test]
+async fn a_url_that_must_be_downloaded_is_bounded_by_the_archives_room() {
+    let origin = axum::Router::new().route(
+        "/big.wacz",
+        axum::routing::get(|| async { vec![0u8; 2 * MIB as usize] }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        axum::serve(listener, origin.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
+    fill_archive(tmp.path(), GIB - MIB);
+    let url = format!("http://{origin_addr}/big.wacz");
+    let post = format!("{base}/api/archives");
+    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post)
+            .header("content-type", "application/json")
+            .send(serde_json::json!({ "path": url, "collection": "net" }).to_string())
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let (_, transcript) = get(format!(
+        "{base}/api/archives/{}/events",
+        job["job"].as_u64().unwrap()
+    ))
+    .await;
+    assert!(
+        transcript.contains("uploads.max_total_gb") && transcript.contains("temp files"),
+        "the download should stop at the room left: {transcript}"
+    );
+    server.abort();
+    origin_task.abort();
+}
+
 /// Uploads arriving together cannot each spend the same room.
 ///
 /// Each one passes the request-time check, because each fits on its own; that
