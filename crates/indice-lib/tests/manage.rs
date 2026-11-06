@@ -2131,6 +2131,83 @@ async fn a_refusal_reaches_a_client_still_sending() {
     server.abort();
 }
 
+/// A copy of `simple.wacz` with every WARC deflated, so it is indexed by inflating
+/// them to temp files, plus a deflated `archive/zeros.warc` that inflates to
+/// `inflated` bytes from a few KiB: a small upload that asks for a lot of disk.
+fn deflated_wacz_that_inflates_to(inflated: usize) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut src =
+        zip::ZipArchive::new(std::fs::File::open(fixture("simple.wacz")).unwrap()).unwrap();
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let deflated = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for i in 0..src.len() {
+        let mut e = src.by_index(i).unwrap();
+        let name = e.name().unwrap().into_owned();
+        let options = if name.starts_with("archive/") {
+            deflated
+        } else {
+            zip::write::SimpleFileOptions::default().compression_method(e.compression())
+        };
+        let mut bytes = Vec::new();
+        e.read_to_end(&mut bytes).unwrap();
+        out.start_file(name, options).unwrap();
+        out.write_all(&bytes).unwrap();
+    }
+    // A real record, so the command line can index it: a resource whose
+    // payload is zeros, which deflate a thousandfold.
+    out.start_file("archive/zeros.warc", deflated).unwrap();
+    write!(
+        out,
+        "WARC/1.0\r\nWARC-Type: resource\r\n\
+         WARC-Record-ID: <urn:uuid:00000000-0000-0000-0000-000000000000>\r\n\
+         WARC-Date: 2026-01-01T00:00:00Z\r\nWARC-Target-URI: https://ex.test/zeros\r\n\
+         Content-Type: application/octet-stream\r\nContent-Length: {inflated}\r\n\r\n"
+    )
+    .unwrap();
+    out.write_all(&vec![0u8; inflated]).unwrap();
+    out.write_all(b"\r\n\r\n").unwrap();
+    out.finish().unwrap().into_inner()
+}
+
+/// What a WACZ inflates to temp files while it is indexed counts against the
+/// archive's room, so a small upload cannot fill the temp volume by naming a
+/// zip entry that inflates a thousandfold. The CLI is not limited.
+#[tokio::test]
+async fn an_upload_may_not_inflate_past_the_archives_room() {
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
+    // Four MiB of room, and an upload of a few KiB that inflates to sixteen.
+    fill_archive(tmp.path(), GIB - 4 * MIB);
+    let wacz = deflated_wacz_that_inflates_to(16 * MIB as usize);
+    assert!(
+        (wacz.len() as u64) < MIB,
+        "the upload itself fits: {}",
+        wacz.len()
+    );
+    let (ct, body) = upload_body("Bomb", &wacz);
+    let (status, text) = post_upload(&base, ct, body, false).await;
+    assert_eq!(status, 202, "accepted, since the upload fits: {text}");
+    let job: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let (_, transcript) = get(format!(
+        "{base}/api/archives/{}/events",
+        job["job"].as_u64().unwrap()
+    ))
+    .await;
+    assert!(
+        transcript.contains("event: error")
+            && transcript.contains("zeros.warc")
+            && transcript.contains("uploads.max_total_gb"),
+        "indexing should stop at the room left, naming the entry: {transcript}"
+    );
+    server.abort();
+
+    // The same file from the command line is the operator's, and indexes.
+    let cli = tempfile::TempDir::new().unwrap();
+    let path = cli.path().join("bomb.wacz");
+    std::fs::write(&path, &wacz).unwrap();
+    indice_lib::index::index_path(&path, cli.path(), None, "cli").unwrap();
+}
+
 /// An upload that would take the archive past `uploads.max_total_gb` is refused
 /// with the numbers, as is any upload once it is full, and the desk says which.
 #[tokio::test]
@@ -2273,6 +2350,49 @@ async fn a_url_that_must_be_downloaded_is_bounded_by_the_upload_limit() {
     assert!(
         transcript.contains("uploads.max_mb"),
         "the download should be refused past the limit: {transcript}"
+    );
+    server.abort();
+    origin_task.abort();
+}
+
+/// The same download counts against the archive's room when only
+/// `uploads.max_total_gb` is set: it is temp disk the accession costs.
+#[tokio::test]
+async fn a_url_that_must_be_downloaded_is_bounded_by_the_archives_room() {
+    let origin = axum::Router::new().route(
+        "/big.wacz",
+        axum::routing::get(|| async { vec![0u8; 2 * MIB as usize] }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        axum::serve(listener, origin.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
+    fill_archive(tmp.path(), GIB - MIB);
+    let url = format!("http://{origin_addr}/big.wacz");
+    let post = format!("{base}/api/archives");
+    let job: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post)
+            .header("content-type", "application/json")
+            .send(serde_json::json!({ "path": url, "collection": "net" }).to_string())
+            .unwrap();
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let (_, transcript) = get(format!(
+        "{base}/api/archives/{}/events",
+        job["job"].as_u64().unwrap()
+    ))
+    .await;
+    assert!(
+        transcript.contains("uploads.max_total_gb") && transcript.contains("temp files"),
+        "the download should stop at the room left: {transcript}"
     );
     server.abort();
     origin_task.abort();

@@ -33,6 +33,7 @@ pub(super) fn open(
     cx: &super::Ingest,
     source: &Source,
     collection_slug: &str,
+    scratch: &crate::wacz::Scratch,
 ) -> Result<(Source, WaczAccess)> {
     let (home, download, resolver, progress) = (cx.home, cx.download, cx.resolver, cx.progress);
     // Where a curator-supplied URL is allowed to point. A Browsertrix source is
@@ -70,7 +71,7 @@ pub(super) fn open(
                 Ok(false) | Err(_) => {
                     info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
                     progress.phase("downloading");
-                    let tmp = download_to_temp(u, fetch, cx.download_limit)
+                    let tmp = download_to_temp(u, fetch, cx.download_limit, scratch)
                         .with_context(|| format!("downloading {u}"))?;
                     let path = tmp.path().to_path_buf();
                     // The temp file must outlive the read, so the handle rides along.
@@ -273,16 +274,18 @@ fn download_to_temp(
     url: &str,
     policy: crate::http_range::FetchPolicy,
     limit: Option<u64>,
+    scratch: &crate::wacz::Scratch,
 ) -> Result<tempfile::NamedTempFile> {
-    use std::io::{copy, Read, Write};
+    use std::io::{Read, Write};
 
-    let mut tmp = tempfile::Builder::new().suffix(".wacz").tempfile()?;
     let reader = crate::http_range::get_reader(url, policy)?;
     // Read one byte past the limit, so "exactly at the limit" and "over it" can
     // be told apart without trusting a Content-Length the host may not send.
-    let mut bounded = reader.take(limit.map_or(u64::MAX, |l| l.saturating_add(1)));
-    let written =
-        copy(&mut bounded, &mut tmp).with_context(|| format!("writing {url} to temp file"))?;
+    // It is temp disk like any other this WACZ costs, so it is charged too.
+    let bounded = reader.take(limit.map_or(u64::MAX, |l| l.saturating_add(1)));
+    let mut tmp = crate::wacz::inflate_to_temp(bounded, 0, url, ".wacz", scratch)
+        .with_context(|| format!("writing {url} to temp file"))?;
+    let written = tmp.as_file().metadata()?.len();
     if let Some(l) = limit {
         if written > l {
             anyhow::bail!(

@@ -39,8 +39,12 @@ fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
         search,
         read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
         extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+        scratch: &UNLIMITED,
     }
 }
+
+/// No temp-disk limit, as the CLI has.
+static UNLIMITED: crate::wacz::Scratch = crate::wacz::Scratch::new(None);
 
 #[test]
 fn streaming_matches_scan_on_a_stored_wacz() {
@@ -399,6 +403,55 @@ impl crate::http_range::RangeFetch for MemFetch {
         Ok(self.0[start as usize..end as usize].to_vec())
     }
 }
+/// A nested WACZ whose inner `simple.wacz` is deflated, so it is inflated to
+/// a temp file to be read; returns it with the inner's inflated size.
+fn nested_with_a_deflated_inner() -> (Vec<u8>, u64) {
+    use std::io::Write;
+    let inner = std::fs::read(fixture("simple.wacz")).unwrap();
+    let inner_name = "inner.wacz";
+    let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zw.start_file(
+        inner_name,
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated),
+    )
+    .unwrap();
+    zw.write_all(&inner).unwrap();
+    zw.start_file("datapackage.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    let dp = format!(
+        r#"{{"profile":"multi-wacz-package","resources":[{{"name":"{inner_name}","path":"{inner_name}"}}]}}"#
+    );
+    zw.write_all(dp.as_bytes()).unwrap();
+    (zw.finish().unwrap().into_inner(), inner.len() as u64)
+}
+
+/// A deflated inner WACZ counts against what the WACZ may inflate to disk.
+#[test]
+fn a_deflated_nested_wacz_is_inflated_within_the_scratch_limit() {
+    let (outer, inner_len) = nested_with_a_deflated_inner();
+    let tmp = TempDir::new().unwrap();
+    let search = Mutex::new(SearchIndex::open(&tmp.path().join("ft")).unwrap());
+    let index = |limit: Option<u64>| {
+        index_nested_from(
+            MemFetch(std::sync::Arc::new(outer.clone())),
+            &Docs {
+                scratch: &crate::wacz::Scratch::new(limit),
+                ..docs(&search)
+            },
+            1,
+            crate::index::no_progress(),
+        )
+    };
+    let err = index(Some(inner_len - 1)).unwrap_err();
+    assert!(
+        err.chain()
+            .any(|c| c.downcast_ref::<crate::wacz::ScratchFull>().is_some()),
+        "{err:#}"
+    );
+    assert!(index(None).unwrap().is_some(), "with room, it indexes");
+}
+
 #[test]
 fn nested_multi_wacz_is_indexed() {
     let outer = nested_multi_wacz();
@@ -447,6 +500,7 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
             extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+            scratch: &UNLIMITED,
         },
         2,
         crate::index::no_progress(),
