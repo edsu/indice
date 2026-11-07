@@ -119,6 +119,50 @@ pub fn archive_dir(home: &Path) -> PathBuf {
     home.join("archive")
 }
 
+/// A WACZ a caller is about to write into `archive/` and then index where it
+/// lies: a Browsertrix download, an Archive-It build. If the caller never
+/// calls [`keep`](Self::keep), because the download, build or ingest failed,
+/// dropping this removes the file.
+///
+/// Such a file is indexed in place, so the ingest's own undo (which takes back
+/// only what *it* filed) leaves it alone, and the code that wrote it has to.
+/// Left behind it is in no manifest, so no workroom shows it and nobody can
+/// delete it without a shell (#233).
+///
+/// A file already at the path before is never removed. A re-import writes
+/// over a crawl that may be registered, and deleting that would take a
+/// working crawl's file from under it.
+#[must_use = "dropped at once, it removes the file before it is written"]
+pub struct NewArchiveFile {
+    path: PathBuf,
+    removable: bool,
+}
+
+impl NewArchiveFile {
+    /// Take note of `path` before anything is written to it.
+    pub fn at(path: &Path) -> Self {
+        NewArchiveFile {
+            path: path.to_path_buf(),
+            removable: !path.exists(),
+        }
+    }
+
+    /// The file is indexed and registered: leave it in place.
+    pub fn keep(mut self) {
+        self.removable = false;
+    }
+}
+
+impl Drop for NewArchiveFile {
+    fn drop(&mut self) {
+        if self.removable {
+            // Best effort: whatever failed is the error worth reporting, and a
+            // file that is not there (the download itself failed) is fine.
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Where indexing writes its temp files: a staged upload, a download of a URL
 /// that can't be streamed, the WARCs a WACZ inflates.
 ///
@@ -206,6 +250,30 @@ mod tests {
         assert_eq!(safe_wacz_filename("a-b_c.WACZ", "id1"), "a-b_c.WACZ");
     }
     #[test]
+    fn a_new_archive_file_is_removed_unless_kept() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("x.wacz");
+
+        let fresh = NewArchiveFile::at(&path);
+        std::fs::write(&path, b"x").unwrap();
+        drop(fresh);
+        assert!(!path.exists(), "a failure removes what was written");
+
+        let fresh = NewArchiveFile::at(&path);
+        std::fs::write(&path, b"x").unwrap();
+        fresh.keep();
+        assert!(path.exists(), "a kept file stays");
+
+        // Now it exists, so a re-import that fails must not delete it.
+        let again = NewArchiveFile::at(&path);
+        std::fs::write(&path, b"y").unwrap();
+        drop(again);
+        assert!(path.exists(), "a file that was already there stays");
+
+        // Nothing was ever written: dropping is a no-op, not a panic.
+        drop(NewArchiveFile::at(&tmp.path().join("never.wacz")));
+    }
+    #[test]
     fn year_prefix_extracts_or_rejects() {
         assert_eq!(year_prefix("2022-01-02T00:00:00Z").as_deref(), Some("2022"));
         assert_eq!(year_prefix("2022").as_deref(), Some("2022"));
@@ -221,9 +289,10 @@ mod archive_bytes_tests {
 
     #[test]
     fn counts_every_file_including_ones_the_manifest_never_recorded() {
-        // The bypass this measurement exists to close: a failed ingest leaves its
-        // file in archive/ with no manifest entry, so a manifest-derived total
-        // never saw it. Here nothing is in a manifest at all.
+        // The bypass this measurement exists to close: a file in archive/ with no
+        // manifest entry (a crash mid-ingest leaves one), which a
+        // manifest-derived total would never see. Here nothing is in a manifest
+        // at all.
         let tmp = tempfile::TempDir::new().unwrap();
         assert_eq!(
             archive_bytes(tmp.path()).unwrap(),

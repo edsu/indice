@@ -731,6 +731,9 @@ pub fn import_crawls<T: Transport>(
         };
         progress.phase(&crate::index::Phase::BuildingWacz);
         tracing::info!(crawl = plan.crawl_id, warcs = warcs.len(), "building WACZ");
+        // Removed again if the build or the ingest fails (see
+        // `NewArchiveFile`). The path is the one `build_wacz` writes.
+        let fresh = crate::index::NewArchiveFile::at(&dest_dir.join(format!("{out_name}.wacz")));
         let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
         // Chained off the caller's context, so `actor` (and anything else it
         // configured) reaches the ingest. force: this function already made the
@@ -738,6 +741,7 @@ pub fn import_crawls<T: Transport>(
         cx.name(Some(&display))
             .force(true)
             .index_location(&built.path.to_string_lossy(), into)?;
+        fresh.keep();
         // The filed WACZ is in place under archive/<slug>/; its id is stable.
         let abs = built.path.canonicalize().unwrap_or(built.path.clone());
         let crawl_indice_id = wacz_id(&Source::for_file(&abs, home));

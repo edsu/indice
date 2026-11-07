@@ -25,6 +25,11 @@ fn fixture(name: &str) -> PathBuf {
 /// (e.g. `http://127.0.0.1:54321`). The server runs on its own runtime thread
 /// for the lifetime of the test process.
 fn start_mock() -> String {
+    start_mock_serving(std::fs::read(fixture("simple.wacz")).unwrap())
+}
+
+/// [`start_mock`], serving `wacz` as the crawl's one WACZ.
+fn start_mock_serving(wacz: Vec<u8>) -> String {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -32,14 +37,13 @@ fn start_mock() -> String {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             tx.send(base.clone()).unwrap();
-            axum::serve(listener, router(base)).await.unwrap();
+            axum::serve(listener, router(base, wacz)).await.unwrap();
         });
     });
     rx.recv().unwrap()
 }
 
-fn router(base: String) -> Router {
-    let wacz = std::fs::read(fixture("simple.wacz")).unwrap();
+fn router(base: String, wacz: Vec<u8>) -> Router {
     let size = wacz.len();
 
     // A replay.json body pointing the WACZ resource back at this mock's /files
@@ -258,6 +262,37 @@ fn import_a_collection_then_skip_on_rerun() {
     assert!(
         after.contains("MY OWN WORDS."),
         "re-import must not overwrite a hand-edited narrative: {after}"
+    );
+}
+
+/// A download that fails to index is removed, rather than left in `archive/`
+/// in no manifest, where no workroom shows it and nobody can delete it (#233).
+#[test]
+fn a_download_that_fails_to_index_is_removed() {
+    let base = start_mock_serving(b"not a zip, whatever the name says".to_vec());
+    let home = TempDir::new().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_indice"))
+        .args(["import", "browsertrix"])
+        .args(["--host", &base])
+        .args(["--org", "demo"])
+        .args(["--collection", "news"])
+        .arg("--home")
+        .arg(home.path())
+        .env("BROWSERTRIX_USER", "u")
+        .env("BROWSERTRIX_PASSWORD", "p")
+        .env_remove("BROWSERTRIX_TOKEN")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "the import should fail\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let downloaded = home.path().join("archive/news/item1/simple.wacz");
+    assert!(
+        !downloaded.exists(),
+        "the failed download should be removed: {}",
+        downloaded.display()
     );
 }
 
