@@ -621,3 +621,9 @@ phase-listing-crawls = listing { -crawl-plural } in the index
 phase-looking-for-orphan-files = looking for the orphans' files on disk
 # As `phase-downloading-file`, when the source does not report the file's size.
 phase-downloading-file-unsized = downloading { $name } [{ $n }/{ $of }]
+
+# The English name of each language indice has a catalog for, whatever the
+# language of this catalog: the AI description prompt is written in English and
+# names the language the model should answer in (`site.language`).
+language-name-en = English
+language-name-it = Italian

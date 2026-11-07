@@ -138,8 +138,9 @@ describe:
   # The most archived text and metadata to send, in characters. Omit for 24000.
   # Lower it for a small model with a short context; it can't go below 2000.
   max_input_chars: 24000
-  # A prompt of your own instead of indice's, relative to the home. Omit to use
-  # the built-in one.
+  # A prompt of your own instead of indice's, relative to the home, sent exactly
+  # as written (so it names its own language). Omit to use the built-in one,
+  # which writes in site.language.
   prompt_file: prompts/describe.md
 ```
 

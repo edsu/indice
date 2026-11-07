@@ -350,7 +350,21 @@ impl Config {
                     )
                 })?
             }
-            None => crate::describe::BUILT_IN_PROMPT.to_string(),
+            None => {
+                // `Config::load` doesn't validate `site.language` (the server
+                // does, at startup), so a bad one reaches here from the CLI:
+                // draft in English rather than refuse over a setting this
+                // command doesn't use.
+                let language = self
+                    .site
+                    .language()
+                    .map_or_else(|_| "English".to_string(), |l| crate::i18n::english_name(&l));
+                format!(
+                    "{}\n\nWrite every value in {}.\n",
+                    crate::describe::BUILT_IN_PROMPT,
+                    language
+                )
+            }
         };
         Ok(Some((
             crate::llm::LlmSettings {
@@ -586,8 +600,41 @@ mod tests {
             describe.max_input_chars,
             crate::describe::DEFAULT_MAX_INPUT_CHARS
         );
-        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(describe
+            .prompt
+            .starts_with(crate::describe::BUILT_IN_PROMPT));
         assert!(!describe.prompt_is_custom);
+    }
+
+    #[test]
+    fn default_prompt_asks_for_english() {
+        let (_t, r) = llm_of("llm:\n  endpoint: http://localhost:1/v1\n  model: m\n");
+        let (_, describe) = r.unwrap().unwrap();
+        assert!(describe
+            .prompt
+            .ends_with("\n\nWrite every value in English.\n"));
+    }
+
+    #[test]
+    fn builtin_prompt_names_the_site_language() {
+        let (_t, r) =
+            llm_of("site:\n  language: it\nllm:\n  endpoint: http://localhost:1/v1\n  model: m\n");
+        let (_, describe) = r.unwrap().unwrap();
+        assert!(describe
+            .prompt
+            .starts_with(crate::describe::BUILT_IN_PROMPT));
+        assert!(describe.prompt.ends_with("Write every value in Italian.\n"));
+    }
+
+    #[test]
+    fn an_unusable_site_language_drafts_in_english_without_failing() {
+        for lang in ["xx", "''", "'not a tag'"] {
+            let (_t, r) = llm_of(&format!(
+                "site:\n  language: {lang}\nllm:\n  endpoint: http://localhost:1/v1\n  model: m\n"
+            ));
+            let (_, describe) = r.unwrap().unwrap();
+            assert!(describe.prompt.ends_with("Write every value in English.\n"));
+        }
     }
 
     #[test]
@@ -635,7 +682,9 @@ mod tests {
              describe:\n  prompt_file: ''\n",
         );
         let (_, describe) = r.unwrap().unwrap();
-        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(describe
+            .prompt
+            .starts_with(crate::describe::BUILT_IN_PROMPT));
         assert!(!describe.prompt_is_custom, "reported as built in");
     }
 

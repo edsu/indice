@@ -118,6 +118,20 @@ pub fn parse_language(tag: &str) -> anyhow::Result<LanguageIdentifier> {
     Ok(BUNDLES[idx].0.clone())
 }
 
+/// The English name of `lang` (`Italian`), from the English catalog's
+/// `language-name-*` messages, for prompts written in English that name the
+/// language a model should answer in. Falls back to English for a language whose
+/// name is missing, so a prompt never asks for the bare message key.
+pub fn english_name(lang: &LanguageIdentifier) -> String {
+    let english = L10n::default();
+    let key = format!("language-name-{lang}");
+    if english.has_message(&key) {
+        english.tr(&key)
+    } else {
+        english.tr("language-name-en")
+    }
+}
+
 /// A plural-aware argument for a message. `Num` selects plural forms.
 #[derive(Clone, Copy, Debug)]
 pub enum FluentArg<'a> {

@@ -141,4 +141,6 @@ describe:
   prompt_file: prompts/describe.md   # relative to the home
 ```
 
+The built-in prompt ends with an instruction to write every value in the instance's `site.language`, so an Italian site gets Italian drafts whatever language the curator's browser uses. A prompt file is sent exactly as you wrote it, so it is responsible for its own language: say in it which language to write in.
+
 `--show-prompt` prints the message your prompt will be paired with. However you phrase it, indice still asks for JSON and still accepts only the four descriptive fields.

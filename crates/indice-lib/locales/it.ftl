@@ -578,3 +578,10 @@ phase-reading-manifest = lettura del manifesto
 phase-listing-crawls = elenco delle { -crawl-plural } nell'indice
 phase-looking-for-orphan-files = ricerca dei file orfani sul disco
 phase-downloading-file-unsized = scaricamento di { $name } [{ $n }/{ $of }]
+
+# The English name of each language indice has a catalog for, whatever the
+# language of this catalog: the AI description prompt is written in English and
+# names the language the model should answer in (`site.language`). Keep these
+# in English.
+language-name-en = English
+language-name-it = Italian
