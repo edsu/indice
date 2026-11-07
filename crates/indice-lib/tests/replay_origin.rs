@@ -154,6 +154,32 @@ async fn viewer_in_italian() {
     assert!(en.contains("/assets/i18n.js"), "{en}");
 }
 
+/// A crawl named only by its tool's identifier is called by its date in the
+/// viewer's banner too, in the reader's language.
+#[tokio::test]
+async fn viewer_names_a_machine_named_crawl_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let input = tmp.path().join("input.wacz");
+    std::fs::copy(fixture("simple.wacz"), &input).unwrap();
+    indice_lib::index::Ingest::new(tmp.path())
+        .name(Some("20250107171404015-af3df7fa-3fc-0"))
+        .index_location(&input.to_string_lossy(), "m")
+        .unwrap();
+    let id = indice_lib::collections::Manifest::open(&tmp.path().join("index"))
+        .unwrap()
+        .waczs[0]
+        .id
+        .clone();
+    let viewer = format!("/crawl/{id}/20250101000000/https://example.org/");
+    let (status, _, html) = call(&app, Method::GET, &viewer, &[("accept-language", "it")]).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(html.contains("Scansione del "), "{html}");
+    assert!(!html.contains("Crawl of "), "{html}");
+    let (_, en) = get(&app, &viewer).await;
+    assert!(en.contains("Crawl of "), "{en}");
+}
+
 /// A collection's Annotations page is in the reader's language, and its
 /// machine-readable form stays as documented.
 #[tokio::test]

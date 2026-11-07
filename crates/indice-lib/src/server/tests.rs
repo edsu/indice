@@ -1127,6 +1127,11 @@ async fn custom_tagline_is_not_translated() {
 
 /// A home with the fixture WACZ indexed into `collection`, and a router over it.
 fn app_with_crawl(collection: &str) -> (tempfile::TempDir, Router, String) {
+    app_with_named_crawl(collection, "Simple")
+}
+
+/// As [`app_with_crawl`], with the crawl called `name`.
+fn app_with_named_crawl(collection: &str, name: &str) -> (tempfile::TempDir, Router, String) {
     let tmp = tempfile::TempDir::new().unwrap();
     let input = tmp.path().join("input.wacz");
     std::fs::copy(
@@ -1135,7 +1140,7 @@ fn app_with_crawl(collection: &str) -> (tempfile::TempDir, Router, String) {
     )
     .unwrap();
     crate::index::Ingest::new(tmp.path())
-        .name(Some("Simple"))
+        .name(Some(name))
         .index_location(&input.to_string_lossy(), collection)
         .unwrap();
     let manifest =
@@ -1186,6 +1191,26 @@ async fn crawl_page_in_italian() {
     }
     for english in ["Indexed", "No pages are listed", ">✓ present<", "Status"] {
         assert!(!body.contains(english), "{english}: {body}");
+    }
+}
+
+/// A crawl named only by its tool's identifier is called by its date, and the
+/// words around the date are in the page's language wherever its name shows.
+#[tokio::test]
+async fn a_machine_named_crawl_is_named_in_italian() {
+    let (_home, app, id) = app_with_named_crawl("c", "20250107171404015-af3df7fa-3fc-0");
+    let pages = [
+        format!("/crawl/{id}"),
+        "/collection/c".to_string(),
+        format!("/search?q=crawl:{id}"),
+    ];
+    for path in &pages {
+        let (status, _, body) = get_with(&app, path, Some("it")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(body.contains("Scansione del "), "{path}: {body}");
+        assert!(!body.contains("Crawl of "), "{path}: {body}");
+        let (_, _, body) = get_with(&app, path, Some("en")).await;
+        assert!(body.contains("Crawl of "), "{path}: {body}");
     }
 }
 

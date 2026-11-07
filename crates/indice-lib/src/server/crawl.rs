@@ -28,7 +28,7 @@ pub(super) async fn crawl_page(
         return not_found(&l10n, "error-crawl-not-found");
     };
 
-    let display_name = c.display_name();
+    let display_name = c.display_name_in(&l10n);
     // Breadcrumb for the containing collection (name + id).
     let col = manifest.collection_by_id(&c.collection);
     let crumb = col.map(|col| (col.id.to_string(), col.name.clone()));
@@ -256,6 +256,8 @@ pub(super) async fn crawl_replay_json(
         &crawl_file_names(&files),
         &presigned,
         format!("/crawl/{}/pages", url_encode(&w.id)),
+        // English: the manifest is read by ReplayWeb.page on the replay origin,
+        // which answers the same bytes to every reader.
         &w.display_name(),
         w.description.as_deref(),
     )

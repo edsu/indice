@@ -181,13 +181,6 @@ impl From<Source> for String {
     }
 }
 
-/// A date written out in English, "7 January 2025", from a timestamp that
-/// starts with `YYYYMMDD` or `YYYY-MM-DD`. Pages use
-/// [`crate::i18n::L10n::long_date`] with the reader's language.
-pub fn long_date(ts: &str) -> Option<String> {
-    crate::i18n::L10n::default().long_date(ts)
-}
-
 /// The host part of a URL, or the string as given if it has none.
 fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
@@ -314,32 +307,49 @@ pub struct Wacz {
 }
 
 impl Wacz {
-    /// The name to show a reader. Most crawls are named by whoever made them;
-    /// a crawl named only by its tool's identifier, such as Browsertrix's
+    /// The name to show a reader, in English: for the describe prompt and
+    /// anything else that is not a page. Pages use [`Wacz::display_name_in`].
+    pub fn display_name(&self) -> String {
+        self.display_name_in(&crate::i18n::L10n::default())
+    }
+
+    /// The name to show a reader, in `l10n`'s language. Most crawls are named
+    /// by whoever made them, and that name is never translated; a crawl named
+    /// only by its tool's identifier, such as Browsertrix's
     /// `20250107171404015-af3df7fa-3fc-0`, is called by when it was made,
     /// "Crawl of 7 January 2025, 17:14", and keeps its identifier in the File
     /// details. The time is there because several crawls often run on one day.
     /// An identifier here is a name with no space that is at least half digits.
-    pub fn display_name(&self) -> String {
+    pub fn display_name_in(&self, l10n: &crate::i18n::L10n) -> String {
+        use crate::i18n::FluentArg;
         let digits = self.name.chars().filter(|c| c.is_ascii_digit()).count();
         let machine = !self.name.contains(' ') && digits * 2 >= self.name.chars().count();
-        let when = self
+        if !machine {
+            return self.name.clone();
+        }
+        let named = self
             .capture_start
             .as_deref()
             .or(self.crawl_date.as_deref())
             .and_then(|ts| {
-                let date = long_date(ts)?;
+                let date = l10n.long_date(ts)?;
                 // A 14-digit timestamp's hours and minutes, when it has them.
                 let d: String = ts.chars().filter(|c| c.is_ascii_digit()).collect();
                 Some(match d.get(8..12) {
-                    Some(hm) => format!("{date}, {}:{}", &hm[..2], &hm[2..]),
-                    None => date,
+                    Some(hm) => l10n.tr_args(
+                        "crawl-name-dated-time",
+                        &[
+                            ("date", FluentArg::Str(&date)),
+                            (
+                                "time",
+                                FluentArg::Str(&format!("{}:{}", &hm[..2], &hm[2..])),
+                            ),
+                        ],
+                    ),
+                    None => l10n.tr_args("crawl-name-dated", &[("date", FluentArg::Str(&date))]),
                 })
             });
-        match (machine, when) {
-            (true, Some(d)) => format!("Crawl of {d}"),
-            _ => self.name.clone(),
-        }
+        named.unwrap_or_else(|| self.name.clone())
     }
 
     /// Whether the WACZ is available, resolving file paths against `home`.
@@ -1663,18 +1673,26 @@ mod tests {
         );
     }
 
+    /// Pages call a machine-named crawl by its date in the reader's language;
+    /// a person's name for a crawl is never translated.
     #[test]
-    fn a_date_is_written_out() {
+    fn a_crawl_called_by_its_date_follows_the_page_language() {
+        let it = crate::i18n::negotiate(Some("it"), &"en".parse().unwrap());
+        let w = named("20250107171404015-af3df7fa-3fc-0", Some("20250107171404"));
         assert_eq!(
-            long_date("20250201010253").as_deref(),
-            Some("1 February 2025")
+            w.display_name_in(&it),
+            "Scansione del 7 gennaio 2025, 17:14"
         );
         assert_eq!(
-            long_date("2021-05-25T00:00:00Z").as_deref(),
-            Some("25 May 2021")
+            named("20250107171404015-af3df7fa-3fc-0", Some("2025-01-07")).display_name_in(&it),
+            "Scansione del 7 gennaio 2025"
         );
-        assert_eq!(long_date("2025"), None);
-        assert_eq!(long_date("20251301"), None);
+        assert_eq!(named("sul", Some("20260803")).display_name_in(&it), "sul");
+        // English, for prompts and anything else that is not a page.
+        assert_eq!(
+            w.display_name_in(&crate::i18n::L10n::default()),
+            w.display_name()
+        );
     }
 
     #[test]

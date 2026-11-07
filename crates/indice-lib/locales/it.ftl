@@ -312,6 +312,8 @@ collection-delete-also = { $count ->
    *[other] elimina anche tutte le { $shown } { -crawl-plural } della { -collection }
 }
 
+crawl-name-dated = Scansione del { $date }
+crawl-name-dated-time = Scansione del { $date }, { $time }
 crawl-curator-note = Nota del curatore
 crawl-provenance = Provenienza
 crawl-file = File

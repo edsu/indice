@@ -234,7 +234,7 @@ pub(super) async fn search_page(
         manifest
             .as_ref()
             .and_then(|m| m.wacz_by_id(&r.crawl_id))
-            .map(|w| w.display_name())
+            .map(|w| w.display_name_in(&l10n))
             .unwrap_or_else(|| r.crawl_name.clone())
     };
 
@@ -358,7 +358,7 @@ pub(super) async fn search_page(
                 manifest
                     .as_ref()
                     .and_then(|m| m.wacz_by_id(v))
-                    .map(|w| w.display_name())
+                    .map(|w| w.display_name_in(&l10n))
                     .unwrap_or_else(|| v.clone())
             } else if f == "collection" {
                 collection_names

@@ -89,7 +89,7 @@ pub(super) async fn collection_page(
         .iter()
         .map(|w| views::MemberItem {
             id: w.id.clone(),
-            name: w.display_name(),
+            name: w.display_name_in(l10n),
             when: w.capture_start.as_deref().and_then(|ts| l10n.long_date(ts)),
             present: w.is_present(&state.home),
             remote: w.source.is_remote(),

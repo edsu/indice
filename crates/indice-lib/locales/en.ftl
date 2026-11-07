@@ -344,6 +344,11 @@ collection-delete-also = { $count ->
 }
 
 # The crawl page.
+# What a crawl named only by its tool's identifier is called: `$date` is a
+# date in words, `$time` the hour and minute (17:14). Capitalised, so the
+# word for a crawl is written out here rather than taken from the term.
+crawl-name-dated = Crawl of { $date }
+crawl-name-dated-time = Crawl of { $date }, { $time }
 crawl-curator-note = Curator's note
 crawl-provenance = Provenance
 crawl-file = File

@@ -232,7 +232,7 @@ pub(super) async fn replay_page(
             source: crawl_replay_source(&manifest, w),
             url: target.url,
             ts: target.ts,
-            name: w.display_name(),
+            name: w.display_name_in(&l10n),
             collection: col.map(|c| c.name.clone()).unwrap_or_default(),
             collection_id: col.map(|c| c.id.to_string()).unwrap_or_default(),
             crawl: w.id.clone(),
