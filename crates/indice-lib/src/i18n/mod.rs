@@ -193,6 +193,16 @@ impl L10n {
         }
     }
 
+    /// Whether the chosen language or English has `key`; lets a caller choose
+    /// between two phrasings without `tr_args` logging a missing message.
+    pub fn has_message(&self, key: &str) -> bool {
+        self.bundle().1.has_message(key)
+            || self
+                .bundles
+                .iter()
+                .any(|(l, b)| l.language.as_str() == REFERENCE && b.has_message(key))
+    }
+
     pub fn tr(&self, key: &str) -> String {
         self.tr_args(key, &[])
     }

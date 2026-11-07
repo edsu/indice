@@ -41,24 +41,25 @@ pub struct HomeBrowse {
 /// collection.
 pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> Markup {
     let management = chrome.manage;
+    let l10n = &chrome.l10n;
     let body = html! {
         // The archive's name and what it holds, from `site:` in config.yaml.
         h1.home-hero { (chrome.site.name) }
-        div.home-tagline { (chrome.site.tagline) }
+        div.home-tagline { (chrome.site.tagline(&chrome.l10n)) }
         form.search-form.home action="/search" method="get" {
-            input type="search" name="q" placeholder="Search archived pages…" autofocus;
-            button.btn type="submit" { "Search" }
+            input type="search" name="q" placeholder=(l10n.tr("home-search-placeholder")) autofocus;
+            button.btn type="submit" { (l10n.tr("layout-search-button")) }
         }
-        (search_tips())
+        (search_tips(l10n))
         @if !browse.years.is_empty() || !browse.sites.is_empty() {
             div.browse {
                 @if !browse.years.is_empty() {
                     div.browse-group {
-                        h3 { "Browse by year" }
+                        h3 { (l10n.tr("home-browse-year")) }
                         div.browse-links {
                             @for y in &browse.years {
                                 a.browse-link href=(y.href) {
-                                    (y.label) " " span.browse-count { (y.count) }
+                                    (y.label) " " span.browse-count { (l10n.number(y.count)) }
                                 }
                             }
                         }
@@ -66,11 +67,11 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                 }
                 @if !browse.sites.is_empty() {
                     div.browse-group {
-                        h3 { "Top sites" }
+                        h3 { (l10n.tr("home-top-sites")) }
                         div.browse-links {
                             @for s in &browse.sites {
                                 a.browse-link href=(s.href) {
-                                    (s.label) " " span.browse-count { (s.count) }
+                                    (s.label) " " span.browse-count { (l10n.number(s.count)) }
                                 }
                             }
                         }
@@ -79,22 +80,22 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
             }
         }
         div.section-head {
-            h2 { "Collections" }
+            h2 { (l10n.tr("home-collections")) }
             // Edit-in-place: the "new collection" action lives right on the list
             // it affects, only in workroom mode.
             @if management {
-                a.btn.edit href="/manage/collections/new" { "+ New collection" }
+                a.btn.edit href="/manage/collections/new" { (l10n.tr("home-new-collection")) }
             }
         }
         @if cards.is_empty() {
             @if management {
                 div.empty-cta {
-                    p { "Add a crawl to start your first collection." }
-                    a.btn.edit href="/manage/add" { "Add a crawl" }
+                    p { (l10n.tr("home-empty-cta")) }
+                    a.btn.edit href="/manage/add" { (l10n.tr("home-add-crawl")) }
                 }
             } @else {
                 p.muted {
-                    "There are no collections yet. Add a crawl with "
+                    (l10n.tr("home-no-collections")) " "
                     code { "indice index archive/*.wacz" } "."
                 }
             }
@@ -107,7 +108,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                     }
                     // Per-card edit affordance (hover-revealed) — workroom only.
                     @if management {
-                        a.card-edit href=(format!("/manage/edit/{}", c.id)) { "Edit" }
+                        a.card-edit href=(format!("/manage/edit/{}", c.id)) { (l10n.tr("action-edit")) }
                     }
                     div.card-body {
                         div.card-header {
@@ -115,15 +116,15 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                                 a.card-title href=(format!("/collection/{}", c.id)) { (c.name) }
                             }
                             span.status.muted {
-                                (c.count) " crawl" @if c.count != 1 { "s" }
+                                (counted(l10n, "home-card-crawls", c.count as u64))
                             }
                         }
                         @if c.has_local || c.has_remote {
                             p.card-source {
                                 @match (c.has_local, c.has_remote) {
-                                    (true, true) => "Stored here and streamed",
-                                    (false, true) => "Streamed",
-                                    _ => "Stored here",
+                                    (true, true) => (l10n.tr("source-stored-and-streamed")),
+                                    (false, true) => (l10n.tr("source-streamed")),
+                                    _ => (l10n.tr("source-stored")),
                                 }
                             }
                         }
@@ -136,7 +137,7 @@ pub fn home(cards: &[CollectionCard], browse: &HomeBrowse, chrome: &Chrome) -> M
                                     div.prov { (r) }
                                 }
                                 @if let Some(href) = &c.replay_href {
-                                    a.btn href=(href) { "Replay" }
+                                    a.btn href=(href) { (l10n.tr("action-replay")) }
                                 }
                             }
                         }

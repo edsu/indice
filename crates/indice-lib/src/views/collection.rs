@@ -193,7 +193,7 @@ pub fn collection(p: &CollectionPage) -> Markup {
         h2 { "Crawls" }
         // When this collection was crawled, then its crawls, newest first: a
         // collection grows over time, and the list reads as that history.
-        (time_axis(&p.crawl_months, "Pages crawled by month", ("page", "pages")))
+        (time_axis(&p.crawl_months, &p.chrome.l10n, "Pages crawled by month", "timeline-pages-count"))
         @if p.members.is_empty() {
             p.muted { "No crawls in this collection." }
         } @else {

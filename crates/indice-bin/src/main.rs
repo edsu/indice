@@ -2053,9 +2053,10 @@ fn run_config(home: &std::path::Path) -> Result<()> {
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty())
         {
-            "shown under the homepage heading"
+            "shown under the homepage heading".to_string()
         } else {
-            indice_lib::views::DEFAULT_TAGLINE
+            // CLI output stays English; readers see the default in their own language.
+            indice_lib::i18n::L10n::default().tr("site-tagline-default")
         }
     );
 

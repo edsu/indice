@@ -7,6 +7,8 @@
 
 use maud::{html, Markup, DOCTYPE};
 
+use crate::i18n::{FluentArg, L10n};
+
 mod collection;
 mod crawl;
 mod home;
@@ -57,8 +59,10 @@ pub struct Chrome {
 #[derive(Debug)]
 pub struct Site {
     pub name: String,
-    /// The tagline, already rendered from Markdown.
-    pub tagline: maud::PreEscaped<String>,
+    /// The operator's tagline, already rendered from Markdown. `None` means
+    /// unset: the page shows the default in the reader's language
+    /// ([`Site::tagline`]).
+    pub tagline: Option<maud::PreEscaped<String>>,
     /// The operator's analytics snippet (`analytics.head`), for every page's
     /// `<head>`, as they wrote it.
     pub head: Option<maud::PreEscaped<String>>,
@@ -67,10 +71,18 @@ pub struct Site {
     pub language: unic_langid::LanguageIdentifier,
 }
 
-/// The tagline when `site.tagline` is unset.
-pub const DEFAULT_TAGLINE: &str = "Web archive search and replay";
-
 impl Site {
+    /// The line under the archive's name: the operator's own words as written,
+    /// never translated, or the default message in the reader's language. Both go
+    /// through the Markdown renderer, which escapes raw HTML, so a translation
+    /// reaches the page only as escaped text.
+    pub fn tagline(&self, l10n: &crate::i18n::L10n) -> maud::PreEscaped<String> {
+        match &self.tagline {
+            Some(own) => maud::PreEscaped(own.0.clone()),
+            None => crate::markdown::render(&l10n.tr("site-tagline-default")),
+        }
+    }
+
     /// Fill in the defaults and render the tagline. A blank value counts as
     /// unset, so `name: ""` can't leave the header with no way home.
     pub fn new(cfg: &crate::config::SiteConfig) -> Site {
@@ -80,12 +92,9 @@ impl Site {
                 .filter(|v| !v.is_empty())
                 .map(str::to_string)
         };
-        let default = Site::default();
         Site {
-            name: given(&cfg.name).unwrap_or(default.name),
-            tagline: given(&cfg.tagline)
-                .map(|md| crate::markdown::render(&md))
-                .unwrap_or(default.tagline),
+            name: given(&cfg.name).unwrap_or_else(|| Site::default().name),
+            tagline: given(&cfg.tagline).map(|md| crate::markdown::render(&md)),
             head: None,
             // `site.language` is checked at startup (`SiteConfig::language`),
             // so English here only covers callers that skipped the check.
@@ -98,7 +107,7 @@ impl Default for Site {
     fn default() -> Site {
         Site {
             name: "indice".to_string(),
-            tagline: crate::markdown::render(DEFAULT_TAGLINE),
+            tagline: None,
             head: None,
             language: "en".parse().expect("en is a language tag"),
         }
@@ -118,6 +127,7 @@ pub fn layout(
 ) -> Markup {
     let manage = chrome.manage;
     let site = &chrome.site;
+    let l10n = &chrome.l10n;
     let title = match title {
         Some(t) => format!("{t} - {}", site.name),
         None => site.name.clone(),
@@ -140,33 +150,36 @@ pub fn layout(
             body class=[manage.then_some("mode-manage")] {
                 header.appbar {
                     a.wordmark href="/" { (site.name) }
-                    @if manage { span.chip { "Manage" } }
+                    @if manage { span.chip { (l10n.tr("layout-manage")) } }
                     @if let Some(s) = search {
                         @let placeholder = if s.scope_label.is_empty() {
-                            "Search all collections…".to_string()
+                            l10n.tr("search-placeholder-all")
                         } else {
-                            format!("Search {}…", s.scope_label)
+                            l10n.tr_args(
+                                "search-placeholder-scoped",
+                                &[("scope", FluentArg::Str(&s.scope_label))],
+                            )
                         };
                         form.search-form action="/search" method="get" {
                             @if !s.scope_query.is_empty() {
                                 input type="hidden" name="scope" value=(s.scope_query);
                             }
                             input type="search" name="q" value=(s.query) placeholder=(placeholder);
-                            button.btn type="submit" { "Search" }
+                            button.btn type="submit" { (l10n.tr("layout-search-button")) }
                         }
                     }
                     @if let Some(u) = &chrome.signed_in {
-                        span.who { "signed in as " b { (u) } }
+                        span.who { (l10n.tr("layout-signed-in-as")) " " b { (u) } }
                         // A form, not a link: see `server::auth::logout`.
                         form.logout-form method="post" action="/logout" {
-                            button.logout type="submit" { "Log out" }
+                            button.logout type="submit" { (l10n.tr("layout-logout")) }
                         }
                     } @else if chrome.can_login {
                         // Forward-auth is configured but this request is anonymous:
                         // offer a login. /manage/login is gated, so following it
                         // trips the proxy's login and bounces back to the
                         // current page.
-                        a.login href="/manage/login" { "Log in" }
+                        a.login href="/manage/login" { (l10n.tr("layout-login")) }
                     }
                 }
                 main.wrap { (body) }
@@ -190,39 +203,50 @@ pub fn access_denied(chrome: &Chrome, what: &str) -> Markup {
 /// The "Search tips" disclosure shown on the homepage and results page. The
 /// examples must stay in sync with how `SearchIndex::search` configures the
 /// query parser (AND-by-default, default fields, and the `field:` filters).
-pub fn search_tips() -> Markup {
+/// The examples are query syntax and stay as written; each sentence around one
+/// is its own message, so no translated text carries markup.
+pub fn search_tips(l10n: &L10n) -> Markup {
+    let t = |key: &str| l10n.tr(key);
     html! {
         details.tips {
-            summary { "Search tips" }
+            summary { (t("search-tips-summary")) }
             div.tips-body {
                 p {
-                    "Type words to search page titles, headings, body text, descriptions, "
-                    "keywords, author, and URLs. "
-                    strong { "All words must match" } " - " code { "climate policy" }
-                    " finds pages containing both."
+                    (t("search-tips-intro")) " "
+                    strong { (t("search-tips-all-words")) } " - " code { "climate policy" }
+                    " " (t("search-tips-all-words-after"))
                 }
                 ul {
-                    li { code { "\"climate policy\"" } " - an exact phrase (use quotes)" }
-                    li { code { "climate OR weather" } " - either word" }
-                    li { code { "climate -policy" } " - has \"climate\", excludes \"policy\"" }
-                    li { code { "(climate OR weather) risk" } " - group with parentheses" }
-                    li { code { "title:climate" } " - match only in the page title" }
-                    li { code { "author:hopper" } " - match the page author" }
-                    li { code { "site:example.com" } " - a whole site, across subdomains" }
-                    li { code { "domain:www.example.com" } " - only that exact host" }
-                    li { code { "collection:demo" } " - only pages in that collection" }
-                    li { code { "year:2021" } " or " code { "year:[2020 TO 2023]" } " - filter by crawl year" }
-                    li { code { "month:202103" } " or " code { "month:[202101 TO 202106]" } " - filter by crawl month" }
-                    li { code { "modified:2015" } " - filter by Last-Modified year" }
-                    li { code { "type:pdf" } " - only PDFs (or " code { "type:html" } ")" }
-                    li { code { "lang:en" } " - only pages in that language" }
-                    li { code { "status:200" } " - filter by HTTP status (or " code { "status:[200 TO 299]" } ")" }
-                    li { code { "climate^2 change" } " - rank \"climate\" matches higher" }
+                    li { code { "\"climate policy\"" } " - " (t("search-tips-phrase")) }
+                    li { code { "climate OR weather" } " - " (t("search-tips-either")) }
+                    li { code { "climate -policy" } " - " (t("search-tips-exclude")) }
+                    li { code { "(climate OR weather) risk" } " - " (t("search-tips-group")) }
+                    li { code { "title:climate" } " - " (t("search-tips-title")) }
+                    li { code { "author:hopper" } " - " (t("search-tips-author")) }
+                    li { code { "site:example.com" } " - " (t("search-tips-site")) }
+                    li { code { "domain:www.example.com" } " - " (t("search-tips-domain")) }
+                    li { code { "collection:demo" } " - " (t("search-tips-collection")) }
+                    li {
+                        code { "year:2021" } " " (t("search-tips-or")) " " code { "year:[2020 TO 2023]" }
+                        " - " (t("search-tips-year"))
+                    }
+                    li {
+                        code { "month:202103" } " " (t("search-tips-or")) " " code { "month:[202101 TO 202106]" }
+                        " - " (t("search-tips-month"))
+                    }
+                    li { code { "modified:2015" } " - " (t("search-tips-modified")) }
+                    li { code { "type:pdf" } " - " (t("search-tips-type")) " " code { "type:html" } ")" }
+                    li { code { "lang:en" } " - " (t("search-tips-lang")) }
+                    li {
+                        code { "status:200" } " - " (t("search-tips-status")) " "
+                        code { "status:[200 TO 299]" } ")"
+                    }
+                    li { code { "climate^2 change" } " - " (t("search-tips-boost")) }
                 }
                 p.tips-note {
-                    "Searches are case-insensitive. Title matches rank above body matches. "
-                    code { "domain:" } " needs the exact host (e.g. " code { "www.example.com" }
-                    "); to match host words loosely, just type them (e.g. " code { "example" } ")."
+                    (t("search-tips-note-intro")) " "
+                    code { "domain:" } " " (t("search-tips-note-needs")) " " code { "www.example.com" }
+                    (t("search-tips-note-loose")) " " code { "example" } ")."
                 }
             }
         }
@@ -263,18 +287,15 @@ pub struct TimelineBar {
 /// marked. Each bar says its month and count to a screen reader, and shows
 /// them on hover and on keyboard focus. Nothing renders for fewer than two
 /// months, where an axis says nothing a sentence wouldn't.
-/// `unit` names what is counted, singular and plural.
-fn time_axis(bars: &[TimelineBar], label: &str, unit: (&str, &str)) -> Markup {
+/// `label` is the axis' name, already translated. `count_key` is a plural message
+/// (`$count`, `$shown`) naming what is counted, so each language chooses its own
+/// forms for "1 result" and "3 results".
+fn time_axis(bars: &[TimelineBar], l10n: &L10n, label: &str, count_key: &str) -> Markup {
     html! {
         @if bars.len() >= 2 {
             div.timeline role="group" aria-label=(label) {
                 @for b in bars {
-                    @let said = format!(
-                        "{}: {} {}",
-                        b.label,
-                        b.count,
-                        if b.count == 1 { unit.0 } else { unit.1 }
-                    );
+                    @let said = format!("{}: {}", b.label, counted(l10n, count_key, b.count));
                     @match &b.href {
                         Some(h) => {
                             a.tl-bar.active[b.active].tl-year[b.year.is_some()] href=(h) aria-label=(said) aria-current=[b.active.then_some("true")] {
@@ -293,6 +314,23 @@ fn time_axis(bars: &[TimelineBar], label: &str, unit: (&str, &str)) -> Markup {
             }
         }
     }
+}
+
+/// `n` as the plural message `key` words it, "3 results". The number is shown
+/// in the language's own grouping and selects the plural form.
+fn counted(l10n: &L10n, key: &str, n: u64) -> String {
+    counted_text(l10n, key, n, &l10n.number(n))
+}
+
+/// Like [`counted`], with the displayed number given (`1,000+` for a floor).
+fn counted_text(l10n: &L10n, key: &str, n: u64, shown: &str) -> String {
+    l10n.tr_args(
+        key,
+        &[
+            ("count", FluentArg::Num(n.try_into().unwrap_or(i64::MAX))),
+            ("shown", FluentArg::Str(shown)),
+        ],
+    )
 }
 
 /// One labeled group of browse-links in a detail page's scoped facet overview

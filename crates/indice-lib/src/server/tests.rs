@@ -709,7 +709,7 @@ fn blank_site_text_falls_back_to_the_defaults() {
     };
     let site = views::Site::new(&cfg);
     assert_eq!(site.name, "indice");
-    assert_eq!(site.tagline.0, views::Site::default().tagline.0);
+    assert!(site.tagline.is_none(), "a blank tagline is unset");
 
     let named = views::Site::new(&crate::config::SiteConfig {
         name: Some(" Ada's archive ".into()),
@@ -1052,4 +1052,73 @@ fn an_unsupported_site_language_stops_startup() {
     let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
     let err = format!("{:#}", router(tmp.path(), config).unwrap_err());
     assert!(err.contains("site.language") && err.contains("it"), "{err}");
+}
+
+fn l10n(tag: &str) -> crate::i18n::L10n {
+    crate::i18n::negotiate(Some(tag), &"en".parse().unwrap())
+}
+
+#[tokio::test]
+async fn search_page_in_italian() {
+    let (_home, app) = app_with_language(None);
+    let (status, _, body) = get_with(&app, "/search?q=x", Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    let placeholder = l10n("it").tr("search-placeholder-all");
+    assert!(body.contains(&placeholder), "{body}");
+    assert!(!body.contains("Search all collections"), "{body}");
+    let (_, _, body) = get_with(&app, "/search?q=x", Some("en")).await;
+    assert!(body.contains("Search all collections"), "{body}");
+}
+
+#[test]
+fn result_count_plurals() {
+    for (tag, expected) in [
+        ("en", ["0 results", "1 result", "3 results"]),
+        ("it", ["0 risultati", "1 risultato", "3 risultati"]),
+    ] {
+        let l = l10n(tag);
+        for (n, want) in [0, 1, 3].into_iter().zip(expected) {
+            assert_eq!(views::results_count(&l, n, false), want, "{tag} {n}");
+        }
+    }
+    assert_eq!(
+        views::results_count(&l10n("en"), 1000, true),
+        "1,000+ results"
+    );
+    assert_eq!(
+        views::results_count(&l10n("it"), 1000, true),
+        "1.000+ risultati"
+    );
+}
+
+#[tokio::test]
+async fn default_tagline_follows_language() {
+    let (_home, app) = app_with_language(None);
+    let (_, _, en) = get_with(&app, "/", Some("en")).await;
+    assert!(en.contains("Web archive search and replay"), "{en}");
+    let (_, _, it) = get_with(&app, "/", Some("it")).await;
+    let italian = l10n("it").tr("site-tagline-default");
+    assert!(it.contains(&italian), "{it}");
+    assert!(!it.contains("Web archive search and replay"), "{it}");
+}
+
+#[tokio::test]
+async fn custom_tagline_is_not_translated() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        crate::config::Config::path(tmp.path()),
+        "site:\n  tagline: Our own words\n",
+    )
+    .unwrap();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    for lang in ["en", "it"] {
+        let (_, _, body) = get_with(&app, "/", Some(lang)).await;
+        assert!(body.contains("Our own words"), "{lang}: {body}");
+        assert!(
+            !body.contains(&l10n("it").tr("site-tagline-default")),
+            "{lang}"
+        );
+        assert!(!body.contains("Web archive search and replay"), "{lang}");
+    }
 }
