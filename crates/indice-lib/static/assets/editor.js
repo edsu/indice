@@ -2,6 +2,7 @@
 // second request. A model can take a minute to answer, and without this the
 // only sign of life is the browser's own loading indicator, while the button
 // stays live for a second, duplicate request. The form works without it.
+// Its sentences come from i18n.js's `t()`, loaded just before it.
 (() => {
   const form = document.querySelector('form.manage-form');
   const button = form && form.querySelector('button.draft');
@@ -16,19 +17,19 @@
     }
     if (event.submitter !== button) return;
     sent = true;
-    const service = button.dataset.service || 'the model';
+    const service = button.dataset.service || t('js-draft-model-default');
     const limit = Number(button.dataset.timeout) || 120;
     const started = Date.now();
     // Next tick, so the submission has already taken the button's formaction:
     // a button disabled in time would drop out of the request.
     setTimeout(() => {
       form.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-      button.textContent = 'Drafting…';
+      button.textContent = t('js-drafting');
       if (!status) return;
       status.hidden = false;
       const tick = () => {
         const s = Math.round((Date.now() - started) / 1000);
-        status.textContent = `Waiting for ${service}: ${s}s (it gives up after ${limit}s)`;
+        status.textContent = t('js-draft-waiting', { service, s, limit });
       };
       tick();
       setInterval(tick, 1000);

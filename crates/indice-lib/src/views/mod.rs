@@ -335,6 +335,57 @@ fn counted_text(l10n: &L10n, key: &str, n: u64, shown: &str) -> String {
     )
 }
 
+/// The names of every argument a script's message can take. Each is handed to the
+/// message as the text `{name}`, which the page's script swaps for the real
+/// value (`t(key, {name: ...})` in `static/assets/i18n.js`), because the value is
+/// not known until the script runs. A message using a name not listed here comes
+/// out as `{$name}`; the `js_strings_use_known_arguments` test catches that.
+const SCRIPT_ARGS: &[&str] = &[
+    "label", "phase", "total", "name", "detail", "status", "id", "service", "s", "limit",
+];
+
+/// The messages `keys` as the JSON text a page's script reads, in the reader's
+/// language. A key ending in `-count` is a plural message, sent as an object with
+/// one text per plural category of the language (`{"one": ..., "other": ...}`)
+/// whose number is the placeholder `{count}`; every other key is one string.
+/// `<` is written `\u003c`, so no translation can close the element it is in or
+/// start a comment inside it. The caller wraps this in an element (see
+/// [`script_strings`]) or a template slot.
+pub fn strings_json(l10n: &L10n, keys: &[&str]) -> String {
+    let placeholders: Vec<String> = SCRIPT_ARGS.iter().map(|a| format!("{{{a}}}")).collect();
+    let mut args: Vec<(&str, FluentArg)> = SCRIPT_ARGS
+        .iter()
+        .zip(&placeholders)
+        .map(|(name, text)| (*name, FluentArg::Str(text)))
+        .collect();
+    let mut strings = serde_json::Map::new();
+    for key in keys {
+        let value = if key.ends_with("-count") {
+            args.push(("shown", FluentArg::Str("{count}")));
+            let forms = l10n.tr_forms(key, &args);
+            args.pop();
+            serde_json::json!(forms)
+        } else {
+            serde_json::Value::String(l10n.tr_args(key, &args))
+        };
+        strings.insert((*key).to_string(), value);
+    }
+    serde_json::Value::Object(strings)
+        .to_string()
+        .replace('<', "\\u003c")
+}
+
+/// [`strings_json`] as the `script#i18n` element the workroom's scripts parse.
+/// JSON in a non-executing `<script>` keeps the page free of inline code, which
+/// the CSP forbids. maud escapes text, but `&` and `<` in JSON would then
+/// be entities a `<script>` never decodes, so the JSON goes in unescaped; that
+/// is safe because `strings_json` leaves no `<` in it.
+pub fn script_strings(l10n: &L10n, keys: &[&str]) -> Markup {
+    html! {
+        script #i18n type="application/json" { (maud::PreEscaped(strings_json(l10n, keys))) }
+    }
+}
+
 /// One labeled group of browse-links in a detail page's scoped facet overview
 /// (e.g. "Top sites" on a collection page), each link a search within that scope.
 pub struct FacetSection {

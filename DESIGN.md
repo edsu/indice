@@ -1744,6 +1744,20 @@ or URL cannot reorder a right-to-left sentence. Bundles for `ar`, `fa`, `he` and
 keep them; left-to-right bundles turn them off, because there they only leak into
 `title` attributes and JSON. `L10n::dir` returns `rtl` or `ltr` for `<html dir>`.
 
+**Strings for scripts.** The workroom's scripts (`manage.js`, `editor.js`) hold no
+English. `views::script_strings` writes the messages they need into
+`script#i18n type="application/json"` (`strings_json` is the same JSON without the
+element, for a template slot), and `static/assets/i18n.js` reads it into `T` and
+fills `{name}` placeholders in `t(key, args)`. Arguments reach the message as the
+text `{name}` (the names are `views::SCRIPT_ARGS`), so `{ $label }` in a catalog
+arrives as `{label}`. A message whose key ends in `-count` selects on `$count` and
+shows `$shown`; `L10n::tr_forms` formats it once per CLDR plural category of the
+language (Italian `one`, `other`; Arabic all six) and the script picks with
+`Intl.PluralRules` on the page's `lang`, falling back to `other`. `strings_json`
+escapes every `<` as `\u003c`, so a translation cannot close the element or open a
+comment; that escape is why the element's text is the one place a string is not
+HTML-escaped by maud. `no_english_literals_in_workroom_js` pins the scripts to `t()`.
+
 **Adding a language.** Add `locales/<tag>.ftl` with every id in `en.ftl`, add one line
 to `CATALOGS`, and the tests check parsing and id parity. A right-to-left language
 also needs the stylesheets converted from physical to logical properties

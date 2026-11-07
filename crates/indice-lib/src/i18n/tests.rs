@@ -193,3 +193,94 @@ fn size_in_italian() {
     assert_eq!(L10n::default().size(512), "512 B");
     assert_eq!(italian().size(1024), "1,0 KB");
 }
+
+/// A language indice does not ship, with all six of Arabic's plural categories.
+const ARABIC_COUNT: &str = "
+js-n-count = { $count ->
+    [zero] zero { $shown }
+    [one] one { $shown }
+    [two] two { $shown }
+    [few] few { $shown }
+    [many] many { $shown }
+   *[other] other { $shown }
+}
+js-plain = plain
+";
+
+fn forms_of(json: &str, key: &str) -> BTreeSet<String> {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap();
+    v[key].as_object().unwrap().keys().cloned().collect()
+}
+
+#[test]
+fn plural_strings_carry_every_category() {
+    // Italian has `one` and `other`, no more.
+    let it = crate::views::strings_json(
+        &L10n::in_bundles(&BUNDLES, &it()),
+        &["js-added-crawls-count"],
+    );
+    assert_eq!(
+        forms_of(&it, "js-added-crawls-count"),
+        BTreeSet::from(["one".to_string(), "other".to_string()])
+    );
+    let v: serde_json::Value = serde_json::from_str(&it).unwrap();
+    // The number stays a placeholder for the page's script to fill in.
+    assert!(v["js-added-crawls-count"]["other"]
+        .as_str()
+        .unwrap()
+        .contains("{count}"));
+
+    // Arabic has six.
+    let ar = test_bundles(&[("ar", ARABIC_COUNT)]);
+    let l10n = negotiate_in(ar, Some("ar"), &"ar".parse().unwrap());
+    let json = crate::views::strings_json(&l10n, &["js-n-count", "js-plain"]);
+    let expected: BTreeSet<String> = ["zero", "one", "two", "few", "many", "other"]
+        .map(String::from)
+        .into();
+    assert_eq!(forms_of(&json, "js-n-count"), expected);
+    // A string without a count stays a plain string.
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["js-plain"], "plain");
+    // Each form was picked by its own category.
+    assert!(v["js-n-count"]["few"].as_str().unwrap().starts_with("few"));
+    assert!(v["js-n-count"]["many"]
+        .as_str()
+        .unwrap()
+        .starts_with("many"));
+}
+
+#[test]
+fn script_strings_escape_lt() {
+    let b = test_bundles(&[("en", "x = </script><b>\n")]);
+    let l10n = negotiate_in(b, Some("en"), &en());
+    let json = crate::views::strings_json(&l10n, &["x"]);
+    assert!(!json.contains('<'), "{json}");
+    assert!(json.contains("\\u003c/script>"), "{json}");
+    let html = crate::views::script_strings(&l10n, &["x"]).into_string();
+    assert!(
+        html.starts_with(r#"<script id="i18n" type="application/json">"#),
+        "{html}"
+    );
+    assert_eq!(html.matches("</script>").count(), 1, "{html}");
+}
+
+#[test]
+fn js_strings_use_known_arguments() {
+    use crate::views::{strings_json, DESK_STRINGS, EDITOR_STRINGS};
+    let keys: Vec<&str> = DESK_STRINGS.iter().chain(EDITOR_STRINGS).copied().collect();
+    // Every `js-` message is sent to some page.
+    for id in ids(CATALOGS[0].1).iter().filter(|id| id.starts_with("js-")) {
+        assert!(keys.contains(&id.as_str()), "{id} is in no page's list");
+    }
+    for (tag, _) in CATALOGS {
+        let l10n = L10n::in_bundles(&BUNDLES, &tag.parse().unwrap());
+        let json = strings_json(&l10n, &keys);
+        // An argument the page does not pass shows up as `{$name}`, a missing
+        // message as its own key.
+        assert!(!json.contains("{$"), "{tag}: {json}");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for key in &keys {
+            assert_ne!(v[key], *key, "{tag}: {key} is missing");
+        }
+    }
+}

@@ -451,3 +451,50 @@ desk-mode-stream-hint = nessuna copia locale; la riproduzione si risolve di nuov
 desk-ait-intro = Scegli le { -crawl-plural } da importare nella { -collection } qui sopra, dall'account Archive-It per cui questo server è configurato. Ogni { -crawl } selezionata viene scaricata e impacchettata in un WACZ.
 desk-ait-collection = Raccolta di Archive-It
 desk-submit = Aggiungi
+
+# Frasi che gli script del workroom mostrano (static/assets/manage.js e editor.js).
+# La pagina le consegna come JSON e lo script riempie i segnaposto `{nome}`, quindi
+# un argomento si scrive come negli altri messaggi (`{ $label }`) e arriva allo
+# script come `{label}`. Un messaggio la cui chiave termina in `-count` è un
+# plurale: sceglie su `$count`, mostra `$shown`, e lo script riceve un testo per
+# ogni categoria plurale.
+js-reading = lettura di { $label }
+js-total = record da indicizzare: { $total }
+js-indexed-count = { $count ->
+    [one] indicizzato { $label } ({ $shown } { -page })
+   *[other] indicizzato { $label } ({ $shown } { -page-plural })
+}
+js-done = Fatto ✓
+js-view-crawl = Vai alla { -crawl } →
+js-view-collection = Vai alla { -collection } →
+js-view-collection-named = Vai alla { -collection } “{ $name }” →
+js-added-crawls-count = { $count ->
+    [one] Aggiunta { $shown } { -crawl }:
+   *[other] Aggiunte { $shown } { -crawl-plural }:
+}
+js-error = Errore: { $detail }
+js-request-failed = Richiesta non riuscita: { $detail }
+js-loading-crawls = Caricamento delle { -crawl-plural }…
+js-no-crawls = Nessuna { -crawl } trovata.
+js-no-importable-crawls = Nessuna { -crawl } importabile trovata.
+js-no-crawls-match = Nessuna { -crawl } corrisponde a questo filtro.
+js-qa-done = con controllo qualità
+js-qa-done-status = con controllo qualità { $status }/5
+js-qa-not-done = senza controllo qualità
+js-in-library = già presente
+js-crawl-label = { -crawl } { $id }
+js-connecting-browsertrix = Connessione a Browsertrix…
+js-connecting-archiveit = Connessione ad Archive-It…
+js-no-organizations = Nessuna organizzazione visibile con queste credenziali.
+js-no-archiveit-collections = Nessuna { -collection } di Archive-It visibile con queste credenziali.
+js-name-collection = Indica il nome della { -collection }.
+js-choose-file = Scegli un file .wacz da caricare.
+js-enter-url = Inserisci un URL http(s)://.
+js-select-crawl = Seleziona almeno una { -crawl } da importare.
+js-uploading = Caricamento…
+js-starting = Avvio…
+js-importing = Importazione…
+js-source-unavailable = Questa fonte non è ancora disponibile.
+js-draft-model-default = il modello
+js-drafting = Generazione della bozza…
+js-draft-waiting = In attesa di { $service }: { $s }s (rinuncia dopo { $limit }s)

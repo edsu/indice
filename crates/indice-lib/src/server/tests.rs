@@ -1498,3 +1498,51 @@ async fn desk_keeps_the_wacz_code_and_a_path_is_refused_in_italian() {
     assert_eq!(text, l10n("it").tr("error-location-not-url"));
     assert!(!text.contains("add an archive"), "{text}");
 }
+
+/// The workroom's scripts get their sentences from the page, in the reader's
+/// language, so the browser never needs a catalog of its own.
+#[tokio::test]
+async fn workroom_ships_italian_js_strings() {
+    let (_home, app) = app_with_language(None);
+    for (lang, loading) in
+        [("it", l10n("it")), ("en", l10n("en"))].map(|(lang, l)| (lang, l.tr("js-loading-crawls")))
+    {
+        let (_, _, page) = get_with(&app, "/manage/add", Some(lang)).await;
+        let marker = r#"<script id="i18n" type="application/json">"#;
+        let start = page
+            .find(marker)
+            .unwrap_or_else(|| panic!("{lang}: no i18n element"))
+            + marker.len();
+        let end = start + page[start..].find("</script>").unwrap();
+        let strings: serde_json::Value = serde_json::from_str(&page[start..end]).unwrap();
+        assert_eq!(strings["js-loading-crawls"], loading.as_str(), "{lang}");
+    }
+    assert_ne!(
+        l10n("it").tr("js-loading-crawls"),
+        l10n("en").tr("js-loading-crawls")
+    );
+}
+
+/// Every sentence the workroom's scripts show comes from `t(...)`, so none can
+/// be left in English on an Italian page.
+#[test]
+fn no_english_literals_in_workroom_js() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/assets");
+    for file in ["manage.js", "editor.js"] {
+        let src = std::fs::read_to_string(dir.join(file)).unwrap();
+        for (n, line) in src.lines().enumerate() {
+            let mut rest = line;
+            while let Some(i) = rest.find("textContent = ") {
+                rest = &rest[i + "textContent = ".len()..];
+                let after_quote = rest
+                    .strip_prefix(['\'', '`', '"'])
+                    .and_then(|r| r.chars().next());
+                assert!(
+                    !after_quote.is_some_and(|c| c.is_ascii_alphabetic()),
+                    "{file}:{}: English literal: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+}

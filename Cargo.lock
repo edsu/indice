@@ -1735,6 +1735,7 @@ dependencies = [
  "fluent-langneg",
  "http-body",
  "image",
+ "intl_pluralrules",
  "maud",
  "pdf-extract",
  "psl",

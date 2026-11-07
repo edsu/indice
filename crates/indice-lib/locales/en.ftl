@@ -494,3 +494,49 @@ desk-mode-stream-hint = no local copy; replay re-resolves via this server's cred
 desk-ait-intro = Pick { -crawl-plural } to import into the { -collection } above, from the Archive-It account this server is configured for. Each selected { -crawl } is downloaded and packaged into a WACZ.
 desk-ait-collection = Archive-It collection
 desk-submit = Add
+
+# Sentences the workroom's scripts show (static/assets/manage.js and editor.js).
+# The page hands them over as JSON and the script fills the `{name}` placeholders,
+# so an argument here is written like any other (`{ $label }`) and reaches the
+# script as `{label}`. A message whose key ends in `-count` is a plural: it selects
+# on `$count` and shows `$shown`, and the script gets one text per plural category.
+js-reading = reading { $label }
+js-total = records to index: { $total }
+js-indexed-count = { $count ->
+    [one] indexed { $label } ({ $shown } { -page })
+   *[other] indexed { $label } ({ $shown } { -page-plural })
+}
+js-done = Done ✓
+js-view-crawl = View { -crawl } →
+js-view-collection = View { -collection } →
+js-view-collection-named = View “{ $name }” →
+js-added-crawls-count = { $count ->
+    [one] Added { $shown } { -crawl }:
+   *[other] Added { $shown } { -crawl-plural }:
+}
+js-error = Error: { $detail }
+js-request-failed = Request failed: { $detail }
+js-loading-crawls = Loading { -crawl-plural }…
+js-no-crawls = No { -crawl-plural } found.
+js-no-importable-crawls = No importable { -crawl-plural } found.
+js-no-crawls-match = No { -crawl-plural } match this filter.
+js-qa-done = QA’d
+js-qa-done-status = QA’d { $status }/5
+js-qa-not-done = not QA’d
+js-in-library = in library
+js-crawl-label = { -crawl } { $id }
+js-connecting-browsertrix = Connecting to Browsertrix…
+js-connecting-archiveit = Connecting to Archive-It…
+js-no-organizations = No organizations visible for these credentials.
+js-no-archiveit-collections = No Archive-It { -collection-plural } visible for these credentials.
+js-name-collection = Please name the { -collection }.
+js-choose-file = Choose a .wacz file to upload.
+js-enter-url = Enter an http(s):// URL.
+js-select-crawl = Select at least one { -crawl } to import.
+js-uploading = Uploading…
+js-starting = Starting…
+js-importing = Importing…
+js-source-unavailable = That source isn’t available yet.
+js-draft-model-default = the model
+js-drafting = Drafting…
+js-draft-waiting = Waiting for { $service }: { $s }s (it gives up after { $limit }s)

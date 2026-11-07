@@ -5,6 +5,45 @@ use maud::{html, Markup};
 
 use super::*;
 
+/// What `manage.js` shows, put in the page by [`script_strings`].
+pub(crate) const DESK_STRINGS: &[&str] = &[
+    "js-reading",
+    "js-total",
+    "js-indexed-count",
+    "js-done",
+    "js-view-crawl",
+    "js-view-collection",
+    "js-view-collection-named",
+    "js-added-crawls-count",
+    "js-error",
+    "js-request-failed",
+    "js-loading-crawls",
+    "js-no-crawls",
+    "js-no-importable-crawls",
+    "js-no-crawls-match",
+    "js-qa-done",
+    "js-qa-done-status",
+    "js-qa-not-done",
+    "js-in-library",
+    "js-crawl-label",
+    "js-connecting-browsertrix",
+    "js-connecting-archiveit",
+    "js-no-organizations",
+    "js-no-archiveit-collections",
+    "js-name-collection",
+    "js-choose-file",
+    "js-enter-url",
+    "js-select-crawl",
+    "js-uploading",
+    "js-starting",
+    "js-importing",
+    "js-source-unavailable",
+];
+
+/// What `editor.js` shows.
+pub(crate) const EDITOR_STRINGS: &[&str] =
+    &["js-draft-model-default", "js-drafting", "js-draft-waiting"];
+
 /// Values for the create/edit collection form. Empty strings render as blank
 /// fields. `editing` locks the name (its slug is the collection's identity) and
 /// switches the labels from "New/Create" to "Edit/Save".
@@ -118,6 +157,8 @@ fn draft_panel(m: &DraftingInfo, l10n: &crate::i18n::L10n) -> Markup {
             // Filled in by editor.js while a draft is being made.
             p #draft-status.draft-status hidden {}
         }
+        (script_strings(l10n, EDITOR_STRINGS))
+        script src="/assets/i18n.js" defer {}
         script src="/assets/editor.js" defer {}
     }
 }
@@ -388,6 +429,8 @@ pub fn accession_desk(
         // Progressive enhancement (source tabs, submit, the Browsertrix /
         // Archive-It browse wizards, SSE progress). Served from static/assets so
         // it stays lintable JavaScript rather than a Rust string literal.
+        (script_strings(l10n, DESK_STRINGS))
+        script src="/assets/i18n.js" {}
         script src="/assets/manage.js" {}
     };
     // Scope the header search to the target collection, when known.

@@ -203,6 +203,25 @@ impl L10n {
                 .any(|(l, b)| l.language.as_str() == REFERENCE && b.has_message(key))
     }
 
+    /// A message that selects on `$count` (and shows `$shown`), formatted once for
+    /// every plural category of the chosen language, for a script that only knows
+    /// the number at run time. The form for a category is the message formatted
+    /// with a number in it, so the catalog's own plural selection does the work.
+    pub fn tr_forms(
+        &self,
+        key: &str,
+        args: &[(&str, FluentArg)],
+    ) -> std::collections::BTreeMap<String, String> {
+        plural_samples(&self.bundle().0)
+            .into_iter()
+            .map(|(category, sample)| {
+                let mut with_count = args.to_vec();
+                with_count.push(("count", FluentArg::Num(sample)));
+                (category.to_string(), self.tr_args(key, &with_count))
+            })
+            .collect()
+    }
+
     pub fn tr(&self, key: &str) -> String {
         self.tr_args(key, &[])
     }
@@ -235,6 +254,35 @@ impl L10n {
         tracing::warn!(key, "message missing from every catalog; showing the key");
         key.to_string()
     }
+}
+
+/// The plural categories `lang` uses, each with a number that falls in it. The
+/// probe covers every cardinal rule in CLDR for integers: Arabic's `few` and
+/// `many` start at 3 and 11, and French's and Spanish's `many` (millions) is the
+/// last number.
+fn plural_samples(lang: &LanguageIdentifier) -> Vec<(&'static str, i64)> {
+    use intl_pluralrules::{PluralCategory, PluralRuleType, PluralRules};
+    let Ok(rules) = PluralRules::create(lang.clone(), PluralRuleType::CARDINAL) else {
+        return vec![("other", 2)];
+    };
+    let mut found: Vec<(&'static str, i64)> = vec![];
+    for n in (0..=200_i64).chain([1_000_000]) {
+        let Ok(category) = rules.select(n) else {
+            continue;
+        };
+        let name = match category {
+            PluralCategory::ZERO => "zero",
+            PluralCategory::ONE => "one",
+            PluralCategory::TWO => "two",
+            PluralCategory::FEW => "few",
+            PluralCategory::MANY => "many",
+            PluralCategory::OTHER => "other",
+        };
+        if !found.iter().any(|(c, _)| *c == name) {
+            found.push((name, n));
+        }
+    }
+    found
 }
 
 fn format(bundle: &Bundle, key: &str, args: &FluentArgs) -> Option<String> {
