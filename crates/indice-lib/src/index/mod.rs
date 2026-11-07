@@ -88,9 +88,10 @@ pub enum Phase {
     },
     WaitingForImport,
     BuildingWacz,
+    /// `bytes` is `None` when the source does not say how big the file is.
     DownloadingFile {
         name: String,
-        bytes: u64,
+        bytes: Option<u64>,
         n: usize,
         of: usize,
     },
@@ -124,7 +125,8 @@ impl Phase {
             Phase::WaitingFor { .. } => "phase-waiting-for",
             Phase::WaitingForImport => "phase-waiting-for-import",
             Phase::BuildingWacz => "phase-building-wacz",
-            Phase::DownloadingFile { .. } => "phase-downloading-file",
+            Phase::DownloadingFile { bytes: Some(_), .. } => "phase-downloading-file",
+            Phase::DownloadingFile { bytes: None, .. } => "phase-downloading-file-unsized",
             Phase::Segments { .. } => "phase-segments",
             Phase::ExpungingDeletes { .. } => "phase-expunging-deletes",
             Phase::RemovedOrphans { .. } => "phase-removed-orphans",
@@ -146,15 +148,18 @@ impl Phase {
             Phase::WaitingFor { holder } => {
                 l10n.tr_args(key, &[("holder", FluentArg::Str(holder))])
             }
-            Phase::DownloadingFile { name, bytes, n, of } => l10n.tr_args(
-                key,
-                &[
-                    ("name", FluentArg::Str(name)),
-                    ("size", FluentArg::Str(&l10n.size(*bytes))),
-                    ("n", num(*n)),
-                    ("of", num(*of)),
-                ],
-            ),
+            Phase::DownloadingFile { name, bytes, n, of } => {
+                let size = bytes.map(|b| l10n.size(b)).unwrap_or_default();
+                l10n.tr_args(
+                    key,
+                    &[
+                        ("name", FluentArg::Str(name)),
+                        ("size", FluentArg::Str(&size)),
+                        ("n", num(*n)),
+                        ("of", num(*of)),
+                    ],
+                )
+            }
             Phase::Segments { count } => l10n.tr_args(key, &[("count", num(*count))]),
             Phase::ExpungingDeletes { segments } => {
                 l10n.tr_args(key, &[("segments", num(*segments))])
@@ -293,13 +298,28 @@ mod phase_tests {
             (
                 Phase::DownloadingFile {
                     name: "a.warc.gz".into(),
-                    bytes: 2_621_440,
+                    bytes: Some(2_621_440),
                     n: 1,
                     of: 3,
                 },
                 "downloading a.warc.gz (2.5 MB) [1/3]",
             ),
+            (
+                Phase::DownloadingFile {
+                    name: "a.warc.gz".into(),
+                    bytes: None,
+                    n: 2,
+                    of: 3,
+                },
+                "downloading a.warc.gz [2/3]",
+            ),
             (Phase::Segments { count: 4 }, "4 segments"),
+            // Counts of a thousand or more print ungrouped, as the CLI always has.
+            (Phase::Segments { count: 12_345 }, "12345 segments"),
+            (
+                Phase::NestedWacz { n: 1000, of: 1500 },
+                "nested WACZ 1000/1500",
+            ),
             (
                 Phase::ExpungingDeletes { segments: 2 },
                 "expunging deletes (2 segment(s))",

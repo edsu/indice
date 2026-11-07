@@ -671,7 +671,7 @@ pub fn import_crawls<T: Transport>(
             };
             let phase = crate::index::Phase::DownloadingFile {
                 name: f.filename.clone(),
-                bytes: f.size,
+                bytes: Some(f.size),
                 n: i + 1,
                 of: total_files,
             };

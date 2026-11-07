@@ -619,3 +619,5 @@ phase-removed-orphans = removed { $files } orphaned file(s)
 phase-reading-manifest = reading the manifest
 phase-listing-crawls = listing { -crawl-plural } in the index
 phase-looking-for-orphan-files = looking for the orphans' files on disk
+# As `phase-downloading-file`, when the source does not report the file's size.
+phase-downloading-file-unsized = downloading { $name } [{ $n }/{ $of }]

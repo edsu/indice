@@ -577,3 +577,4 @@ phase-removed-orphans = { $files ->
 phase-reading-manifest = lettura del manifesto
 phase-listing-crawls = elenco delle { -crawl-plural } nell'indice
 phase-looking-for-orphan-files = ricerca dei file orfani sul disco
+phase-downloading-file-unsized = scaricamento di { $name } [{ $n }/{ $of }]

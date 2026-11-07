@@ -366,7 +366,7 @@ pub(super) async fn bx_import(
                             &progress,
                             &crate::index::Phase::DownloadingFile {
                                 name: filename.to_string(),
-                                bytes: res.size,
+                                bytes: (res.size > 0).then_some(res.size),
                                 n: i + 1,
                                 of: resources.len(),
                             },
