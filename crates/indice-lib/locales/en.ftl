@@ -540,3 +540,4 @@ js-source-unavailable = That source isn’t available yet.
 js-draft-model-default = the model
 js-drafting = Drafting…
 js-draft-waiting = Waiting for { $service }: { $s }s (it gives up after { $limit }s)
+js-all-crawls = All { -crawl-plural }

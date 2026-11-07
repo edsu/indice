@@ -21,6 +21,7 @@ pub(crate) const DESK_STRINGS: &[&str] = &[
     "js-no-crawls",
     "js-no-importable-crawls",
     "js-no-crawls-match",
+    "js-all-crawls",
     "js-qa-done",
     "js-qa-done-status",
     "js-qa-not-done",

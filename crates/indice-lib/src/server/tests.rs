@@ -1523,26 +1523,82 @@ async fn workroom_ships_italian_js_strings() {
     );
 }
 
+/// The quoted string literals of a line of JavaScript (single, double or
+/// template), with the part after a `//` comment dropped. A tokenizer rather
+/// than a regex so an apostrophe inside a comment or another quote's text does
+/// not start a literal.
+fn js_string_literals(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut found = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '/' if chars.get(i + 1) == Some(&'/') => break,
+            quote @ ('\'' | '"' | '`') => {
+                let mut text = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != quote {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    if let Some(c) = chars.get(i) {
+                        text.push(*c);
+                    }
+                    i += 1;
+                }
+                found.push(text);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    found
+}
+
 /// Every sentence the workroom's scripts show comes from `t(...)`, so none can
-/// be left in English on an Italian page.
+/// be left in English on an Italian page. A literal that starts with a letter
+/// and holds a space reads as prose; selectors, ids, class names, event names and
+/// headers have no space, or start with a symbol.
 #[test]
 fn no_english_literals_in_workroom_js() {
+    // Literals that look like prose but are not shown to a reader. Keep this
+    // empty unless a literal truly is not UI text, and say why beside it.
+    const NOT_UI: &[&str] = &[];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/assets");
-    for file in ["manage.js", "editor.js"] {
+    for file in ["manage.js", "editor.js", "i18n.js"] {
         let src = std::fs::read_to_string(dir.join(file)).unwrap();
         for (n, line) in src.lines().enumerate() {
-            let mut rest = line;
-            while let Some(i) = rest.find("textContent = ") {
-                rest = &rest[i + "textContent = ".len()..];
-                let after_quote = rest
-                    .strip_prefix(['\'', '`', '"'])
-                    .and_then(|r| r.chars().next());
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("/*") || code.starts_with('*') {
+                continue;
+            }
+            for lit in js_string_literals(line) {
+                let prose = lit.starts_with(|c: char| c.is_ascii_alphabetic()) && lit.contains(' ');
                 assert!(
-                    !after_quote.is_some_and(|c| c.is_ascii_alphabetic()),
-                    "{file}:{}: English literal: {line}",
+                    !prose || NOT_UI.contains(&lit.as_str()),
+                    "{file}:{}: English literal {lit:?}: {line}",
                     n + 1
                 );
             }
         }
     }
+}
+
+/// The scan itself: it flags the select's placeholder that once slipped through,
+/// and passes selectors and `t(...)` calls.
+#[test]
+fn the_js_literal_scan_catches_prose() {
+    let prose = |line: &str| {
+        js_string_literals(line)
+            .iter()
+            .any(|l| l.starts_with(|c: char| c.is_ascii_alphabetic()) && l.contains(' '))
+    };
+    assert!(prose("fillSelect(sel, colls, 'All crawls');"));
+    assert!(prose("x.title = `Waiting for ${s}`;"));
+    assert!(!prose(
+        "fillSelect(sel, colls, t('js-all-crawls')); // can't be 'All crawls'"
+    ));
+    assert!(!prose(
+        "document.querySelector('#bx-items input:checked').dataset.id;"
+    ));
 }

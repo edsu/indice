@@ -3,7 +3,10 @@
 // `views::script_strings`), so a script never carries English text of its own.
 // Loaded before manage.js and editor.js.
 
-const T = JSON.parse(document.getElementById('i18n').textContent);
+// A page without the element (or with unreadable JSON) shows keys, not an error.
+const T = (() => {
+  try { return JSON.parse(document.getElementById('i18n').textContent); } catch (e) { return {}; }
+})();
 
 // The message `key` with its `{name}` placeholders filled from `args`. A plural
 // message is an object with one text per plural category; the form for

@@ -82,7 +82,7 @@ async function bxLoadCollections() {
   if (!org) return;
   try {
     const colls = await bxGet('/api/browsertrix/collections?org=' + encodeURIComponent(org));
-    fillSelect(document.getElementById('bx-collection'), colls, 'All crawls');
+    fillSelect(document.getElementById('bx-collection'), colls, t('js-all-crawls'));
   } catch (e) { out.textContent = t('js-error', { detail: e.message }); }
 }
 // Crawls load reactively (on connect / org / collection change), so a later
