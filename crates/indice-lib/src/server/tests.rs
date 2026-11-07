@@ -1663,6 +1663,25 @@ fn no_english_literals_in_scripts() {
     }
 }
 
+/// The server frames each error it sends in a sentence of its own ("The request
+/// failed: …", "the job failed: …", "Browsertrix error: …"), so the workroom
+/// shows that text as sent. Framing it again would read "Error: the job failed:
+/// …". Only a request that never reached the server gets the script's own frame.
+#[test]
+fn the_workroom_shows_server_errors_as_sent() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/assets/manage.js");
+    let src = std::fs::read_to_string(path).unwrap();
+    assert!(
+        !src.contains("js-error"),
+        "a second frame around server text"
+    );
+    // The job's SSE `error` event, and a refused submit.
+    assert!(src.contains("show(JSON.parse(ev.data).message)"), "{src}");
+    assert!(src.contains("out.textContent = await res.text()"), "{src}");
+    // The browse calls: server text as sent, a network failure framed.
+    assert!(src.contains("e.fromServer ? e.message"), "{src}");
+}
+
 /// The scan itself: it flags the select's placeholder that once slipped through,
 /// and passes selectors and `t(...)` calls.
 #[test]

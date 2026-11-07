@@ -491,7 +491,6 @@ js-added-crawls-count = { $count ->
     [one] Aggiunta { $shown } { -crawl }:
    *[other] Aggiunte { $shown } { -crawl-plural }:
 }
-js-error = Errore: { $detail }
 js-request-failed = Richiesta non riuscita: { $detail }
 js-loading-crawls = Caricamento delle { -crawl-plural }…
 js-no-crawls = Nessuna { -crawl } trovata.

@@ -293,6 +293,19 @@ fn js_strings_use_known_arguments() {
         for key in &keys {
             assert_ne!(v[key], *key, "{tag}: {key} is missing");
         }
+        // A plural message's every form shows the number: the script fills
+        // `{count}`, and a form without it would drop the number silently.
+        for key in keys.iter().filter(|k| k.ends_with("-count")) {
+            let forms = v[key].as_object().unwrap_or_else(|| panic!("{tag}: {key}"));
+            assert!(!forms.is_empty(), "{tag}: {key} has no forms");
+            for (category, text) in forms {
+                let text = text.as_str().unwrap();
+                assert!(
+                    text.contains("{count}"),
+                    "{tag}: {key} [{category}] has no {{count}}: {text}"
+                );
+            }
+        }
     }
 }
 

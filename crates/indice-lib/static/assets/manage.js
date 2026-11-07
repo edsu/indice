@@ -53,7 +53,8 @@ function stream(job, collectionName) {
     if (wrap.childNodes.length) out.appendChild(wrap);
     es.close();
   });
-  es.addEventListener('error', (ev) => { if (ev.data) show(t('js-error', { detail: JSON.parse(ev.data).message })); es.close(); });
+  // The server words the failure as a whole sentence ("the job failed: …").
+  es.addEventListener('error', (ev) => { if (ev.data) show(JSON.parse(ev.data).message); es.close(); });
 }
 
 // Source tabs.
@@ -67,11 +68,15 @@ document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click
 }));
 
 // ── Browsertrix browse (orgs → collections → crawls), using server creds. ──
+// A refusal's body is the server's own sentence, already framed and in the
+// page's language, so it is marked to be shown as sent; anything else thrown
+// (the network, unreadable JSON) gets the script's frame from `failure`.
 async function bxGet(path) {
   const r = await fetch(path);
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) { const e = new Error(await r.text()); e.fromServer = true; throw e; }
   return r.json();
 }
+const failure = (e) => (e.fromServer ? e.message : t('js-request-failed', { detail: e.message }));
 function fillSelect(sel, items, placeholder) {
   sel.innerHTML = '';
   if (placeholder != null) { const o = document.createElement('option'); o.value = ''; o.textContent = placeholder; sel.appendChild(o); }
@@ -83,7 +88,7 @@ async function bxLoadCollections() {
   try {
     const colls = await bxGet('/api/browsertrix/collections?org=' + encodeURIComponent(org));
     fillSelect(document.getElementById('bx-collection'), colls, t('js-all-crawls'));
-  } catch (e) { out.textContent = t('js-error', { detail: e.message }); }
+  } catch (e) { out.textContent = failure(e); }
 }
 // Crawls load reactively (on connect / org / collection change), so a later
 // request can overtake an earlier one — bxSeq drops any stale response.
@@ -102,7 +107,7 @@ async function bxLoadItems() {
     bxItems = items;
     out.textContent = '';
     bxRender();
-  } catch (e) { if (seq === bxSeq) out.textContent = t('js-error', { detail: e.message }); }
+  } catch (e) { if (seq === bxSeq) out.textContent = failure(e); }
 }
 // Render bxItems into the list, applying the client-side QA-status filter.
 function bxRender() {
@@ -148,7 +153,7 @@ async function bxConnect() {
     out.textContent = '';
     await bxLoadCollections();
     bxLoadItems();
-  } catch (e) { out.textContent = t('js-error', { detail: e.message }); }
+  } catch (e) { out.textContent = failure(e); }
 }
 const bxRefresh = document.getElementById('bx-refresh');
 if (bxRefresh) bxRefresh.addEventListener('click', bxLoadItems);
@@ -184,7 +189,7 @@ async function aitConnect() {
     if (!colls.length) { out.textContent = t('js-no-archiveit-collections'); return; }
     out.textContent = '';
     aitLoadCrawls();
-  } catch (e) { out.textContent = t('js-error', { detail: e.message }); }
+  } catch (e) { out.textContent = failure(e); }
 }
 async function aitLoadCrawls() {
   const coll = document.getElementById('ait-collection').value;
@@ -197,7 +202,7 @@ async function aitLoadCrawls() {
     aitCrawls = crawls;
     out.textContent = '';
     aitRender();
-  } catch (e) { if (seq === aitSeq) out.textContent = t('js-error', { detail: e.message }); }
+  } catch (e) { if (seq === aitSeq) out.textContent = failure(e); }
 }
 function aitRender() {
   const box = document.getElementById('ait-crawls');
@@ -301,7 +306,8 @@ f.addEventListener('submit', async (e) => {
       return;
     }
   } catch (err) { out.textContent = t('js-request-failed', { detail: err }); return; }
-  if (!res.ok) { out.textContent = t('js-error', { detail: await res.text() }); return; }
+  // As for a browse call: the server's sentence, as sent.
+  if (!res.ok) { out.textContent = await res.text(); return; }
   const { job } = await res.json();
   stream(job, collection);
 });

@@ -15,7 +15,6 @@ pub(crate) const DESK_STRINGS: &[&str] = &[
     "js-view-collection",
     "js-view-collection-named",
     "js-added-crawls-count",
-    "js-error",
     "js-request-failed",
     "js-loading-crawls",
     "js-no-crawls",
