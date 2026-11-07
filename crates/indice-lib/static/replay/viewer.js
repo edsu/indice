@@ -2,7 +2,7 @@
 //
 // A file rather than an inline <script>, so the app origin's
 // Content-Security-Policy can refuse inline script (server/headers.rs). It is
-// loaded at the end of <body>, after annotations.js, and runs before
+// loaded at the end of <body>, after i18n.js (`t`) and annotations.js, and runs before
 // DOMContentLoaded, which is when the notes panel starts and first uses the
 // channel set up here.
 
@@ -47,18 +47,19 @@
   // while reading it, so the banner leads with it. From the link's `ts`, then
   // from the frame as the reader moves between pages.
   const captured = document.getElementById('captured');
-  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
-    'August', 'September', 'October', 'November', 'December'];
   function showCaptured(ts) {
     const d = String(ts || '').replace(/\D/g, '');
-    const month = MONTHS[Number(d.slice(4, 6)) - 1];
-    if (d.length < 8 || !month) {
+    const month = Number(d.slice(4, 6));
+    if (d.length < 8 || month < 1 || month > 12) {
       captured.textContent = '';
       return;
     }
-    let text = 'Captured ' + Number(d.slice(6, 8)) + ' ' + month + ' ' + d.slice(0, 4);
-    if (d.length >= 12) text += ', ' + d.slice(8, 10) + ':' + d.slice(10, 12) + ' UTC';
-    captured.textContent = text;
+    // The month's name comes from the page's catalog (`month-1` to `month-12`),
+    // so each language writes the date in its own order around it.
+    const when = { day: Number(d.slice(6, 8)), month: t('month-' + month), year: d.slice(0, 4) };
+    captured.textContent = d.length >= 12
+      ? t('viewer-captured-time', { ...when, time: d.slice(8, 10) + ':' + d.slice(10, 12) })
+      : t('viewer-captured', when);
   }
   showCaptured(ctx.ts);
 
@@ -78,7 +79,7 @@
   });
   const frame = document.createElement('iframe');
   frame.id = 'replay-frame';
-  frame.title = 'Archived page';
+  frame.title = t('viewer-frame-title');
   frame.allow = 'autoplay; fullscreen';
   frame.src = frameOrigin + '/replay-frame?' + frameParams.toString();
   document.getElementById('replay-container').appendChild(frame);
@@ -118,8 +119,7 @@
   const loadingText = document.getElementById('replay-loading-text');
   const loadingTimers = [
     setTimeout(function () {
-      loadingText.textContent =
-        'Still loading the archived page. Pages from large crawls can take a while.';
+      loadingText.textContent = t('viewer-loading-slow');
     }, 30000),
     setTimeout(hideLoading, 120000),
   ];

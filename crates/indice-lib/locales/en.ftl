@@ -541,3 +541,52 @@ js-draft-model-default = the model
 js-drafting = Drafting…
 js-draft-waiting = Waiting for { $service }: { $s }s (it gives up after { $limit }s)
 js-all-crawls = All { -crawl-plural }
+
+# The replay viewer's banner and the notes panel beside the replay
+# (static/replay/viewer.js and annotations.js). The page hands them over as JSON,
+# like the `js-` messages above, and the script fills the `{name}` placeholders.
+viewer-notes = Notes
+viewer-notes-n = Notes ({ $total })
+viewer-loading = Loading the archived page…
+viewer-loading-slow = Still loading the archived page. Pages from large { -crawl-plural } can take a while.
+viewer-frame-title = Archived page
+# The month is its name from the `month-` messages, so a language orders the date as it likes.
+viewer-captured = Captured { $day } { $month } { $year }
+viewer-captured-time = Captured { $day } { $month } { $year }, { $time } UTC
+anno-close = Close notes
+anno-add-page = Add a note about this page
+anno-add-selection = Add note on selection
+anno-empty-can-annotate = No notes on this page yet. Select text in the page, or add a note about the whole page.
+anno-empty = No notes on this page.
+anno-anonymous = anonymous
+anno-date-edited = { $date }, edited
+anno-link = Link to this note
+anno-edit = Edit
+anno-delete = Delete
+anno-save = Save
+anno-add-note = Add note
+anno-cancel = Cancel
+anno-placeholder = Write a note… (Markdown)
+anno-public = Notes are public, so anyone who can read this { -archive } can read them.
+# `{ $url }` stands for the page's address, which the script shows in its own element.
+anno-new-passage = New note on this passage at { $url }
+anno-new-page = New note about { $url }
+anno-confirm-delete = Delete this note?
+anno-failed-add = Could not add note ({ $status })
+anno-failed-save = Could not save note ({ $status })
+anno-failed-delete = Could not delete note ({ $status })
+anno-selection-too-long = The selection is too long to quote (at most { $max } characters).
+
+# The Annotations page of a collection and a note's own page.
+annotations-index-title = Annotations - { $name }
+annotations-index-count = { $count ->
+    [one] { $shown } note on pages in this { -collection }.
+   *[other] { $shown } notes on pages in this { -collection }.
+}
+annotations-index-empty = No annotations yet.
+annotations-open-page = Open page
+annotations-link = Link to this note
+note-heading = Note
+note-title = Note - { $name }
+note-json-ld = This note as a W3C Web Annotation:
+replay-not-configured = Replay is not configured: this server has no replay origin.

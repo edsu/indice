@@ -1563,9 +1563,25 @@ fn js_string_literals(line: &str) -> Vec<String> {
 fn no_english_literals_in_workroom_js() {
     // Literals that look like prose but are not shown to a reader. Keep this
     // empty unless a literal truly is not UI text, and say why beside it.
-    const NOT_UI: &[&str] = &[];
+    const NOT_UI: &[&str] = &[
+        // The iframe's Permissions Policy value (viewer.js), read by the browser.
+        "autoplay; fullscreen",
+        // The directive at the top of annotations.js.
+        "use strict",
+        // A selector (annotations.js).
+        "button, a",
+    ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/assets");
-    for file in ["manage.js", "editor.js", "i18n.js"] {
+    let replay = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/replay");
+    // Not the vendored `ui.js` and `sw.js`, which are ReplayWeb.page's own.
+    let files = [
+        (&dir, "manage.js"),
+        (&dir, "editor.js"),
+        (&dir, "i18n.js"),
+        (&replay, "viewer.js"),
+        (&replay, "annotations.js"),
+    ];
+    for (dir, file) in files {
         let src = std::fs::read_to_string(dir.join(file)).unwrap();
         for (n, line) in src.lines().enumerate() {
             let code = line.trim_start();
@@ -1601,4 +1617,47 @@ fn the_js_literal_scan_catches_prose() {
     assert!(!prose(
         "document.querySelector('#bx-items input:checked').dataset.id;"
     ));
+}
+
+/// A translation is text the viewer's template is filled with, so it must not
+/// be able to fill a slot or close an element: a catalog edited by hand, or a
+/// translator's slip, cannot turn the page's own data into someone else's.
+#[test]
+fn viewer_strings_cannot_fill_slots() {
+    let hostile = "{{replay_context}}</script><b>{{analytics_head}}";
+    let catalog = format!(
+        "viewer-notes = {hostile}\nviewer-loading = {hostile}\nviewer-frame-title = {hostile}\n"
+    );
+    let l10n = crate::i18n::l10n_from_catalog("en", &catalog);
+    let template = std::str::from_utf8(&assets::ReplayAssets::get("viewer.html").unwrap().data)
+        .unwrap()
+        .to_string();
+    let html = assets::viewer_html(
+        &template,
+        &l10n,
+        "<!-- head -->",
+        "https://replay.test",
+        "Site",
+        r#"{"url":"https://example.org/{{site_name}}"}"#,
+    );
+    assert_eq!(
+        html.matches(r#"id="replay-context""#).count(),
+        1,
+        "one replay-context element: {html}"
+    );
+    assert_eq!(html.matches(r#"id="i18n""#).count(), 1, "{html}");
+    // The page's own elements and nothing a string opened.
+    assert_eq!(html.matches("</script>").count(), 5, "{html}");
+    assert!(!html.contains("<b>"), "{html}");
+    assert!(
+        html.contains("&lt;b&gt;"),
+        "escaped where it is text: {html}"
+    );
+    assert!(
+        html.contains("\\u003c/script>"),
+        "escaped in the JSON: {html}"
+    );
+    // The archived URL names a slot, and the slot stays as written.
+    assert!(html.contains("example.org/{{site_name}}"), "{html}");
+    assert!(!html.contains("{{lang}}"), "{html}");
 }

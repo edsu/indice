@@ -35,7 +35,9 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for L10n {
 /// Add `Accept-Language` to `Vary` on every response whose text may depend on
 /// the language, which is all of them but the static files: those are the same
 /// for everyone and should stay cacheable as one copy. Appended, because a
-/// handler may already vary on something else (`Accept`, on a note).
+/// handler may already vary on something else (`Accept`, on a note). The
+/// viewer page itself is at `/crawl/…` and `/collection/…`, not under `/replay/`
+/// (which holds only its script and style), so it varies like any page.
 pub(super) async fn vary_accept_language(
     req: axum::extract::Request,
     next: axum::middleware::Next,

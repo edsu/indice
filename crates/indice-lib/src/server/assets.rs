@@ -17,7 +17,7 @@ use super::*;
 
 #[derive(RustEmbed)]
 #[folder = "static/replay"]
-struct ReplayAssets;
+pub(super) struct ReplayAssets;
 
 /// Site static assets (the shared stylesheet, etc.), served at `/assets/*`.
 #[derive(RustEmbed)]
@@ -154,6 +154,19 @@ const HEAD_SLOT: &str = "{{analytics_head}}";
 /// replay, as JSON (see [`ReplayContext`]).
 const REPLAY_CONTEXT_SLOT: &str = "{{replay_context}}";
 
+/// The placeholder in `viewer.html` that [`replay_page`] fills with the page's
+/// language tag, for `<html lang>`.
+const LANG_SLOT: &str = "{{lang}}";
+
+/// The placeholder in `viewer.html` that [`replay_page`] fills with the
+/// sentences its scripts show, as JSON (`views::strings_json`).
+const STRINGS_SLOT: &str = "{{strings}}";
+
+/// The placeholders in `viewer.html` for the two sentences that are on the page
+/// before any script runs: the notes button and the loading notice.
+const NOTES_LABEL_SLOT: &str = "{{notes_label}}";
+const LOADING_TEXT_SLOT: &str = "{{loading_text}}";
+
 /// What the viewer needs to replay a page and label it, worked out from the
 /// replay path so the link carries none of it.
 #[derive(serde::Serialize)]
@@ -187,6 +200,7 @@ struct ReplayContext {
 /// configuration, which archived script cannot touch.
 pub(super) async fn replay_page(
     State(state): State<Arc<AppState>>,
+    l10n: L10n,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
@@ -197,13 +211,13 @@ pub(super) async fn replay_page(
     let Some(origin) = &state.replay_origin else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "replay is not configured: this server has no replay origin",
+            l10n.tr("replay-not-configured"),
         )
             .into_response();
     };
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(&L10n::default(), e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
     let context = if target.kind == ReplayKind::Crawl {
         let Some(w) = manifest.wacz_by_id(&target.id) else {
@@ -244,21 +258,75 @@ pub(super) async fn replay_page(
     let json = serde_json::to_string(&context)
         .unwrap_or_default()
         .replace('<', "\\u003c");
-    // The snippet goes in first, so the slots filled after it are filled in
-    // the template's text and not in whatever the snippet happens to contain,
-    // and the archived URL, in the context, goes in last, so it can't fill a
-    // slot either.
     let head = state.site.head.as_ref().map_or("", |h| h.0.as_str());
-    let html = String::from_utf8_lossy(&file.data)
-        .replace(HEAD_SLOT, head)
-        .replace(REPLAY_ORIGIN_SLOT, &html_escape(origin.as_str()))
-        .replace(SITE_NAME_SLOT, &html_escape(&state.site.name))
-        .replace(REPLAY_CONTEXT_SLOT, &json);
+    let template = String::from_utf8_lossy(&file.data);
+    let html = viewer_html(
+        &template,
+        &l10n,
+        head,
+        origin.as_str(),
+        &state.site.name,
+        &json,
+    );
     let hash: [u8; 32] = {
         use sha2::Digest;
         sha2::Sha256::digest(html.as_bytes()).into()
     };
     serve_bytes(html.into_bytes().into(), &hash, "viewer.html", &headers)
+}
+
+/// The viewer's page: `template` with each slot filled.
+///
+/// One pass over the template, so a value is never read for slots: the
+/// operator's snippet, a translation or the archived URL may each contain
+/// `{{replay_context}}` or any other slot's text, and it comes out as written.
+/// Filling slot after slot would depend on the order they are filled in, and
+/// every value filled earlier would be open to the ones after it.
+pub(super) fn viewer_html(
+    template: &str,
+    l10n: &L10n,
+    head: &str,
+    origin: &str,
+    site_name: &str,
+    context_json: &str,
+) -> String {
+    let lang = html_escape(&l10n.lang());
+    let origin = html_escape(origin);
+    let site_name = html_escape(site_name);
+    let notes_label = html_escape(&l10n.tr("viewer-notes"));
+    let loading_text = html_escape(&l10n.tr("viewer-loading"));
+    let strings = crate::views::strings_json(l10n, crate::views::VIEWER_STRINGS);
+    let slots: [(&str, &str); 8] = [
+        (HEAD_SLOT, head),
+        (REPLAY_ORIGIN_SLOT, &origin),
+        (SITE_NAME_SLOT, &site_name),
+        (LANG_SLOT, &lang),
+        (STRINGS_SLOT, &strings),
+        (NOTES_LABEL_SLOT, &notes_label),
+        (LOADING_TEXT_SLOT, &loading_text),
+        (REPLAY_CONTEXT_SLOT, context_json),
+    ];
+    let mut out = String::with_capacity(template.len() + 1024);
+    let mut rest = template;
+    while !rest.is_empty() {
+        // The slot that starts earliest in what is left of the template.
+        let next = slots
+            .iter()
+            .filter_map(|(slot, value)| rest.find(slot).map(|at| (at, slot.len(), *value)))
+            .min_by_key(|(at, _, _)| *at);
+        match next {
+            Some((at, len, value)) => {
+                out.push_str(&rest[..at]);
+                out.push_str(value);
+                rest = &rest[at + len..];
+            }
+            None => {
+                out.push_str(rest);
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// What the app origin serves under `/replay/`: the viewer's own script and

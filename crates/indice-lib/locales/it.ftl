@@ -499,3 +499,48 @@ js-draft-model-default = il modello
 js-drafting = Generazione della bozza…
 js-draft-waiting = In attesa di { $service }: { $s }s (rinuncia dopo { $limit }s)
 js-all-crawls = Tutte le { -crawl-plural }
+
+# Il banner del visualizzatore e il pannello delle note accanto alla riproduzione
+# (static/replay/viewer.js e annotations.js).
+viewer-notes = Note
+viewer-notes-n = Note ({ $total })
+viewer-loading = Caricamento della pagina archiviata…
+viewer-loading-slow = La pagina archiviata è ancora in caricamento. Le pagine delle { -crawl-plural } di grandi dimensioni possono richiedere tempo.
+viewer-frame-title = Pagina archiviata
+viewer-captured = Acquisita il { $day } { $month } { $year }
+viewer-captured-time = Acquisita il { $day } { $month } { $year }, ore { $time } UTC
+anno-close = Chiudi le note
+anno-add-page = Aggiungi una nota su questa pagina
+anno-add-selection = Aggiungi una nota sulla selezione
+anno-empty-can-annotate = Nessuna nota su questa pagina. Seleziona del testo nella pagina o aggiungi una nota sull’intera pagina.
+anno-empty = Nessuna nota su questa pagina.
+anno-anonymous = anonimo
+anno-date-edited = { $date }, modificata
+anno-link = Collegamento a questa nota
+anno-edit = Modifica
+anno-delete = Elimina
+anno-save = Salva
+anno-add-note = Aggiungi nota
+anno-cancel = Annulla
+anno-placeholder = Scrivi una nota… (Markdown)
+anno-public = Le note sono pubbliche: chiunque possa leggere questo { -archive } può leggerle.
+anno-new-passage = Nuova nota su questo brano in { $url }
+anno-new-page = Nuova nota su { $url }
+anno-confirm-delete = Eliminare questa nota?
+anno-failed-add = Impossibile aggiungere la nota ({ $status })
+anno-failed-save = Impossibile salvare la nota ({ $status })
+anno-failed-delete = Impossibile eliminare la nota ({ $status })
+anno-selection-too-long = La selezione è troppo lunga per essere citata (al massimo { $max } caratteri).
+
+annotations-index-title = Annotazioni - { $name }
+annotations-index-count = { $count ->
+    [one] { $shown } nota sulle pagine di questa { -collection }.
+   *[other] { $shown } note sulle pagine di questa { -collection }.
+}
+annotations-index-empty = Ancora nessuna annotazione.
+annotations-open-page = Apri la pagina
+annotations-link = Collegamento a questa nota
+note-heading = Nota
+note-title = Nota - { $name }
+note-json-ld = Questa nota come W3C Web Annotation:
+replay-not-configured = La riproduzione non è configurata: questo server non ha un’origine di riproduzione.

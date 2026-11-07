@@ -290,26 +290,30 @@ pub struct AnnotationsIndexPage {
 
 /// A public browse of every annotation in a collection.
 pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
-    let plural = if p.items.len() == 1 { "note" } else { "notes" };
+    let l10n = &p.chrome.l10n;
+    let heading = l10n.tr("collection-annotations-heading");
     let body = html! {
         p.crumb {
             a href=(format!("/collection/{}", p.collection_id)) { (p.collection_name) }
-            " / Annotations"
+            " / " (heading)
         }
-        h1.page-title { "Annotations" }
-        p.desc { (p.items.len()) " " (plural) " on pages in this collection." }
+        h1.page-title { (heading) }
+        p.desc { (counted(l10n, "annotations-index-count", p.items.len() as u64)) }
         @if p.items.is_empty() {
-            p.muted { "No annotations yet." }
+            p.muted { (l10n.tr("annotations-index-empty")) }
         } @else {
             ul.anno-index {
                 @for a in &p.items {
-                    li.anno-index-item id=(a.key) { (anno_entry(a, true)) }
+                    li.anno-index-item id=(a.key) { (anno_entry(a, true, l10n)) }
                 }
             }
         }
     };
     layout(
-        Some(&format!("Annotations - {}", p.collection_name)),
+        Some(&l10n.tr_args(
+            "annotations-index-title",
+            &[("name", FluentArg::Str(&p.collection_name))],
+        )),
         &p.chrome,
         None,
         body,
@@ -318,7 +322,7 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
 
 /// A note as the Annotations page and its own page show it; `linked` adds the
 /// link to its own page, which that page doesn't need.
-fn anno_entry(a: &AnnoLink, linked: bool) -> Markup {
+fn anno_entry(a: &AnnoLink, linked: bool, l10n: &L10n) -> Markup {
     html! {
         div.anno-index-meta {
             span.anno-author { (a.author) } ", " (a.date)
@@ -328,11 +332,11 @@ fn anno_entry(a: &AnnoLink, linked: bool) -> Markup {
         }
         div.anno-index-body { (a.note_html) }
         p.anno-index-loc {
-            a href=(a.replay_href) { "Open page" }
+            a href=(a.replay_href) { (l10n.tr("annotations-open-page")) }
             " " span.muted { (a.page_url) }
         }
         @if let (true, Some(href)) = (linked, &a.permalink) {
-            p.anno-index-loc { a href=(href) { "Link to this note" } }
+            p.anno-index-loc { a href=(href) { (l10n.tr("annotations-link")) } }
         }
     }
 }
@@ -341,17 +345,18 @@ fn anno_entry(a: &AnnoLink, linked: bool) -> Markup {
 /// The page carries that JSON-LD too, for whatever reads pages rather than
 /// asking for JSON.
 pub fn annotation_page(p: &AnnotationPage) -> Markup {
+    let l10n = &p.chrome.l10n;
     let body = html! {
         p.crumb {
             a href=(format!("/collection/{}", p.collection_id)) { (p.collection_name) }
             " / "
             // Back to this note's place in the list.
-            a href=(format!("/collection/{}/annotations#{}", p.collection_id, p.note.key)) { "Annotations" }
+            a href=(format!("/collection/{}/annotations#{}", p.collection_id, p.note.key)) { (l10n.tr("collection-annotations-heading")) }
         }
-        h1.page-title { "Note" }
-        div.anno-index-item { (anno_entry(&p.note, false)) }
+        h1.page-title { (l10n.tr("note-heading")) }
+        div.anno-index-item { (anno_entry(&p.note, false, l10n)) }
         p.anno-index-loc {
-            "This note as a W3C Web Annotation: "
+            (l10n.tr("note-json-ld")) " "
             a href=(p.json_ld_href) rel="alternate" type="application/ld+json" { "JSON-LD" }
         }
         // Data, not script: a type the browser does not run, so the policy
@@ -359,7 +364,10 @@ pub fn annotation_page(p: &AnnotationPage) -> Markup {
         script type="application/ld+json" { (PreEscaped(&p.json_ld)) }
     };
     layout(
-        Some(&format!("Note - {}", p.collection_name)),
+        Some(&l10n.tr_args(
+            "note-title",
+            &[("name", FluentArg::Str(&p.collection_name))],
+        )),
         &p.chrome,
         None,
         body,

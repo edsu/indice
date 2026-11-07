@@ -121,6 +121,74 @@ async fn the_viewer_frames_the_configured_replay_origin() {
     );
 }
 
+/// The viewer is in the reader's language: the page, the strings its scripts
+/// show, and a `Vary` so a cache keeps the two apart.
+#[tokio::test]
+async fn viewer_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let (status, headers, html) =
+        call(&app, Method::GET, VIEWER, &[("accept-language", "it")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"<html lang="it""#), "{html}");
+    assert!(
+        html.contains("Caricamento della pagina archiviata"),
+        "{html}"
+    );
+    assert!(html.contains(r#"id="i18n""#), "{html}");
+    assert!(html.contains("Scrivi una nota"), "{html}");
+    assert!(!html.contains("Loading the archived page"), "{html}");
+    let vary = headers
+        .get_all("vary")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(vary.contains("accept-language"), "{vary}");
+
+    // English by default, and the shared script is served for the page to load.
+    let (_, en) = get(&app, VIEWER).await;
+    assert!(en.contains(r#"<html lang="en""#), "{en}");
+    assert!(en.contains("Write a note"), "{en}");
+    assert!(en.contains("/assets/i18n.js"), "{en}");
+}
+
+/// A collection's Annotations page is in the reader's language, and its
+/// machine-readable form stays as documented.
+#[tokio::test]
+async fn annotations_page_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let (status, headers, html) = call(
+        &app,
+        Method::GET,
+        "/collection/demo/annotations",
+        &[("accept-language", "it")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("Ancora nessuna annotazione"), "{html}");
+    assert!(html.contains("<title>Annotazioni - demo"), "{html}");
+    assert!(!html.contains("No annotations yet"), "{html}");
+    assert!(headers
+        .get_all("vary")
+        .iter()
+        .any(|v| v.to_str().unwrap().eq_ignore_ascii_case("accept-language")));
+}
+
+/// Without a replay origin the page says so in the reader's language, and a
+/// failure to open the manifest is worded the same way.
+#[tokio::test]
+async fn viewer_without_replay_origin_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
+    let app = indice_lib::server::router(tmp.path(), proxy_config()).unwrap();
+    let (status, _, body) = call(&app, Method::GET, VIEWER, &[("accept-language", "it")]).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!body.contains("replay is not configured"), "{body}");
+    assert!(body.contains("riproduzione"), "{body}");
+}
+
 /// The viewer works out what to replay from its address: the collection's
 /// manifest as the source, and the page and time as written. Unknown crawls,
 /// collections and non-web addresses are not pages to replay.
@@ -151,7 +219,7 @@ async fn the_viewer_takes_what_to_replay_from_its_address() {
     .await;
     assert_eq!(
         html.matches("</script>").count(),
-        3,
+        5,
         "only the page's own: {html}"
     );
 

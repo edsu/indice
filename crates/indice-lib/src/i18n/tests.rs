@@ -266,10 +266,21 @@ fn script_strings_escape_lt() {
 
 #[test]
 fn js_strings_use_known_arguments() {
-    use crate::views::{strings_json, DESK_STRINGS, EDITOR_STRINGS};
-    let keys: Vec<&str> = DESK_STRINGS.iter().chain(EDITOR_STRINGS).copied().collect();
-    // Every `js-` message is sent to some page.
-    for id in ids(CATALOGS[0].1).iter().filter(|id| id.starts_with("js-")) {
+    use crate::views::{strings_json, DESK_STRINGS, EDITOR_STRINGS, VIEWER_STRINGS};
+    let keys: Vec<&str> = DESK_STRINGS
+        .iter()
+        .chain(EDITOR_STRINGS)
+        .chain(VIEWER_STRINGS)
+        .copied()
+        .collect();
+    // Every script message (`js-` for the workroom, `viewer-` and `anno-` for the
+    // viewer) is sent to some page.
+    let for_scripts = |id: &&String| {
+        ["js-", "viewer-", "anno-"]
+            .iter()
+            .any(|p| id.starts_with(p))
+    };
+    for id in ids(CATALOGS[0].1).iter().filter(for_scripts) {
         assert!(keys.contains(&id.as_str()), "{id} is in no page's list");
     }
     for (tag, _) in CATALOGS {

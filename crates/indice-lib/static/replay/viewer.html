@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{lang}}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +7,8 @@
   <meta name="indice-replay-origin" content="{{replay_origin}}">
   <!-- Filled in by the server: what to replay, from the address. -->
   <script type="application/json" id="replay-context">{{replay_context}}</script>
+  <!-- Filled in by the server: the sentences the scripts show, in the page's language. -->
+  <script type="application/json" id="i18n">{{strings}}</script>
   <title>Replay - {{site_name}}</title>
   <!--
     The replay viewer: indice's chrome and the notes panel, around a frame that
@@ -15,6 +17,7 @@
     in the frame's origin. Messages from the frame are therefore suggestions:
     see viewer.js and annotations.js.
   -->
+  <script src="/assets/i18n.js"></script>
   <script src="/replay/annotations.js"></script>
   <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
   <link rel="stylesheet" href="/assets/tokens.css">
@@ -32,13 +35,13 @@
     <a id="collection-name"></a>
     <span id="captured"></span>
     <span id="current-url"></span>
-    <button type="button" id="anno-toggle" aria-expanded="true">Notes</button>
+    <button type="button" id="anno-toggle" aria-expanded="true">{{notes_label}}</button>
   </div>
   <div id="stage">
     <div id="replay-container">
       <div id="replay-loading" role="status">
         <span class="spinner" aria-hidden="true"></span>
-        <span id="replay-loading-text">Loading the archived page…</span>
+        <span id="replay-loading-text">{{loading_text}}</span>
       </div>
     </div>
     <aside id="anno-panel"></aside>

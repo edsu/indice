@@ -297,5 +297,14 @@ fn format(bundle: &Bundle, key: &str, args: &FluentArgs) -> Option<String> {
 
 mod format;
 
+/// A `L10n` for one catalog indice does not ship, so a test elsewhere in the
+/// crate can see what a hostile translation does to a page. Leaked so it is
+/// `'static` like the real bundles; a test process is short-lived.
+#[cfg(test)]
+pub(crate) fn l10n_from_catalog(tag: &str, source: &str) -> L10n {
+    let bundles: &'static Bundles = Box::leak(Box::new(build_bundles(&[(tag, source)])));
+    L10n { bundles, idx: 0 }
+}
+
 #[cfg(test)]
 mod tests;

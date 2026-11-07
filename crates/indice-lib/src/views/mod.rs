@@ -341,7 +341,54 @@ fn counted_text(l10n: &L10n, key: &str, n: u64, shown: &str) -> String {
 /// not known until the script runs. A message using a name not listed here comes
 /// out as `{$name}`; the `js_strings_use_known_arguments` test catches that.
 const SCRIPT_ARGS: &[&str] = &[
-    "label", "phase", "total", "name", "detail", "status", "id", "service", "s", "limit",
+    "label", "phase", "total", "name", "detail", "status", "id", "service", "s", "limit", "date",
+    "day", "month", "year", "time", "max", "url",
+];
+
+/// The messages the replay viewer's scripts (`static/replay/viewer.js` and
+/// `annotations.js`) show, written into the viewer's `script#i18n` slot.
+pub(crate) const VIEWER_STRINGS: &[&str] = &[
+    "viewer-notes",
+    "viewer-notes-n",
+    "viewer-loading",
+    "viewer-loading-slow",
+    "viewer-frame-title",
+    "viewer-captured",
+    "viewer-captured-time",
+    "month-1",
+    "month-2",
+    "month-3",
+    "month-4",
+    "month-5",
+    "month-6",
+    "month-7",
+    "month-8",
+    "month-9",
+    "month-10",
+    "month-11",
+    "month-12",
+    "anno-close",
+    "anno-add-page",
+    "anno-add-selection",
+    "anno-empty-can-annotate",
+    "anno-empty",
+    "anno-anonymous",
+    "anno-date-edited",
+    "anno-link",
+    "anno-edit",
+    "anno-delete",
+    "anno-save",
+    "anno-add-note",
+    "anno-cancel",
+    "anno-placeholder",
+    "anno-public",
+    "anno-new-passage",
+    "anno-new-page",
+    "anno-confirm-delete",
+    "anno-failed-add",
+    "anno-failed-save",
+    "anno-failed-delete",
+    "anno-selection-too-long",
 ];
 
 /// The messages `keys` as the JSON text a page's script reads, in the reader's
