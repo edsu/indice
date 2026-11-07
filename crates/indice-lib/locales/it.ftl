@@ -36,6 +36,8 @@
 -collection-plural = raccolte
 # Plural of { -page }, for counts and lists.
 -page-plural = pagine
+# Plural of { -capture }, for counts and lists.
+-capture-plural = acquisizioni
 
 # Nomi dei mesi, per le date e la linea del tempo. In minuscolo, come si scrivono
 # in italiano.
@@ -176,3 +178,136 @@ http-status-500 = Errore interno del server
 http-status-502 = Gateway non valido
 http-status-503 = Servizio non disponibile
 http-status-504 = Timeout del gateway
+
+# Parole comuni dei pulsanti.
+action-delete-permanently = Elimina definitivamente
+
+# Etichette delle tabelle di dati nelle pagine delle raccolte e delle scansioni.
+meta-curator = Curatore
+meta-crawls = Scansioni
+meta-size = Dimensione
+meta-software = Software
+meta-capture-dates = Date di acquisizione
+meta-capture-quality = Qualità delle acquisizioni
+meta-created = Creata
+meta-created-by = Creata da
+meta-source = Origine
+meta-review = Revisione
+meta-browsertrix-item = Elemento Browsertrix
+meta-collection = Raccolta
+meta-crawl = Scansione
+meta-warc-files = File WARC
+meta-operator = Operatore
+meta-user-agent = User-Agent
+meta-robots = Robots
+meta-crawl-host = Host della scansione
+meta-part-of = Fa parte di
+meta-conforms-to = Conforme a
+meta-keywords = Parole chiave
+meta-license = Licenza
+meta-multi-wacz = Multi-WACZ
+meta-pages = Pagine
+meta-wacz-modified = WACZ modificato
+meta-added-by = Aggiunta da
+meta-named = Nome originale
+meta-sha256 = SHA-256
+meta-crawled = Scansionata
+meta-indexed = Indicizzata
+meta-status = Stato
+meta-multi-wacz-value = { $count ->
+    [one] { $shown } { -crawl } riunita in un solo file
+   *[other] { $shown } { -crawl-plural } riunite in un solo file
+}
+
+collection-field-scope = Ambito e contenuto
+collection-field-creator = Autore
+collection-field-access = Accesso e uso
+
+review-5 = Eccellente
+review-4 = Buona
+review-3 = Discreta
+review-2 = Scarsa
+review-1 = Pessima
+review-other = Revisionata
+review-label = { $word } ({ $rating }/5)
+
+capture-quality = { $count ->
+    [one] { $shown } { -capture }, { $pct }% ok
+   *[other] { $shown } { -capture-plural }, { $pct }% ok
+}
+capture-quality-failures = { $summary } — { $codes }
+list-and = { $first } e { $last }
+
+crawl-summary-pages = { $count ->
+    [one] { $shown } { -page }
+   *[other] { $shown } { -page-plural }
+}
+crawl-summary-by = di { $software }
+
+# Il nome dei campi va in minuscolo in `$fields`; `$Fields` è lo stesso elenco con
+# l'iniziale maiuscola, per un messaggio che comincia con l'elenco.
+draft-field-description = descrizione
+draft-field-narrative = presentazione
+draft-field-dates = date
+draft-field-subjects = soggetti
+draft-fields-unknown = Alcuni campi
+drafted-note = Bozza di { $fields } generata con { $model }{ $service }.
+drafted-note-reviewed = Bozza di { $fields } generata con { $model }{ $service }, rivista da { $reviewer }.
+
+source-describe-file = Conservato in questo archivio: { $path }
+source-describe-url = Letto da { $url }
+source-describe-browsertrix = Browsertrix ({ $host }), file { $file }
+source-describe-browsertrix-public = Raccolta pubblica Browsertrix ({ $host }), file { $file }
+source-badge-remote-title = Ospitata altrove: indice la legge in streaming durante la riproduzione e non ne conserva una copia
+source-badge-local-title = Conservata nella cartella dell'archivio
+
+facet-top-sites = Siti principali
+facet-by-year = Per anno
+facet-types = Tipi
+facet-languages = Lingue
+
+collection-replay = Riproduci la { -collection }
+collection-edit = Modifica la { -collection }
+collection-add-crawls = + Aggiungi { -crawl-plural }
+collection-about = Informazioni su questa { -collection }
+collection-needed = Ancora da compilare: { $list } (il minimo richiesto per la descrizione archivistica).
+collection-edit-link = Modifica questa { -collection }
+collection-edit-to-add = per aggiungerli.
+collection-edit-to-describe = per descriverla.
+collection-empty-nudge = Nessuna descrizione archivistica per ora. Aggiungi gli elementi essenziali per chi legge: chi l'ha raccolta (Autore), perché è stata archiviata (Ambito e contenuto) e chi può usarla (Accesso).
+collection-add-with = Aggiungi con
+collection-or-edit = oppure modifica
+collection-annotations-heading = Annotazioni
+collection-annotation-count = { $count ->
+    [one] { $shown } nota sulle pagine di questa { -collection }.
+   *[other] { $shown } note sulle pagine di questa { -collection }.
+}
+collection-browse-annotations = Sfoglia le annotazioni
+collection-crawls-heading = Scansioni
+collection-timeline-label = Pagine acquisite per mese
+collection-no-crawls = Nessuna { -crawl } in questa { -collection }.
+crawl-file-missing = Il file manca
+collection-delete-summary = Elimina questa { -collection }
+collection-delete-empty-note = Rimuove la descrizione archivistica di questa { -collection } vuota. L'operazione non può essere annullata.
+collection-delete-note = { $count ->
+    [one] Questa { -collection } ha { $shown } { -crawl }. Eliminare solo il raggruppamento non è consentito; spunta la casella per eliminare anche la { -crawl } (le sue pagine, il file WACZ e la miniatura). L'operazione non può essere annullata.
+   *[other] Questa { -collection } ha { $shown } { -crawl-plural }. Eliminare solo il raggruppamento non è consentito; spunta la casella per eliminare anche le { -crawl-plural } (le loro pagine, i file WACZ e le miniature). L'operazione non può essere annullata.
+}
+collection-delete-also = { $count ->
+    [one] elimina anche la { -crawl } della { -collection }
+   *[other] elimina anche tutte le { $shown } { -crawl-plural } della { -collection }
+}
+
+crawl-curator-note = Nota del curatore
+crawl-provenance = Provenienza
+crawl-file = File
+crawl-status-present = ✓ presente
+crawl-status-missing = ✗ mancante
+crawl-pages-heading = Pagine
+crawl-no-pages = Nessuna pagina elencata in questa { -crawl }.
+crawl-delete-summary = Elimina questa { -crawl }
+crawl-delete-note = Rimuove definitivamente questa { -crawl }: le sue pagine dalla ricerca, il file WACZ locale e la miniatura. L'operazione non può essere annullata.
+
+collection-field-dates = Date
+collection-field-rights = Diritti
+collection-field-subjects = Soggetti

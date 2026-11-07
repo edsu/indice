@@ -446,13 +446,13 @@ fn capture_quality_summarizes_status_histogram() {
     c.insert(301, 2);
     c.insert(404, 1);
     c.insert(504, 1);
-    let s = capture_quality(&c).unwrap();
+    let s = capture_quality(&l10n("en"), &c).unwrap();
     // 2xx+3xx are "ok": (96+2)/100 = 98%.
     assert!(s.starts_with("100 captures, 98% ok"), "{s}");
     // Failing codes surfaced, most frequent first.
     assert!(s.contains("404×1") && s.contains("504×1"), "{s}");
     // Empty histogram → nothing to show.
-    assert!(capture_quality(&BTreeMap::new()).is_none());
+    assert!(capture_quality(&l10n("en"), &BTreeMap::new()).is_none());
 }
 
 #[test]
@@ -1121,4 +1121,163 @@ async fn custom_tagline_is_not_translated() {
         );
         assert!(!body.contains("Web archive search and replay"), "{lang}");
     }
+}
+
+/// A home with the fixture WACZ indexed into `collection`, and a router over it.
+fn app_with_crawl(collection: &str) -> (tempfile::TempDir, Router, String) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let input = tmp.path().join("input.wacz");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple.wacz"),
+        &input,
+    )
+    .unwrap();
+    crate::index::Ingest::new(tmp.path())
+        .name(Some("Simple"))
+        .index_location(&input.to_string_lossy(), collection)
+        .unwrap();
+    let manifest =
+        crate::collections::Manifest::open(&crate::index::index_dir(tmp.path())).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    (tmp, app, id)
+}
+
+#[tokio::test]
+async fn collection_page_in_italian() {
+    let (_home, app, _) = app_with_crawl("c");
+    let it = l10n("it");
+    let (status, _, body) = get_with(&app, "/collection/c", Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    for key in [
+        "collection-about",
+        "collection-crawls-heading",
+        "meta-capture-dates",
+        "meta-size",
+    ] {
+        let word = it.tr(key);
+        assert!(body.contains(&word), "{key}: {body}");
+    }
+    for english in [
+        "About this collection",
+        "Capture dates",
+        ">Crawls<",
+        "Stored here",
+    ] {
+        assert!(!body.contains(english), "{english}: {body}");
+    }
+    let (_, _, body) = get_with(&app, "/collection/c", Some("en")).await;
+    assert!(body.contains("About this collection"), "{body}");
+    assert!(body.contains("Capture dates"), "{body}");
+}
+
+#[tokio::test]
+async fn crawl_page_in_italian() {
+    let (_home, app, id) = app_with_crawl("c");
+    let it = l10n("it");
+    let (status, _, body) = get_with(&app, &format!("/crawl/{id}"), Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    for key in ["crawl-file", "crawl-pages-heading", "meta-indexed"] {
+        let word = it.tr(key);
+        assert!(body.contains(&word), "{key}: {body}");
+    }
+    for english in ["Indexed", "No pages are listed", ">✓ present<", "Status"] {
+        assert!(!body.contains(english), "{english}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn curator_text_stays_escaped_in_italian() {
+    let hostile = "<img src=x onerror=alert(1)>";
+    let (_home, app, id) = app_with_crawl(hostile);
+    let slug = crate::collections::slugify(hostile);
+    for path in [format!("/collection/{slug}"), format!("/crawl/{id}")] {
+        let (status, _, body) = get_with(&app, &path, Some("it")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(body.contains("&lt;img"), "{path}: {body}");
+        assert!(!body.contains("<img src=x"), "{path}: {body}");
+    }
+}
+
+/// A collection page with `n` member crawls, for the delete confirmation.
+fn collection_with_members(n: usize, tag: &str) -> String {
+    let members = (0..n)
+        .map(|i| views::MemberItem {
+            id: format!("m{i}"),
+            name: format!("Crawl {i}"),
+            when: None,
+            present: true,
+            remote: false,
+            provenance: None,
+            thumb: None,
+        })
+        .collect();
+    let page = views::CollectionPage {
+        name: "C".into(),
+        description: None,
+        narrative: None,
+        creator: None,
+        dates: None,
+        rights: None,
+        subjects: vec![],
+        meta: vec![],
+        facets: vec![],
+        members,
+        crawl_months: vec![],
+        replay_href: None,
+        id: "c".into(),
+        can_delete: true,
+        chrome: views::Chrome {
+            l10n: l10n(tag),
+            ..Default::default()
+        },
+        annotation_count: 0,
+        drafted_note: None,
+    };
+    views::collection(&page).into_string()
+}
+
+#[test]
+fn delete_confirmation_plurals() {
+    for (tag, one, three, all_three) in [
+        (
+            "en",
+            "has 1 crawl.",
+            "has 3 crawls.",
+            "also delete all 3 member crawls",
+        ),
+        (
+            "it",
+            "ha 1 scansione.",
+            "ha 3 scansioni.",
+            "tutte le 3 scansioni",
+        ),
+    ] {
+        let body = collection_with_members(1, tag);
+        assert!(body.contains(one), "{tag}: {body}");
+        assert!(!body.contains("(s)"), "{tag}: {body}");
+        let body = collection_with_members(3, tag);
+        assert!(body.contains(three), "{tag}: {body}");
+        assert!(body.contains(all_three), "{tag}: {body}");
+        assert!(!body.contains("(s)"), "{tag}: {body}");
+    }
+}
+
+#[test]
+fn date_span_in_both_languages() {
+    let (start, end) = (Some("20250107000000"), Some("20260803120000"));
+    assert_eq!(
+        date_span(&l10n("en"), start, end).unwrap(),
+        "7 January 2025 to 3 August 2026"
+    );
+    assert_eq!(
+        date_span(&l10n("it"), start, end).unwrap(),
+        "dal 7 gennaio 2025 al 3 agosto 2026"
+    );
+    // The same day on both ends is one date, not "from X to X".
+    let (a, b) = (Some("20250107000000"), Some("20250107235959"));
+    assert_eq!(date_span(&l10n("en"), a, b).unwrap(), "7 January 2025");
+    assert_eq!(date_span(&l10n("it"), a, b).unwrap(), "7 gennaio 2025");
+    assert_eq!(date_span(&l10n("it"), None, None), None);
 }

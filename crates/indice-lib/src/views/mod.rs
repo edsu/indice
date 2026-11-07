@@ -342,7 +342,7 @@ pub struct FacetSection {
 
 /// Render a `.browse` block from facet sections (reused on detail pages). Empty
 /// sections render nothing.
-fn facet_browse(facets: &[FacetSection]) -> Markup {
+fn facet_browse(facets: &[FacetSection], l10n: &L10n) -> Markup {
     html! {
         @if !facets.is_empty() {
             div.browse {
@@ -352,7 +352,7 @@ fn facet_browse(facets: &[FacetSection]) -> Markup {
                         div.browse-links {
                             @for l in &f.links {
                                 a.browse-link href=(l.href) {
-                                    (l.label) " " span.browse-count { (l.count) }
+                                    (l.label) " " span.browse-count { (l10n.number(l.count)) }
                                 }
                             }
                         }
@@ -403,17 +403,18 @@ fn meta_table(rows: &[MetaRow]) -> Markup {
 
 /// Where a crawl's WACZ lives, in words: stored in this archive's own
 /// folder, or streamed from a remote host at replay time.
-fn source_badge(remote: bool) -> Markup {
+fn source_badge(remote: bool, l10n: &L10n) -> Markup {
     if remote {
         html! {
-            span.source-badge
-                title="Hosted remotely: indice streams this at replay time and keeps no copy" {
-                "Streamed"
+            span.source-badge title=(l10n.tr("source-badge-remote-title")) {
+                (l10n.tr("source-streamed"))
             }
         }
     } else {
         html! {
-            span.source-badge title="Stored in this archive's own folder" { "Stored here" }
+            span.source-badge title=(l10n.tr("source-badge-local-title")) {
+                (l10n.tr("source-stored"))
+            }
         }
     }
 }

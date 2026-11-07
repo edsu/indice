@@ -27,6 +27,8 @@
 -collection-plural = collections
 # Plural of { -page }, for counts and lists.
 -page-plural = pages
+# Plural of { -capture }, for counts and lists.
+-capture-plural = captures
 
 # Month names, for dates and the timeline. In languages that write months in
 # lower case mid-sentence, give them that way here.
@@ -193,3 +195,153 @@ http-status-500 = Internal Server Error
 http-status-502 = Bad Gateway
 http-status-503 = Service Unavailable
 http-status-504 = Gateway Timeout
+
+# Shared button words.
+action-delete-permanently = Delete permanently
+
+# Labels of the facts tables on collection and crawl pages.
+meta-curator = Curator
+meta-crawls = Crawls
+meta-size = Size
+meta-software = Software
+meta-capture-dates = Capture dates
+meta-capture-quality = Capture quality
+meta-created = Created
+meta-created-by = Created by
+meta-source = Source
+meta-review = Review
+meta-browsertrix-item = Browsertrix item
+meta-collection = Collection
+meta-crawl = Crawl
+meta-warc-files = WARC files
+meta-operator = Operator
+meta-user-agent = User-Agent
+meta-robots = Robots
+meta-crawl-host = Crawl host
+meta-part-of = Part of
+meta-conforms-to = Conforms to
+meta-keywords = Keywords
+meta-license = License
+meta-multi-wacz = Multi-WACZ
+meta-pages = Pages
+meta-wacz-modified = WACZ modified
+meta-added-by = Added by
+meta-named = Named
+meta-sha256 = SHA-256
+meta-crawled = Crawled
+meta-indexed = Indexed
+meta-status = Status
+# "3 crawls bundled in one file".
+meta-multi-wacz-value = { $count ->
+    [one] { $shown } { -crawl } bundled in one file
+   *[other] { $shown } { -crawl-plural } bundled in one file
+}
+
+# The finding-aid fields a collection can still be missing.
+collection-field-scope = Scope & Content
+collection-field-creator = Creator
+collection-field-access = Access & Use
+
+# Browsertrix quality-assurance ratings, 1 (worst) to 5 (best).
+review-5 = Excellent
+review-4 = Good
+review-3 = Fair
+review-2 = Poor
+review-1 = Bad
+review-other = Reviewed
+# `$word` is one of the ratings above.
+review-label = { $word } ({ $rating }/5)
+
+# "100 captures, 98% ok"; `$count` picks the form, `$shown` is formatted.
+capture-quality = { $count ->
+    [one] { $shown } { -capture }, { $pct }% ok
+   *[other] { $shown } { -capture-plural }, { $pct }% ok
+}
+# The summary, then the most frequent failing HTTP codes: "404×3, 504×1".
+capture-quality-failures = { $summary } — { $codes }
+# Joins two names in a list: "A and B". A longer list is joined pairwise.
+list-and = { $first } and { $last }
+
+# One line under a crawl in a collection's list: "38 pages, by Browsertrix-Crawler".
+crawl-summary-pages = { $count ->
+    [one] { $shown } { -page }
+   *[other] { $shown } { -page-plural }
+}
+crawl-summary-by = by { $software }
+
+# Which finding-aid fields began as a language model's draft. The names fill
+# `$fields` in lower case; `$Fields` is the same list with its first letter in
+# capitals, for a message that opens with it. `$service` is empty or " (host)".
+draft-field-description = description
+draft-field-narrative = narrative
+draft-field-dates = dates
+draft-field-subjects = subjects
+draft-fields-unknown = Some fields
+drafted-note = { $Fields } drafted with { $model }{ $service }.
+drafted-note-reviewed = { $Fields } drafted with { $model }{ $service }, reviewed by { $reviewer }.
+
+# Where a crawl's WACZ file lives, on its page.
+source-describe-file = Stored in this archive: { $path }
+source-describe-url = Read from { $url }
+source-describe-browsertrix = Browsertrix ({ $host }), file { $file }
+source-describe-browsertrix-public = Browsertrix public collection ({ $host }), file { $file }
+# Tooltips of the badge beside a crawl's name.
+source-badge-remote-title = Hosted remotely: indice streams this at replay time and keeps no copy
+source-badge-local-title = Stored in this archive's own folder
+
+# Headings of the scoped facet overview on a collection or crawl page.
+facet-top-sites = Top sites
+facet-by-year = By year
+facet-types = Types
+facet-languages = Languages
+
+# The collection page.
+collection-replay = Replay collection
+collection-edit = Edit collection
+collection-add-crawls = + Add crawls
+collection-about = About this collection
+# `$list` names the missing fields, comma separated.
+collection-needed = Still needed: { $list } (the finding-aid minimum).
+collection-edit-link = Edit this collection
+collection-edit-to-add = to add them.
+collection-edit-to-describe = to describe it.
+collection-empty-nudge = No finding-aid description yet. Add the essentials a reader needs: who gathered it (Creator), why it was archived (Scope & Content), and who may use it (Access).
+# Before a command, `indice collection set "name" …`, then `collection-or-edit`.
+collection-add-with = Add with
+# Before a file path, which ends the sentence.
+collection-or-edit = or edit
+collection-annotations-heading = Annotations
+collection-annotation-count = { $count ->
+    [one] { $shown } page note in this collection.
+   *[other] { $shown } page notes in this collection.
+}
+collection-browse-annotations = Browse annotations
+collection-crawls-heading = Crawls
+collection-timeline-label = Pages crawled by month
+collection-no-crawls = No crawls in this collection.
+crawl-file-missing = The file is missing
+collection-delete-summary = Delete this collection
+collection-delete-empty-note = Removes this empty collection's finding aid. This can't be undone.
+collection-delete-note = { $count ->
+    [one] This collection has { $shown } { -crawl }. Deleting the grouping alone is refused; tick the box to delete its { -crawl } too (its pages, WACZ file, and thumbnail). This can't be undone.
+   *[other] This collection has { $shown } { -crawl-plural }. Deleting the grouping alone is refused; tick the box to delete its { -crawl-plural } too (their pages, WACZ files, and thumbnails). This can't be undone.
+}
+collection-delete-also = { $count ->
+    [one] also delete the member { -crawl }
+   *[other] also delete all { $shown } member { -crawl-plural }
+}
+
+# The crawl page.
+crawl-curator-note = Curator's note
+crawl-provenance = Provenance
+crawl-file = File
+crawl-status-present = ✓ present
+crawl-status-missing = ✗ missing
+crawl-pages-heading = Pages
+crawl-no-pages = No pages are listed in this crawl.
+crawl-delete-summary = Delete this crawl
+crawl-delete-note = Permanently removes this crawl: its pages from search, the local WACZ file, and its thumbnail. This can't be undone.
+# Labels of the finding-aid fields a curator fills in, beside their values.
+collection-field-dates = Dates
+collection-field-rights = Rights
+collection-field-subjects = Subjects

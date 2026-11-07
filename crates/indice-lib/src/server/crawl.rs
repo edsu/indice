@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::collections::{Manifest, Wacz};
+use crate::i18n::FluentArg;
 use crate::views;
 
 use super::*;
@@ -58,14 +59,20 @@ pub(super) async fn crawl_page(
             .trim_start_matches("https://")
             .trim_start_matches("http://");
         provenance.push(views::MetaRow::new(
-            "Source",
+            &l10n.tr("meta-source"),
             format!("Browsertrix ({host})"),
         ));
         if let Some(rating) = bt.review_status {
-            provenance.push(views::MetaRow::new("Review", review_label(rating)));
+            provenance.push(views::MetaRow::new(
+                &l10n.tr("meta-review"),
+                review_label(l10n, rating),
+            ));
         }
         if !bt.item_id.is_empty() {
-            provenance.push(views::MetaRow::mono("Browsertrix item", bt.item_id.clone()));
+            provenance.push(views::MetaRow::mono(
+                &l10n.tr("meta-browsertrix-item"),
+                bt.item_id.clone(),
+            ));
         }
     }
     if let Some(ait) = &c.archive_it {
@@ -75,73 +82,99 @@ pub(super) async fn crawl_page(
             .trim_start_matches("https://")
             .trim_start_matches("http://");
         provenance.push(views::MetaRow::new(
-            "Source",
+            &l10n.tr("meta-source"),
             format!("Archive-It ({host})"),
         ));
         if !ait.collection_title.is_empty() {
             provenance.push(views::MetaRow::new(
-                "Collection",
+                &l10n.tr("meta-collection"),
                 ait.collection_title.clone(),
             ));
         }
         if ait.crawl_id != 0 {
-            provenance.push(views::MetaRow::mono("Crawl", ait.crawl_id.to_string()));
+            provenance.push(views::MetaRow::mono(
+                &l10n.tr("meta-crawl"),
+                ait.crawl_id.to_string(),
+            ));
         }
         if ait.warc_count != 0 {
             provenance.push(views::MetaRow::new(
-                "WARC files",
+                &l10n.tr("meta-warc-files"),
                 ait.warc_count.to_string(),
             ));
         }
     }
     if !c.software.is_empty() {
-        provenance.push(views::MetaRow::new("Software", c.software.join(", ")));
+        provenance.push(views::MetaRow::new(
+            &l10n.tr("meta-software"),
+            c.software.join(", "),
+        ));
     }
     if let Some(op) = &c.operator {
-        provenance.push(views::MetaRow::new("Operator", op.clone()));
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-operator"), op.clone()));
     }
     if let Some(ua) = &c.user_agent {
-        provenance.push(views::MetaRow::mono("User-Agent", ua.clone()));
+        provenance.push(views::MetaRow::mono(
+            &l10n.tr("meta-user-agent"),
+            ua.clone(),
+        ));
     }
     if let Some(rb) = &c.robots {
-        provenance.push(views::MetaRow::new("Robots", rb.clone()));
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-robots"), rb.clone()));
     }
     if let Some(h) = &c.hostname {
-        provenance.push(views::MetaRow::mono("Crawl host", h.clone()));
+        provenance.push(views::MetaRow::mono(&l10n.tr("meta-crawl-host"), h.clone()));
     }
     if let Some(p) = &c.is_part_of {
-        provenance.push(views::MetaRow::new("Part of", p.clone()));
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-part-of"), p.clone()));
     }
     if let Some(ct) = &c.conforms_to {
-        provenance.push(views::MetaRow::mono("Conforms to", ct.clone()));
+        provenance.push(views::MetaRow::mono(
+            &l10n.tr("meta-conforms-to"),
+            ct.clone(),
+        ));
     }
     if !c.keywords.is_empty() {
-        provenance.push(views::MetaRow::new("Keywords", c.keywords.join(", ")));
+        provenance.push(views::MetaRow::new(
+            &l10n.tr("meta-keywords"),
+            c.keywords.join(", "),
+        ));
     }
     if !c.licenses.is_empty() {
-        provenance.push(views::MetaRow::new("License", c.licenses.join(", ")));
+        provenance.push(views::MetaRow::new(
+            &l10n.tr("meta-license"),
+            c.licenses.join(", "),
+        ));
     }
     if let Some(n) = c.nested_waczs {
         provenance.push(views::MetaRow::new(
-            "Multi-WACZ",
-            format!(
-                "{n} crawl{} bundled in one file",
-                if n == 1 { "" } else { "s" }
+            &l10n.tr("meta-multi-wacz"),
+            l10n.tr_args(
+                "meta-multi-wacz-value",
+                &[
+                    (
+                        "count",
+                        FluentArg::Num(i64::try_from(n).unwrap_or(i64::MAX)),
+                    ),
+                    ("shown", FluentArg::Str(&l10n.number(n))),
+                ],
             ),
         ));
     }
     if let Some(n) = c.page_count {
-        provenance.push(views::MetaRow::new("Pages", n.to_string()));
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-pages"), l10n.number(n)));
     }
-    if let Some(q) = capture_quality(&c.status_counts) {
-        provenance.push(views::MetaRow::new("Capture quality", q));
+    if let Some(q) = capture_quality(l10n, &c.status_counts) {
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-capture-quality"), q));
     }
     if let Some(range) = capture_range(l10n, c) {
-        provenance.push(views::MetaRow::new("Capture dates", range));
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-capture-dates"), range));
     }
     if let Some(m) = &c.modified {
-        let m = m.get(..10).unwrap_or(m);
-        provenance.push(views::MetaRow::new("WACZ modified", m.to_string()));
+        provenance.push(views::MetaRow::new(
+            &l10n.tr("meta-wacz-modified"),
+            day_in_words(l10n, m),
+        ));
     }
     // Custody. This page is public, so resolve the stored SubjectId to a
     // display name through the roster rather than printing the identity.
@@ -152,7 +185,7 @@ pub(super) async fn crawl_page(
             .resolve(subject.clone())
             .display_name()
             .to_string();
-        provenance.push(views::MetaRow::new("Added by", name));
+        provenance.push(views::MetaRow::new(&l10n.tr("meta-added-by"), name));
     }
 
     // Match the handler's rule exactly: an admin may remove any crawl, a
@@ -178,21 +211,14 @@ pub(super) async fn crawl_page(
         // Fetched from a remote host at replay time, not stored in <home>/archive.
         remote: c.source.is_remote(),
         provenance,
-        source: c.source.describe(),
+        source: c.source.describe(l10n),
         size: l10n.size(c.file_size),
         sha_short: c.sha256.get(..16).unwrap_or(&c.sha256).to_string(),
         sha_full: c.sha256.clone(),
-        crawled: c
-            .crawl_date
-            .as_deref()
-            .map(|d| d.get(..10).unwrap_or(d).to_string()),
-        indexed: c
-            .date_indexed
-            .get(..10)
-            .unwrap_or(&c.date_indexed)
-            .to_string(),
+        crawled: c.crawl_date.as_deref().map(|d| day_in_words(l10n, d)),
+        indexed: day_in_words(l10n, &c.date_indexed),
         present: c.is_present(&state.home),
-        facets: scoped_facet_sections(&crawl_overview.facets, &format!("crawl:{id}")),
+        facets: scoped_facet_sections(l10n, &crawl_overview.facets, &format!("crawl:{id}")),
         pages,
         can_delete,
         chrome,

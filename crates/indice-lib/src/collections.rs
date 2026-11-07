@@ -129,19 +129,22 @@ impl Source {
     /// gives and the manifest keeps).
     ///
     /// [`location`]: Source::location
-    pub fn describe(&self) -> String {
+    pub fn describe(&self, l10n: &crate::i18n::L10n) -> String {
+        use crate::i18n::FluentArg::Str;
         match self {
-            Source::File(p) => format!("Stored in this archive: {}", p.to_string_lossy()),
-            Source::Url(u) => format!("Read from {u}"),
-            Source::Browsertrix { host, resource, .. } => {
-                format!("Browsertrix ({}), file {resource}", host_of(host))
-            }
-            Source::BrowsertrixPublic { host, resource, .. } => {
-                format!(
-                    "Browsertrix public collection ({}), file {resource}",
-                    host_of(host)
-                )
-            }
+            Source::File(p) => l10n.tr_args(
+                "source-describe-file",
+                &[("path", Str(&p.to_string_lossy()))],
+            ),
+            Source::Url(u) => l10n.tr_args("source-describe-url", &[("url", Str(u))]),
+            Source::Browsertrix { host, resource, .. } => l10n.tr_args(
+                "source-describe-browsertrix",
+                &[("host", Str(host_of(host))), ("file", Str(resource))],
+            ),
+            Source::BrowsertrixPublic { host, resource, .. } => l10n.tr_args(
+                "source-describe-browsertrix-public",
+                &[("host", Str(host_of(host))), ("file", Str(resource))],
+            ),
         }
     }
 
@@ -1676,13 +1679,14 @@ mod tests {
 
     #[test]
     fn a_source_is_described_for_a_reader() {
+        let en = crate::i18n::L10n::default();
         let s = Source::parse("browsertrix-public|https://app.browsertrix.com|org|coll|2025.wacz");
         assert_eq!(
-            s.describe(),
+            s.describe(&en),
             "Browsertrix public collection (app.browsertrix.com), file 2025.wacz"
         );
         assert_eq!(
-            Source::parse("archive/c/a.wacz").describe(),
+            Source::parse("archive/c/a.wacz").describe(&en),
             "Stored in this archive: archive/c/a.wacz"
         );
     }

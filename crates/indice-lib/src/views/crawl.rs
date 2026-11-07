@@ -53,62 +53,64 @@ pub struct CrawlPage {
 
 /// The crawl detail page: provenance panel, file metadata, and seed-page list.
 pub fn crawl(p: &CrawlPage) -> Markup {
+    let l10n = &p.chrome.l10n;
+    let t = |key: &str| l10n.tr(key);
     let body = html! {
         @if let Some((id, cname)) = &p.crumb {
-            div.crumb { "in " a href=(format!("/collection/{}", id)) { (cname) } }
+            div.crumb { (t("search-in-collection")) " " a href=(format!("/collection/{}", id)) { (cname) } }
         }
         // A crawl's own page shows its thumbnail only when it has one.
         @if let Some(t) = &p.thumb {
             div.detail-thumb { (thumb_area(Some(t))) }
         }
         div.crawl-title {
-            (source_badge(p.remote))
+            (source_badge(p.remote, l10n))
             h1.page-title { (p.name) }
         }
         @if let Some(d) = &p.description { p.desc { (d) } }
         @if let Some(href) = &p.replay_href {
-            div.actions { a.btn href=(href) { "Replay" } }
+            div.actions { a.btn href=(href) { (t("action-replay")) } }
         }
 
         @if let Some(n) = &p.note {
             section.about {
-                h2 { "Curator's note" }
+                h2 { (t("crawl-curator-note")) }
                 div.narrative { (n) }
             }
         }
 
         @if !p.provenance.is_empty() {
-            h2 { "Provenance" }
+            h2 { (t("crawl-provenance")) }
             (meta_table(&p.provenance))
         }
 
-        h2 { "File" }
+        h2 { (t("crawl-file")) }
         table.meta {
-            tr { th { "Source" } td { (p.source) } }
+            tr { th { (t("meta-source")) } td { (p.source) } }
             @if let Some(n) = &p.original_name {
-                tr { th { "Named" } td.mono { (n) } }
+                tr { th { (t("meta-named")) } td.mono { (n) } }
             }
-            tr { th { "Size" } td { (p.size) } }
+            tr { th { (t("meta-size")) } td { (p.size) } }
             // Not every source records a hash; a missing one is left out, not
             // shown as an empty value.
             @if !p.sha_full.is_empty() {
-                tr { th { "SHA-256" } td.mono title=(p.sha_full) { (p.sha_short) "…" } }
+                tr { th { (t("meta-sha256")) } td.mono title=(p.sha_full) { (p.sha_short) "…" } }
             }
-            @if let Some(c) = &p.crawled { tr { th { "Crawled" } td { (c) } } }
-            tr { th { "Indexed" } td { (p.indexed) } }
+            @if let Some(c) = &p.crawled { tr { th { (t("meta-crawled")) } td { (c) } } }
+            tr { th { (t("meta-indexed")) } td { (p.indexed) } }
             tr {
-                th { "Status" }
+                th { (t("meta-status")) }
                 td {
-                    @if p.present { span.ok { "✓ present" } } @else { span.missing { "✗ missing" } }
+                    @if p.present { span.ok { (t("crawl-status-present")) } } @else { span.missing { (t("crawl-status-missing")) } }
                 }
             }
         }
 
-        (facet_browse(&p.facets))
+        (facet_browse(&p.facets, l10n))
 
-        h2 { "Pages" }
+        h2 { (t("crawl-pages-heading")) }
         @if p.pages.is_empty() {
-            p.muted { "No pages are listed in this crawl." }
+            p.muted { (t("crawl-no-pages")) }
         } @else {
             ul.pages {
                 @for pg in &p.pages {
@@ -122,10 +124,10 @@ pub fn crawl(p: &CrawlPage) -> Markup {
 
         @if p.can_delete {
             details.danger-zone {
-                summary { "Delete this crawl" }
+                summary { (t("crawl-delete-summary")) }
                 form.confirm-delete method="post" action=(format!("/api/crawls/{}/delete", p.id)) {
-                    p.muted { "Permanently removes this crawl: its pages from search, the local WACZ file, and its thumbnail. This can't be undone." }
-                    button.btn.danger type="submit" { "Delete permanently" }
+                    p.muted { (t("crawl-delete-note")) }
+                    button.btn.danger type="submit" { (t("action-delete-permanently")) }
                 }
             }
         }

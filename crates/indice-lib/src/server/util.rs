@@ -453,7 +453,7 @@ pub(super) fn month_axis(
 /// Two timestamps as a span of dates in words: "7 January 2025 to 3 August
 /// 2026", or one date when they fall on the same day. A timestamp that is not
 /// a date is shown as it is.
-fn date_span(l10n: &L10n, start: Option<&str>, end: Option<&str>) -> Option<String> {
+pub(super) fn date_span(l10n: &L10n, start: Option<&str>, end: Option<&str>) -> Option<String> {
     let words = |ts: &str| l10n.long_date(ts).unwrap_or_else(|| ymd(ts));
     match (start, end) {
         (Some(s), Some(e)) => {
@@ -481,7 +481,10 @@ pub(super) fn capture_range(l10n: &L10n, c: &Wacz) -> Option<String> {
 /// captures, the share that succeeded (2xx/3xx), and the notable failing codes.
 /// The derived DACS Appraisal signal — surfaces the 404/403/504 "absences" that
 /// a clean-looking crawl can hide.
-pub(super) fn capture_quality(counts: &std::collections::BTreeMap<u16, u64>) -> Option<String> {
+pub(super) fn capture_quality(
+    l10n: &L10n,
+    counts: &std::collections::BTreeMap<u16, u64>,
+) -> Option<String> {
     let total: u64 = counts.values().sum();
     if total == 0 {
         return None;
@@ -492,7 +495,17 @@ pub(super) fn capture_quality(counts: &std::collections::BTreeMap<u16, u64>) -> 
         .map(|(_, n)| n)
         .sum();
     let ok_pct = (ok as f64 / total as f64 * 100.0).round() as u64;
-    let mut s = format!("{total} captures, {ok_pct}% ok");
+    let summary = l10n.tr_args(
+        "capture-quality",
+        &[
+            (
+                "count",
+                FluentArg::Num(total.try_into().unwrap_or(i64::MAX)),
+            ),
+            ("shown", FluentArg::Str(&l10n.number(total))),
+            ("pct", FluentArg::Num(ok_pct as i64)),
+        ],
+    );
     // Notable failing codes (>= 400), most frequent first.
     let mut bad: Vec<(u16, u64)> = counts
         .iter()
@@ -500,30 +513,53 @@ pub(super) fn capture_quality(counts: &std::collections::BTreeMap<u16, u64>) -> 
         .map(|(c, n)| (*c, *n))
         .collect();
     bad.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    if !bad.is_empty() {
-        let parts: Vec<String> = bad
-            .iter()
-            .take(4)
-            .map(|(c, n)| format!("{c}×{n}"))
-            .collect();
-        s.push_str(" — ");
-        s.push_str(&parts.join(", "));
+    if bad.is_empty() {
+        return Some(summary);
     }
-    Some(s)
+    // Codes and counts are digits, written the way the status line writes them.
+    let codes: Vec<String> = bad
+        .iter()
+        .take(4)
+        .map(|(c, n)| format!("{c}×{n}"))
+        .collect();
+    Some(l10n.tr_args(
+        "capture-quality-failures",
+        &[
+            ("summary", FluentArg::Str(&summary)),
+            ("codes", FluentArg::Str(&codes.join(", "))),
+        ],
+    ))
 }
 
 /// Map a Browsertrix QA review rating (1–5) to its label, with the raw value —
 /// a DACS Appraisal signal ("this crawl was reviewed and judged …").
-pub(super) fn review_label(rating: u8) -> String {
+pub(super) fn review_label(l10n: &L10n, rating: u8) -> String {
     let word = match rating {
-        5 => "Excellent",
-        4 => "Good",
-        3 => "Fair",
-        2 => "Poor",
-        1 => "Bad",
-        _ => "Reviewed",
+        1..=5 => l10n.tr(&format!("review-{rating}")),
+        _ => l10n.tr("review-other"),
     };
-    format!("{word} ({rating}/5)")
+    l10n.tr_args(
+        "review-label",
+        &[
+            ("word", FluentArg::Str(&word)),
+            ("rating", FluentArg::Str(&rating.to_string())),
+        ],
+    )
+}
+
+/// Names as a list in words: "A", "A and B", "A, B and C".
+pub(super) fn list_and(l10n: &L10n, items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => l10n.tr_args(
+            "list-and",
+            &[
+                ("first", FluentArg::Str(&head.join(", "))),
+                ("last", FluentArg::Str(last)),
+            ],
+        ),
+    }
 }
 
 /// Merge the per-crawl status histograms across a collection's members.
@@ -561,19 +597,41 @@ pub(super) fn members_capture_range(l10n: &L10n, members: &[&Wacz]) -> Option<St
 /// pages, by Browsertrix-Crawler 1.4.2." The list shows each crawl's date
 /// above it, so the sentence leaves it out. `None` when nothing is known. The
 /// view escapes it.
-pub(super) fn provenance_summary(c: &Wacz) -> Option<String> {
+pub(super) fn provenance_summary(l10n: &L10n, c: &Wacz) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(n) = c.page_count {
-        parts.push(format!("{n} page{}", if n == 1 { "" } else { "s" }));
+        parts.push(counted_message(l10n, "crawl-summary-pages", n));
     }
     if !c.software.is_empty() {
-        parts.push(format!("by {}", c.software.join(" and ")));
+        parts.push(l10n.tr_args(
+            "crawl-summary-by",
+            &[("software", FluentArg::Str(&list_and(l10n, &c.software)))],
+        ));
     }
     let mut sentence = parts.join(", ");
     let first = sentence.chars().next()?;
     sentence.replace_range(..first.len_utf8(), &first.to_uppercase().to_string());
     sentence.push('.');
     Some(sentence)
+}
+
+/// A plural message (`$count`, `$shown`) for `n`, with the number in the
+/// language's own grouping.
+fn counted_message(l10n: &L10n, key: &str, n: u64) -> String {
+    l10n.tr_args(
+        key,
+        &[
+            ("count", FluentArg::Num(n.try_into().unwrap_or(i64::MAX))),
+            ("shown", FluentArg::Str(&l10n.number(n))),
+        ],
+    )
+}
+
+/// A date for a facts table: in words when the timestamp is a date, as given
+/// otherwise.
+pub(super) fn day_in_words(l10n: &L10n, ts: &str) -> String {
+    l10n.long_date(ts)
+        .unwrap_or_else(|| ts.get(..10).unwrap_or(ts).to_string())
 }
 
 pub(super) fn html_escape(s: &str) -> String {
