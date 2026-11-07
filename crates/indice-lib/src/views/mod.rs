@@ -189,15 +189,17 @@ pub fn layout(
 }
 
 /// The page a signed-in reader gets when they open a workroom page: a 403
-/// that explains itself. `what` is what the page needed, e.g. "curating this
-/// archive".
-pub fn access_denied(chrome: &Chrome, what: &str) -> Markup {
+/// that explains itself. `what_key` is the message naming what the page
+/// needed, e.g. `denied-need-curating`, which completes the sentence.
+pub fn access_denied(chrome: &Chrome, what_key: &str) -> Markup {
+    let l10n = &chrome.l10n;
+    let what = l10n.tr(what_key);
     let body = html! {
-        h1.page-title { "You can't change this archive" }
-        p { "Your account isn't authorized for " (what) "." }
-        p { a href="/" { "Back to the archive" } }
+        h1.page-title { (l10n.tr("denied-heading")) }
+        p { (l10n.tr_args("denied-page-insufficient", &[("what", FluentArg::Str(&what))])) }
+        p { a href="/" { (l10n.tr("denied-back")) } }
     };
-    layout(Some("Not authorized"), chrome, None, body)
+    layout(Some(&l10n.tr("denied-title")), chrome, None, body)
 }
 
 /// The "Search tips" disclosure shown on the homepage and results page. The

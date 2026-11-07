@@ -345,3 +345,148 @@ crawl-delete-note = Permanently removes this crawl: its pages from search, the l
 collection-field-dates = Dates
 collection-field-rights = Rights
 collection-field-subjects = Subjects
+
+# Shared words of the workroom.
+crumb-home = Home
+action-cancel = Cancel
+
+# Sentences the server says when a request fails. The text of an underlying
+# error (`$detail`) is indice's own English and is passed through unchanged.
+error-server = Something went wrong on the server
+# `$message` is a sentence; `$id` is a code to quote to whoever reads the log.
+error-reference = { $message } (reference { $id }).
+error-no-reference = { $message }.
+error-request-failed = The request failed: { $detail }
+error-query-too-long = search query too long: { $bytes } bytes, limit { $limit }
+# `$holder` names what holds the lock, in indice's own English ("a workroom add").
+error-index-busy = The search index is busy: { $holder } is running. Your change was not saved — try again shortly.
+error-busy = indice is busy; try again in a moment
+# `$secs` is how long to wait, in seconds.
+error-too-many-requests = too many requests from this address; try again in { $secs }s
+error-too-many-streams = too many open archive streams from this address; try again in { $secs }s
+error-collection-required = collection is required
+error-file-required = a file is required
+error-org-required = org is required
+error-select-crawl = select at least one { -crawl }
+error-text-field-long = a text field in this upload is longer than { $max } bytes
+error-text-field-utf8 = a text field is not valid UTF-8
+error-upload-refused = upload refused: { $detail }
+error-job-unknown = unknown or already-consumed job
+error-collection-unknown = unknown { -collection }
+error-collection-name-required = { -collection } name is required
+error-collection-not-found = { -collection } not found
+error-crawl-not-found = { -crawl } not found
+error-note-empty = note is empty
+error-note-target-required = url and timestamp are required
+error-annotation-none = no such { -annotation }
+error-annotation-not-yours = not your { -annotation }
+error-browsertrix-unconfigured = Browsertrix import is not configured — set BROWSERTRIX_TOKEN (or BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) in the server's environment.
+error-archiveit-unconfigured = Archive-It import is not configured — set ARCHIVEIT_USER + ARCHIVEIT_PASSWORD in the server's environment.
+error-browsertrix = Browsertrix error: { $detail }
+error-archiveit = Archive-It error: { $detail }
+error-browsertrix-resolver = Browsertrix streaming import requires the resolver (credentials).
+error-reload-failed = indexed, but reloading the searcher failed: { $detail }
+error-lock-failed = could not lock the search index: { $detail }
+# `$count` crawls are still in the collection; `$shown` is the formatted number.
+error-collection-not-empty = { $count ->
+    [one] This { -collection } has { $shown } { -crawl }; tick the box to delete it too, or delete or move it first.
+   *[other] This { -collection } has { $shown } { -crawl-plural }; tick the box to delete them too, or delete or move them first.
+}
+
+# Why a signed-in person may not do something. The `denied-need-` messages
+# complete "your account is not authorized for ...": give them a form that does.
+denied-heading = You can't change this archive
+denied-title = Not authorized
+denied-back = Back to the archive
+denied-page-insufficient = Your account isn't authorized for { $what }.
+denied-insufficient = forbidden: your account is not authorized for { $what }
+denied-unauthenticated = forbidden: this action requires signing in via the front proxy
+denied-stale = forbidden: your sign-in has lapsed — reload the page to log in again
+denied-need-curating = curating this archive
+denied-need-administering = administering this archive
+denied-need-delete-others-crawl = deleting a { -crawl } someone else added
+
+# Why an accession was refused. `$cap`, `$used` and `$left` are sizes.
+refused-too-large = this is larger than the { $cap } limit on a single upload (uploads.max_mb in config.yaml)
+refused-archive-full = the archive is limited to { $cap } and holds { $used }, so there is { $left } left (uploads.max_total_gb in config.yaml)
+refused-measure = could not measure the archive: { $detail }
+
+# The line on the accession desk about how much room there is. The sentences
+# for each limit are joined by `room-both` when both apply.
+room-per-upload = Uploads up to { $cap } each.
+room-full = The archive is full ({ $used } of its { $cap } limit), so uploads and download imports are refused until a { -crawl } is removed or the limit is raised. Adding by URL still works.
+room-left = The archive holds { $used } of its { $cap } limit; { $left } left.
+room-both = { $upload } { $archive }
+
+# The finding-aid form.
+form-new-heading = New { -collection }
+form-eyebrow = Finding aid
+form-edit-heading = Edit { -collection }
+form-name-fixed = The name is fixed (it's the { -collection }'s identity); edit the description below.
+# Before the model's name, then `form-drafted-at` and the service's name.
+form-drafted-with = Drafted with
+form-drafted-at = at
+form-drafted-explain = Fields marked “drafted” were empty and now hold the draft; where you had already written something, the draft is shown below it, to use only if you choose. Nothing is saved until you press Save.
+form-label-name = Name
+form-label-description = Description
+form-hint-description = a one-line summary, shown on cards and under the title
+form-hint-subjects = comma-separated
+form-label-narrative = Narrative
+form-hint-narrative = the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal
+form-drafted-mark = drafted, review before saving
+form-draft-suggests = The draft suggests:
+form-use-draft = Use the draft instead
+form-save = Save changes
+form-create = Create { -collection }
+form-draft-again = Draft again
+form-draft-new = Draft a description
+draft-error-no-model = No language model is configured, so there is nothing to draft with. An operator sets one in config.yaml (llm:).
+draft-error-gather = Couldn't gather this { -collection }'s { -page-plural }: { $detail }
+draft-error-failed = The draft couldn't be made: { $detail }
+# The panel under the Draft button: "Drafts with <model> at <service>, which ...".
+draft-panel-with = Drafts with
+draft-panel-at = at
+draft-panel-sent = which is sent a sample of this { -collection }'s archived text.
+# `$pages` and `$chars` are the counts below, already written out.
+draft-panel-summary = What will be sent: { $pages }, { $chars }
+draft-panel-pages = { $count ->
+    [one] { $shown } { -page }
+   *[other] { $shown } { -page-plural }
+}
+draft-panel-chars = { $count ->
+    [one] { $shown } character
+   *[other] { $shown } characters
+}
+draft-panel-prompt = The full prompt
+
+# The accession desk, where crawls are added to a collection.
+desk-eyebrow = Accession
+desk-heading = Add { -crawl-plural }
+desk-collection = { -collection }
+desk-collection-placeholder = which { -collection } this belongs to
+desk-name = Display name
+desk-optional = optional
+desk-name-placeholder = override the { -collection }'s display name
+desk-tab-upload = Upload
+desk-tab-url = URL
+desk-upload-label = Upload a .wacz file
+desk-location = Location
+desk-location-hint = an http(s):// URL
+desk-bx-intro = Pick { -crawl-plural } to import into the { -collection } above, from the Browsertrix instance this server is configured for (its credentials + host).
+desk-bx-org = Organization
+desk-bx-collection = Browsertrix collection
+desk-bx-optional-filter = optional filter
+desk-bx-show = Show
+desk-bx-all = All { -crawl-plural }
+desk-bx-reviewed = QA’d only
+desk-bx-unreviewed = Not QA’d
+desk-hide-imported = Hide already-imported
+desk-refresh = Refresh list
+desk-on-import = On import
+desk-mode-download = Download a durable copy
+desk-mode-download-hint = stored locally, replays offline
+desk-mode-stream = Stream in place
+desk-mode-stream-hint = no local copy; replay re-resolves via this server's credentials
+desk-ait-intro = Pick { -crawl-plural } to import into the { -collection } above, from the Archive-It account this server is configured for. Each selected { -crawl } is downloaded and packaged into a WACZ.
+desk-ait-collection = Archive-It collection
+desk-submit = Add

@@ -25,9 +25,10 @@ pub(super) async fn homepage(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
 
     let chrome = chrome(&state, &headers);
@@ -164,6 +165,7 @@ pub(super) async fn search_page(
     headers: HeaderMap,
     Query(params): Query<SearchPageParams>,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     // Fold any scope token (e.g. `collection:<id>` from the header search on a
     // collection page) into the query, so downstream faceting + the removable
     // active-filter chip treat it like any other `field:value`.
@@ -186,7 +188,7 @@ pub(super) async fn search_page(
     }
     // Checked after the scope token is folded in, so the bound covers what
     // actually reaches the parser rather than what the visitor typed.
-    if let Some(refusal) = query_too_long(&q) {
+    if let Some(refusal) = query_too_long(&l10n, &q) {
         return refusal;
     }
 
@@ -198,7 +200,7 @@ pub(super) async fn search_page(
         .await
     {
         Ok(r) => r,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
     let results = &response.results;
 

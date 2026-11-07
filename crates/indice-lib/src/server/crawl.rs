@@ -19,12 +19,13 @@ pub(super) async fn crawl_page(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
     let Some(c) = manifest.wacz_by_id(&id) else {
-        return (StatusCode::NOT_FOUND, "Crawl not found").into_response();
+        return not_found(&l10n, "error-crawl-not-found");
     };
 
     let display_name = c.display_name();
@@ -240,7 +241,7 @@ pub(super) async fn crawl_replay_json(
 ) -> Response {
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(&L10n::default(), e),
     };
     let Some(w) = manifest.wacz_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "crawl not found").into_response();
@@ -269,7 +270,7 @@ pub(super) async fn crawl_pages(
 ) -> Response {
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(&L10n::default(), e),
     };
     let Some(w) = manifest.wacz_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "crawl not found").into_response();

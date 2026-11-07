@@ -22,12 +22,13 @@ pub(super) async fn collection_page(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
     let Some(c) = manifest.collection_by_id(&id) else {
-        return (StatusCode::NOT_FOUND, "collection not found").into_response();
+        return not_found(&l10n, "error-collection-not-found");
     };
     let members: Vec<&Wacz> = manifest.members_of(&id).collect();
 
@@ -224,12 +225,13 @@ pub(super) async fn collection_annotations(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(&l10n, e),
     };
     let Some(c) = manifest.collection_by_id(&id) else {
-        return (StatusCode::NOT_FOUND, "collection not found").into_response();
+        return not_found(&l10n, "error-collection-not-found");
     };
     let chrome = chrome(&state, &headers);
     // Reads and parses the whole store, so off the async workers.
@@ -416,8 +418,13 @@ pub(super) async fn collection_annotation(
     let (collection_name, a) = match found {
         Ok(Ok(Some(found))) => found,
         Ok(Ok(None)) => return not_found(),
-        Ok(Err(e)) => return error_response(e),
-        Err(e) => return error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+        Ok(Err(e)) => return error_response(&L10n::default(), e),
+        Err(e) => {
+            return error_response(
+                &L10n::default(),
+                anyhow::anyhow!("annotation task panicked: {e}"),
+            )
+        }
     };
     let ld = annotation_json_ld(&a, &id, &state.origin);
     // Public, and free of anything that identifies a login, so any site's
@@ -474,9 +481,12 @@ pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    // The replay manifest is read by wabac, not a person: English, like the
+    // other documented read endpoints.
+    let en = L10n::default();
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(&en, e),
     };
     let Some(c) = manifest.collection_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
@@ -631,7 +641,11 @@ pub(super) async fn pages_response(
     scope: PagesFor,
     params: PagesParams,
 ) -> Response {
-    if let Some(refusal) = params.search.as_deref().and_then(query_too_long) {
+    if let Some(refusal) = params
+        .search
+        .as_deref()
+        .and_then(|q| query_too_long(&L10n::default(), q))
+    {
         return refusal;
     }
     let page = params.page.unwrap_or(1).max(1);
@@ -685,7 +699,7 @@ pub(super) async fn pages_response(
             )
                 .into_response()
         }
-        Err(e) => error_response(e),
+        Err(e) => error_response(&L10n::default(), e),
     }
 }
 

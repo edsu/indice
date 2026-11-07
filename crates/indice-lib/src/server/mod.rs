@@ -15,6 +15,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::i18n::{FluentArg, L10n};
 use crate::search::SearchIndex;
 
 /// How long a request that should be quick is allowed to take.

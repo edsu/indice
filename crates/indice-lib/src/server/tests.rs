@@ -1281,3 +1281,197 @@ fn date_span_in_both_languages() {
     assert_eq!(date_span(&l10n("it"), a, b).unwrap(), "7 gennaio 2025");
     assert_eq!(date_span(&l10n("it"), None, None), None);
 }
+
+async fn post_with(
+    app: &Router,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Body,
+) -> (StatusCode, HeaderMap, String) {
+    use tower::ServiceExt;
+
+    let mut req = axum::http::Request::post(path).header("host", "localhost");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn manage_page_in_italian() {
+    let (_home, app) = app_with_language(None);
+    let it = l10n("it");
+    for (path, keys, english) in [
+        (
+            "/manage/add",
+            vec![
+                "desk-heading",
+                "desk-eyebrow",
+                "desk-tab-upload",
+                "desk-submit",
+            ],
+            vec!["Accession", "Display name", "Hide already-imported"],
+        ),
+        (
+            "/manage/collections/new",
+            vec!["form-new-heading", "form-label-narrative", "form-create"],
+            vec!["Finding aid", "Create collection", "comma-separated"],
+        ),
+    ] {
+        let (status, _, body) = get_with(&app, path, Some("it")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        for key in keys {
+            let word = it.tr(key);
+            assert!(body.contains(&word), "{path} {key}: {body}");
+        }
+        for word in english {
+            assert!(!body.contains(word), "{path} {word}: {body}");
+        }
+    }
+}
+
+/// The page carries the refusal the server would send, so a refusal says the
+/// same thing whichever of the two catches it, in the reader's language.
+#[tokio::test]
+async fn refused_upload_in_italian() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        crate::config::Config::path(tmp.path()),
+        "uploads:\n  max_mb: 1\n",
+    )
+    .unwrap();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    let declared = (2 * 1024 * 1024).to_string();
+    let headers = [
+        ("accept-language", "it"),
+        ("content-type", "multipart/form-data; boundary=x"),
+        ("content-length", declared.as_str()),
+    ];
+    let (status, resp_headers, text) =
+        post_with(&app, "/api/archives/upload", &headers, Body::empty()).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let it = l10n("it");
+    let sentence = it.tr_args(
+        "refused-too-large",
+        &[("cap", crate::i18n::FluentArg::Str(&it.size(1024 * 1024)))],
+    );
+    assert_eq!(text, sentence);
+    assert!(text.contains(&it.size(1024 * 1024)), "{text}");
+    assert!(text.contains("uploads.max_mb"), "{text}");
+    assert!(!text.contains("larger than"), "{text}");
+    assert!(vary_values(&resp_headers).contains("accept-language"));
+
+    // The accession desk says exactly the same thing, escaped into its attribute.
+    let (_, _, desk) = get_with(&app, "/manage/add", Some("it")).await;
+    let attr = maud::html! { (text) }.into_string();
+    assert!(desk.contains(&attr), "{desk}");
+}
+
+#[tokio::test]
+async fn curator_error_keeps_chain() {
+    let (home, app, _) = app_with_crawl("c");
+    // Make the manifest unreadable, so a curator's page fails with a chain.
+    std::fs::write(
+        crate::index::index_dir(home.path()).join("waczs.json"),
+        "{ not json",
+    )
+    .unwrap();
+    let it = l10n("it");
+    let outer = it.tr_args(
+        "error-request-failed",
+        &[("detail", crate::i18n::FluentArg::Str(""))],
+    );
+    let prefix = outer.trim_end();
+    for (lang, expect_prefix) in [
+        ("it", prefix.to_string()),
+        ("en", "The request failed".into()),
+    ] {
+        let (status, _, body) = get_with(&app, "/manage/edit/c", Some(lang)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body.starts_with(&expect_prefix), "{lang}: {body}");
+        // The chain is indice's English error text, passed through unchanged.
+        assert!(body.contains("waczs.json"), "{lang}: {body}");
+        let reference = if lang == "it" {
+            "riferimento"
+        } else {
+            "reference"
+        };
+        assert!(body.contains(reference), "{lang}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn public_search_api_stays_english() {
+    let (_home, app) = app_with_language(None);
+    let long = "a".repeat(5000);
+    let (status, _, body) = get_with(&app, &format!("/api/search?q={long}"), Some("it")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with("search query too long"), "{body}");
+    // The same refusal on the search page is the reader's language.
+    let (status, _, body) = get_with(&app, &format!("/search?q={long}"), Some("it")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!body.starts_with("search query too long"), "{body}");
+    assert!(body.contains("5000"), "{body}");
+}
+
+#[tokio::test]
+async fn page_not_found_in_italian() {
+    let (_home, app) = app_with_language(None);
+    for path in ["/collection/nope", "/crawl/nope"] {
+        let (status, _, it) = get_with(&app, path, Some("it")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        let (_, _, en) = get_with(&app, path, Some("en")).await;
+        assert_ne!(it, en, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_says_why_in_the_readers_language() {
+    use super::auth::{Denied, Need};
+    use axum::response::IntoResponse;
+    for (tag, forbidden) in [
+        (
+            "en",
+            "forbidden: your account is not authorized for curating",
+        ),
+        ("it", "vietato: il tuo account non è autorizzato a curare"),
+    ] {
+        let res = Denied::Insufficient(Need::Curating, l10n(tag)).into_response();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let text = String::from_utf8_lossy(
+            &axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .into_owned();
+        assert!(text.starts_with(forbidden), "{tag}: {text}");
+    }
+    let res = Denied::Unauthenticated(l10n("it")).into_response();
+    let text = String::from_utf8_lossy(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .into_owned();
+    assert_eq!(text, l10n("it").tr("denied-unauthenticated"));
+
+    // The page a browser gets says it in the same words.
+    let chrome = views::Chrome {
+        l10n: l10n("it"),
+        ..Default::default()
+    };
+    let page = views::access_denied(&chrome, Need::DeletingOthersCrawl.key()).into_string();
+    assert!(page.contains(&l10n("it").tr("denied-heading")), "{page}");
+    assert!(
+        page.contains("aggiunta da un&#39;altra persona")
+            || page.contains("aggiunta da un'altra persona"),
+        "{page}"
+    );
+    assert!(!page.contains("You can't change"), "{page}");
+}

@@ -38,6 +38,7 @@ async fn browsertrix_redirect(state: &AppState, col: &Wacz) -> Response {
     match super::presigned::url_for(&state.presigned, resolver, col).await {
         Ok(url) => axum::response::Redirect::temporary(&url).into_response(),
         Err(e) => failure(
+            &L10n::default(),
             StatusCode::BAD_GATEWAY,
             "The archived copy could not be fetched from Browsertrix",
             anyhow::anyhow!("could not resolve the archived copy from Browsertrix: {e:#}"),
@@ -91,7 +92,7 @@ pub(super) async fn serve_file(
             if let Some((start, end)) = range {
                 use tokio::io::AsyncSeekExt;
                 if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
-                    return error_response(anyhow::anyhow!(e)).into_response();
+                    return error_response(&L10n::default(), anyhow::anyhow!(e)).into_response();
                 }
                 let length = end - start + 1;
                 let limited = tokio::io::AsyncReadExt::take(file, length);
@@ -115,7 +116,7 @@ pub(super) async fn serve_file(
                     .unwrap()
             }
         }
-        Err(e) => error_response(anyhow::anyhow!(e)).into_response(),
+        Err(e) => error_response(&L10n::default(), anyhow::anyhow!(e)).into_response(),
     }
 }
 
@@ -202,7 +203,7 @@ pub(super) async fn replay_page(
     };
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&L10n::default(), e).into_response(),
     };
     let context = if target.kind == ReplayKind::Crawl {
         let Some(w) = manifest.wacz_by_id(&target.id) else {

@@ -311,3 +311,139 @@ crawl-delete-note = Rimuove definitivamente questa { -crawl }: le sue pagine dal
 collection-field-dates = Date
 collection-field-rights = Diritti
 collection-field-subjects = Soggetti
+
+# Parole comuni dell'area di lavoro.
+crumb-home = Home
+action-cancel = Annulla
+
+# Frasi che il server dice quando una richiesta non riesce. Il testo di un errore
+# sottostante (`$detail`) è l'inglese di indice e viene riportato invariato.
+error-server = Si è verificato un errore sul server
+error-reference = { $message } (riferimento { $id }).
+error-no-reference = { $message }.
+error-request-failed = Richiesta non riuscita: { $detail }
+error-query-too-long = query di ricerca troppo lunga: { $bytes } byte, limite { $limit }
+error-index-busy = L'indice di ricerca è occupato ({ $holder }). La modifica non è stata salvata: riprova tra poco.
+error-busy = indice è occupato; riprova tra un momento
+error-too-many-requests = troppe richieste da questo indirizzo; riprova tra { $secs } s
+error-too-many-streams = troppi flussi di archivio aperti da questo indirizzo; riprova tra { $secs } s
+error-collection-required = la { -collection } è obbligatoria
+error-file-required = il file è obbligatorio
+error-org-required = l'organizzazione è obbligatoria
+error-select-crawl = seleziona almeno una { -crawl }
+error-text-field-long = un campo di testo in questo caricamento supera { $max } byte
+error-text-field-utf8 = un campo di testo non è UTF-8 valido
+error-upload-refused = caricamento rifiutato: { $detail }
+error-job-unknown = operazione sconosciuta o già consumata
+error-collection-unknown = { -collection } sconosciuta
+error-collection-name-required = il nome della { -collection } è obbligatorio
+error-collection-not-found = { -collection } non trovata
+error-crawl-not-found = { -crawl } non trovata
+error-note-empty = la nota è vuota
+error-note-target-required = l'URL e la data sono obbligatori
+error-annotation-none = nessuna { -annotation } corrispondente
+error-annotation-not-yours = non è una tua { -annotation }
+error-browsertrix-unconfigured = L'importazione da Browsertrix non è configurata: imposta BROWSERTRIX_TOKEN (oppure BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) nell'ambiente del server.
+error-archiveit-unconfigured = L'importazione da Archive-It non è configurata: imposta ARCHIVEIT_USER + ARCHIVEIT_PASSWORD nell'ambiente del server.
+error-browsertrix = Errore di Browsertrix: { $detail }
+error-archiveit = Errore di Archive-It: { $detail }
+error-browsertrix-resolver = L'importazione in streaming da Browsertrix richiede il resolver (credenziali).
+error-reload-failed = indicizzato, ma il ricaricamento del motore di ricerca non è riuscito: { $detail }
+error-lock-failed = impossibile bloccare l'indice di ricerca: { $detail }
+error-collection-not-empty = { $count ->
+    [one] Questa { -collection } contiene { $shown } { -crawl }: spunta la casella per eliminare anche questa, oppure eliminala o spostala prima.
+   *[other] Questa { -collection } contiene { $shown } { -crawl-plural }: spunta la casella per eliminare anche queste, oppure eliminale o spostale prima.
+}
+
+# Perché una persona autenticata non può fare qualcosa. I messaggi `denied-need-`
+# completano "il tuo account non è autorizzato a ...", quindi sono all'infinito.
+denied-heading = Non puoi modificare questo archivio
+denied-title = Non autorizzato
+denied-back = Torna all'archivio
+denied-page-insufficient = Il tuo account non è autorizzato a { $what }.
+denied-insufficient = vietato: il tuo account non è autorizzato a { $what }
+denied-unauthenticated = vietato: questa azione richiede l'accesso tramite il proxy frontale
+denied-stale = vietato: l'accesso è scaduto — ricarica la pagina per accedere di nuovo
+denied-need-curating = curare questo archivio
+denied-need-administering = amministrare questo archivio
+denied-need-delete-others-crawl = eliminare una { -crawl } aggiunta da un'altra persona
+
+# Perché un versamento è stato rifiutato. `$cap`, `$used` e `$left` sono dimensioni.
+refused-too-large = supera il limite di { $cap } per un singolo caricamento (uploads.max_mb in config.yaml)
+refused-archive-full = l'archivio è limitato a { $cap } e ne contiene { $used }, quindi restano { $left } (uploads.max_total_gb in config.yaml)
+refused-measure = impossibile misurare lo spazio occupato dall'archivio: { $detail }
+
+room-per-upload = Caricamenti fino a { $cap } ciascuno.
+room-full = L'archivio è pieno ({ $used } su un limite di { $cap }): caricamenti e importazioni con download sono rifiutati finché non viene rimossa una { -crawl } o aumentato il limite. L'aggiunta tramite URL funziona ancora.
+room-left = L'archivio contiene { $used } su un limite di { $cap }; ne restano { $left }.
+room-both = { $upload } { $archive }
+
+# Il modulo della descrizione archivistica.
+form-new-heading = Nuova { -collection }
+form-eyebrow = Descrizione archivistica
+form-edit-heading = Modifica { -collection }
+form-name-fixed = Il nome è fisso (è l'identità della { -collection }); modifica la descrizione qui sotto.
+form-drafted-with = Bozza generata con
+form-drafted-at = presso
+form-drafted-explain = I campi contrassegnati “bozza” erano vuoti e ora contengono la bozza; dove avevi già scritto qualcosa, la bozza è mostrata sotto, da usare solo se lo scegli. Nulla viene salvato finché non premi Salva.
+form-label-name = Nome
+form-label-description = Descrizione
+form-hint-description = un riepilogo di una riga, mostrato sulle schede e sotto il titolo
+form-hint-subjects = separati da virgole
+form-label-narrative = Narrazione
+form-hint-narrative = il testo completo della descrizione archivistica (Markdown): ambito e contenuto, storia della conservazione, valutazione
+form-drafted-mark = bozza, da rivedere prima di salvare
+form-draft-suggests = La bozza suggerisce:
+form-use-draft = Usa invece la bozza
+form-save = Salva le modifiche
+form-create = Crea { -collection }
+form-draft-again = Genera di nuovo la bozza
+form-draft-new = Genera una bozza della descrizione
+draft-error-no-model = Nessun modello linguistico è configurato, quindi non c'è nulla con cui generare una bozza. L'operatore ne imposta uno in config.yaml (llm:).
+draft-error-gather = Impossibile raccogliere le { -page-plural } di questa { -collection }: { $detail }
+draft-error-failed = Non è stato possibile generare la bozza: { $detail }
+draft-panel-with = Genera la bozza con
+draft-panel-at = presso
+draft-panel-sent = a cui viene inviato un campione del testo archiviato di questa { -collection }.
+draft-panel-summary = Cosa verrà inviato: { $pages }, { $chars }
+draft-panel-pages = { $count ->
+    [one] { $shown } { -page }
+   *[other] { $shown } { -page-plural }
+}
+draft-panel-chars = { $count ->
+    [one] { $shown } carattere
+   *[other] { $shown } caratteri
+}
+draft-panel-prompt = Il prompt completo
+
+# Il banco dei versamenti, dove si aggiungono scansioni a una raccolta.
+desk-eyebrow = Versamento
+desk-heading = Aggiungi { -crawl-plural }
+desk-collection = { -collection }
+desk-collection-placeholder = a quale { -collection } appartiene
+desk-name = Nome visualizzato
+desk-optional = facoltativo
+desk-name-placeholder = sostituisce il nome visualizzato della { -collection }
+desk-tab-upload = Carica
+desk-tab-url = URL
+desk-upload-label = Carica un file .wacz
+desk-location = Indirizzo
+desk-location-hint = un URL http(s)://
+desk-bx-intro = Scegli le { -crawl-plural } da importare nella { -collection } qui sopra, dall'istanza di Browsertrix per cui questo server è configurato (credenziali e host).
+desk-bx-org = Organizzazione
+desk-bx-collection = Raccolta di Browsertrix
+desk-bx-optional-filter = filtro facoltativo
+desk-bx-show = Mostra
+desk-bx-all = Tutte le { -crawl-plural }
+desk-bx-reviewed = Solo con controllo qualità
+desk-bx-unreviewed = Senza controllo qualità
+desk-hide-imported = Nascondi quelle già importate
+desk-refresh = Aggiorna l'elenco
+desk-on-import = All'importazione
+desk-mode-download = Scarica una copia durevole
+desk-mode-download-hint = conservata in locale, riproducibile offline
+desk-mode-stream = Lascia in streaming
+desk-mode-stream-hint = nessuna copia locale; la riproduzione si risolve di nuovo con le credenziali di questo server
+desk-ait-intro = Scegli le { -crawl-plural } da importare nella { -collection } qui sopra, dall'account Archive-It per cui questo server è configurato. Ogni { -crawl } selezionata viene scaricata e impacchettata in un WACZ.
+desk-ait-collection = Raccolta di Archive-It
+desk-submit = Aggiungi

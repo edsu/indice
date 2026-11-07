@@ -75,11 +75,10 @@ fn new_import_job(
 }
 
 /// Response when a Browsertrix endpoint is hit but no credentials are configured.
-fn browsertrix_unconfigured() -> Response {
+fn browsertrix_unconfigured(l10n: &L10n) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "Browsertrix import is not configured — set BROWSERTRIX_TOKEN (or \
-         BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) in the server's environment.",
+        l10n.tr("error-browsertrix-unconfigured"),
     )
         .into_response()
 }
@@ -111,9 +110,15 @@ where
     .await
     {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => {
-            (StatusCode::BAD_GATEWAY, format!("Browsertrix error: {e:#}")).into_response()
-        }
+        // The sentence is translated, the service's own error text is not.
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            admin.l10n().tr_args(
+                "error-browsertrix",
+                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+            ),
+        )
+            .into_response(),
         Err(e) => admin.error_response(anyhow::anyhow!(e)),
     }
 }
@@ -121,7 +126,7 @@ where
 /// `GET /api/browsertrix/orgs` — the orgs the configured credentials can see.
 pub(super) async fn bx_orgs(State(state): State<Arc<AppState>>, admin: Admin) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
-        return browsertrix_unconfigured();
+        return browsertrix_unconfigured(admin.l10n());
     };
     bx_json(&admin, provider, |c| {
         let orgs = c.orgs()?;
@@ -140,10 +145,10 @@ pub(super) async fn bx_collections(
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
-        return browsertrix_unconfigured();
+        return browsertrix_unconfigured(admin.l10n());
     };
     if q.org.is_empty() {
-        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+        return bad_request(admin.l10n(), "error-org-required");
     }
     let org = q.org.clone();
     bx_json(&admin, provider, move |c| {
@@ -189,10 +194,10 @@ pub(super) async fn bx_items(
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
-        return browsertrix_unconfigured();
+        return browsertrix_unconfigured(admin.l10n());
     };
     if q.org.is_empty() {
-        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+        return bad_request(admin.l10n(), "error-org-required");
     }
     let org = q.org.clone();
     let collection = q.collection.clone();
@@ -275,23 +280,23 @@ pub(super) async fn bx_import(
     Json(req): Json<BxImportRequest>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
-        return browsertrix_unconfigured();
+        return browsertrix_unconfigured(admin.l10n());
     };
     if req.collection.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+        return bad_request(admin.l10n(), "error-collection-required");
     }
     if req.org.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "org is required").into_response();
+        return bad_request(admin.l10n(), "error-org-required");
     }
     if req.items.is_empty() {
-        return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
+        return bad_request(admin.l10n(), "error-select-crawl");
     }
     // A download lands in `archive/`; a streamed import costs no local disk.
     // This is the early check, so a full archive refuses at once; each
     // resource is checked against its size inside the job.
     if req.download {
         if let Err(refused) = super::manage::accession_budget(&state) {
-            return refused.into_response();
+            return refused.respond(admin.l10n());
         }
     }
     // Streaming needs the resolver (to fetch a fresh presigned URL at index time
@@ -300,7 +305,7 @@ pub(super) async fn bx_import(
     if !req.download && resolver.is_none() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "Browsertrix streaming import requires the resolver (credentials).",
+            admin.l10n().tr("error-browsertrix-resolver"),
         )
             .into_response();
     }
@@ -358,7 +363,7 @@ pub(super) async fn bx_import(
                         // Browsertrix does not report is admitted as zero and
                         // refused only if the archive is already full.
                         super::manage::admit(&job_state, res.size)
-                            .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
+                            .map_err(|r| anyhow::anyhow!(r.message(&l10n)))?;
                         crate::index::IndexProgress::phase(
                             &progress,
                             &format!("downloading {filename}{size}"),
@@ -378,7 +383,7 @@ pub(super) async fn bx_import(
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                         // Already filed, so the room is what is left now.
                         let scratch = super::manage::scratch_room(&job_state)
-                            .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
+                            .map_err(|r| anyhow::anyhow!(r.message(&l10n)))?;
                         // force: honor the explicitly selected crawl. No
                         // download: it is already a local file.
                         crate::index::Ingest::new(&job_state.home)
@@ -424,7 +429,7 @@ pub(super) async fn bx_import(
                             resource: res.name.clone(),
                         };
                         let scratch = super::manage::scratch_room(&job_state)
-                            .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
+                            .map_err(|r| anyhow::anyhow!(r.message(&l10n)))?;
                         // Streamed in place (no download), forced because the
                         // crawl was explicitly selected.
                         crate::index::Ingest::new(&job_state.home)
@@ -480,7 +485,10 @@ pub(super) async fn bx_import(
                         .ok(),
                     Err(e) => tx
                         .send(ProgressEvent::Error {
-                            message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                            message: l10n.tr_args(
+                                "error-reload-failed",
+                                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                            ),
                         })
                         .ok(),
                 }
@@ -496,11 +504,10 @@ pub(super) async fn bx_import(
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
-fn archiveit_unconfigured() -> Response {
+fn archiveit_unconfigured(l10n: &L10n) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "Archive-It import is not configured — set ARCHIVEIT_USER + \
-         ARCHIVEIT_PASSWORD in the server's environment.",
+        l10n.tr("error-archiveit-unconfigured"),
     )
         .into_response()
 }
@@ -522,7 +529,14 @@ where
     .await
     {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, format!("Archive-It error: {e:#}")).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            admin.l10n().tr_args(
+                "error-archiveit",
+                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+            ),
+        )
+            .into_response(),
         Err(e) => admin.error_response(anyhow::anyhow!(e)),
     }
 }
@@ -531,7 +545,7 @@ where
 /// inactive ones, which still hold importable crawls).
 pub(super) async fn ait_collections(State(state): State<Arc<AppState>>, admin: Admin) -> Response {
     let Some(provider) = state.archiveit.clone() else {
-        return archiveit_unconfigured();
+        return archiveit_unconfigured(admin.l10n());
     };
     archiveit_json(&admin, provider, |c| {
         let colls = c.collections(false)?;
@@ -557,10 +571,10 @@ pub(super) async fn ait_crawls(
     Query(q): Query<AitBrowse>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
-        return archiveit_unconfigured();
+        return archiveit_unconfigured(admin.l10n());
     };
     let Some(collection) = q.collection else {
-        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+        return bad_request(admin.l10n(), "error-collection-required");
     };
     let index_dir = state.index_dir.clone();
     archiveit_json(&admin, provider, move |c| {
@@ -642,19 +656,19 @@ pub(super) async fn ait_import(
     Json(req): Json<AitImportRequest>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
-        return archiveit_unconfigured();
+        return archiveit_unconfigured(admin.l10n());
     };
     if req.into.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+        return bad_request(admin.l10n(), "error-collection-required");
     }
     // Archive-It serves WARCs, so every import builds a WACZ in `archive/`.
     // This is the early check, so a full archive refuses at once; the import's
     // total, known once its WARCs are listed, is checked inside the job.
     if let Err(refused) = super::manage::accession_budget(&state) {
-        return refused.into_response();
+        return refused.respond(admin.l10n());
     }
     if req.crawls.is_empty() {
-        return (StatusCode::BAD_REQUEST, "select at least one crawl").into_response();
+        return bad_request(admin.l10n(), "error-select-crawl");
     }
 
     audit_detail(
@@ -743,7 +757,7 @@ pub(super) async fn ait_import(
                     .map(|f| f.size)
                     .sum();
                 let scratch = super::manage::admit(&job_state, incoming)
-                    .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
+                    .map_err(|r| anyhow::anyhow!(r.message(&l10n)))?;
                 crate::archiveit::import_crawls(
                     &client,
                     &crate::index::Ingest::new(&job_state.home)
@@ -777,7 +791,10 @@ pub(super) async fn ait_import(
                         .ok(),
                     Err(e) => tx
                         .send(ProgressEvent::Error {
-                            message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                            message: l10n.tr_args(
+                                "error-reload-failed",
+                                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                            ),
                         })
                         .ok(),
                 }

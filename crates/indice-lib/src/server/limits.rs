@@ -41,6 +41,7 @@ use axum::response::{IntoResponse, Response};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::AppState;
+use crate::i18n::{FluentArg, L10n};
 
 /// Quick requests in flight across all clients. These answer in milliseconds, so
 /// reaching this means the server is being asked for far more than any
@@ -479,12 +480,8 @@ fn charge(state: &AppState, req: &axum::extract::Request) -> Option<ClientKey> {
     Some(ClientKey::of(client_ip(peer, req.headers())))
 }
 
-fn busy() -> Response {
-    let mut res = (
-        StatusCode::SERVICE_UNAVAILABLE,
-        "indice is busy; try again in a moment",
-    )
-        .into_response();
+fn busy(l10n: &L10n) -> Response {
+    let mut res = (StatusCode::SERVICE_UNAVAILABLE, l10n.tr("error-busy")).into_response();
     res.headers_mut().insert(
         axum::http::header::RETRY_AFTER,
         HeaderValue::from_static("1"),
@@ -493,11 +490,13 @@ fn busy() -> Response {
     res
 }
 
-fn too_many(wait: Duration, what: &str) -> Response {
+/// `what` is the message that says what there were too many of
+/// (`error-too-many-requests`, `error-too-many-streams`).
+fn too_many(l10n: &L10n, wait: Duration, what: &str) -> Response {
     let secs = wait.as_secs_f64().ceil().max(1.0) as u64;
     let mut res = (
         StatusCode::TOO_MANY_REQUESTS,
-        format!("too many {what} from this address; try again in {secs}s"),
+        l10n.tr_args(what, &[("secs", FluentArg::Str(&l10n.number(secs)))]),
     )
         .into_response();
     if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
@@ -518,12 +517,16 @@ pub(super) async fn limit_quick(
     };
     let Ok(permit) = Arc::clone(&limits.quick).try_acquire_owned() else {
         report(&limits.reporter, Subject::Server, Reason::Busy);
-        return busy();
+        return busy(&super::i18n::negotiate_headers(&state, req.headers()));
     };
     if let Some(key) = charge(&state, &req) {
         if let Err(wait) = limits.take_quick(key, Instant::now()) {
             report(&limits.reporter, Subject::Client(key), Reason::Rate);
-            return too_many(wait, "requests");
+            return too_many(
+                &super::i18n::negotiate_headers(&state, req.headers()),
+                wait,
+                "error-too-many-requests",
+            );
         }
     }
     let (parts, body) = next.run(req).await.into_parts();
@@ -547,14 +550,18 @@ pub(super) async fn limit_streams(
     };
     let Ok(permit) = Arc::clone(&limits.streams).try_acquire_owned() else {
         report(&limits.reporter, Subject::Server, Reason::StreamsBusy);
-        return busy();
+        return busy(&super::i18n::negotiate_headers(&state, req.headers()));
     };
     let slot = match charge(&state, &req) {
         Some(key) => match limits.open_stream(key) {
             Some(slot) => Some(slot),
             None => {
                 report(&limits.reporter, Subject::Client(key), Reason::Streams);
-                return too_many(Duration::from_secs(1), "open archive streams");
+                return too_many(
+                    &super::i18n::negotiate_headers(&state, req.headers()),
+                    Duration::from_secs(1),
+                    "error-too-many-streams",
+                );
             }
         },
         None => None,
@@ -686,6 +693,53 @@ mod tests {
         assert!(r.windows.is_empty(), "ended windows are removed");
         // A single refusal needs no summary; its first line said it all.
         assert_eq!(lines.len(), 1, "the one-off Streams refusal adds nothing");
+    }
+
+    fn l10n(tag: &str) -> L10n {
+        crate::i18n::negotiate(Some(tag), &"en".parse().unwrap())
+    }
+
+    async fn body_text(res: Response) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn busy_in_italian() {
+        let res = busy(&l10n("it"));
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // The wait is a number for the client, not words for the reader.
+        assert_eq!(res.headers()[axum::http::header::RETRY_AFTER], "1");
+        assert!(res.extensions().get::<LimitRefusal>().is_some());
+        let text = body_text(res).await;
+        assert_eq!(text, l10n("it").tr("error-busy"));
+        assert_ne!(text, body_text(busy(&l10n("en"))).await);
+    }
+
+    #[tokio::test]
+    async fn too_many_says_how_long_in_the_readers_language() {
+        let res = too_many(
+            &l10n("it"),
+            Duration::from_millis(2500),
+            "error-too-many-requests",
+        );
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.headers()[axum::http::header::RETRY_AFTER], "3");
+        let text = body_text(res).await;
+        assert!(text.starts_with("troppe richieste"), "{text}");
+        assert!(text.contains("3 s"), "{text}");
+        let en = body_text(too_many(
+            &l10n("en"),
+            Duration::from_secs(3),
+            "error-too-many-streams",
+        ))
+        .await;
+        assert_eq!(
+            en,
+            "too many open archive streams from this address; try again in 3s"
+        );
     }
 
     #[test]

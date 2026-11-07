@@ -233,16 +233,20 @@ pub(super) const MAX_QUERY_LEN: usize = 2048;
 ///
 /// The message names the limit, so a client can tell this apart from a query
 /// that simply matched nothing.
-pub(super) fn query_too_long(q: &str) -> Option<Response> {
+///
+/// Takes the language of whoever asked: a search page says it to its reader,
+/// while the documented API passes `L10n::default()` to keep its English.
+pub(super) fn query_too_long(l10n: &L10n, q: &str) -> Option<Response> {
     (q.len() > MAX_QUERY_LEN).then(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "search query too long: {} bytes, limit {MAX_QUERY_LEN}",
-                q.len()
-            ),
-        )
-            .into_response()
+        let text = l10n.tr_args(
+            "error-query-too-long",
+            &[
+                // Plain digits: a client matches the limit by its number.
+                ("bytes", FluentArg::Str(&q.len().to_string())),
+                ("limit", FluentArg::Str(&MAX_QUERY_LEN.to_string())),
+            ],
+        );
+        (StatusCode::BAD_REQUEST, text).into_response()
     })
 }
 
@@ -296,10 +300,21 @@ pub(super) async fn assign_request_id(
 }
 
 /// `message`, with the request's reference when there is one, as a sentence.
-pub(super) fn with_reference(message: &str) -> String {
+/// The reference is an id to quote, not words, so only the frame around it is
+/// translated.
+pub(super) fn with_reference(l10n: &L10n, message: &str) -> String {
     match REQUEST_ID.try_with(|id| *id) {
-        Ok(id) => format!("{message} (reference {id})."),
-        Err(_) => format!("{message}."),
+        Ok(id) => l10n.tr_args(
+            "error-reference",
+            &[
+                ("message", FluentArg::Str(message)),
+                ("id", FluentArg::Str(&id.to_string())),
+            ],
+        ),
+        Err(_) => l10n.tr_args(
+            "error-no-reference",
+            &[("message", FluentArg::Str(message))],
+        ),
     }
 }
 
@@ -311,19 +326,25 @@ pub(super) fn with_reference(message: &str) -> String {
 /// to the log instead, under the request's id, which the answer quotes so the
 /// operator can find it. A handler serving someone who may change the archive
 /// uses [`Curator::error_response`] instead, which says what went wrong.
-pub(super) fn error_response(e: anyhow::Error) -> Response {
+pub(super) fn error_response(l10n: &L10n, e: anyhow::Error) -> Response {
     failure(
+        l10n,
         StatusCode::INTERNAL_SERVER_ERROR,
-        "Something went wrong on the server",
+        &l10n.tr("error-server"),
         e,
     )
 }
 
 /// As [`error_response`], with another status and what to tell the reader, such
 /// as a `502` that says which service failed.
-pub(super) fn failure(status: StatusCode, message: &str, e: anyhow::Error) -> Response {
+pub(super) fn failure(
+    l10n: &L10n,
+    status: StatusCode,
+    message: &str,
+    e: anyhow::Error,
+) -> Response {
     tracing::error!("{e:#}");
-    (status, with_reference(message)).into_response()
+    (status, with_reference(l10n, message)).into_response()
 }
 
 /// How long a request-path write waits for the cross-process index lock before
@@ -349,14 +370,14 @@ fn retry_after_secs() -> u64 {
 }
 
 /// 503 for a write that could not get the index lock in time.
-pub(super) fn busy_response(holder: &str) -> Response {
+///
+/// `holder` names what has the lock and is indice's own English phrase (it is
+/// also what the log says); only the sentence around it is translated.
+pub(super) fn busy_response(l10n: &L10n, holder: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         [("Retry-After", retry_after_secs().to_string())],
-        format!(
-            "The search index is busy: {holder} is running. \
-             Your change was not saved — try again shortly."
-        ),
+        l10n.tr_args("error-index-busy", &[("holder", FluentArg::Str(holder))]),
     )
         .into_response()
 }
@@ -695,4 +716,14 @@ pub(super) fn format_timestamp(ts: &str) -> String {
     } else {
         ts.to_string()
     }
+}
+
+/// A plain-text `400` saying `key`, in the language of the request.
+pub(super) fn bad_request(l10n: &L10n, key: &str) -> Response {
+    (StatusCode::BAD_REQUEST, l10n.tr(key)).into_response()
+}
+
+/// A plain-text `404` saying `key`, in the language of the request.
+pub(super) fn not_found(l10n: &L10n, key: &str) -> Response {
+    (StatusCode::NOT_FOUND, l10n.tr(key)).into_response()
 }

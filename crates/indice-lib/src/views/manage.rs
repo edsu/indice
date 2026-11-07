@@ -90,15 +90,17 @@ fn draft_panel(m: &DraftingInfo, l10n: &crate::i18n::L10n) -> Markup {
     html! {
         div.draft-panel {
             p.draft-who {
-                "Drafts with " b { (m.model) } " at " b { (m.service) }
-                ", which is sent a sample of this collection's archived text."
+                (l10n.tr("draft-panel-with")) " " b { (m.model) } " " (l10n.tr("draft-panel-at")) " " b { (m.service) }
+                ", " (l10n.tr("draft-panel-sent"))
             }
             @if let Some(n) = &m.notice { div.draft-notice { (n) } }
             @if let Some(p) = &m.preview {
                 details.draft-preview {
                     summary {
-                        "What will be sent: " (p.pages.len()) " page" @if p.pages.len() != 1 { "s" }
-                        ", " (l10n.number(p.chars as u64)) " characters"
+                        (l10n.tr_args("draft-panel-summary", &[
+                            ("pages", FluentArg::Str(&counted(l10n, "draft-panel-pages", p.pages.len() as u64))),
+                            ("chars", FluentArg::Str(&counted(l10n, "draft-panel-chars", p.chars as u64))),
+                        ]))
                     }
                     ol.draft-pages {
                         @for (title, url) in &p.pages {
@@ -108,7 +110,7 @@ fn draft_panel(m: &DraftingInfo, l10n: &crate::i18n::L10n) -> Markup {
                         }
                     }
                     details.draft-prompt {
-                        summary { "The full prompt" }
+                        summary { (l10n.tr("draft-panel-prompt")) }
                         pre { (p.prompt) }
                     }
                 }
@@ -121,25 +123,25 @@ fn draft_panel(m: &DraftingInfo, l10n: &crate::i18n::L10n) -> Markup {
 }
 
 /// The marker on a field a draft filled: say so, so the curator reviews it.
-fn drafted_mark(draft: Option<&FormDraft>, field: &str) -> Markup {
+fn drafted_mark(draft: Option<&FormDraft>, field: &str, l10n: &crate::i18n::L10n) -> Markup {
     html! {
         @if draft.is_some_and(|d| d.filled(field)) {
-            " " span.drafted-mark { "drafted, review before saving" }
+            " " span.drafted-mark { (l10n.tr("form-drafted-mark")) }
         }
     }
 }
 
 /// For a field already written, the draft's alternative, used only if the
 /// curator ticks the box.
-fn draft_suggestion(draft: Option<&FormDraft>, field: &str) -> Markup {
+fn draft_suggestion(draft: Option<&FormDraft>, field: &str, l10n: &crate::i18n::L10n) -> Markup {
     html! {
         @if let Some(text) = draft.and_then(|d| d.suggestion(field)) {
             div.draft-suggestion {
-                span.draft-label { "The draft suggests:" }
+                span.draft-label { (l10n.tr("form-draft-suggests")) }
                 div.draft-text { (text) }
                 label.use-draft {
                     input type="checkbox" name=(format!("use_draft_{field}"));
-                    " Use the draft instead"
+                    " " (l10n.tr("form-use-draft"))
                 }
             }
         }
@@ -155,24 +157,26 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
     } else {
         "/".to_string()
     };
+    let l10n = &chrome.l10n;
+    let t = |key: &str| l10n.tr(key);
     let body = html! {
         div.crumbs {
-            a href="/" { "Home" }
+            a href="/" { (t("crumb-home")) }
             span.sep { " / " }
-            @if form.editing { b { (form.name) } } @else { b { "New collection" } }
+            @if form.editing { b { (form.name) } } @else { b { (t("form-new-heading")) } }
         }
-        span.eyebrow { "Finding aid" }
-        h1.page-title { @if form.editing { "Edit collection" } @else { "New collection" } }
+        span.eyebrow { (t("form-eyebrow")) }
+        h1.page-title { @if form.editing { (t("form-edit-heading")) } @else { (t("form-new-heading")) } }
         @if form.editing {
-            p.muted { "The name is fixed (it's the collection's identity); edit the description below." }
+            p.muted { (t("form-name-fixed")) }
         }
         @if let Some(e) = &form.error {
             p.form-error { (e) }
         }
         @if let Some(d) = &form.draft {
             p.draft-note {
-                "Drafted with " b { (d.model) } " at " (d.service) ". "
-                "Fields marked “drafted” were empty and now hold the draft; where you had already written something, the draft is shown below it, to use only if you choose. Nothing is saved until you press Save."
+                (t("form-drafted-with")) " " b { (d.model) } " " (t("form-drafted-at")) " " (d.service) ". "
+                (t("form-drafted-explain"))
             }
         }
         form.manage-form method="post" action="/api/collections" {
@@ -185,45 +189,45 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
                 }
             }
             label {
-                span { "Name" }
+                span { (t("form-label-name")) }
                 input type="text" name="name" required value=(form.name) readonly[form.editing];
             }
             label {
-                span { "Description" (drafted_mark(form.draft.as_ref(), "description")) span.hint { "a one-line summary, shown on cards and under the title" } }
+                span { (t("form-label-description")) (drafted_mark(form.draft.as_ref(), "description", l10n)) span.hint { (t("form-hint-description")) } }
                 input type="text" name="description" value=(form.description);
             }
-            (draft_suggestion(form.draft.as_ref(), "description"))
+            (draft_suggestion(form.draft.as_ref(), "description", l10n))
             div.grid-2 {
-                label { span { "Creator" } input type="text" name="creator" value=(form.creator); }
-                label { span { "Dates" (drafted_mark(form.draft.as_ref(), "dates")) } input type="text" name="dates" value=(form.dates); }
-                label { span { "Curator" } input type="text" name="curator" value=(form.curator); }
-                label { span { "Rights" } input type="text" name="rights" value=(form.rights); }
+                label { span { (t("collection-field-creator")) } input type="text" name="creator" value=(form.creator); }
+                label { span { (t("collection-field-dates")) (drafted_mark(form.draft.as_ref(), "dates", l10n)) } input type="text" name="dates" value=(form.dates); }
+                label { span { (t("meta-curator")) } input type="text" name="curator" value=(form.curator); }
+                label { span { (t("collection-field-rights")) } input type="text" name="rights" value=(form.rights); }
             }
-            (draft_suggestion(form.draft.as_ref(), "dates"))
+            (draft_suggestion(form.draft.as_ref(), "dates", l10n))
             label {
-                span { "Subjects" (drafted_mark(form.draft.as_ref(), "subjects")) span.hint { "comma-separated" } }
+                span { (t("collection-field-subjects")) (drafted_mark(form.draft.as_ref(), "subjects", l10n)) span.hint { (t("form-hint-subjects")) } }
                 input type="text" name="subjects" value=(form.subjects);
             }
-            (draft_suggestion(form.draft.as_ref(), "subjects"))
+            (draft_suggestion(form.draft.as_ref(), "subjects", l10n))
             label {
-                span { "Narrative" (drafted_mark(form.draft.as_ref(), "narrative")) span.hint { "the full finding-aid prose (Markdown): Scope & Content, custodial history, appraisal" } }
+                span { (t("form-label-narrative")) (drafted_mark(form.draft.as_ref(), "narrative", l10n)) span.hint { (t("form-hint-narrative")) } }
                 textarea name="narrative" rows="8" { (form.narrative) }
             }
-            (draft_suggestion(form.draft.as_ref(), "narrative"))
+            (draft_suggestion(form.draft.as_ref(), "narrative", l10n))
             div.form-actions {
-                button.btn type="submit" { @if form.editing { "Save changes" } @else { "Create collection" } }
+                button.btn type="submit" { @if form.editing { (t("form-save")) } @else { (t("form-create")) } }
                 @if let (true, Some(m)) = (form.editing, &form.drafting) {
                     // Posts the form as it stands, so unsaved edits count, to
                     // the draft route instead of saving.
                     button.btn.draft type="submit" formaction=(format!("/manage/edit/{}/draft", form.id)) formnovalidate
                         data-service=(m.service) data-timeout=(m.timeout_secs) {
-                        @if form.draft.is_some() { "Draft again" } @else { "Draft a description" }
+                        @if form.draft.is_some() { (t("form-draft-again")) } @else { (t("form-draft-new")) }
                     }
                 }
-                a.cancel href=(back) { "Cancel" }
+                a.cancel href=(back) { (t("action-cancel")) }
             }
             @if let (true, Some(m)) = (form.editing, &form.drafting) {
-                (draft_panel(m, &chrome.l10n))
+                (draft_panel(m, l10n))
             }
         }
     };
@@ -237,7 +241,7 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
     } else {
         SearchBox::default()
     };
-    layout(Some("Manage"), chrome, Some(&search), body)
+    layout(Some(&t("layout-manage")), chrome, Some(&search), body)
 }
 
 /// Which import wizards the accession desk offers.
@@ -265,14 +269,16 @@ pub fn accession_desk(
     room_left: Option<&(u64, String)>,
     imports: ImportTabs,
 ) -> Markup {
+    let l10n = &chrome.l10n;
+    let t = |key: &str| l10n.tr(key);
     let body = html! {
         div.crumbs {
-            a href="/" { "Home" }
+            a href="/" { (t("crumb-home")) }
             span.sep { " / " }
-            b { "Add crawls" }
+            b { (t("desk-heading")) }
         }
-        span.eyebrow { "Accession" }
-        h1.page-title { "Add crawls" }
+        span.eyebrow { (t("desk-eyebrow")) }
+        h1.page-title { (t("desk-heading")) }
         @if let Some(room) = room {
             p.hint.room { (room) }
         }
@@ -289,18 +295,18 @@ pub fn accession_desk(
             data-room=[room_left.map(|r| r.0)]
             data-room-msg=[room_left.map(|r| r.1.as_str())] {
             label {
-                span { "Collection" }
+                span { (t("desk-collection")) }
                 input type="text" name="collection" required value=(collection_name)
-                    placeholder="which collection this belongs to";
+                    placeholder=(t("desk-collection-placeholder"));
             }
             label {
-                span { "Display name " span.hint { "optional" } }
-                input type="text" name="name" placeholder="override the collection's display name";
+                span { (t("desk-name")) " " span.hint { (t("desk-optional")) } }
+                input type="text" name="name" placeholder=(t("desk-name-placeholder"));
             }
 
             div.sources role="tablist" {
-                button.src-tab type="button" role="tab" aria-selected="true" data-src="upload" { "Upload" }
-                button.src-tab type="button" role="tab" aria-selected="false" data-src="url" { "URL" }
+                button.src-tab type="button" role="tab" aria-selected="true" data-src="upload" { (t("desk-tab-upload")) }
+                button.src-tab type="button" role="tab" aria-selected="false" data-src="url" { (t("desk-tab-url")) }
                 @if imports.browsertrix {
                     button.src-tab type="button" role="tab" aria-selected="false" data-src="bx" { "Browsertrix" }
                 }
@@ -310,63 +316,63 @@ pub fn accession_desk(
             }
             div.src-panel.active #src-upload {
                 label {
-                    span { "Upload a " code { ".wacz" } " file" }
+                    span { (t("desk-upload-label")) }
                     input type="file" name="file" accept=".wacz";
                 }
             }
             div.src-panel #src-url {
                 label {
-                    span { "Location " span.hint { "an http(s):// URL" } }
+                    span { (t("desk-location")) " " span.hint { (t("desk-location-hint")) } }
                     input type="text" name="location"
                         placeholder="https://example.org/crawl.wacz";
                 }
             }
             @if imports.browsertrix {
                 div.src-panel #src-bx {
-                    p.muted { "Pick crawls to import into the collection above, from the Browsertrix instance this server is configured for (its credentials + host)." }
+                    p.muted { (t("desk-bx-intro")) }
                     div #bx-browse.bx-browse hidden {
                         div.grid-2 {
-                            label { span { "Organization" } select #bx-org {} }
+                            label { span { (t("desk-bx-org")) } select #bx-org {} }
                             label {
-                                span { "Browsertrix collection " span.hint { "optional filter" } }
-                                select #bx-collection { option value="" { "All crawls" } }
+                                span { (t("desk-bx-collection")) " " span.hint { (t("desk-bx-optional-filter")) } }
+                                select #bx-collection { option value="" { (t("desk-bx-all")) } }
                             }
                         }
                         div.bx-toolbar {
                             label.bx-filter {
-                                span { "Show" }
+                                span { (t("desk-bx-show")) }
                                 select #bx-qa-filter {
-                                    option value="all" { "All crawls" }
-                                    option value="reviewed" { "QA’d only" }
-                                    option value="unreviewed" { "Not QA’d" }
+                                    option value="all" { (t("desk-bx-all")) }
+                                    option value="reviewed" { (t("desk-bx-reviewed")) }
+                                    option value="unreviewed" { (t("desk-bx-unreviewed")) }
                                 }
                             }
                             label.bx-check {
                                 input type="checkbox" #bx-hide-imported;
-                                span { "Hide already-imported" }
+                                span { (t("desk-hide-imported")) }
                             }
-                            button.btn.ghost type="button" #bx-refresh { "Refresh list" }
+                            button.btn.ghost type="button" #bx-refresh { (t("desk-refresh")) }
                         }
                     }
                     div #bx-items.bx-items {}
                     fieldset.bx-mode {
-                        legend { "On import" }
-                        label { input type="radio" name="bx-mode" value="download" checked; span { "Download a durable copy " span.hint { "stored locally, replays offline" } } }
-                        label { input type="radio" name="bx-mode" value="stream"; span { "Stream in place " span.hint { "no local copy; replay re-resolves via this server's credentials" } } }
+                        legend { (t("desk-on-import")) }
+                        label { input type="radio" name="bx-mode" value="download" checked; span { (t("desk-mode-download")) " " span.hint { (t("desk-mode-download-hint")) } } }
+                        label { input type="radio" name="bx-mode" value="stream"; span { (t("desk-mode-stream")) " " span.hint { (t("desk-mode-stream-hint")) } } }
                     }
                 }
             }
             @if imports.archive_it {
                 div.src-panel #src-ait {
-                    p.muted { "Pick crawls to import into the collection above, from the Archive-It account this server is configured for. Each selected crawl is downloaded and packaged into a WACZ." }
+                    p.muted { (t("desk-ait-intro")) }
                     div #ait-browse.bx-browse hidden {
-                        label { span { "Archive-It collection" } select #ait-collection {} }
+                        label { span { (t("desk-ait-collection")) } select #ait-collection {} }
                         div.bx-toolbar {
                             label.bx-check {
                                 input type="checkbox" #ait-hide-imported;
-                                span { "Hide already-imported" }
+                                span { (t("desk-hide-imported")) }
                             }
-                            button.btn.ghost type="button" #ait-refresh { "Refresh list" }
+                            button.btn.ghost type="button" #ait-refresh { (t("desk-refresh")) }
                         }
                     }
                     div #ait-crawls.bx-items {}
@@ -374,8 +380,8 @@ pub fn accession_desk(
             }
 
             div.form-actions {
-                button.btn type="submit" { "Add" }
-                a.cancel href="/" { "Cancel" }
+                button.btn type="submit" { (t("desk-submit")) }
+                a.cancel href="/" { (t("action-cancel")) }
             }
         }
         pre #add-progress.progress {}
@@ -394,5 +400,5 @@ pub fn accession_desk(
             ..Default::default()
         }
     };
-    layout(Some("Add crawls"), chrome, Some(&search), body)
+    layout(Some(&t("desk-heading")), chrome, Some(&search), body)
 }
