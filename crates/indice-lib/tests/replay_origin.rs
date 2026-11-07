@@ -154,6 +154,24 @@ async fn viewer_in_italian() {
     assert!(en.contains("/assets/i18n.js"), "{en}");
 }
 
+/// On an instance whose `site.language` is Italian, a reader whose browser asks
+/// for nothing indice has, or for nothing at all, gets the Italian viewer.
+#[tokio::test]
+async fn viewer_falls_back_to_the_site_language() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("config.yaml"), "site:\n  language: it\n").unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    for headers in [&[("accept-language", "ja")][..], &[]] {
+        let (status, _, html) = call(&app, Method::GET, VIEWER, headers).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"<html lang="it""#), "{headers:?}: {html}");
+        assert!(html.contains("Scrivi una nota"), "{headers:?}: {html}");
+    }
+    // A browser that asks for English still gets it.
+    let (_, _, en) = call(&app, Method::GET, VIEWER, &[("accept-language", "en")]).await;
+    assert!(en.contains(r#"<html lang="en""#), "{en}");
+}
+
 /// A crawl named only by its tool's identifier is called by its date in the
 /// viewer's banner too, in the reader's language.
 #[tokio::test]

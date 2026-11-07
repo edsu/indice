@@ -241,8 +241,11 @@ impl L10n {
     }
 
     /// Look `key` up in the chosen language, then English, then give back the key
-    /// itself: a page with a missing translation stays usable. The last two steps
-    /// log, because they mean a catalog needs fixing.
+    /// itself: a page with a missing translation stays usable. A translation that
+    /// does not format cleanly (a misspelled `$variable` in a hand-edited catalog)
+    /// counts as missing, so the reader gets the English sentence whole rather
+    /// than one with `{$nome}` in it. Each of these means a catalog needs fixing,
+    /// so each is logged.
     pub fn tr_args(&self, key: &str, args: &[(&str, FluentArg)]) -> String {
         let mut fluent_args = FluentArgs::new();
         for (name, value) in args {
@@ -252,21 +255,47 @@ impl L10n {
             }
         }
         let chosen = self.bundle();
-        if let Some(text) = format(&chosen.1, key, &fluent_args) {
-            return text;
+        match format(&chosen.1, key, &fluent_args) {
+            Some(Ok(text)) => return text,
+            Some(Err((_, errors))) => warn_once(&chosen.0, key, &errors),
+            None => {}
         }
         let english = self
             .bundles
             .iter()
             .find(|(l, _)| l.language.as_str() == REFERENCE);
-        if let Some((_, bundle)) = english {
-            if let Some(text) = format(bundle, key, &fluent_args) {
-                tracing::warn!(key, lang = %chosen.0, "message missing from catalog; used English");
-                return text;
+        if let Some((lang, bundle)) = english {
+            if let Some(result) = format(bundle, key, &fluent_args) {
+                if lang != &chosen.0 {
+                    tracing::warn!(key, lang = %chosen.0, "message missing or broken in catalog; used English");
+                }
+                return match result {
+                    Ok(text) => text,
+                    // English is the last word: shown even when it is broken,
+                    // which the catalog tests keep from shipping.
+                    Err((text, errors)) => {
+                        warn_once(lang, key, &errors);
+                        text
+                    }
+                };
             }
         }
         tracing::warn!(key, "message missing from every catalog; showing the key");
         key.to_string()
+    }
+}
+
+/// Log a message that did not format cleanly, once per language and message:
+/// a broken translation is on every page that uses it, and one line says it.
+fn warn_once(lang: &LanguageIdentifier, key: &str, errors: &[fluent_bundle::FluentError]) {
+    static SEEN: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(Default::default);
+    let first = SEEN
+        .lock()
+        .map(|mut seen| seen.insert(format!("{lang}/{key}")))
+        .unwrap_or(true);
+    if first {
+        tracing::warn!(key, %lang, ?errors, "message did not format cleanly");
     }
 }
 
@@ -299,14 +328,24 @@ fn plural_samples(lang: &LanguageIdentifier) -> Vec<(&'static str, i64)> {
     found
 }
 
-fn format(bundle: &Bundle, key: &str, args: &FluentArgs) -> Option<String> {
+/// `key` formatted with `args`, or `None` when the bundle has no such message.
+/// A message that formats with errors comes back as `Err`, with the text Fluent
+/// made of it anyway and the errors.
+fn format(
+    bundle: &Bundle,
+    key: &str,
+    args: &FluentArgs,
+) -> Option<Result<String, (String, Vec<fluent_bundle::FluentError>)>> {
     let pattern = bundle.get_message(key)?.value()?;
     let mut errors = vec![];
-    let text = bundle.format_pattern(pattern, Some(args), &mut errors);
-    if !errors.is_empty() {
-        tracing::warn!(key, ?errors, "message did not format cleanly");
-    }
-    Some(text.into_owned())
+    let text = bundle
+        .format_pattern(pattern, Some(args), &mut errors)
+        .into_owned();
+    Some(if errors.is_empty() {
+        Ok(text)
+    } else {
+        Err((text, errors))
+    })
 }
 
 mod format;

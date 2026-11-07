@@ -51,6 +51,122 @@ fn catalogs_have_the_same_messages() {
     }
 }
 
+/// The `$variables` each message and term uses, by id, from the catalog's
+/// syntax tree.
+fn variables(source: &str) -> std::collections::BTreeMap<String, BTreeSet<String>> {
+    use fluent_syntax::ast::{Entry, Expression, InlineExpression, Pattern, PatternElement};
+
+    fn inline(e: &InlineExpression<&str>, out: &mut BTreeSet<String>) {
+        match e {
+            InlineExpression::VariableReference { id } => {
+                out.insert(id.name.to_string());
+            }
+            InlineExpression::FunctionReference { arguments, .. }
+            | InlineExpression::TermReference {
+                arguments: Some(arguments),
+                ..
+            } => {
+                for a in &arguments.positional {
+                    inline(a, out);
+                }
+                for a in &arguments.named {
+                    inline(&a.value, out);
+                }
+            }
+            InlineExpression::Placeable { expression } => expr(expression, out),
+            _ => {}
+        }
+    }
+    fn expr(e: &Expression<&str>, out: &mut BTreeSet<String>) {
+        match e {
+            Expression::Inline(i) => inline(i, out),
+            Expression::Select { selector, variants } => {
+                inline(selector, out);
+                for v in variants {
+                    pattern(&v.value, out);
+                }
+            }
+        }
+    }
+    fn pattern(p: &Pattern<&str>, out: &mut BTreeSet<String>) {
+        for el in &p.elements {
+            if let PatternElement::Placeable { expression } = el {
+                expr(expression, out);
+            }
+        }
+    }
+
+    let resource = FluentResource::try_new(source.to_string()).unwrap();
+    let mut found = std::collections::BTreeMap::new();
+    for entry in resource.entries() {
+        let mut out = BTreeSet::new();
+        let (id, value, attributes) = match entry {
+            Entry::Message(m) => (m.id.name.to_string(), m.value.as_ref(), &m.attributes),
+            Entry::Term(t) => (format!("-{}", t.id.name), Some(&t.value), &t.attributes),
+            _ => continue,
+        };
+        if let Some(value) = value {
+            pattern(value, &mut out);
+        }
+        for a in attributes {
+            pattern(&a.value, &mut out);
+        }
+        found.insert(id, out);
+    }
+    found
+}
+
+/// A translation uses exactly the variables the English message does, so a
+/// misspelled or dropped `{ $name }` in a hand-edited catalog fails here rather
+/// than on a page.
+#[test]
+fn catalogs_use_the_same_variables() {
+    // Arguments offered in two spellings, of which a message uses whichever
+    // suits its language: `$Fields` is `$fields` capitalised, for a sentence
+    // that opens with the list (`server::collection::drafted_note` passes both).
+    const ALTERNATIVES: &[(&str, &str)] = &[("Fields", "fields")];
+    let normalised = |source: &str| {
+        let mut found = variables(source);
+        for vars in found.values_mut() {
+            for (alt, canonical) in ALTERNATIVES {
+                if vars.remove(*alt) {
+                    vars.insert(canonical.to_string());
+                }
+            }
+        }
+        found
+    };
+    let reference = normalised(CATALOGS[0].1);
+    assert!(reference.values().any(|v| !v.is_empty()));
+    for (tag, source) in &CATALOGS[1..] {
+        let have = normalised(source);
+        let differ: Vec<String> = reference
+            .iter()
+            .filter_map(|(id, want)| {
+                let got = have.get(id)?;
+                (got != want).then(|| format!("{id}: en {want:?}, {tag} {got:?}"))
+            })
+            .collect();
+        assert!(differ.is_empty(), "{tag}.ftl:\n{}", differ.join("\n"));
+    }
+}
+
+/// The parity check itself: it sees a misspelled variable, including one inside
+/// a plural branch.
+#[test]
+fn the_variable_check_sees_a_misspelling() {
+    let en = variables("x = { $count ->\n    [one] one { $name }\n   *[other] { $shown }\n}\n");
+    assert_eq!(
+        en["x"],
+        ["count", "name", "shown"]
+            .map(String::from)
+            .into_iter()
+            .collect()
+    );
+    let it = variables("x = { $count ->\n    [one] uno { $nome }\n   *[other] { $shown }\n}\n");
+    assert_ne!(en["x"], it["x"]);
+}
+
 #[test]
 fn negotiate_prefers_the_browser() {
     assert_eq!(
@@ -100,6 +216,26 @@ fn missing_italian_key_falls_back_to_english() {
     assert_eq!(l.lang(), "it");
     assert_eq!(l.tr("both"), "it both");
     assert_eq!(l.tr("test-only-en"), "English text");
+}
+
+/// A translation that does not format cleanly (a misspelled variable, here) is
+/// not shown: the reader gets the English sentence, whole.
+#[test]
+fn a_broken_translation_falls_back_to_english() {
+    let bundles = test_bundles(&[
+        ("en", "hello = Hello { $name }\n"),
+        ("it", "hello = Ciao { $nome }\n"),
+    ]);
+    let l = negotiate_in(bundles, Some("it"), &en());
+    assert_eq!(
+        l.tr_args("hello", &[("name", FluentArg::Str("Ed"))]),
+        "Hello Ed"
+    );
+    // Asked again, the same answer (the warning is logged only once).
+    assert_eq!(
+        l.tr_args("hello", &[("name", FluentArg::Str("Ed"))]),
+        "Hello Ed"
+    );
 }
 
 #[test]

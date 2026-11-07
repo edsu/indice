@@ -1733,6 +1733,7 @@ dependencies = [
  "flate2",
  "fluent-bundle",
  "fluent-langneg",
+ "fluent-syntax",
  "http-body",
  "image",
  "intl_pluralrules",
