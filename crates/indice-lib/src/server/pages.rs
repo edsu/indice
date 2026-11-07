@@ -124,6 +124,18 @@ pub(super) fn active_filters(q: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A filter's name in the page's language, for the sidebar and the chips. The
+/// library's own label is English because the JSON API reports it; a field with
+/// no `filter-` message (a test keeps that from happening) falls back to it.
+pub(super) fn filter_name(l10n: &L10n, field: &str) -> String {
+    let key = format!("filter-{field}");
+    if l10n.has_message(&key) {
+        l10n.tr(&key)
+    } else {
+        crate::search::filter_label(field).to_string()
+    }
+}
+
 /// Add a `field:value` filter to a query, leaving the rest (including quoted
 /// phrases) untouched. A no-op if that exact filter is already present.
 pub(super) fn query_with_filter(q: &str, field: &str, value: &str) -> String {
@@ -244,7 +256,7 @@ pub(super) async fn search_page(
             let title = if is_annotation {
                 // A note has no page title; show the annotated page's URL.
                 if r.url.is_empty() {
-                    "Note".to_string()
+                    l10n.tr("search-badge-note")
                 } else {
                     r.url.clone()
                 }
@@ -358,7 +370,7 @@ pub(super) async fn search_page(
             };
             views::ActiveFilter {
                 field: f.clone(),
-                label: crate::search::filter_label(f).to_string(),
+                label: filter_name(&l10n, f),
                 value: display,
                 remove_href: search_href(&query_without_filter(&q, f, v)),
             }
@@ -368,7 +380,7 @@ pub(super) async fn search_page(
         .facets
         .iter()
         .map(|g| views::FacetGroupView {
-            label: g.label.clone(),
+            label: filter_name(&l10n, &g.field),
             items: g
                 .buckets
                 .iter()

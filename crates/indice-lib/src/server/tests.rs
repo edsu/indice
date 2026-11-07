@@ -451,6 +451,8 @@ fn capture_quality_summarizes_status_histogram() {
     assert!(s.starts_with("100 captures, 98% ok"), "{s}");
     // Failing codes surfaced, most frequent first.
     assert!(s.contains("404×1") && s.contains("504×1"), "{s}");
+    // The codes follow the summary in parentheses (no em dash: house style).
+    assert!(s.contains("98% ok (404×1"), "{s}");
     // Empty histogram → nothing to show.
     assert!(capture_quality(&l10n("en"), &BTreeMap::new()).is_none());
 }
@@ -1675,4 +1677,48 @@ fn viewer_strings_cannot_fill_slots() {
     // The archived URL names a slot, and the slot stays as written.
     assert!(html.contains("example.org/{{site_name}}"), "{html}");
     assert!(!html.contains("{{lang}}"), "{html}");
+}
+
+/// The drafted note names its fields inside an Italian sentence, so the words
+/// stay lower case and a field whose name has its own "e" ("ambito e contenuto")
+/// stays readable in a list joined by "e".
+#[test]
+fn drafted_note_reads_as_a_sentence_in_italian() {
+    use super::collection::drafted_note;
+    let drafted = |fields: &[&str]| crate::collections::Drafted {
+        model: "m".into(),
+        service: String::new(),
+        fields: fields.iter().map(|f| f.to_string()).collect(),
+        at: String::new(),
+    };
+    let it = l10n("it");
+    assert_eq!(
+        drafted_note(&it, &drafted(&[]), None),
+        "Bozza di alcuni campi generata con m."
+    );
+    assert_eq!(
+        drafted_note(&it, &drafted(&["description", "narrative", "dates"]), None),
+        "Bozza di “descrizione”, “ambito e contenuto” e “date” generata con m."
+    );
+    // English opens with the list, capitalized.
+    assert_eq!(
+        drafted_note(&l10n("en"), &drafted(&["narrative"]), None),
+        "Narrative drafted with m."
+    );
+}
+
+/// The search sidebar and filter chips name each filter in the page's language;
+/// the library's English label is for the JSON API. Every filter the library
+/// knows has a message, so a new facet cannot appear in English on an Italian page.
+#[test]
+fn filter_names_follow_the_page_language() {
+    use super::pages::filter_name;
+    let it = l10n("it");
+    assert_eq!(filter_name(&it, "year"), "Anno");
+    assert_eq!(filter_name(&it, "collection"), "Raccolta");
+    assert_eq!(filter_name(&l10n("en"), "type"), "Type");
+    for field in crate::search::filter_fields() {
+        let key = format!("filter-{field}");
+        assert!(it.has_message(&key), "no {key} message");
+    }
 }

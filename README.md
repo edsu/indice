@@ -27,8 +27,8 @@ are revision control ready.
 > [#223](https://github.com/edsu/indice/issues/223).
 
 > **The web archive replay is entirely [Webrecorder]'s work.** indice bundles and
-> serves [ReplayWeb.page] and [wabac.js] — the browser-side engine that does all
-> the actual replay — and adds a thin Rust layer for indexing, search, and
+> serves [ReplayWeb.page] and [wabac.js] (the browser-side engine that does all
+> the actual replay) and adds a thin Rust layer for indexing, search, and
 > serving. Webrecorder did the heavy lifting; please support them.
 
 ## The readings room
@@ -47,6 +47,10 @@ are revision control ready.
   the person reading. On a server, changes need a sign-in through your identity
   provider and a role you grant. The [threat model](DESIGN.md#threat-model) says
   what indice defends and what it does not.
+- **In English and Italian**: each reader sees the web interface in their
+  browser's language when indice has it, and otherwise in the instance's
+  `site.language` (see [Interface language]). Text curators write is shown as
+  written.
 
 It ships as a single self-contained binary, so there is no Solr, no
 Elasticsearch, no separate database server. indice is built for **small, local,
@@ -130,3 +134,4 @@ components it bundles. See [LICENSE](LICENSE) for the full text and
 [Making a WACZ]: https://indice.page/docs/guides/wacz/#making-a-wacz
 [apod.wacz]: https://github.com/edsu/indice/raw/refs/heads/main/apod.wacz
 [Securing a server]: https://indice.page/docs/guides/security/
+[Interface language]: https://indice.page/docs/reference/configuration/#interface-language

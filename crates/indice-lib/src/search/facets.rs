@@ -61,6 +61,15 @@ pub fn is_filter_field(field: &str) -> bool {
         .any(|(f, _)| *f == field)
 }
 
+/// Every filterable field name, facets first, for callers that keep their own
+/// words for them (the web pages name each in the reader's language).
+pub fn filter_fields() -> impl Iterator<Item = &'static str> {
+    FACET_DIMENSIONS
+        .iter()
+        .chain(EXTRA_FILTERS.iter())
+        .map(|(f, _)| *f)
+}
+
 /// The human label for a filterable field (for active-filter chips), sharing
 /// the facet labels above so they stay in sync.
 pub fn filter_label(field: &str) -> &'static str {

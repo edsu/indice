@@ -34,6 +34,12 @@ A URL also has to resolve to a **public** address once indice runs behind an aut
 
 These routes are always mounted, and indice checks each request against the caller's role ([below](#who-can-do-what)), so an anonymous visitor gets a `403` rather than a `404`.
 
+## Language
+
+The workroom follows the same rule as the rest of the site: each curator sees it in the first language their browser asks for that indice has (English or Italian), and otherwise in the instance's [`site.language`](/docs/reference/configuration/#interface-language). There is no switch on the page; a curator who wants the other language changes their browser's preferred language. Error messages from the workroom are in the same language, though the technical detail they quote from an underlying failure stays as that failure reported it.
+
+What curators write (collection names, finding aids, notes) is shown as written, in whatever language they wrote it. A [drafted description](/docs/guides/drafting/) is the exception to "the browser decides": it is written in `site.language`, because it becomes part of the collection's record and should not change language with whoever pressed the button.
+
 ## On a workstation
 
 `indice serve` bound to `127.0.0.1`, which is the default, trusts every caller: you are the only one who can reach it, so you are the admin and there is no login. indice does not read `users.yaml` here, so a roster you write on a workstation has no effect.

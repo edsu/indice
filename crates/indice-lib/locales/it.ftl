@@ -20,7 +20,7 @@
 # A person who looks after a collection and writes its description.
 -curator = curatore
     .gender = masculine
-# A WACZ file indice has indexed and can replay.
+# The whole web archive this indice instance serves, as its readers see it.
 -archive = archivio
     .gender = masculine
 # An archived web page as indexed for search and replay.
@@ -80,7 +80,7 @@ site-tagline-default = Ricerca e consultazione di archivi web
 # L'intestazione della pagina, su ogni pagina.
 layout-manage = Gestione
 layout-search-button = Cerca
-layout-signed-in-as = connesso come
+layout-signed-in-as = accesso effettuato come
 layout-logout = Esci
 layout-login = Accedi
 
@@ -148,6 +148,18 @@ timeline-pages-count = { $count ->
 }
 search-all-collections = Cerca in tutte le { -collection-plural }
 search-without = Cerca senza { $label }: { $value }
+# I nomi dei filtri di ricerca, nella colonna "Affina" e sulle etichette dei filtri
+# attivi. La chiave termina con il nome del filtro nella query (`year:` è `filter-year`).
+filter-collection = Raccolta
+filter-year = Anno
+filter-site = Sito
+filter-type = Tipo
+filter-lang = Lingua
+filter-month = Mese
+filter-domain = Dominio
+filter-status = Stato
+filter-modified = Ultima modifica
+filter-crawl = Scansione
 search-try-fewer = Prova con meno parole o controlla l'ortografia.
 search-browse-link = Sfoglia le { -collection-plural } per anno o per sito
 search-badge-collection = Raccolta
@@ -169,7 +181,7 @@ http-status-302 = Trovata (reindirizzamento)
 http-status-307 = Reindirizzamento
 http-status-308 = Reindirizzamento
 http-status-400 = Richiesta non valida
-http-status-401 = Non autorizzato
+http-status-401 = Non autorizzata
 http-status-403 = Accesso negato
 http-status-404 = Non trovata
 http-status-410 = Non più disponibile
@@ -211,7 +223,7 @@ meta-wacz-modified = WACZ modificato
 meta-added-by = Aggiunta da
 meta-named = Nome originale
 meta-sha256 = SHA-256
-meta-crawled = Scansionata
+meta-crawled = Eseguita
 meta-indexed = Indicizzata
 meta-status = Stato
 meta-multi-wacz-value = { $count ->
@@ -228,14 +240,14 @@ review-4 = Buona
 review-3 = Discreta
 review-2 = Scarsa
 review-1 = Pessima
-review-other = Revisionata
+review-other = Esaminata
 review-label = { $word } ({ $rating }/5)
 
 capture-quality = { $count ->
     [one] { $shown } { -capture }, { $pct }% ok
    *[other] { $shown } { -capture-plural }, { $pct }% ok
 }
-capture-quality-failures = { $summary } — { $codes }
+capture-quality-failures = { $summary } ({ $codes })
 list-and = { $first } e { $last }
 
 crawl-summary-pages = { $count ->
@@ -245,12 +257,14 @@ crawl-summary-pages = { $count ->
 crawl-summary-by = di { $software }
 
 # Il nome dei campi va in minuscolo in `$fields`; `$Fields` è lo stesso elenco con
-# l'iniziale maiuscola, per un messaggio che comincia con l'elenco.
-draft-field-description = descrizione
-draft-field-narrative = presentazione
-draft-field-dates = date
-draft-field-subjects = soggetti
-draft-fields-unknown = Alcuni campi
+# l'iniziale maiuscola, per un messaggio che comincia con l'elenco. I nomi sono tra
+# virgolette perché l'elenco si unisce con "e" e "ambito e contenuto" ne contiene
+# già una.
+draft-field-description = “descrizione”
+draft-field-narrative = “ambito e contenuto”
+draft-field-dates = “date”
+draft-field-subjects = “soggetti”
+draft-fields-unknown = alcuni campi
 drafted-note = Bozza di { $fields } generata con { $model }{ $service }.
 drafted-note-reviewed = Bozza di { $fields } generata con { $model }{ $service }, rivista da { $reviewer }.
 
@@ -360,12 +374,12 @@ error-collection-not-empty = { $count ->
 # Perché una persona autenticata non può fare qualcosa. I messaggi `denied-need-`
 # completano "il tuo account non è autorizzato a ...", quindi sono all'infinito.
 denied-heading = Non puoi modificare questo archivio
-denied-title = Non autorizzato
+denied-title = Operazione non autorizzata
 denied-back = Torna all'archivio
 denied-page-insufficient = Il tuo account non è autorizzato a { $what }.
 denied-insufficient = vietato: il tuo account non è autorizzato a { $what }
 denied-unauthenticated = vietato: questa azione richiede l'accesso tramite il proxy frontale
-denied-stale = vietato: l'accesso è scaduto — ricarica la pagina per accedere di nuovo
+denied-stale = vietato: l'accesso è scaduto; ricarica la pagina per accedere di nuovo
 denied-need-curating = curare questo archivio
 denied-need-administering = amministrare questo archivio
 denied-need-delete-others-crawl = eliminare una { -crawl } aggiunta da un'altra persona
@@ -421,7 +435,7 @@ draft-panel-prompt = Il prompt completo
 # Il banco dei versamenti, dove si aggiungono scansioni a una raccolta.
 desk-eyebrow = Versamento
 desk-heading = Aggiungi { -crawl-plural }
-desk-collection = { -collection }
+desk-collection = Raccolta
 desk-collection-placeholder = a quale { -collection } appartiene
 desk-name = Nome visualizzato
 desk-optional = facoltativo
@@ -498,7 +512,7 @@ js-importing = Importazione…
 js-source-unavailable = Questa fonte non è ancora disponibile.
 js-draft-model-default = il modello
 js-drafting = Generazione della bozza…
-js-draft-waiting = In attesa di { $service }: { $s }s (rinuncia dopo { $limit }s)
+js-draft-waiting = In attesa di { $service }: { $s } s (rinuncia dopo { $limit } s)
 js-all-crawls = Tutte le { -crawl-plural }
 
 # Il banner del visualizzatore e il pannello delle note accanto alla riproduzione
@@ -514,7 +528,7 @@ viewer-captured-time = Acquisita il { $day } { $month } { $year }, ore { $time }
 anno-close = Chiudi le note
 anno-add-page = Aggiungi una nota su questa pagina
 anno-add-selection = Aggiungi una nota sulla selezione
-anno-empty-can-annotate = Nessuna nota su questa pagina. Seleziona del testo nella pagina o aggiungi una nota sull’intera pagina.
+anno-empty-can-annotate = Nessuna nota su questa pagina. Seleziona del testo nella pagina o aggiungi una nota sull'intera pagina.
 anno-empty = Nessuna nota su questa pagina.
 anno-anonymous = anonimo
 anno-date-edited = { $date }, modificata
@@ -545,14 +559,15 @@ annotations-link = Collegamento a questa nota
 note-heading = Nota
 note-title = Nota - { $name }
 note-json-ld = Questa nota come W3C Web Annotation:
-replay-not-configured = La riproduzione non è configurata: questo server non ha un’origine di riproduzione.
+replay-not-configured = La riproduzione non è configurata: questo server non ha un'origine di riproduzione.
 
 # Cosa sta facendo l'indicizzazione, mostrato nella pagina di aggiunta mentre il
 # lavoro è in corso.
 phase-downloading = scaricamento
 phase-resolving = risoluzione dell'indirizzo
 phase-checksumming = calcolo dell'impronta
-phase-scanning = scansione
+# Non "scansione": in indice quella parola indica la { -crawl } (vedi i termini).
+phase-scanning = analisi dei record
 phase-reading-index = lettura dell'indice
 phase-building-index = costruzione dell'indice
 phase-committing = salvataggio

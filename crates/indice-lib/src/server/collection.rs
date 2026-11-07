@@ -167,7 +167,7 @@ pub(super) async fn collection_page(
 }
 
 /// "Description and subjects drafted with M (S), reviewed by R."
-fn drafted_note(
+pub(super) fn drafted_note(
     l10n: &crate::i18n::L10n,
     d: &crate::collections::Drafted,
     reviewer: Option<&str>,

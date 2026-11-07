@@ -295,3 +295,22 @@ fn js_strings_use_known_arguments() {
         }
     }
 }
+
+/// The interface's prose uses colons, semicolons and parentheses, not em dashes:
+/// the house style for everything indice says, in every language.
+#[test]
+fn catalogs_have_no_em_dashes() {
+    for (tag, source) in CATALOGS {
+        let lines: Vec<_> = source
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains('\u{2014}'))
+            .map(|(n, l)| format!("{}: {l}", n + 1))
+            .collect();
+        assert!(
+            lines.is_empty(),
+            "{tag}.ftl has em dashes:\n{}",
+            lines.join("\n")
+        );
+    }
+}

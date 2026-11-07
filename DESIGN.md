@@ -1758,9 +1758,26 @@ escapes every `<` as `\u003c`, so a translation cannot close the element or open
 comment; that escape is why the element's text is the one place a string is not
 HTML-escaped by maud. `no_english_literals_in_scripts` pins the scripts to `t()`.
 
-**Adding a language.** Add `locales/<tag>.ftl` with every id in `en.ftl`, add one line
-to `CATALOGS`, and the tests check parsing and id parity. A right-to-left language
-also needs the stylesheets converted from physical to logical properties
+**Adding a language.**
+
+1. Copy `locales/en.ftl` to `locales/<tag>.ftl`, naming it by the full tag
+   (`pt-BR`, `zh-Hant`).
+2. Translate the values, keeping every id. Choose the terms at the top first; the
+   messages refer to them. Give each plural message the categories the language
+   uses (`[one]`, `[few]`, `[many]`, `*[other]`, as CLDR lists them). Translate the
+   `month-` names, `date-long`, `date-span` and the number separators too.
+3. Add a `language-name-<tag>` message, in English, to every catalog: the built-in
+   describe prompt names `site.language` with it.
+4. Add one line to `i18n::CATALOGS`.
+5. Run `cargo test -p indice-lib`: `every_catalog_parses`,
+   `catalogs_have_the_same_messages` and `catalogs_have_no_em_dashes` check the
+   file, and `parse_language` then accepts the tag for `site.language`.
+
+A term is used inside sentences, so a translator who changes a term's gender
+(Italian `scansione` is feminine) also changes the articles and agreements around it;
+the `.gender` attribute records the choice but no message selects on it yet.
+
+A right-to-left language also needs the stylesheets converted from physical to logical properties
 (`margin-inline-start` and friends): about 43 physical left/right rules remain across
 `app.css`, `viewer.css` and `annotations.css`. That is separate work from the catalog.
 

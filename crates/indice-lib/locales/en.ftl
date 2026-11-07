@@ -14,7 +14,7 @@
 -annotation = annotation
 # A person who looks after a collection and writes its description.
 -curator = curator
-# A WACZ file indice has indexed and can replay.
+# The whole web archive this indice instance serves, as its readers see it.
 -archive = archive
 # An archived web page as indexed for search and replay.
 -page = page
@@ -162,6 +162,18 @@ timeline-pages-count = { $count ->
 search-all-collections = Search all { -collection-plural }
 # `$label` names a filter, `$value` its value.
 search-without = Search without { $label }: { $value }
+# Names of the search filters, in the Refine sidebar and on the chips of active
+# filters. The key ends in the filter's query name (`year:2021` is `filter-year`).
+filter-collection = Collection
+filter-year = Year
+filter-site = Site
+filter-type = Type
+filter-lang = Language
+filter-month = Month
+filter-domain = Host
+filter-status = Status
+filter-modified = Modified
+filter-crawl = Crawl
 search-try-fewer = Try fewer words, or check the spelling.
 search-browse-link = Browse the { -collection-plural } by year or by site
 search-badge-collection = Collection
@@ -257,8 +269,8 @@ capture-quality = { $count ->
     [one] { $shown } { -capture }, { $pct }% ok
    *[other] { $shown } { -capture-plural }, { $pct }% ok
 }
-# The summary, then the most frequent failing HTTP codes: "404×3, 504×1".
-capture-quality-failures = { $summary } — { $codes }
+# The summary, then the most frequent failing HTTP codes: "100 captures, 98% ok (404×3, 504×1)".
+capture-quality-failures = { $summary } ({ $codes })
 # Joins two names in a list: "A and B". A longer list is joined pairwise.
 list-and = { $first } and { $last }
 
@@ -359,7 +371,7 @@ error-no-reference = { $message }.
 error-request-failed = The request failed: { $detail }
 error-query-too-long = search query too long: { $bytes } bytes, limit { $limit }
 # `$holder` names what holds the lock, in indice's own English ("a workroom add").
-error-index-busy = The search index is busy: { $holder } is running. Your change was not saved — try again shortly.
+error-index-busy = The search index is busy: { $holder } is running. Your change was not saved; try again shortly.
 error-busy = indice is busy; try again in a moment
 # `$secs` is how long to wait, in seconds.
 error-too-many-requests = too many requests from this address; try again in { $secs }s
@@ -382,8 +394,8 @@ error-note-empty = note is empty
 error-note-target-required = url and timestamp are required
 error-annotation-none = no such { -annotation }
 error-annotation-not-yours = not your { -annotation }
-error-browsertrix-unconfigured = Browsertrix import is not configured — set BROWSERTRIX_TOKEN (or BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) in the server's environment.
-error-archiveit-unconfigured = Archive-It import is not configured — set ARCHIVEIT_USER + ARCHIVEIT_PASSWORD in the server's environment.
+error-browsertrix-unconfigured = Browsertrix import is not configured: set BROWSERTRIX_TOKEN (or BROWSERTRIX_USER + BROWSERTRIX_PASSWORD) in the server's environment.
+error-archiveit-unconfigured = Archive-It import is not configured: set ARCHIVEIT_USER + ARCHIVEIT_PASSWORD in the server's environment.
 error-browsertrix = Browsertrix error: { $detail }
 error-archiveit = Archive-It error: { $detail }
 error-browsertrix-resolver = Browsertrix streaming import requires the resolver (credentials).
@@ -405,7 +417,7 @@ denied-back = Back to the archive
 denied-page-insufficient = Your account isn't authorized for { $what }.
 denied-insufficient = forbidden: your account is not authorized for { $what }
 denied-unauthenticated = forbidden: this action requires signing in via the front proxy
-denied-stale = forbidden: your sign-in has lapsed — reload the page to log in again
+denied-stale = forbidden: your sign-in has lapsed; reload the page to log in again
 denied-need-curating = curating this archive
 denied-need-administering = administering this archive
 denied-need-delete-others-crawl = deleting a { -crawl } someone else added
@@ -466,7 +478,8 @@ draft-panel-prompt = The full prompt
 # The accession desk, where crawls are added to a collection.
 desk-eyebrow = Accession
 desk-heading = Add { -crawl-plural }
-desk-collection = { -collection }
+# The label of the collection box, capitalized like the other labels.
+desk-collection = Collection
 desk-collection-placeholder = which { -collection } this belongs to
 desk-name = Display name
 desk-optional = optional
