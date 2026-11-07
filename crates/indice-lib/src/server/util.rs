@@ -6,25 +6,15 @@ use axum::response::{IntoResponse, Response};
 use std::time::Duration;
 
 use crate::collections::{Manifest, Wacz};
+use crate::i18n::{FluentArg, L10n};
 
 use super::*;
 
-/// Format a byte count as a short human-readable size.
-/// Format a byte count for display (e.g. `48.2 MB`). Shared by the web UI and
-/// the CLI so both show sizes the same way.
+/// Format a byte count for display (e.g. `48.2 MB`) in English, for the CLI and
+/// log lines. Pages use [`crate::i18n::L10n::size`] with the reader's language;
+/// this is the same code with the English catalog, so the two cannot drift.
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut b = bytes as f64;
-    let mut i = 0;
-    while b >= 1024.0 && i < UNITS.len() - 1 {
-        b /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{b:.1} {}", UNITS[i])
-    }
+    crate::i18n::L10n::default().size(bytes)
 }
 
 pub(super) fn load_waczs(state: &AppState) -> Vec<Wacz> {
@@ -243,16 +233,20 @@ pub(super) const MAX_QUERY_LEN: usize = 2048;
 ///
 /// The message names the limit, so a client can tell this apart from a query
 /// that simply matched nothing.
-pub(super) fn query_too_long(q: &str) -> Option<Response> {
+///
+/// Takes the language of whoever asked: a search page says it to its reader,
+/// while the documented API passes `L10n::default()` to keep its English.
+pub(super) fn query_too_long(l10n: &L10n, q: &str) -> Option<Response> {
     (q.len() > MAX_QUERY_LEN).then(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "search query too long: {} bytes, limit {MAX_QUERY_LEN}",
-                q.len()
-            ),
-        )
-            .into_response()
+        let text = l10n.tr_args(
+            "error-query-too-long",
+            &[
+                // Plain digits: a client matches the limit by its number.
+                ("bytes", FluentArg::Str(&q.len().to_string())),
+                ("limit", FluentArg::Str(&MAX_QUERY_LEN.to_string())),
+            ],
+        );
+        (StatusCode::BAD_REQUEST, text).into_response()
     })
 }
 
@@ -306,10 +300,21 @@ pub(super) async fn assign_request_id(
 }
 
 /// `message`, with the request's reference when there is one, as a sentence.
-pub(super) fn with_reference(message: &str) -> String {
+/// The reference is an id to quote, not words, so only the frame around it is
+/// translated.
+pub(super) fn with_reference(l10n: &L10n, message: &str) -> String {
     match REQUEST_ID.try_with(|id| *id) {
-        Ok(id) => format!("{message} (reference {id})."),
-        Err(_) => format!("{message}."),
+        Ok(id) => l10n.tr_args(
+            "error-reference",
+            &[
+                ("message", FluentArg::Str(message)),
+                ("id", FluentArg::Str(&id.to_string())),
+            ],
+        ),
+        Err(_) => l10n.tr_args(
+            "error-no-reference",
+            &[("message", FluentArg::Str(message))],
+        ),
     }
 }
 
@@ -321,19 +326,25 @@ pub(super) fn with_reference(message: &str) -> String {
 /// to the log instead, under the request's id, which the answer quotes so the
 /// operator can find it. A handler serving someone who may change the archive
 /// uses [`Curator::error_response`] instead, which says what went wrong.
-pub(super) fn error_response(e: anyhow::Error) -> Response {
+pub(super) fn error_response(l10n: &L10n, e: anyhow::Error) -> Response {
     failure(
+        l10n,
         StatusCode::INTERNAL_SERVER_ERROR,
-        "Something went wrong on the server",
+        &l10n.tr("error-server"),
         e,
     )
 }
 
 /// As [`error_response`], with another status and what to tell the reader, such
 /// as a `502` that says which service failed.
-pub(super) fn failure(status: StatusCode, message: &str, e: anyhow::Error) -> Response {
+pub(super) fn failure(
+    l10n: &L10n,
+    status: StatusCode,
+    message: &str,
+    e: anyhow::Error,
+) -> Response {
     tracing::error!("{e:#}");
-    (status, with_reference(message)).into_response()
+    (status, with_reference(l10n, message)).into_response()
 }
 
 /// How long a request-path write waits for the cross-process index lock before
@@ -359,14 +370,14 @@ fn retry_after_secs() -> u64 {
 }
 
 /// 503 for a write that could not get the index lock in time.
-pub(super) fn busy_response(holder: &str) -> Response {
+///
+/// `holder` names what has the lock and is indice's own English phrase (it is
+/// also what the log says); only the sentence around it is translated.
+pub(super) fn busy_response(l10n: &L10n, holder: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         [("Retry-After", retry_after_secs().to_string())],
-        format!(
-            "The search index is busy: {holder} is running. \
-             Your change was not saved — try again shortly."
-        ),
+        l10n.tr_args("error-index-busy", &[("holder", FluentArg::Str(holder))]),
     )
         .into_response()
 }
@@ -413,25 +424,13 @@ fn ymd(ts: &str) -> String {
 /// first to the last, empty months included, so gaps show. `href` gives a
 /// month's link and `active` whether it is the filter in force. At most the
 /// last ten years, so a stray old capture cannot squeeze the rest to nothing.
+/// Labels are in the reader's language.
 pub(super) fn month_axis(
+    l10n: &crate::i18n::L10n,
     counts: &[(u64, u64)],
     href: impl Fn(u64) -> String,
     active: impl Fn(u64) -> bool,
 ) -> Vec<crate::views::TimelineBar> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
     let valid = |ym: u64| (1..=12).contains(&(ym % 100));
     let mut by_month: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
     for &(ym, n) in counts.iter().filter(|(ym, _)| valid(*ym)) {
@@ -457,7 +456,7 @@ pub(super) fn month_axis(
             let count = by_month.get(&ym).copied().unwrap_or(0);
             let month = (ym % 100) as usize;
             crate::views::TimelineBar {
-                label: format!("{} {}", MONTHS[month - 1], ym / 100),
+                label: l10n.month_year(month as u32, (ym / 100) as i32),
                 year: (i == start || month == 1).then(|| (ym / 100).to_string()),
                 count,
                 step: if count == 0 {
@@ -475,15 +474,18 @@ pub(super) fn month_axis(
 /// Two timestamps as a span of dates in words: "7 January 2025 to 3 August
 /// 2026", or one date when they fall on the same day. A timestamp that is not
 /// a date is shown as it is.
-fn date_span(start: Option<&str>, end: Option<&str>) -> Option<String> {
-    let words = |ts: &str| crate::collections::long_date(ts).unwrap_or_else(|| ymd(ts));
+pub(super) fn date_span(l10n: &L10n, start: Option<&str>, end: Option<&str>) -> Option<String> {
+    let words = |ts: &str| l10n.long_date(ts).unwrap_or_else(|| ymd(ts));
     match (start, end) {
         (Some(s), Some(e)) => {
             let (sd, ed) = (words(s), words(e));
             Some(if sd == ed {
                 sd
             } else {
-                format!("{sd} to {ed}")
+                l10n.tr_args(
+                    "date-span",
+                    &[("start", FluentArg::Str(&sd)), ("end", FluentArg::Str(&ed))],
+                )
             })
         }
         (Some(t), None) | (None, Some(t)) => Some(words(t)),
@@ -492,15 +494,18 @@ fn date_span(start: Option<&str>, end: Option<&str>) -> Option<String> {
 }
 
 /// When a crawl's captures were made, or `None` when none were recorded.
-pub(super) fn capture_range(c: &Wacz) -> Option<String> {
-    date_span(c.capture_start.as_deref(), c.capture_end.as_deref())
+pub(super) fn capture_range(l10n: &L10n, c: &Wacz) -> Option<String> {
+    date_span(l10n, c.capture_start.as_deref(), c.capture_end.as_deref())
 }
 
 /// A compact "capture quality" summary of an HTTP status histogram: total
 /// captures, the share that succeeded (2xx/3xx), and the notable failing codes.
 /// The derived DACS Appraisal signal — surfaces the 404/403/504 "absences" that
 /// a clean-looking crawl can hide.
-pub(super) fn capture_quality(counts: &std::collections::BTreeMap<u16, u64>) -> Option<String> {
+pub(super) fn capture_quality(
+    l10n: &L10n,
+    counts: &std::collections::BTreeMap<u16, u64>,
+) -> Option<String> {
     let total: u64 = counts.values().sum();
     if total == 0 {
         return None;
@@ -511,7 +516,17 @@ pub(super) fn capture_quality(counts: &std::collections::BTreeMap<u16, u64>) -> 
         .map(|(_, n)| n)
         .sum();
     let ok_pct = (ok as f64 / total as f64 * 100.0).round() as u64;
-    let mut s = format!("{total} captures, {ok_pct}% ok");
+    let summary = l10n.tr_args(
+        "capture-quality",
+        &[
+            (
+                "count",
+                FluentArg::Num(total.try_into().unwrap_or(i64::MAX)),
+            ),
+            ("shown", FluentArg::Str(&l10n.number(total))),
+            ("pct", FluentArg::Num(ok_pct as i64)),
+        ],
+    );
     // Notable failing codes (>= 400), most frequent first.
     let mut bad: Vec<(u16, u64)> = counts
         .iter()
@@ -519,30 +534,53 @@ pub(super) fn capture_quality(counts: &std::collections::BTreeMap<u16, u64>) -> 
         .map(|(c, n)| (*c, *n))
         .collect();
     bad.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    if !bad.is_empty() {
-        let parts: Vec<String> = bad
-            .iter()
-            .take(4)
-            .map(|(c, n)| format!("{c}×{n}"))
-            .collect();
-        s.push_str(" — ");
-        s.push_str(&parts.join(", "));
+    if bad.is_empty() {
+        return Some(summary);
     }
-    Some(s)
+    // Codes and counts are digits, written the way the status line writes them.
+    let codes: Vec<String> = bad
+        .iter()
+        .take(4)
+        .map(|(c, n)| format!("{c}×{n}"))
+        .collect();
+    Some(l10n.tr_args(
+        "capture-quality-failures",
+        &[
+            ("summary", FluentArg::Str(&summary)),
+            ("codes", FluentArg::Str(&codes.join(", "))),
+        ],
+    ))
 }
 
 /// Map a Browsertrix QA review rating (1–5) to its label, with the raw value —
 /// a DACS Appraisal signal ("this crawl was reviewed and judged …").
-pub(super) fn review_label(rating: u8) -> String {
+pub(super) fn review_label(l10n: &L10n, rating: u8) -> String {
     let word = match rating {
-        5 => "Excellent",
-        4 => "Good",
-        3 => "Fair",
-        2 => "Poor",
-        1 => "Bad",
-        _ => "Reviewed",
+        1..=5 => l10n.tr(&format!("review-{rating}")),
+        _ => l10n.tr("review-other"),
     };
-    format!("{word} ({rating}/5)")
+    l10n.tr_args(
+        "review-label",
+        &[
+            ("word", FluentArg::Str(&word)),
+            ("rating", FluentArg::Str(&rating.to_string())),
+        ],
+    )
+}
+
+/// Names as a list in words: "A", "A and B", "A, B and C".
+pub(super) fn list_and(l10n: &L10n, items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => l10n.tr_args(
+            "list-and",
+            &[
+                ("first", FluentArg::Str(&head.join(", "))),
+                ("last", FluentArg::Str(last)),
+            ],
+        ),
+    }
 }
 
 /// Merge the per-crawl status histograms across a collection's members.
@@ -570,29 +608,51 @@ pub(super) fn collection_software(members: &[&Wacz]) -> Vec<String> {
 }
 
 /// The capture date range spanning a collection's member WACZs.
-pub(super) fn members_capture_range(members: &[&Wacz]) -> Option<String> {
+pub(super) fn members_capture_range(l10n: &L10n, members: &[&Wacz]) -> Option<String> {
     let start = members.iter().filter_map(|w| w.capture_start.clone()).min();
     let end = members.iter().filter_map(|w| w.capture_end.clone()).max();
-    date_span(start.as_deref(), end.as_deref())
+    date_span(l10n, start.as_deref(), end.as_deref())
 }
 
 /// A one-sentence provenance summary for a collection's list of crawls: "38
 /// pages, by Browsertrix-Crawler 1.4.2." The list shows each crawl's date
 /// above it, so the sentence leaves it out. `None` when nothing is known. The
 /// view escapes it.
-pub(super) fn provenance_summary(c: &Wacz) -> Option<String> {
+pub(super) fn provenance_summary(l10n: &L10n, c: &Wacz) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(n) = c.page_count {
-        parts.push(format!("{n} page{}", if n == 1 { "" } else { "s" }));
+        parts.push(counted_message(l10n, "crawl-summary-pages", n));
     }
     if !c.software.is_empty() {
-        parts.push(format!("by {}", c.software.join(" and ")));
+        parts.push(l10n.tr_args(
+            "crawl-summary-by",
+            &[("software", FluentArg::Str(&list_and(l10n, &c.software)))],
+        ));
     }
     let mut sentence = parts.join(", ");
     let first = sentence.chars().next()?;
     sentence.replace_range(..first.len_utf8(), &first.to_uppercase().to_string());
     sentence.push('.');
     Some(sentence)
+}
+
+/// A plural message (`$count`, `$shown`) for `n`, with the number in the
+/// language's own grouping.
+fn counted_message(l10n: &L10n, key: &str, n: u64) -> String {
+    l10n.tr_args(
+        key,
+        &[
+            ("count", FluentArg::Num(n.try_into().unwrap_or(i64::MAX))),
+            ("shown", FluentArg::Str(&l10n.number(n))),
+        ],
+    )
+}
+
+/// A date for a facts table: in words when the timestamp is a date, as given
+/// otherwise.
+pub(super) fn day_in_words(l10n: &L10n, ts: &str) -> String {
+    l10n.long_date(ts)
+        .unwrap_or_else(|| ts.get(..10).unwrap_or(ts).to_string())
 }
 
 pub(super) fn html_escape(s: &str) -> String {
@@ -656,4 +716,14 @@ pub(super) fn format_timestamp(ts: &str) -> String {
     } else {
         ts.to_string()
     }
+}
+
+/// A plain-text `400` saying `key`, in the language of the request.
+pub(super) fn bad_request(l10n: &L10n, key: &str) -> Response {
+    (StatusCode::BAD_REQUEST, l10n.tr(key)).into_response()
+}
+
+/// A plain-text `404` saying `key`, in the language of the request.
+pub(super) fn not_found(l10n: &L10n, key: &str) -> Response {
+    (StatusCode::NOT_FOUND, l10n.tr(key)).into_response()
 }

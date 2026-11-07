@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::annotations::{self};
 use crate::collections::{Manifest, Wacz};
+use crate::i18n::FluentArg;
 use crate::search::PagesScope;
 use crate::views;
 
@@ -21,37 +22,54 @@ pub(super) async fn collection_page(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
     let Some(c) = manifest.collection_by_id(&id) else {
-        return (StatusCode::NOT_FOUND, "collection not found").into_response();
+        return not_found(&l10n, "error-collection-not-found");
     };
     let members: Vec<&Wacz> = manifest.members_of(&id).collect();
 
     // Aggregates derived from members.
     let total_size: u64 = members.iter().map(|w| w.file_size).sum();
     let software = collection_software(&members);
-    let range = members_capture_range(&members);
+    let chrome = chrome(&state, &headers);
+    let l10n = &chrome.l10n;
+    let range = members_capture_range(l10n, &members);
 
     let mut meta = Vec::new();
     if let Some(cur) = &c.curator {
-        meta.push(views::MetaRow::new("Curator", cur.clone()));
+        meta.push(views::MetaRow::new(&l10n.tr("meta-curator"), cur.clone()));
     }
-    meta.push(views::MetaRow::new("Crawls", members.len().to_string()));
-    meta.push(views::MetaRow::new("Size", human_size(total_size)));
+    meta.push(views::MetaRow::new(
+        &l10n.tr("meta-crawls"),
+        l10n.number(members.len() as u64),
+    ));
+    meta.push(views::MetaRow::new(
+        &l10n.tr("meta-size"),
+        l10n.size(total_size),
+    ));
     if !software.is_empty() {
-        meta.push(views::MetaRow::new("Software", software.join(", ")));
+        meta.push(views::MetaRow::new(
+            &l10n.tr("meta-software"),
+            software.join(", "),
+        ));
     }
     if let Some(r) = &range {
-        meta.push(views::MetaRow::new("Capture dates", r.clone()));
+        meta.push(views::MetaRow::new(
+            &l10n.tr("meta-capture-dates"),
+            r.clone(),
+        ));
     }
-    if let Some(q) = capture_quality(&merged_status_counts(&members)) {
-        meta.push(views::MetaRow::new("Capture quality", q));
+    if let Some(q) = capture_quality(l10n, &merged_status_counts(&members)) {
+        meta.push(views::MetaRow::new(&l10n.tr("meta-capture-quality"), q));
     }
-    let created = c.created.get(..10).unwrap_or(&c.created);
-    meta.push(views::MetaRow::new("Created", created));
+    meta.push(views::MetaRow::new(
+        &l10n.tr("meta-created"),
+        day_in_words(l10n, &c.created),
+    ));
     // Custody, resolved to a display name through the roster — this page is
     // public, so the stored SubjectId must not be printed.
     if let Some(subject) = &c.created_by {
@@ -61,7 +79,7 @@ pub(super) async fn collection_page(
             .resolve(subject.clone())
             .display_name()
             .to_string();
-        meta.push(views::MetaRow::new("Created by", name));
+        meta.push(views::MetaRow::new(&l10n.tr("meta-created-by"), name));
     }
 
     // Newest first. A crawl with no recorded date sorts last.
@@ -71,14 +89,11 @@ pub(super) async fn collection_page(
         .iter()
         .map(|w| views::MemberItem {
             id: w.id.clone(),
-            name: w.display_name(),
-            when: w
-                .capture_start
-                .as_deref()
-                .and_then(crate::collections::long_date),
+            name: w.display_name_in(l10n),
+            when: w.capture_start.as_deref().and_then(|ts| l10n.long_date(ts)),
             present: w.is_present(&state.home),
             remote: w.source.is_remote(),
-            provenance: provenance_summary(w),
+            provenance: provenance_summary(l10n, w),
             thumb: thumb_href(&state.home, &state.index_dir, &w.collection, &w.id),
         })
         .collect();
@@ -92,12 +107,25 @@ pub(super) async fn collection_page(
         })
         .await
         .unwrap_or_default();
-    let facets = scoped_facet_sections(&overview.facets, &format!("collection:{id}"));
+    let facets = scoped_facet_sections(l10n, &overview.facets, &format!("collection:{id}"));
 
-    let chrome = chrome(&state, &headers);
     // Deaccession is an admin act; don't offer a curator a button that 403s.
     let can_delete =
         resolve_caller(&state, &headers).is_some_and(|(p, _)| p.role().can_administer());
+    // Built before the page takes `chrome`, whose language it is worded in.
+    let drafted_note = c.drafted.as_ref().map(|d| {
+        // Reviewed by whoever last saved the finding aid, resolved through
+        // the roster: this page is public, so never the stored identity.
+        let reviewer = c.updated_by.as_ref().map(|s| {
+            state
+                .users
+                .current()
+                .resolve(s.clone())
+                .display_name()
+                .to_string()
+        });
+        drafted_note(l10n, d, reviewer.as_deref())
+    });
     let page = views::CollectionPage {
         name: c.name.clone(),
         description: c.description.clone(),
@@ -112,6 +140,7 @@ pub(super) async fn collection_page(
         // From the index, like the search timeline, so each bar counts what
         // its `month:` link finds.
         crawl_months: month_axis(
+            l10n,
             &overview
                 .months
                 .iter()
@@ -132,49 +161,60 @@ pub(super) async fn collection_page(
         annotation_count: annotations::load(&state.home, &c.id)
             .map(|v| v.len())
             .unwrap_or(0),
-        drafted_note: c.drafted.as_ref().map(|d| {
-            // Reviewed by whoever last saved the finding aid, resolved through
-            // the roster: this page is public, so never the stored identity.
-            let reviewer = c.updated_by.as_ref().map(|s| {
-                state
-                    .users
-                    .current()
-                    .resolve(s.clone())
-                    .display_name()
-                    .to_string()
-            });
-            drafted_note(d, reviewer.as_deref())
-        }),
+        drafted_note,
     };
     views::collection(&page).into_response()
 }
 
 /// "Description and subjects drafted with M (S), reviewed by R."
-fn drafted_note(d: &crate::collections::Drafted, reviewer: Option<&str>) -> String {
-    let mut names: Vec<String> = d.fields.iter().map(|f| f.to_string()).collect();
-    let list = match names.len() {
-        0 => "Some fields".to_string(),
-        1 => names.remove(0),
-        _ => {
-            let last = names.pop().unwrap();
-            format!("{} and {last}", names.join(", "))
-        }
+pub(super) fn drafted_note(
+    l10n: &crate::i18n::L10n,
+    d: &crate::collections::Drafted,
+    reviewer: Option<&str>,
+) -> String {
+    let names: Vec<String> = d
+        .fields
+        .iter()
+        .map(|f| {
+            let key = format!("draft-field-{f}");
+            // A field this catalog has no word for is shown as recorded.
+            if l10n.has_message(&key) {
+                l10n.tr(&key)
+            } else {
+                f.to_string()
+            }
+        })
+        .collect();
+    let list = if names.is_empty() {
+        l10n.tr("draft-fields-unknown")
+    } else {
+        list_and(l10n, &names)
     };
-    let mut list: Vec<char> = list.chars().collect();
-    if let Some(first) = list.first_mut() {
-        *first = first.to_ascii_uppercase();
-    }
-    let list: String = list.into_iter().collect();
+    // For a message that opens with the list: the same words, first letter up.
+    let mut capitalized = list.chars();
+    let capitalized: String = match capitalized.next() {
+        Some(first) => first.to_uppercase().chain(capitalized).collect(),
+        None => String::new(),
+    };
     let service = if d.service.is_empty() {
         String::new()
     } else {
         format!(" ({})", d.service)
     };
+    let mut args = vec![
+        ("fields", FluentArg::Str(&list)),
+        ("Fields", FluentArg::Str(&capitalized)),
+        ("model", FluentArg::Str(&d.model)),
+        ("service", FluentArg::Str(&service)),
+    ];
     match reviewer {
-        Some(r) => format!("{list} drafted with {}{service}, reviewed by {r}.", d.model),
+        Some(r) => {
+            args.push(("reviewer", FluentArg::Str(r)));
+            l10n.tr_args("drafted-note-reviewed", &args)
+        }
         // Saved without a known editor (`collection draft --apply` from the
         // command line): claim no review that may not have happened.
-        None => format!("{list} drafted with {}{service}.", d.model),
+        None => l10n.tr_args("drafted-note", &args),
     }
 }
 
@@ -185,12 +225,13 @@ pub(super) async fn collection_annotations(
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(&l10n, e),
     };
     let Some(c) = manifest.collection_by_id(&id) else {
-        return (StatusCode::NOT_FOUND, "collection not found").into_response();
+        return not_found(&l10n, "error-collection-not-found");
     };
     let chrome = chrome(&state, &headers);
     // Reads and parses the whole store, so off the async workers.
@@ -357,9 +398,16 @@ pub(super) async fn collection_annotation(
         Some(k) => (k.to_string(), true),
         None => (key, false),
     };
-    let not_found = || (StatusCode::NOT_FOUND, "annotation not found").into_response();
+    // The page is in the reader's language; the JSON-LD is the documented API,
+    // and English.
+    let l10n = if json_ld_url || wants_json_ld(&headers) {
+        L10n::default()
+    } else {
+        super::i18n::negotiate_headers(&state, &headers)
+    };
+    let missing = || not_found(&l10n, "error-annotation-not-found");
     let Some(note_id) = annotations::id_for_key(&key) else {
-        return not_found();
+        return missing();
     };
     // The manifest and the whole store are read and parsed for one note, so
     // off the async workers: note pages are open to crawlers.
@@ -376,9 +424,14 @@ pub(super) async fn collection_annotation(
     };
     let (collection_name, a) = match found {
         Ok(Ok(Some(found))) => found,
-        Ok(Ok(None)) => return not_found(),
-        Ok(Err(e)) => return error_response(e),
-        Err(e) => return error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+        Ok(Ok(None)) => return missing(),
+        Ok(Err(e)) => return error_response(&L10n::default(), e),
+        Err(e) => {
+            return error_response(
+                &L10n::default(),
+                anyhow::anyhow!("annotation task panicked: {e}"),
+            )
+        }
     };
     let ld = annotation_json_ld(&a, &id, &state.origin);
     // Public, and free of anything that identifies a login, so any site's
@@ -404,7 +457,7 @@ pub(super) async fn collection_annotation(
         return (vary, ld_headers, ld.to_string()).into_response();
     }
     let Some(path) = annotation_path(&id, &a.id) else {
-        return not_found();
+        return missing();
     };
     let json_ld_href = format!("{path}{JSON_LD_SUFFIX}");
     // Where the JSON-LD is, for a client that reads headers and not pages.
@@ -435,9 +488,12 @@ pub(super) async fn collection_replay_json(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
+    // The replay manifest is read by wabac, not a person: English, like the
+    // other documented read endpoints.
+    let en = L10n::default();
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(&en, e),
     };
     let Some(c) = manifest.collection_by_id(&id) else {
         return (StatusCode::NOT_FOUND, "collection not found").into_response();
@@ -592,7 +648,11 @@ pub(super) async fn pages_response(
     scope: PagesFor,
     params: PagesParams,
 ) -> Response {
-    if let Some(refusal) = params.search.as_deref().and_then(query_too_long) {
+    if let Some(refusal) = params
+        .search
+        .as_deref()
+        .and_then(|q| query_too_long(&L10n::default(), q))
+    {
         return refusal;
     }
     let page = params.page.unwrap_or(1).max(1);
@@ -646,7 +706,7 @@ pub(super) async fn pages_response(
             )
                 .into_response()
         }
-        Err(e) => error_response(e),
+        Err(e) => error_response(&L10n::default(), e),
     }
 }
 
@@ -655,15 +715,16 @@ pub(super) async fn pages_response(
 /// further filtered by that value. The Collection dimension is skipped (moot on a
 /// scoped page), and empty dimensions are dropped.
 pub(super) fn scoped_facet_sections(
+    l10n: &crate::i18n::L10n,
     overview: &[crate::search::FacetGroup],
     scope: &str,
 ) -> Vec<views::FacetSection> {
-    // (facet field == filter field, heading, sort by value desc, max shown)
+    // (facet field == filter field, heading message, sort by value desc, max shown)
     const DIMS: [(&str, &str, bool, usize); 4] = [
-        ("site", "Top sites", false, 10),
-        ("year", "By year", true, 12),
-        ("type", "Types", false, 6),
-        ("lang", "Languages", false, 8),
+        ("site", "facet-top-sites", false, 10),
+        ("year", "facet-by-year", true, 12),
+        ("type", "facet-types", false, 6),
+        ("lang", "facet-languages", false, 8),
     ];
     DIMS.iter()
         .filter_map(|(field, label, by_value_desc, max)| {
@@ -688,7 +749,7 @@ pub(super) fn scoped_facet_sections(
                 })
                 .collect();
             Some(views::FacetSection {
-                label: label.to_string(),
+                label: l10n.tr(label),
                 links,
             })
         })

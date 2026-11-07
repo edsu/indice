@@ -87,7 +87,7 @@
   const API = "/api/annotations";
   async function listAll() {
     const r = await fetch(API + "?collection=" + encodeURIComponent(state.collection));
-    if (!r.ok) throw new Error("list " + r.status);
+    if (!r.ok) throw new Error(String(r.status));
     return r.json();
   }
   function postJson(path, body) {
@@ -109,14 +109,14 @@
     // The banner's toggle says how many notes there are, since on a phone the
     // panel starts closed and would otherwise give no sign of them.
     const toggle = document.getElementById("anno-toggle");
-    if (toggle) toggle.textContent = forUrl.length ? "Notes (" + forUrl.length + ")" : "Notes";
+    if (toggle) toggle.textContent = forUrl.length ? t("viewer-notes-n", { total: forUrl.length }) : t("viewer-notes");
     els.list.innerHTML = "";
     if (!forUrl.length) {
       const empty = document.createElement("p");
       empty.className = "anno-empty";
       empty.textContent = state.canAnnotate
-        ? "No notes on this page yet. Select text in the page, or add a note about the whole page."
-        : "No notes on this page.";
+        ? t("anno-empty-can-annotate")
+        : t("anno-empty");
       els.list.appendChild(empty);
     }
     for (const a of forUrl) {
@@ -137,10 +137,11 @@
     meta.className = "anno-meta";
     const who = document.createElement("span");
     who.className = "anno-author";
-    who.textContent = a.author || "anonymous";
+    who.textContent = a.author || t("anno-anonymous");
     const when = document.createElement("span");
     when.className = "anno-date";
-    when.textContent = fmtDate(a.modified || a.created) + (a.modified ? ", edited" : "");
+    const date = fmtDate(a.modified || a.created);
+    when.textContent = a.modified ? t("anno-date-edited", { date: date }) : date;
     meta.append(who, when);
 
     const body = document.createElement("div");
@@ -166,7 +167,7 @@
         encodeURIComponent(state.collection) +
         "/annotations/" +
         encodeURIComponent(keyed[1]);
-      link.textContent = "Link to this note";
+      link.textContent = t("anno-link");
       li.append(link);
     }
 
@@ -181,8 +182,8 @@
     if (a.editable) {
       const actions = document.createElement("div");
       actions.className = "anno-actions";
-      const edit = button("Edit", () => beginEdit(a, li, body));
-      const del = button("Delete", () => remove(a.id));
+      const edit = button(t("anno-edit"), () => beginEdit(a, li, body));
+      const del = button(t("anno-delete"), () => remove(a.id));
       del.classList.add("danger");
       actions.append(edit, del);
       li.append(actions);
@@ -202,7 +203,7 @@
   /** @param {Anno} a */
   function beginEdit(a, li, body) {
     if (li.querySelector(".anno-composer")) return;
-    const form = composer(a.note_md, "Save", async (text) => {
+    const form = composer(a.note_md, t("anno-save"), async (text) => {
       const r = await postJson("/" + encodeURIComponent(a.id), {
         collection: state.collection,
         note: text,
@@ -228,7 +229,11 @@
     const where = document.createElement("p");
     const url = document.createElement("bdi");
     url.textContent = displayUrl(target.url);
-    where.append(selector ? "New note on this passage at " : "New note about ", url);
+    // The sentence's own word order decides where the address goes, so the
+    // message holds a placeholder and the address is put in its place as an element.
+    const marker = "\u0001";
+    const [before, after] = t(selector ? "anno-new-passage" : "anno-new-page", { url: marker }).split(marker);
+    where.append(before, url, after || "");
     hint.append(where);
     if (selector) {
       const quote = document.createElement("blockquote");
@@ -238,7 +243,7 @@
       quote.append(q);
       hint.append(quote);
     }
-    const form = composer("", "Add note", async (text) => {
+    const form = composer("", t("anno-add-note"), async (text) => {
       const body = {
         collection: state.collection,
         url: target.url,
@@ -265,20 +270,20 @@
     const ta = document.createElement("textarea");
     ta.value = initial;
     ta.rows = 4;
-    ta.placeholder = "Write a note… (Markdown)";
+    ta.placeholder = t("anno-placeholder");
     const row = document.createElement("div");
     row.className = "anno-composer-row";
     const save = button(saveLabel, () => {});
     save.type = "submit";
     save.className = "primary";
-    const cancel = button("Cancel", () => form.remove());
+    const cancel = button(t("anno-cancel"), () => form.remove());
     row.append(save, cancel);
     // Notes are stored in the clear and shown publicly (public read, gated
     // write); say so at the point of authoring so a "note" isn't mistaken for a
     // private one. See rustyweb-annotation-public-warning-yrxe.
     const pub = document.createElement("p");
     pub.className = "anno-public-note";
-    pub.textContent = "Notes are public, so anyone who can read this archive can read them.";
+    pub.textContent = t("anno-public");
     form.append(ta, pub, row);
     form.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -305,11 +310,11 @@
         /* fall back to the status alone */
       }
     }
-    alert(detail || "Could not " + verb + " note (" + r.status + ")");
+    alert(detail || t("anno-failed-" + verb, { status: r.status }));
   }
 
   async function remove(id) {
-    if (!confirm("Delete this note?")) return;
+    if (!confirm(t("anno-confirm-delete"))) return;
     const r = await postJson("/" + encodeURIComponent(id) + "/delete", {
       collection: state.collection,
     });
@@ -383,15 +388,21 @@
     const panel = /** @type {HTMLElement} */ (document.getElementById("anno-panel"));
     if (!panel) return;
     els.panel = panel;
+    // The structure is fixed markup; the sentences go in as text, so a
+    // translation can never add markup of its own.
     panel.innerHTML =
-      '<div class="anno-head"><strong>Notes</strong> <span class="anno-count" id="anno-count">0</span>' +
-      '<button type="button" class="anno-close" id="anno-close" aria-label="Close notes">×</button></div>' +
+      '<div class="anno-head"><strong></strong> <span class="anno-count" id="anno-count">0</span>' +
+      '<button type="button" class="anno-close" id="anno-close">×</button></div>' +
       '<div class="anno-tools">' +
-      '<button type="button" id="anno-add">Add a note about this page</button>' +
-      '<button type="button" id="anno-sel" disabled>Add note on selection</button>' +
+      '<button type="button" id="anno-add"></button>' +
+      '<button type="button" id="anno-sel" disabled></button>' +
       "</div>" +
       '<div id="anno-composer-host"></div>' +
       '<ul class="anno-list" id="anno-list"></ul>';
+    panel.querySelector(".anno-head strong").textContent = t("viewer-notes");
+    panel.querySelector("#anno-close").setAttribute("aria-label", t("anno-close"));
+    panel.querySelector("#anno-add").textContent = t("anno-add-page");
+    panel.querySelector("#anno-sel").textContent = t("anno-add-selection");
     els.count = /** @type {HTMLElement} */ (document.getElementById("anno-count"));
     els.list = /** @type {HTMLElement} */ (document.getElementById("anno-list"));
     els.addBtn = /** @type {HTMLElement} */ (document.getElementById("anno-add"));
@@ -468,7 +479,7 @@
         const tooLong = !!d.selector && typeof d.selector.exact === "string" &&
           d.selector.exact.length > MAX_QUOTE;
         btn.title = tooLong
-          ? "The selection is too long to quote (at most " + MAX_QUOTE + " characters)."
+          ? t("anno-selection-too-long", { max: MAX_QUOTE })
           : "";
       }
     });

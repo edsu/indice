@@ -842,7 +842,7 @@ impl indice_lib::index::IndexProgress for BarProgress {
         pb.enable_steady_tick(std::time::Duration::from_millis(120));
         *guard = Some(Active { pb, label });
     }
-    fn phase(&self, phase: &str) {
+    fn phase(&self, phase: &indice_lib::index::Phase) {
         if let Some(a) = &*self.inner.lock().unwrap() {
             // Reset to the spinner style: `phase` marks an indeterminate phase,
             // including the transition *back* from the determinate records bar
@@ -2053,11 +2053,20 @@ fn run_config(home: &std::path::Path) -> Result<()> {
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty())
         {
-            "shown under the homepage heading"
+            "shown under the homepage heading".to_string()
         } else {
-            indice_lib::views::DEFAULT_TAGLINE
+            // CLI output stays English; readers see the default in their own language.
+            indice_lib::i18n::L10n::default().tr("site-tagline-default")
         }
     );
+
+    match cfg.site.language() {
+        Ok(lang) => println!(
+            "site.language:            {}  ->  {lang}",
+            set(&cfg.site.language)
+        ),
+        Err(e) => println!("site.language:            invalid  ->  {e:#}"),
+    }
 
     match indice_lib::analytics::Analytics::from_config(&cfg.analytics) {
         Ok(Some(a)) => println!(

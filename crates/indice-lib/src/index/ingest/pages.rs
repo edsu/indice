@@ -16,7 +16,7 @@ use rayon::prelude::*;
 use tracing::{debug, info};
 
 use crate::http_range::{RangeFetch, RangeReader};
-use crate::index::IndexProgress;
+use crate::index::{IndexProgress, Phase};
 use crate::search::{extract_html_text, utf8_prefix, SearchIndex};
 use crate::wacz::{extract_warc_from_wacz, iter_warc_paths};
 use crate::warc::{iter_records, WarcRecord, Warcinfo};
@@ -94,7 +94,7 @@ pub(super) fn index(access: &WaczAccess, ctx: &Ctx) -> Result<CrawlStats> {
                 // The scan path has no cheap up-front record total, so it stays on
                 // the spinner (no determinate bar). Label it "scanning" - it reads
                 // every WARC record, unlike the CDX-guided path.
-                ctx.progress.phase("scanning");
+                ctx.progress.phase(&Phase::Scanning);
                 index_wacz(path, &ctx.docs)
             }
         }
@@ -251,7 +251,10 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
 
     let mut agg = CrawlStats::default();
     for (i, inner) in inners.iter().enumerate() {
-        progress.phase(&format!("nested WACZ {}/{}", i + 1, inners.len()));
+        progress.phase(&Phase::NestedWacz {
+            n: i + 1,
+            of: inners.len(),
+        });
         let stats = match inner.inline {
             // Stored: read it in place as a window of the outer file.
             Some((base, len)) => index_inner(
@@ -468,7 +471,7 @@ where
     F: crate::http_range::RangeFetch + Clone + Send + Sync,
 {
     use crate::wacz;
-    progress.phase("reading index");
+    progress.phase(&Phase::ReadingIndex);
     let limit = docs.read_limit;
     let (cdx, starts, warcinfo) = {
         let mut zip =
@@ -659,7 +662,7 @@ where
     })?;
 
     // 3. The page lists again: each page's last line, with its waiting metadata.
-    progress.phase("building index");
+    progress.phase(&Phase::BuildingIndex);
     let mut waiting = waiting.into_inner().unwrap();
     let mut completed = 0usize;
     each_page_text(&mut |pos, page| {

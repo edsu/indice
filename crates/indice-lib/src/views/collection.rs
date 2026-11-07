@@ -76,34 +76,39 @@ impl CollectionPage {
     /// — Scope & Content (narrative), Name of Creator, Conditions Governing
     /// Access/Use (rights). Drives the "still needed" prompt when ingest seeded
     /// some fields but left these gaps (the fields no source fills reliably).
+    /// Returns message keys, which the view words in the page language.
     fn missing_minimum(&self) -> Vec<&'static str> {
         let mut m = Vec::new();
         if self.narrative.is_none() {
-            m.push("Scope & Content");
+            m.push("collection-field-scope");
         }
         if self.creator.is_none() {
-            m.push("Creator");
+            m.push("collection-field-creator");
         }
         if self.rights.is_none() {
-            m.push("Access & Use");
+            m.push("collection-field-access");
         }
         m
     }
 
     /// The curatorial (finding-aid) metadata table, with DACS-labelled rows.
     fn curatorial_rows(&self) -> Vec<MetaRow> {
+        let t = |key: &str| self.chrome.l10n.tr(key);
         let mut rows = Vec::new();
         if let Some(v) = &self.creator {
-            rows.push(MetaRow::new("Creator", v.clone()));
+            rows.push(MetaRow::new(&t("collection-field-creator"), v.clone()));
         }
         if let Some(v) = &self.dates {
-            rows.push(MetaRow::new("Dates", v.clone()));
+            rows.push(MetaRow::new(&t("collection-field-dates"), v.clone()));
         }
         if let Some(v) = &self.rights {
-            rows.push(MetaRow::new("Rights", v.clone()));
+            rows.push(MetaRow::new(&t("collection-field-rights"), v.clone()));
         }
         if !self.subjects.is_empty() {
-            rows.push(MetaRow::new("Subjects", self.subjects.join(", ")));
+            rows.push(MetaRow::new(
+                &t("collection-field-subjects"),
+                self.subjects.join(", "),
+            ));
         }
         rows
     }
@@ -117,6 +122,8 @@ impl CollectionPage {
 pub fn collection(p: &CollectionPage) -> Markup {
     let curatorial = p.curatorial_rows();
     let missing = p.missing_minimum();
+    let l10n = &p.chrome.l10n;
+    let t = |key: &str| l10n.tr(key);
     let body = html! {
         h1.page-title { (p.name) }
         @if let Some(d) = &p.description { p.desc { (d) } }
@@ -124,15 +131,15 @@ pub fn collection(p: &CollectionPage) -> Markup {
         // curation actions — all the same button treatment.
         div.actions {
             @if let Some(href) = &p.replay_href {
-                a.btn href=(href) { "Replay collection" }
+                a.btn href=(href) { (t("collection-replay")) }
             }
             @if p.chrome.manage {
-                a.btn.edit href=(format!("/manage/edit/{}", p.id)) { "Edit collection" }
-                a.btn.edit href=(format!("/manage/add?collection={}", p.id)) { "+ Add crawls" }
+                a.btn.edit href=(format!("/manage/edit/{}", p.id)) { (t("collection-edit")) }
+                a.btn.edit href=(format!("/manage/add?collection={}", p.id)) { (t("collection-add-crawls")) }
             }
         }
         section.about {
-            h2 { "About this collection" }
+            h2 { (t("collection-about")) }
             @if p.has_curatorial() {
                 @if let Some(n) = &p.narrative { div.narrative { (n) } }
                 @if !curatorial.is_empty() { (meta_table(&curatorial)) }
@@ -142,15 +149,15 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 // creator, the scope rationale, use conditions).
                 @if !missing.is_empty() {
                     p.muted.nudge {
-                        "Still needed: " (missing.join(", "))
-                        " (the finding-aid minimum). "
+                        @let list = missing.iter().map(|k| t(k)).collect::<Vec<_>>().join(", ");
+                        (l10n.tr_args("collection-needed", &[("list", FluentArg::Str(&list))])) " "
                         @if p.chrome.manage {
-                            a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
-                            " to add them."
+                            a href=(format!("/manage/edit/{}", p.id)) { (t("collection-edit-link")) }
+                            " " (t("collection-edit-to-add"))
                         } @else {
-                            "Add with "
+                            (t("collection-add-with")) " "
                             code { "indice collection set \"" (p.name) "\" …" }
-                            " or edit "
+                            " " (t("collection-or-edit")) " "
                             code { "collections/" (p.id) "/README.md" }
                             "."
                         }
@@ -160,16 +167,14 @@ pub fn collection(p: &CollectionPage) -> Markup {
                 // Empty-state nudge: name the DACS single-level minimum
                 // curatorial elements that are missing, with archival authority.
                 p.muted.nudge {
-                    "No finding-aid description yet. Add the essentials a reader needs — "
-                    "who gathered it (Creator), why it was archived (Scope & Content), and "
-                    "who may use it (Access). "
+                    (t("collection-empty-nudge")) " "
                     @if p.chrome.manage {
-                        a href=(format!("/manage/edit/{}", p.id)) { "Edit this collection" }
-                        " to describe it."
+                        a href=(format!("/manage/edit/{}", p.id)) { (t("collection-edit-link")) }
+                        " " (t("collection-edit-to-describe"))
                     } @else {
-                        "Add with "
+                        (t("collection-add-with")) " "
                         code { "indice collection set \"" (p.name) "\" --creator \"…\"" }
-                        " — or edit "
+                        " " (t("collection-or-edit")) " "
                         code { "collections/" (p.id) "/README.md" }
                         "."
                     }
@@ -178,24 +183,23 @@ pub fn collection(p: &CollectionPage) -> Markup {
         }
 
         @if p.annotation_count > 0 {
-            @let plural = if p.annotation_count == 1 { "note" } else { "notes" };
             section.annotations-summary {
-                h2 { "Annotations" }
+                h2 { (t("collection-annotations-heading")) }
                 p.muted {
-                    (p.annotation_count) " page " (plural) " in this collection. "
-                    a href=(format!("/collection/{}/annotations", p.id)) { "Browse annotations" }
+                    (counted(l10n, "collection-annotation-count", p.annotation_count as u64)) " "
+                    a href=(format!("/collection/{}/annotations", p.id)) { (t("collection-browse-annotations")) }
                 }
             }
         }
 
         @if !p.meta.is_empty() { (meta_table(&p.meta)) }
-        (facet_browse(&p.facets))
-        h2 { "Crawls" }
+        (facet_browse(&p.facets, l10n))
+        h2 { (t("collection-crawls-heading")) }
         // When this collection was crawled, then its crawls, newest first: a
         // collection grows over time, and the list reads as that history.
-        (time_axis(&p.crawl_months, "Pages crawled by month", ("page", "pages")))
+        (time_axis(&p.crawl_months, l10n, &t("collection-timeline-label"), "timeline-pages-count"))
         @if p.members.is_empty() {
-            p.muted { "No crawls in this collection." }
+            p.muted { (t("collection-no-crawls")) }
         } @else {
             ol.crawl-list {
                 @for m in &p.members {
@@ -207,8 +211,8 @@ pub fn collection(p: &CollectionPage) -> Markup {
                             @if let Some(w) = &m.when { div.crawl-when { (w) } }
                             a.card-title href=(format!("/crawl/{}", m.id)) { (m.name) }
                             p.card-source {
-                                @if m.remote { "Streamed" } @else { "Stored here" }
-                                @if !m.present { span.missing { ". The file is missing" } }
+                                @if m.remote { (t("source-streamed")) } @else { (t("source-stored")) }
+                                @if !m.present { span.missing { ". " (t("crawl-file-missing")) } }
                             }
                             @if let Some(pr) = &m.provenance { p.crawl-prov { (pr) } }
                         }
@@ -220,22 +224,18 @@ pub fn collection(p: &CollectionPage) -> Markup {
         // anyone comes here to do, and it should never sit beside the actions.
         @if p.can_delete {
             details.danger-zone {
-                summary { "Delete this collection" }
+                summary { (t("collection-delete-summary")) }
                 form.confirm-delete method="post" action=(format!("/api/collections/{}/delete", p.id)) {
                     @if p.members.is_empty() {
-                        p.muted { "Removes this empty collection's finding aid. This can't be undone." }
+                        p.muted { (t("collection-delete-empty-note")) }
                     } @else {
-                        p.muted {
-                            "This collection has " (p.members.len()) " crawl(s). Deleting the "
-                            "grouping alone is refused; tick the box to delete its crawls too "
-                            "(their pages, WACZ files, and thumbnails). This can't be undone."
-                        }
+                        p.muted { (counted(l10n, "collection-delete-note", p.members.len() as u64)) }
                         label.confirm-with-crawls {
                             input type="checkbox" name="with_crawls" value="true";
-                            span { "also delete all " (p.members.len()) " member crawl(s)" }
+                            span { (counted(l10n, "collection-delete-also", p.members.len() as u64)) }
                         }
                     }
-                    button.btn.danger type="submit" { "Delete permanently" }
+                    button.btn.danger type="submit" { (t("action-delete-permanently")) }
                 }
             }
         }
@@ -290,26 +290,30 @@ pub struct AnnotationsIndexPage {
 
 /// A public browse of every annotation in a collection.
 pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
-    let plural = if p.items.len() == 1 { "note" } else { "notes" };
+    let l10n = &p.chrome.l10n;
+    let heading = l10n.tr("collection-annotations-heading");
     let body = html! {
         p.crumb {
             a href=(format!("/collection/{}", p.collection_id)) { (p.collection_name) }
-            " / Annotations"
+            " / " (heading)
         }
-        h1.page-title { "Annotations" }
-        p.desc { (p.items.len()) " " (plural) " on pages in this collection." }
+        h1.page-title { (heading) }
+        p.desc { (counted(l10n, "annotations-index-count", p.items.len() as u64)) }
         @if p.items.is_empty() {
-            p.muted { "No annotations yet." }
+            p.muted { (l10n.tr("annotations-index-empty")) }
         } @else {
             ul.anno-index {
                 @for a in &p.items {
-                    li.anno-index-item id=(a.key) { (anno_entry(a, true)) }
+                    li.anno-index-item id=(a.key) { (anno_entry(a, true, l10n)) }
                 }
             }
         }
     };
     layout(
-        Some(&format!("Annotations - {}", p.collection_name)),
+        Some(&l10n.tr_args(
+            "annotations-index-title",
+            &[("name", FluentArg::Str(&p.collection_name))],
+        )),
         &p.chrome,
         None,
         body,
@@ -318,7 +322,7 @@ pub fn annotations_index(p: &AnnotationsIndexPage) -> Markup {
 
 /// A note as the Annotations page and its own page show it; `linked` adds the
 /// link to its own page, which that page doesn't need.
-fn anno_entry(a: &AnnoLink, linked: bool) -> Markup {
+fn anno_entry(a: &AnnoLink, linked: bool, l10n: &L10n) -> Markup {
     html! {
         div.anno-index-meta {
             span.anno-author { (a.author) } ", " (a.date)
@@ -328,11 +332,11 @@ fn anno_entry(a: &AnnoLink, linked: bool) -> Markup {
         }
         div.anno-index-body { (a.note_html) }
         p.anno-index-loc {
-            a href=(a.replay_href) { "Open page" }
+            a href=(a.replay_href) { (l10n.tr("annotations-open-page")) }
             " " span.muted { (a.page_url) }
         }
         @if let (true, Some(href)) = (linked, &a.permalink) {
-            p.anno-index-loc { a href=(href) { "Link to this note" } }
+            p.anno-index-loc { a href=(href) { (l10n.tr("annotations-link")) } }
         }
     }
 }
@@ -341,17 +345,18 @@ fn anno_entry(a: &AnnoLink, linked: bool) -> Markup {
 /// The page carries that JSON-LD too, for whatever reads pages rather than
 /// asking for JSON.
 pub fn annotation_page(p: &AnnotationPage) -> Markup {
+    let l10n = &p.chrome.l10n;
     let body = html! {
         p.crumb {
             a href=(format!("/collection/{}", p.collection_id)) { (p.collection_name) }
             " / "
             // Back to this note's place in the list.
-            a href=(format!("/collection/{}/annotations#{}", p.collection_id, p.note.key)) { "Annotations" }
+            a href=(format!("/collection/{}/annotations#{}", p.collection_id, p.note.key)) { (l10n.tr("collection-annotations-heading")) }
         }
-        h1.page-title { "Note" }
-        div.anno-index-item { (anno_entry(&p.note, false)) }
+        h1.page-title { (l10n.tr("note-heading")) }
+        div.anno-index-item { (anno_entry(&p.note, false, l10n)) }
         p.anno-index-loc {
-            "This note as a W3C Web Annotation: "
+            (l10n.tr("note-json-ld")) " "
             a href=(p.json_ld_href) rel="alternate" type="application/ld+json" { "JSON-LD" }
         }
         // Data, not script: a type the browser does not run, so the policy
@@ -359,7 +364,10 @@ pub fn annotation_page(p: &AnnotationPage) -> Markup {
         script type="application/ld+json" { (PreEscaped(&p.json_ld)) }
     };
     layout(
-        Some(&format!("Note - {}", p.collection_name)),
+        Some(&l10n.tr_args(
+            "note-title",
+            &[("name", FluentArg::Str(&p.collection_name))],
+        )),
         &p.chrome,
         None,
         body,

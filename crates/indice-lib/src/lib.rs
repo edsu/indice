@@ -8,6 +8,7 @@ pub mod describe;
 pub mod events;
 mod fsio;
 pub mod http_range;
+pub mod i18n;
 pub mod identity;
 pub mod index;
 pub mod llm;

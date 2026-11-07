@@ -25,11 +25,13 @@ pub(super) async fn homepage(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     let manifest = match Manifest::open(&state.index_dir) {
         Ok(m) => m,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
 
+    let chrome = chrome(&state, &headers);
     let cards: Vec<views::CollectionCard> = manifest
         .collections
         .iter()
@@ -43,7 +45,7 @@ pub(super) async fn homepage(
                 replay_href: collection_replay_href(&c.id, collection_default_page(&members)),
                 // Capture date range (temporal span is meaningful at the
                 // collection level; per-tool software lives on the WACZ page).
-                date_range: members_capture_range(&members),
+                date_range: members_capture_range(&chrome.l10n, &members),
                 // Representative image: a curator-set collection thumbnail if
                 // present, else the first member crawl that has one.
                 thumb: collection_thumb_href(&state.home, &c.id).or_else(|| {
@@ -69,7 +71,6 @@ pub(super) async fn homepage(
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    let chrome = chrome(&state, &headers);
     views::home(&cards, &browse, &chrome).into_response()
 }
 
@@ -123,6 +124,18 @@ pub(super) fn active_filters(q: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A filter's name in the page's language, for the sidebar and the chips. The
+/// library's own label is English because the JSON API reports it; a field with
+/// no `filter-` message (a test keeps that from happening) falls back to it.
+pub(super) fn filter_name(l10n: &L10n, field: &str) -> String {
+    let key = format!("filter-{field}");
+    if l10n.has_message(&key) {
+        l10n.tr(&key)
+    } else {
+        crate::search::filter_label(field).to_string()
+    }
+}
+
 /// Add a `field:value` filter to a query, leaving the rest (including quoted
 /// phrases) untouched. A no-op if that exact filter is already present.
 pub(super) fn query_with_filter(q: &str, field: &str, value: &str) -> String {
@@ -164,6 +177,7 @@ pub(super) async fn search_page(
     headers: HeaderMap,
     Query(params): Query<SearchPageParams>,
 ) -> impl IntoResponse {
+    let l10n = super::i18n::negotiate_headers(&state, &headers);
     // Fold any scope token (e.g. `collection:<id>` from the header search on a
     // collection page) into the query, so downstream faceting + the removable
     // active-filter chip treat it like any other `field:value`.
@@ -186,7 +200,7 @@ pub(super) async fn search_page(
     }
     // Checked after the scope token is folded in, so the bound covers what
     // actually reaches the parser rather than what the visitor typed.
-    if let Some(refusal) = query_too_long(&q) {
+    if let Some(refusal) = query_too_long(&l10n, &q) {
         return refusal;
     }
 
@@ -198,7 +212,7 @@ pub(super) async fn search_page(
         .await
     {
         Ok(r) => r,
-        Err(e) => return error_response(e).into_response(),
+        Err(e) => return error_response(&l10n, e).into_response(),
     };
     let results = &response.results;
 
@@ -220,7 +234,7 @@ pub(super) async fn search_page(
         manifest
             .as_ref()
             .and_then(|m| m.wacz_by_id(&r.crawl_id))
-            .map(|w| w.display_name())
+            .map(|w| w.display_name_in(&l10n))
             .unwrap_or_else(|| r.crawl_name.clone())
     };
 
@@ -242,7 +256,7 @@ pub(super) async fn search_page(
             let title = if is_annotation {
                 // A note has no page title; show the annotated page's URL.
                 if r.url.is_empty() {
-                    "Note".to_string()
+                    l10n.tr("search-badge-note")
                 } else {
                     r.url.clone()
                 }
@@ -344,7 +358,7 @@ pub(super) async fn search_page(
                 manifest
                     .as_ref()
                     .and_then(|m| m.wacz_by_id(v))
-                    .map(|w| w.display_name())
+                    .map(|w| w.display_name_in(&l10n))
                     .unwrap_or_else(|| v.clone())
             } else if f == "collection" {
                 collection_names
@@ -356,7 +370,7 @@ pub(super) async fn search_page(
             };
             views::ActiveFilter {
                 field: f.clone(),
-                label: crate::search::filter_label(f).to_string(),
+                label: filter_name(&l10n, f),
                 value: display,
                 remove_href: search_href(&query_without_filter(&q, f, v)),
             }
@@ -366,7 +380,7 @@ pub(super) async fn search_page(
         .facets
         .iter()
         .map(|g| views::FacetGroupView {
-            label: g.label.clone(),
+            label: filter_name(&l10n, &g.field),
             items: g
                 .buckets
                 .iter()
@@ -406,7 +420,9 @@ pub(super) async fn search_page(
             .any(|(f, v)| f == "month" && v == &ym.to_string())
     };
     let counts: Vec<(u64, u64)> = response.timeline.iter().map(|t| (t.ym, t.count)).collect();
+    let chrome = chrome(&state, &headers);
     let timeline = month_axis(
+        &chrome.l10n,
         &counts,
         |ym| {
             let month = ym.to_string();
@@ -419,6 +435,5 @@ pub(super) async fn search_page(
         in_force,
     );
 
-    let chrome = chrome(&state, &headers);
     views::search_results(&q, &page_nav, &sidebar, &timeline, &rows, &chrome).into_response()
 }

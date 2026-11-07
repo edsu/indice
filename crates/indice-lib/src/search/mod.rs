@@ -1,3 +1,4 @@
+use crate::index::Phase;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tantivy::schema::Value;
@@ -484,7 +485,7 @@ impl SearchIndex {
             .set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
         let before = self.index.searchable_segment_ids()?.len();
         progress.begin("optimize");
-        progress.phase(&format!("{before} segments"));
+        progress.phase(&Phase::Segments { count: before });
 
         let mut prev = usize::MAX;
         let mut retries = 0;
@@ -506,7 +507,9 @@ impl SearchIndex {
             match self.writer_mut().merge(&ids).wait() {
                 Ok(_) => {
                     retries = 0;
-                    progress.phase(&format!("{} segments", n - (take - 1)));
+                    progress.phase(&Phase::Segments {
+                        count: n - (take - 1),
+                    });
                 }
                 Err(e) => {
                     // A background merge scheduled during a prior ingest can still
@@ -539,10 +542,9 @@ impl SearchIndex {
             .map(|m| m.id())
             .collect();
         if !with_deletes.is_empty() {
-            progress.phase(&format!(
-                "expunging deletes ({} segment(s))",
-                with_deletes.len()
-            ));
+            progress.phase(&Phase::ExpungingDeletes {
+                segments: with_deletes.len(),
+            });
             for id in with_deletes {
                 let mut retries = 0;
                 loop {
@@ -588,7 +590,7 @@ impl SearchIndex {
                 freed_bytes = freed,
                 "removed orphaned segment files (leftovers from an interrupted merge/ingest)"
             );
-            progress.phase(&format!("removed {orphans} orphaned file(s)"));
+            progress.phase(&Phase::RemovedOrphans { files: orphans });
         }
 
         let after = self.index.searchable_segment_ids()?.len();

@@ -83,6 +83,19 @@ The tagline is the homepage's only text from you, so it is the place to say anyt
 
 The tagline uses the same Markdown as finding aids and notes: raw HTML is shown as text, images become their alt text, and links must be `http`, `https`, `mailto` or relative. A blank value counts as unset. The file is read at startup, so a change needs a restart; `indice config` shows what is in force.
 
+## Interface language
+
+indice's pages are available in every language it ships with: English (`en`) and Italian (`it`). Each reader gets the first language in their browser's `Accept-Language` list that indice has, so a browser asking for Italian gets Italian on any instance, whatever you set here. `site.language` is the language for a reader whose browser asks for none that indice has, and it defaults to `en`.
+
+```yaml
+site:
+  language: it
+```
+
+An unsupported value stops the server at startup with the list of supported languages. Regional tags match their language (`it-CH` reads as `it`), and a blank value counts as unset. The documented API (`/api/search`, `/api/annotations`, `/health`) and command-line output stay in English. `indice config` shows the language in force.
+
+Translations are compiled into the binary, so adding a language is a change to indice's source: a translation file, one line listing it in `i18n::CATALOGS`, and a `language-name-<tag>` message in every catalog. [DESIGN.md](https://github.com/edsu/indice/blob/main/DESIGN.md#interface-languages) explains the steps.
+
 ## Web analytics
 
 indice can add a web analytics service's snippet, such as Plausible, Matomo, GoatCounter or Google Analytics, to its pages. It is off unless you set `head`:
@@ -127,8 +140,9 @@ describe:
   # The most archived text and metadata to send, in characters. Omit for 24000.
   # Lower it for a small model with a short context; it can't go below 2000.
   max_input_chars: 24000
-  # A prompt of your own instead of indice's, relative to the home. Omit to use
-  # the built-in one.
+  # A prompt of your own instead of indice's, relative to the home, sent exactly
+  # as written (so it names its own language). Omit to use the built-in one,
+  # which writes in site.language.
   prompt_file: prompts/describe.md
 ```
 

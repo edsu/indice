@@ -15,6 +15,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::i18n::{FluentArg, L10n};
 use crate::search::SearchIndex;
 
 /// How long a request that should be quick is allowed to take.
@@ -43,6 +44,7 @@ mod auth;
 mod collection;
 mod crawl;
 mod headers;
+mod i18n;
 mod imports;
 mod limits;
 mod manage;
@@ -635,6 +637,8 @@ fn build_routers(
     // the roster does, rather than at the first upload or ingest.
     let home_config = crate::config::Config::load(home)?;
     crate::config::Config::check_upload_limits(home)?;
+    // An unsupported `site.language` stops startup too, listing what is shipped.
+    home_config.site.language()?;
     // Resolved strictly here, so a mistake in `llm:` or `describe:` stops the
     // server at startup rather than at a curator's first draft.
     let drafting = home_config.llm_settings(home)?.map(|(llm, settings)| {
@@ -977,7 +981,15 @@ fn build_routers(
     let replay_headers = headers::SecurityHeaders::replay(&ancestors);
 
     Ok(Routers {
-        app: outer_layers(app, csrf.clone(), app_headers).with_state(state.clone()),
+        // Pages differ by the reader's language, so caches must keep them apart;
+        // inside the shared layers so every app response, refusals included,
+        // carries it.
+        app: outer_layers(
+            app.layer(axum::middleware::from_fn(i18n::vary_accept_language)),
+            csrf.clone(),
+            app_headers,
+        )
+        .with_state(state.clone()),
         // The CSRF guard has nothing to refuse here, since every route is a
         // GET and the guard checks only writes. The rebinding guard does: on a
         // workstation, a page that rebinds its own name to the replay port

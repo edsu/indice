@@ -446,13 +446,15 @@ fn capture_quality_summarizes_status_histogram() {
     c.insert(301, 2);
     c.insert(404, 1);
     c.insert(504, 1);
-    let s = capture_quality(&c).unwrap();
+    let s = capture_quality(&l10n("en"), &c).unwrap();
     // 2xx+3xx are "ok": (96+2)/100 = 98%.
     assert!(s.starts_with("100 captures, 98% ok"), "{s}");
     // Failing codes surfaced, most frequent first.
     assert!(s.contains("404×1") && s.contains("504×1"), "{s}");
+    // The codes follow the summary in parentheses (no em dash: house style).
+    assert!(s.contains("98% ok (404×1"), "{s}");
     // Empty histogram → nothing to show.
-    assert!(capture_quality(&BTreeMap::new()).is_none());
+    assert!(capture_quality(&l10n("en"), &BTreeMap::new()).is_none());
 }
 
 #[test]
@@ -647,6 +649,7 @@ fn every_crawl_replays_through_its_own_files_path() {
 #[test]
 fn a_time_axis_keeps_empty_months_and_marks_years() {
     let bars = month_axis(
+        &crate::i18n::L10n::default(),
         &[(202105, 200), (202207, 1)],
         |ym| format!("/m/{ym}"),
         |ym| ym == 202207,
@@ -666,7 +669,17 @@ fn a_time_axis_keeps_empty_months_and_marks_years() {
     // One page against two hundred still shows.
     assert_eq!(bars[14].step, 1);
     assert!(bars[14].active);
-    assert!(month_axis(&[], |_| String::new(), |_| false).is_empty());
+    assert!(month_axis(
+        &crate::i18n::L10n::default(),
+        &[],
+        |_| String::new(),
+        |_| false
+    )
+    .is_empty());
+    // The labels follow the reader's language.
+    let it = crate::i18n::negotiate(Some("it"), &"en".parse().unwrap());
+    let bars = month_axis(&it, &[(202105, 1)], |ym| ym.to_string(), |_| false);
+    assert_eq!(bars[0].label, "maggio 2021");
 }
 
 /// The axis shows at most ten years, and its heights are scaled to the busiest
@@ -674,6 +687,7 @@ fn a_time_axis_keeps_empty_months_and_marks_years() {
 #[test]
 fn a_time_axis_is_scaled_to_the_months_it_shows() {
     let bars = month_axis(
+        &crate::i18n::L10n::default(),
         &[(200801, 10_000), (202501, 50), (202502, 25)],
         |ym| ym.to_string(),
         |_| false,
@@ -693,10 +707,11 @@ fn blank_site_text_falls_back_to_the_defaults() {
     let cfg = crate::config::SiteConfig {
         name: Some("  ".into()),
         tagline: Some("\n".into()),
+        ..Default::default()
     };
     let site = views::Site::new(&cfg);
     assert_eq!(site.name, "indice");
-    assert_eq!(site.tagline.0, views::Site::default().tagline.0);
+    assert!(site.tagline.is_none(), "a blank tagline is unset");
 
     let named = views::Site::new(&crate::config::SiteConfig {
         name: Some(" Ada's archive ".into()),
@@ -882,5 +897,908 @@ fn only_a_minted_note_has_an_address() {
     );
     for id in ["urn:uuid:7b1f", "urn:indice:annotation:0123ABCD", "x"] {
         assert_eq!(annotation_path("c", id), None, "{id:?}");
+    }
+}
+
+/// An app router over an empty home, whose `site.language` is `language`.
+fn app_with_language(language: Option<&str>) -> (tempfile::TempDir, Router) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    if let Some(tag) = language {
+        std::fs::write(
+            crate::config::Config::path(tmp.path()),
+            format!("site:\n  language: {tag}\n"),
+        )
+        .unwrap();
+    }
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    (tmp, app)
+}
+
+async fn get_with(
+    app: &Router,
+    path: &str,
+    accept_language: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    use tower::ServiceExt;
+
+    let mut req = axum::http::Request::get(path).header("host", "localhost");
+    if let Some(v) = accept_language {
+        req = req.header("accept-language", v);
+    }
+    let res = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn home_follows_the_browser_language() {
+    let (_home, app) = app_with_language(None);
+    let (status, _, body) = get_with(&app, "/", Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#"lang="it""#), "{body}");
+    let (_, _, body) = get_with(&app, "/", None).await;
+    assert!(body.contains(r#"lang="en""#), "{body}");
+    assert!(body.contains(r#"dir="ltr""#), "{body}");
+}
+
+#[tokio::test]
+async fn home_falls_back_to_site_language() {
+    let (_home, app) = app_with_language(Some("it"));
+    let (_, _, body) = get_with(&app, "/", Some("ja")).await;
+    assert!(body.contains(r#"lang="it""#), "{body}");
+    // Asking for a language indice has wins over the fallback.
+    let (_, _, body) = get_with(&app, "/", Some("en")).await;
+    assert!(body.contains(r#"lang="en""#), "{body}");
+}
+
+/// Whatever a browser or a hostile client sends, the answer is a page in a
+/// language indice has.
+#[tokio::test]
+async fn a_messy_accept_language_never_breaks_a_page() {
+    let (_home, app) = app_with_language(None);
+    let long = format!("{}it", "xx,".repeat(5000));
+    let cases = [
+        ("en;q=0.5, it;q=0.9", "it"),
+        ("*", "en"),
+        ("it-CH", "it"),
+        ("IT", "it"),
+        ("fr, it;q=0.1", "it"),
+        ("\u{fffd}\u{fffd};;;q=,,,", "en"),
+        ("it;q=0", "en"),
+        (long.as_str(), "en"),
+    ];
+    for (header, lang) in cases {
+        let (status, _, body) = get_with(&app, "/", Some(header)).await;
+        assert_eq!(status, StatusCode::OK, "{header:?}");
+        assert!(body.contains(&format!(r#"lang="{lang}""#)), "{header:?}");
+    }
+    // A header that is not text at all.
+    let res = tower::ServiceExt::oneshot(
+        app.clone(),
+        axum::http::Request::get("/")
+            .header("host", "localhost")
+            .header("accept-language", &[0xffu8, 0xfe][..])
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+fn vary_values(headers: &HeaderMap) -> String {
+    headers
+        .get_all(axum::http::header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(", ")
+        .to_ascii_lowercase()
+}
+
+/// Pages vary on `Accept-Language`; what is the same in every language (static
+/// files, archive bytes, thumbnails, the health probe, robots.txt, the
+/// documented public API and replay's manifests) does not, so a cache keeps one
+/// copy of it.
+#[tokio::test]
+async fn pages_vary_on_accept_language() {
+    let (_home, app, id) = app_with_crawl("c");
+    for path in [
+        "/".to_string(),
+        "/search?q=x".to_string(),
+        "/collection/c".to_string(),
+        format!("/crawl/{id}"),
+    ] {
+        let (_, headers, _) = get_with(&app, &path, None).await;
+        assert!(vary_values(&headers).contains("accept-language"), "{path}");
+    }
+    for path in [
+        "/assets/app.css".to_string(),
+        "/health".to_string(),
+        "/robots.txt".to_string(),
+        format!("/files/{id}"),
+        "/api/search?q=x".to_string(),
+        "/api/annotations".to_string(),
+        format!("/crawl/{id}/replay.json"),
+        "/collection/c/replay.json".to_string(),
+        format!("/thumb/{id}"),
+    ] {
+        let (_, headers, _) = get_with(&app, &path, None).await;
+        assert!(!vary_values(&headers).contains("accept-language"), "{path}");
+    }
+}
+
+/// A replayed page whose own address ends in `/pages` is a page, not a page list,
+/// and a curator's note write is the workroom's: both speak the reader's language.
+#[test]
+fn only_shared_answers_skip_the_readers_language() {
+    use axum::http::Method;
+    let same = i18n::same_for_every_language;
+    assert!(same(&Method::GET, "/crawl/abc/pages"));
+    assert!(same(&Method::GET, "/api/annotations"));
+    assert!(!same(
+        &Method::GET,
+        "/crawl/abc/2025/https://example.org/pages"
+    ));
+    assert!(!same(&Method::POST, "/api/annotations"));
+    assert!(!same(&Method::GET, "/collection/c"));
+}
+
+/// A handler that already varies on `Accept` (a note's page and JSON-LD share a
+/// URL) keeps that, and gains `Accept-Language`.
+#[tokio::test]
+async fn vary_is_appended_not_replaced() {
+    use tower::ServiceExt;
+
+    let app = Router::new()
+        .route(
+            "/note",
+            get(|| async { ([(axum::http::header::VARY, "Accept")], "note") }),
+        )
+        .layer(axum::middleware::from_fn(i18n::vary_accept_language));
+    let res = app
+        .oneshot(
+            axum::http::Request::get("/note")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let vary = vary_values(res.headers());
+    assert!(
+        vary.contains("accept") && vary.contains("accept-language"),
+        "{vary}"
+    );
+}
+
+#[test]
+fn an_unsupported_site_language_stops_startup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        crate::config::Config::path(tmp.path()),
+        "site:\n  language: xx\n",
+    )
+    .unwrap();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let err = format!("{:#}", router(tmp.path(), config).unwrap_err());
+    assert!(err.contains("site.language") && err.contains("it"), "{err}");
+}
+
+fn l10n(tag: &str) -> crate::i18n::L10n {
+    crate::i18n::negotiate(Some(tag), &"en".parse().unwrap())
+}
+
+#[tokio::test]
+async fn search_page_in_italian() {
+    let (_home, app) = app_with_language(None);
+    let (status, _, body) = get_with(&app, "/search?q=x", Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    let placeholder = l10n("it").tr("search-placeholder-all");
+    assert!(body.contains(&placeholder), "{body}");
+    assert!(!body.contains("Search all collections"), "{body}");
+    let (_, _, body) = get_with(&app, "/search?q=x", Some("en")).await;
+    assert!(body.contains("Search all collections"), "{body}");
+}
+
+#[test]
+fn result_count_plurals() {
+    for (tag, expected) in [
+        ("en", ["0 results", "1 result", "3 results"]),
+        ("it", ["0 risultati", "1 risultato", "3 risultati"]),
+    ] {
+        let l = l10n(tag);
+        for (n, want) in [0, 1, 3].into_iter().zip(expected) {
+            assert_eq!(views::results_count(&l, n, false), want, "{tag} {n}");
+        }
+    }
+    assert_eq!(
+        views::results_count(&l10n("en"), 1000, true),
+        "1,000+ results"
+    );
+    assert_eq!(
+        views::results_count(&l10n("it"), 1000, true),
+        "1.000+ risultati"
+    );
+}
+
+#[tokio::test]
+async fn default_tagline_follows_language() {
+    let (_home, app) = app_with_language(None);
+    let (_, _, en) = get_with(&app, "/", Some("en")).await;
+    assert!(en.contains("Web archive search and replay"), "{en}");
+    let (_, _, it) = get_with(&app, "/", Some("it")).await;
+    let italian = l10n("it").tr("site-tagline-default");
+    assert!(it.contains(&italian), "{it}");
+    assert!(!it.contains("Web archive search and replay"), "{it}");
+}
+
+#[tokio::test]
+async fn custom_tagline_is_not_translated() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        crate::config::Config::path(tmp.path()),
+        "site:\n  tagline: Our own words\n",
+    )
+    .unwrap();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    for lang in ["en", "it"] {
+        let (_, _, body) = get_with(&app, "/", Some(lang)).await;
+        assert!(body.contains("Our own words"), "{lang}: {body}");
+        assert!(
+            !body.contains(&l10n("it").tr("site-tagline-default")),
+            "{lang}"
+        );
+        assert!(!body.contains("Web archive search and replay"), "{lang}");
+    }
+}
+
+/// A home with the fixture WACZ indexed into `collection`, and a router over it.
+fn app_with_crawl(collection: &str) -> (tempfile::TempDir, Router, String) {
+    app_with_named_crawl(collection, "Simple")
+}
+
+/// As [`app_with_crawl`], with the crawl called `name`.
+fn app_with_named_crawl(collection: &str, name: &str) -> (tempfile::TempDir, Router, String) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let input = tmp.path().join("input.wacz");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simple.wacz"),
+        &input,
+    )
+    .unwrap();
+    crate::index::Ingest::new(tmp.path())
+        .name(Some(name))
+        .index_location(&input.to_string_lossy(), collection)
+        .unwrap();
+    let manifest =
+        crate::collections::Manifest::open(&crate::index::index_dir(tmp.path())).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    (tmp, app, id)
+}
+
+#[tokio::test]
+async fn collection_page_in_italian() {
+    let (_home, app, _) = app_with_crawl("c");
+    let it = l10n("it");
+    let (status, _, body) = get_with(&app, "/collection/c", Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    for key in [
+        "collection-about",
+        "collection-crawls-heading",
+        "meta-capture-dates",
+        "meta-size",
+    ] {
+        let word = it.tr(key);
+        assert!(body.contains(&word), "{key}: {body}");
+    }
+    for english in [
+        "About this collection",
+        "Capture dates",
+        ">Crawls<",
+        "Stored here",
+    ] {
+        assert!(!body.contains(english), "{english}: {body}");
+    }
+    let (_, _, body) = get_with(&app, "/collection/c", Some("en")).await;
+    assert!(body.contains("About this collection"), "{body}");
+    assert!(body.contains("Capture dates"), "{body}");
+}
+
+#[tokio::test]
+async fn crawl_page_in_italian() {
+    let (_home, app, id) = app_with_crawl("c");
+    let it = l10n("it");
+    let (status, _, body) = get_with(&app, &format!("/crawl/{id}"), Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    for key in ["crawl-file", "crawl-pages-heading", "meta-indexed"] {
+        let word = it.tr(key);
+        assert!(body.contains(&word), "{key}: {body}");
+    }
+    for english in ["Indexed", "No pages are listed", ">✓ present<", "Status"] {
+        assert!(!body.contains(english), "{english}: {body}");
+    }
+}
+
+/// A crawl named only by its tool's identifier is called by its date, and the
+/// words around the date are in the page's language wherever its name shows.
+#[tokio::test]
+async fn a_machine_named_crawl_is_named_in_italian() {
+    let (_home, app, id) = app_with_named_crawl("c", "20250107171404015-af3df7fa-3fc-0");
+    let pages = [
+        format!("/crawl/{id}"),
+        "/collection/c".to_string(),
+        format!("/search?q=crawl:{id}"),
+    ];
+    for path in &pages {
+        let (status, _, body) = get_with(&app, path, Some("it")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(body.contains("Scansione del "), "{path}: {body}");
+        assert!(!body.contains("Crawl of "), "{path}: {body}");
+        let (_, _, body) = get_with(&app, path, Some("en")).await;
+        assert!(body.contains("Crawl of "), "{path}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn curator_text_stays_escaped_in_italian() {
+    let hostile = "<img src=x onerror=alert(1)>";
+    let (_home, app, id) = app_with_crawl(hostile);
+    let slug = crate::collections::slugify(hostile);
+    for path in [format!("/collection/{slug}"), format!("/crawl/{id}")] {
+        let (status, _, body) = get_with(&app, &path, Some("it")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(body.contains("&lt;img"), "{path}: {body}");
+        assert!(!body.contains("<img src=x"), "{path}: {body}");
+    }
+}
+
+/// A collection page with `n` member crawls, for the delete confirmation.
+fn collection_with_members(n: usize, tag: &str) -> String {
+    let members = (0..n)
+        .map(|i| views::MemberItem {
+            id: format!("m{i}"),
+            name: format!("Crawl {i}"),
+            when: None,
+            present: true,
+            remote: false,
+            provenance: None,
+            thumb: None,
+        })
+        .collect();
+    let page = views::CollectionPage {
+        name: "C".into(),
+        description: None,
+        narrative: None,
+        creator: None,
+        dates: None,
+        rights: None,
+        subjects: vec![],
+        meta: vec![],
+        facets: vec![],
+        members,
+        crawl_months: vec![],
+        replay_href: None,
+        id: "c".into(),
+        can_delete: true,
+        chrome: views::Chrome {
+            l10n: l10n(tag),
+            ..Default::default()
+        },
+        annotation_count: 0,
+        drafted_note: None,
+    };
+    views::collection(&page).into_string()
+}
+
+#[test]
+fn delete_confirmation_plurals() {
+    for (tag, one, three, all_three) in [
+        (
+            "en",
+            "has 1 crawl.",
+            "has 3 crawls.",
+            "also delete all 3 member crawls",
+        ),
+        (
+            "it",
+            "ha 1 scansione.",
+            "ha 3 scansioni.",
+            "tutte le 3 scansioni",
+        ),
+    ] {
+        let body = collection_with_members(1, tag);
+        assert!(body.contains(one), "{tag}: {body}");
+        assert!(!body.contains("(s)"), "{tag}: {body}");
+        let body = collection_with_members(3, tag);
+        assert!(body.contains(three), "{tag}: {body}");
+        assert!(body.contains(all_three), "{tag}: {body}");
+        assert!(!body.contains("(s)"), "{tag}: {body}");
+    }
+}
+
+#[test]
+fn date_span_in_both_languages() {
+    let (start, end) = (Some("20250107000000"), Some("20260803120000"));
+    assert_eq!(
+        date_span(&l10n("en"), start, end).unwrap(),
+        "7 January 2025 to 3 August 2026"
+    );
+    assert_eq!(
+        date_span(&l10n("it"), start, end).unwrap(),
+        "dal 7 gennaio 2025 al 3 agosto 2026"
+    );
+    // The same day on both ends is one date, not "from X to X".
+    let (a, b) = (Some("20250107000000"), Some("20250107235959"));
+    assert_eq!(date_span(&l10n("en"), a, b).unwrap(), "7 January 2025");
+    assert_eq!(date_span(&l10n("it"), a, b).unwrap(), "7 gennaio 2025");
+    assert_eq!(date_span(&l10n("it"), None, None), None);
+}
+
+async fn post_with(
+    app: &Router,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Body,
+) -> (StatusCode, HeaderMap, String) {
+    use tower::ServiceExt;
+
+    let mut req = axum::http::Request::post(path).header("host", "localhost");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn manage_page_in_italian() {
+    let (_home, app) = app_with_language(None);
+    let it = l10n("it");
+    for (path, keys, english) in [
+        (
+            "/manage/add",
+            vec![
+                "desk-heading",
+                "desk-eyebrow",
+                "desk-tab-upload",
+                "desk-submit",
+            ],
+            vec!["Accession", "Display name", "Hide already-imported"],
+        ),
+        (
+            "/manage/collections/new",
+            vec!["form-new-heading", "form-label-narrative", "form-create"],
+            vec!["Finding aid", "Create collection", "comma-separated"],
+        ),
+    ] {
+        let (status, _, body) = get_with(&app, path, Some("it")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        for key in keys {
+            let word = it.tr(key);
+            assert!(body.contains(&word), "{path} {key}: {body}");
+        }
+        for word in english {
+            assert!(!body.contains(word), "{path} {word}: {body}");
+        }
+    }
+}
+
+/// The page carries the refusal the server would send, so a refusal says the
+/// same thing whichever of the two catches it, in the reader's language.
+#[tokio::test]
+async fn refused_upload_in_italian() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        crate::config::Config::path(tmp.path()),
+        "uploads:\n  max_mb: 1\n",
+    )
+    .unwrap();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    let declared = (2 * 1024 * 1024).to_string();
+    let headers = [
+        ("accept-language", "it"),
+        ("content-type", "multipart/form-data; boundary=x"),
+        ("content-length", declared.as_str()),
+    ];
+    let (status, resp_headers, text) =
+        post_with(&app, "/api/archives/upload", &headers, Body::empty()).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let it = l10n("it");
+    let sentence = it.tr_args(
+        "refused-too-large",
+        &[("cap", crate::i18n::FluentArg::Str(&it.size(1024 * 1024)))],
+    );
+    assert_eq!(text, sentence);
+    assert!(text.contains(&it.size(1024 * 1024)), "{text}");
+    assert!(text.contains("uploads.max_mb"), "{text}");
+    assert!(!text.contains("larger than"), "{text}");
+    assert!(vary_values(&resp_headers).contains("accept-language"));
+
+    // The accession desk says exactly the same thing, escaped into its attribute.
+    let (_, _, desk) = get_with(&app, "/manage/add", Some("it")).await;
+    let attr = maud::html! { (text) }.into_string();
+    assert!(desk.contains(&attr), "{desk}");
+}
+
+#[tokio::test]
+async fn curator_error_keeps_chain() {
+    let (home, app, _) = app_with_crawl("c");
+    // Make the manifest unreadable, so a curator's page fails with a chain.
+    std::fs::write(
+        crate::index::index_dir(home.path()).join("waczs.json"),
+        "{ not json",
+    )
+    .unwrap();
+    let it = l10n("it");
+    let outer = it.tr_args(
+        "error-request-failed",
+        &[("detail", crate::i18n::FluentArg::Str(""))],
+    );
+    let prefix = outer.trim_end();
+    for (lang, expect_prefix) in [
+        ("it", prefix.to_string()),
+        ("en", "The request failed".into()),
+    ] {
+        let (status, _, body) = get_with(&app, "/manage/edit/c", Some(lang)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body.starts_with(&expect_prefix), "{lang}: {body}");
+        // The chain is indice's English error text, passed through unchanged.
+        assert!(body.contains("waczs.json"), "{lang}: {body}");
+        let reference = if lang == "it" {
+            "riferimento"
+        } else {
+            "reference"
+        };
+        assert!(body.contains(reference), "{lang}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn public_search_api_stays_english() {
+    let (_home, app) = app_with_language(None);
+    let long = "a".repeat(5000);
+    let (status, _, body) = get_with(&app, &format!("/api/search?q={long}"), Some("it")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.starts_with("search query too long"), "{body}");
+    // The same refusal on the search page is the reader's language.
+    let (status, _, body) = get_with(&app, &format!("/search?q={long}"), Some("it")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!body.starts_with("search query too long"), "{body}");
+    assert!(body.contains("5000"), "{body}");
+}
+
+#[tokio::test]
+async fn page_not_found_in_italian() {
+    let (_home, app) = app_with_language(None);
+    for path in ["/collection/nope", "/crawl/nope"] {
+        let (status, _, it) = get_with(&app, path, Some("it")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        let (_, _, en) = get_with(&app, path, Some("en")).await;
+        assert_ne!(it, en, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_says_why_in_the_readers_language() {
+    use super::auth::{Denied, Need};
+    use axum::response::IntoResponse;
+    for (tag, forbidden) in [
+        (
+            "en",
+            "forbidden: your account is not authorized for curating",
+        ),
+        ("it", "vietato: il tuo account non è autorizzato a curare"),
+    ] {
+        let res = Denied::Insufficient(Need::Curating, l10n(tag)).into_response();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let text = String::from_utf8_lossy(
+            &axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .into_owned();
+        assert!(text.starts_with(forbidden), "{tag}: {text}");
+    }
+    let res = Denied::Unauthenticated(l10n("it")).into_response();
+    let text = String::from_utf8_lossy(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .into_owned();
+    assert_eq!(text, l10n("it").tr("denied-unauthenticated"));
+
+    // The page a browser gets says it in the same words.
+    let chrome = views::Chrome {
+        l10n: l10n("it"),
+        ..Default::default()
+    };
+    let page = views::access_denied(&chrome, Need::DeletingOthersCrawl.key()).into_string();
+    assert!(page.contains(&l10n("it").tr("denied-heading")), "{page}");
+    assert!(
+        page.contains("aggiunta da un&#39;altra persona")
+            || page.contains("aggiunta da un'altra persona"),
+        "{page}"
+    );
+    assert!(!page.contains("You can't change"), "{page}");
+}
+
+#[tokio::test]
+async fn desk_keeps_the_wacz_code_and_a_path_is_refused_in_italian() {
+    let (_home, app) = app_with_language(None);
+    for lang in ["en", "it"] {
+        let (_, _, desk) = get_with(&app, "/manage/add", Some(lang)).await;
+        assert!(desk.contains("<code>.wacz</code>"), "{lang}: {desk}");
+    }
+    let body = r#"{"path":"/etc/x.wacz","collection":"c"}"#;
+    let (status, _, text) = post_with(
+        &app,
+        "/api/archives",
+        &[
+            ("accept-language", "it"),
+            ("content-type", "application/json"),
+        ],
+        Body::from(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(text, l10n("it").tr("error-location-not-url"));
+    assert!(!text.contains("add an archive"), "{text}");
+}
+
+/// The workroom's scripts get their sentences from the page, in the reader's
+/// language, so the browser never needs a catalog of its own.
+#[tokio::test]
+async fn workroom_ships_italian_js_strings() {
+    let (_home, app) = app_with_language(None);
+    for (lang, loading) in
+        [("it", l10n("it")), ("en", l10n("en"))].map(|(lang, l)| (lang, l.tr("js-loading-crawls")))
+    {
+        let (_, _, page) = get_with(&app, "/manage/add", Some(lang)).await;
+        let marker = r#"<script id="i18n" type="application/json">"#;
+        let start = page
+            .find(marker)
+            .unwrap_or_else(|| panic!("{lang}: no i18n element"))
+            + marker.len();
+        let end = start + page[start..].find("</script>").unwrap();
+        let strings: serde_json::Value = serde_json::from_str(&page[start..end]).unwrap();
+        assert_eq!(strings["js-loading-crawls"], loading.as_str(), "{lang}");
+    }
+    assert_ne!(
+        l10n("it").tr("js-loading-crawls"),
+        l10n("en").tr("js-loading-crawls")
+    );
+}
+
+/// The quoted string literals of a line of JavaScript (single, double or
+/// template), with the part after a `//` comment dropped. A tokenizer rather
+/// than a regex so an apostrophe inside a comment or another quote's text does
+/// not start a literal.
+fn js_string_literals(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut found = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '/' if chars.get(i + 1) == Some(&'/') => break,
+            quote @ ('\'' | '"' | '`') => {
+                let mut text = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != quote {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    if let Some(c) = chars.get(i) {
+                        text.push(*c);
+                    }
+                    i += 1;
+                }
+                found.push(text);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    found
+}
+
+/// Every sentence the workroom's and the replay viewer's scripts show comes
+/// from `t(...)`, so none can be left in English on an Italian page. A literal that starts with a letter
+/// and holds a space reads as prose; selectors, ids, class names, event names and
+/// headers have no space, or start with a symbol.
+#[test]
+fn no_english_literals_in_scripts() {
+    // Literals that look like prose but are not shown to a reader. Keep this
+    // empty unless a literal truly is not UI text, and say why beside it.
+    const NOT_UI: &[&str] = &[
+        // The iframe's Permissions Policy value (viewer.js), read by the browser.
+        "autoplay; fullscreen",
+        // The directive at the top of annotations.js.
+        "use strict",
+        // A selector (annotations.js).
+        "button, a",
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/assets");
+    let replay = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/replay");
+    // Not the vendored `ui.js` and `sw.js`, which are ReplayWeb.page's own.
+    let files = [
+        (&dir, "manage.js"),
+        (&dir, "editor.js"),
+        (&dir, "i18n.js"),
+        (&replay, "viewer.js"),
+        (&replay, "annotations.js"),
+    ];
+    for (dir, file) in files {
+        let src = std::fs::read_to_string(dir.join(file)).unwrap();
+        for (n, line) in src.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("/*") || code.starts_with('*') {
+                continue;
+            }
+            for lit in js_string_literals(line) {
+                let prose = lit.starts_with(|c: char| c.is_ascii_alphabetic()) && lit.contains(' ');
+                assert!(
+                    !prose || NOT_UI.contains(&lit.as_str()),
+                    "{file}:{}: English literal {lit:?}: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+}
+
+/// The server frames each error it sends in a sentence of its own ("The request
+/// failed: …", "the job failed: …", "Browsertrix error: …"), so the workroom
+/// shows that text as sent. Framing it again would read "Error: the job failed:
+/// …". Only a request that never reached the server gets the script's own frame.
+#[test]
+fn the_workroom_shows_server_errors_as_sent() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/assets/manage.js");
+    let src = std::fs::read_to_string(path).unwrap();
+    assert!(
+        !src.contains("js-error"),
+        "a second frame around server text"
+    );
+    // The job's SSE `error` event, and a refused submit.
+    assert!(src.contains("show(JSON.parse(ev.data).message)"), "{src}");
+    assert!(src.contains("out.textContent = await res.text()"), "{src}");
+    // The browse calls: server text as sent, a network failure framed.
+    assert!(src.contains("e.fromServer ? e.message"), "{src}");
+}
+
+/// The scan itself: it flags the select's placeholder that once slipped through,
+/// and passes selectors and `t(...)` calls.
+#[test]
+fn the_js_literal_scan_catches_prose() {
+    let prose = |line: &str| {
+        js_string_literals(line)
+            .iter()
+            .any(|l| l.starts_with(|c: char| c.is_ascii_alphabetic()) && l.contains(' '))
+    };
+    assert!(prose("fillSelect(sel, colls, 'All crawls');"));
+    assert!(prose("x.title = `Waiting for ${s}`;"));
+    assert!(!prose(
+        "fillSelect(sel, colls, t('js-all-crawls')); // can't be 'All crawls'"
+    ));
+    assert!(!prose(
+        "document.querySelector('#bx-items input:checked').dataset.id;"
+    ));
+}
+
+/// A translation is text the viewer's template is filled with, so it must not
+/// be able to fill a slot or close an element: a catalog edited by hand, or a
+/// translator's slip, cannot turn the page's own data into someone else's.
+#[test]
+fn viewer_strings_cannot_fill_slots() {
+    // Fluent source: `{"{{"}` is a literal `{{`, so the translation really
+    // contains the text of the slots (a bare `{{x}}` would be a placeable).
+    let hostile = r#"{"{{"}replay_context{"}}"}</script><b>{"{{"}analytics_head{"}}"}"#;
+    let catalog = format!(
+        "viewer-notes = {hostile}\nviewer-loading = {hostile}\nviewer-frame-title = {hostile}\nreplay-title = {hostile}\n"
+    );
+    let l10n = crate::i18n::l10n_from_catalog("en", &catalog);
+    let template = std::str::from_utf8(&assets::ReplayAssets::get("viewer.html").unwrap().data)
+        .unwrap()
+        .to_string();
+    let html = assets::viewer_html(
+        &template,
+        &l10n,
+        "<!-- head -->",
+        "https://replay.test",
+        "Site",
+        r#"{"url":"https://example.org/{{site_name}}"}"#,
+    );
+    assert_eq!(
+        html.matches(r#"id="replay-context""#).count(),
+        1,
+        "one replay-context element: {html}"
+    );
+    assert_eq!(html.matches(r#"id="i18n""#).count(), 1, "{html}");
+    // The slots' text survives as written: in the button (as text), in the
+    // loading notice, and in the JSON, and nothing was filled into it.
+    assert!(
+        html.contains(r#"aria-expanded="true">{{replay_context}}&lt;/script&gt;&lt;b&gt;{{analytics_head}}</button>"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            r#""viewer-notes":"{{replay_context}}\u003c/script>\u003cb>{{analytics_head}}""#
+        ),
+        "{html}"
+    );
+    assert_eq!(html.matches("<!-- head -->").count(), 1, "{html}");
+    // The page's own elements and nothing a string opened.
+    assert_eq!(html.matches("</script>").count(), 5, "{html}");
+    assert!(!html.contains("<b>"), "{html}");
+    assert!(
+        html.contains("&lt;b&gt;"),
+        "escaped where it is text: {html}"
+    );
+    assert!(
+        html.contains("\\u003c/script>"),
+        "escaped in the JSON: {html}"
+    );
+    // The archived URL names a slot, and the slot stays as written.
+    assert!(html.contains("example.org/{{site_name}}"), "{html}");
+    assert!(!html.contains("{{lang}}"), "{html}");
+}
+
+/// The drafted note names its fields inside an Italian sentence, so the words
+/// stay lower case and a field whose name has its own "e" ("ambito e contenuto")
+/// stays readable in a list joined by "e".
+#[test]
+fn drafted_note_reads_as_a_sentence_in_italian() {
+    use super::collection::drafted_note;
+    let drafted = |fields: &[&str]| crate::collections::Drafted {
+        model: "m".into(),
+        service: String::new(),
+        fields: fields.iter().map(|f| f.to_string()).collect(),
+        at: String::new(),
+    };
+    let it = l10n("it");
+    assert_eq!(
+        drafted_note(&it, &drafted(&[]), None),
+        "Bozza di alcuni campi generata con m."
+    );
+    assert_eq!(
+        drafted_note(&it, &drafted(&["description", "narrative", "dates"]), None),
+        "Bozza di “descrizione”, “ambito e contenuto” e “date” generata con m."
+    );
+    // English opens with the list, capitalized.
+    assert_eq!(
+        drafted_note(&l10n("en"), &drafted(&["narrative"]), None),
+        "Narrative drafted with m."
+    );
+}
+
+/// The search sidebar and filter chips name each filter in the page's language;
+/// the library's English label is for the JSON API. Every filter the library
+/// knows has a message, so a new facet cannot appear in English on an Italian page.
+#[test]
+fn filter_names_follow_the_page_language() {
+    use super::pages::filter_name;
+    let it = l10n("it");
+    assert_eq!(filter_name(&it, "year"), "Anno");
+    assert_eq!(filter_name(&it, "collection"), "Raccolta");
+    assert_eq!(filter_name(&l10n("en"), "type"), "Type");
+    for field in crate::search::filter_fields() {
+        let key = format!("filter-{field}");
+        assert!(it.has_message(&key), "no {key} message");
     }
 }

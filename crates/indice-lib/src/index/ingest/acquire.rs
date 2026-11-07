@@ -13,6 +13,7 @@ use tracing::info;
 
 use crate::collections::{file_sha256, Manifest, Source};
 use crate::index::paths::{archive_dir, scratch_dir};
+use crate::index::Phase;
 
 use super::WaczAccess;
 
@@ -43,7 +44,7 @@ pub(super) fn open(
     let effective_source: Source = match source {
         Source::Url(u) if download => {
             info!(url = %u, "downloading remote WACZ into archive");
-            progress.phase("downloading");
+            progress.phase(&Phase::Downloading);
             Source::File(download_into_archive(u, home, collection_slug, fetch)?)
         }
         _ => source.clone(),
@@ -70,7 +71,7 @@ pub(super) fn open(
                 Err(e) if crate::http_range::is_policy_refusal(&e) => return Err(e),
                 Ok(false) | Err(_) => {
                     info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
-                    progress.phase("downloading");
+                    progress.phase(&Phase::Downloading);
                     let tmp = download_to_temp(u, fetch, cx.download_limit, scratch)
                         .with_context(|| format!("downloading {u}"))?;
                     let path = tmp.path().to_path_buf();
@@ -83,7 +84,7 @@ pub(super) fn open(
             }
         }
         bt @ (Source::Browsertrix { .. } | Source::BrowsertrixPublic { .. }) => {
-            progress.phase("resolving");
+            progress.phase(&Phase::Resolving);
             let resolver = resolver.ok_or_else(|| {
                 anyhow::anyhow!(
                     "indexing a Browsertrix source needs a resolver to fetch a fresh URL \

@@ -6,30 +6,34 @@ use maud::{html, Markup, PreEscaped};
 use super::*;
 
 /// A human label for an HTTP status code, for the result badge's `title`
-/// tooltip. Common archived-error codes get a phrase; anything else falls back
-/// to the bare code.
-fn http_status_label(code: u16) -> String {
-    let reason = match code {
-        301 => "Moved Permanently",
-        302 => "Found (redirect)",
-        307 | 308 => "Redirect",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        410 => "Gone",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => "",
-    };
-    if reason.is_empty() {
-        format!("Archived HTTP {code}")
+/// tooltip. Common archived-error codes get a phrase (`http-status-<code>`);
+/// anything else falls back to the bare code.
+fn http_status_label(l10n: &L10n, code: u16) -> String {
+    let key = format!("http-status-{code}");
+    let code = code.to_string();
+    let code = FluentArg::Str(&code);
+    // A code with no message has no phrase: the lookup would answer with the key.
+    if l10n.has_message(&key) {
+        let reason = l10n.tr(&key);
+        l10n.tr_args(
+            "search-status-title",
+            &[("code", code), ("reason", FluentArg::Str(&reason))],
+        )
     } else {
-        format!("Archived HTTP {code} {reason}")
+        l10n.tr_args("search-status-title-bare", &[("code", code)])
     }
+}
+
+/// The count line's number and noun, "1 result" or "1,000+ results". `capped`
+/// shows the total as a floor.
+pub fn results_count(l10n: &L10n, hits: usize, capped: bool) -> String {
+    let plus = if capped { "+" } else { "" };
+    counted_text(
+        l10n,
+        "search-results-count",
+        hits as u64,
+        &format!("{}{plus}", l10n.number(hits as u64)),
+    )
 }
 
 /// How many values of a facet show before "Show all".
@@ -52,14 +56,14 @@ fn split_facet_items(items: &[FacetItem]) -> (Vec<&FacetItem>, Vec<&FacetItem>) 
 }
 
 /// One facet value in the sidebar.
-fn facet_item(it: &FacetItem) -> Markup {
+fn facet_item(it: &FacetItem, l10n: &L10n) -> Markup {
     html! {
         li.facet-item.active[it.active] {
             // aria-current says which value is applied; the checkmark beside it
             // is drawn by CSS, which a screen reader does not announce.
             a href=(it.href) aria-current=[it.active.then_some("true")] {
                 span.facet-value { (it.value) }
-                span.facet-count { (it.count) }
+                span.facet-count { (l10n.number(it.count)) }
             }
         }
     }
@@ -137,6 +141,20 @@ pub struct FacetItem {
     pub active: bool,
 }
 
+/// "Page 2 of 5".
+fn page_of(l10n: &L10n, nav: &PageNav) -> String {
+    l10n.tr_args(
+        "search-page-of",
+        &[
+            ("page", FluentArg::Str(&l10n.number(nav.page as u64))),
+            (
+                "total",
+                FluentArg::Str(&l10n.number(nav.total_pages as u64)),
+            ),
+        ],
+    )
+}
+
 /// The search results page: top bar, tips, a count line, an active-filter row,
 /// a month timeline, then a facet sidebar beside the results table with
 /// prev/next pagination.
@@ -149,22 +167,23 @@ pub fn search_results(
     chrome: &Chrome,
 ) -> Markup {
     // Preserve the query when linking to another page.
+    let l10n = &chrome.l10n;
     let page_href = |p: usize| format!("/search?q={}&page={}", nav.query_encoded, p);
     let body = html! {
-        (search_tips())
+        (search_tips(l10n))
         div.count {
             @if nav.total_hits == 0 {
-                "Nothing matched " em { (query) } "."
+                (l10n.tr("search-nothing-matched")) " " em { (query) } "."
             } @else {
-                (nav.total_hits) @if nav.capped { "+" } " result" @if nav.total_hits != 1 { "s" } " for " em { (query) }
+                (results_count(l10n, nav.total_hits, nav.capped)) " " (l10n.tr("search-results-for")) " " em { (query) }
                 @if nav.total_pages > 1 {
-                    ". Page " (nav.page) " of " (nav.total_pages)
+                    ". " (page_of(l10n, nav))
                 }
             }
         }
         @if !sidebar.active.is_empty() {
             div.active-filters {
-                span.active-label { "Filters:" }
+                span.active-label { (l10n.tr("search-filters")) }
                 @for f in &sidebar.active {
                     a.filter-chip href=(f.remove_href) {
                         span.chip-label { (f.label) ": " }
@@ -173,7 +192,7 @@ pub fn search_results(
                 }
             }
         }
-        (time_axis(timeline, "Results by month captured", ("result", "results")))
+        (time_axis(timeline, l10n, &l10n.tr("search-timeline-label"), "search-results-count"))
         // An empty result says what to try next: each applied filter can be
         // dropped (a collection filter is how a scoped search arrives), then
         // the query itself, then browsing.
@@ -183,15 +202,18 @@ pub fn search_results(
                     li {
                         a href=(f.remove_href) {
                             @if f.field == "collection" {
-                                "Search all collections"
+                                (l10n.tr("search-all-collections"))
                             } @else {
-                                "Search without " (f.label) ": " (f.value)
+                                (l10n.tr_args(
+                                    "search-without",
+                                    &[("label", FluentArg::Str(&f.label)), ("value", FluentArg::Str(&f.value))],
+                                ))
                             }
                         }
                     }
                 }
-                li { "Try fewer words, or check the spelling." }
-                li { a href="/" { "Browse the collections by year or by site" } }
+                li { (l10n.tr("search-try-fewer")) }
+                li { a href="/" { (l10n.tr("search-browse-link")) } }
             }
         }
         div.results-layout {
@@ -205,11 +227,11 @@ pub fn search_results(
                                         div.result-title { a href=(r.href) { (r.title) } }
                                         div.result-meta {
                                             @if r.is_collection {
-                                                span.result-coll-badge { "Collection" }
+                                                span.result-coll-badge { (l10n.tr("search-badge-collection")) }
                                             } @else if r.is_annotation {
-                                                span.result-note-badge { "Note" }
+                                                span.result-note-badge { (l10n.tr("search-badge-note")) }
                                                 @if !r.author.is_empty() {
-                                                    span.result-note-author { " by " (r.author) }
+                                                    span.result-note-author { " " (l10n.tr_args("search-note-by", &[("author", FluentArg::Str(&r.author))])) }
                                                 }
                                             } @else {
                                                 div.result-url { (r.url) }
@@ -218,14 +240,14 @@ pub fn search_results(
                                                 div.result-ts {
                                                     (r.timestamp_display)
                                                     @if r.capture_count > 1 {
-                                                        span.capture-count { " (captured " (r.capture_count) " times)" }
+                                                        span.capture-count { " " (counted(l10n, "search-captured-times", r.capture_count as u64)) }
                                                     }
                                                 }
                                             }
                                             // Flag archived non-200 captures (404/500/…); 200 stays unmarked.
                                             @if let Some(code) = r.status {
                                                 @if code != 200 {
-                                                    span.result-status title=(http_status_label(code)) { "HTTP " (code) }
+                                                    span.result-status title=(http_status_label(l10n, code)) { "HTTP " (code) }
                                                 }
                                             }
                                         }
@@ -233,11 +255,11 @@ pub fn search_results(
                                             div.snippet { (PreEscaped(s)) }
                                         }
                                         div.result-coll {
-                                            "in " a href=(format!("/collection/{}", r.coll_href)) { em { (r.coll_display) } }
+                                            (l10n.tr("search-in-collection")) " " a href=(format!("/collection/{}", r.coll_href)) { em { (r.coll_display) } }
                                         }
                                     }
                                     td.replay-col {
-                                        a.btn.small href=(r.href) { "Replay" }
+                                        a.btn.small href=(r.href) { (l10n.tr("action-replay")) }
                                     }
                                 }
                             }
@@ -247,15 +269,15 @@ pub fn search_results(
                 @if nav.total_pages > 1 {
                     nav.pagination {
                         @if nav.page > 1 {
-                            a.page-prev href=(page_href(nav.page - 1)) { "Previous" }
+                            a.page-prev href=(page_href(nav.page - 1)) { (l10n.tr("search-previous")) }
                         } @else {
-                            span.page-prev.disabled { "Previous" }
+                            span.page-prev.disabled { (l10n.tr("search-previous")) }
                         }
-                        span.page-info { "Page " (nav.page) " of " (nav.total_pages) }
+                        span.page-info { (page_of(l10n, nav)) }
                         @if nav.page < nav.total_pages {
-                            a.page-next href=(page_href(nav.page + 1)) { "Next" }
+                            a.page-next href=(page_href(nav.page + 1)) { (l10n.tr("search-next")) }
                         } @else {
-                            span.page-next.disabled { "Next" }
+                            span.page-next.disabled { (l10n.tr("search-next")) }
                         }
                     }
                 }
@@ -265,21 +287,21 @@ pub fn search_results(
             // FACET_SHOWN values plus any applied one, and the rest behind a
             // disclosure: a site facet can run to hundreds of hosts.
             @if !sidebar.groups.is_empty() {
-                aside.facets aria-label="Refine" {
-                    h2.facets-title { "Refine" }
+                aside.facets aria-label=(l10n.tr("search-refine")) {
+                    h2.facets-title { (l10n.tr("search-refine")) }
                     @for g in &sidebar.groups {
                         @let (shown, rest) = split_facet_items(&g.items);
                         div.facet-group {
                             h3 { (g.label) }
                             ul {
-                                @for it in &shown { (facet_item(it)) }
+                                @for it in &shown { (facet_item(it, l10n)) }
                             }
                             @if !rest.is_empty() {
                                 details.facet-more {
                                     // "More", not "all": the index returns at most 50 values a facet.
-                                    summary { "Show " (rest.len()) " more" }
+                                    summary { (l10n.tr_args("search-show-more", &[("shown", FluentArg::Str(&l10n.number(rest.len() as u64)))])) }
                                     ul {
-                                        @for it in &rest { (facet_item(it)) }
+                                        @for it in &rest { (facet_item(it, l10n)) }
                                     }
                                 }
                             }

@@ -4,7 +4,8 @@
 // stream. Small and dependency-free, served from /assets/manage.js.
 //
 // Loaded by a plain <script src> at the end of the form (see
-// `views::accession_desk`), so the elements it looks up already exist.
+// `views::accession_desk`), so the elements it looks up already exist, after
+// i18n.js, which supplies `t()` for every sentence it shows.
 
 const f = document.getElementById('add-archive-form');
 const out = document.getElementById('add-progress');
@@ -14,15 +15,15 @@ function stream(job, collectionName) {
   const es = new EventSource('/api/archives/' + job + '/events');
   const lines = [];
   const show = (m) => { lines.push(m); out.textContent = lines.join('\n'); };
-  es.addEventListener('begin', (ev) => show('reading ' + JSON.parse(ev.data).label));
+  es.addEventListener('begin', (ev) => show(t('js-reading', { label: JSON.parse(ev.data).label })));
   es.addEventListener('phase', (ev) => show('… ' + JSON.parse(ev.data).phase));
-  es.addEventListener('total', (ev) => show('records to index: ' + JSON.parse(ev.data).total));
+  es.addEventListener('total', (ev) => show(t('js-total', { total: JSON.parse(ev.data).total })));
   es.addEventListener('wacz_indexed', (ev) => {
     const d = JSON.parse(ev.data);
-    show('indexed ' + d.label + ' (' + d.pages + ' pages)');
+    show(t('js-indexed-count', { label: d.label, count: d.pages }));
   });
   es.addEventListener('done', (ev) => {
-    show('Done ✓');
+    show(t('js-done'));
     let d = {};
     try { d = JSON.parse(ev.data) || {}; } catch (e) {}
     const crawls = Array.isArray(d.crawls) ? d.crawls : [];
@@ -31,12 +32,12 @@ function stream(job, collectionName) {
     };
     const para = (child) => { const p = document.createElement('p'); p.appendChild(child); return p; };
     const collLink = () => link('/collection/' + encodeURIComponent(d.collection),
-      'View ' + (collectionName ? '“' + collectionName + '”' : 'collection') + ' →');
+      collectionName ? t('js-view-collection-named', { name: collectionName }) : t('js-view-collection'));
     const wrap = document.createElement('div'); wrap.className = 'add-done-link';
     if (crawls.length === 1) {
-      wrap.appendChild(para(link('/crawl/' + encodeURIComponent(crawls[0].id), 'View crawl →')));
+      wrap.appendChild(para(link('/crawl/' + encodeURIComponent(crawls[0].id), t('js-view-crawl'))));
     } else if (crawls.length > 1) {
-      const head = document.createElement('p'); head.textContent = 'Added ' + crawls.length + ' crawls:';
+      const head = document.createElement('p'); head.textContent = t('js-added-crawls-count', { count: crawls.length });
       wrap.appendChild(head);
       const ul = document.createElement('ul'); ul.className = 'add-done-crawls';
       for (const c of crawls) {
@@ -52,7 +53,8 @@ function stream(job, collectionName) {
     if (wrap.childNodes.length) out.appendChild(wrap);
     es.close();
   });
-  es.addEventListener('error', (ev) => { if (ev.data) show('Error: ' + JSON.parse(ev.data).message); es.close(); });
+  // The server words the failure as a whole sentence ("the job failed: …").
+  es.addEventListener('error', (ev) => { if (ev.data) show(JSON.parse(ev.data).message); es.close(); });
 }
 
 // Source tabs.
@@ -66,11 +68,15 @@ document.querySelectorAll('.src-tab').forEach(tab => tab.addEventListener('click
 }));
 
 // ── Browsertrix browse (orgs → collections → crawls), using server creds. ──
+// A refusal's body is the server's own sentence, already framed and in the
+// page's language, so it is marked to be shown as sent; anything else thrown
+// (the network, unreadable JSON) gets the script's frame from `failure`.
 async function bxGet(path) {
   const r = await fetch(path);
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) { const e = new Error(await r.text()); e.fromServer = true; throw e; }
   return r.json();
 }
+const failure = (e) => (e.fromServer ? e.message : t('js-request-failed', { detail: e.message }));
 function fillSelect(sel, items, placeholder) {
   sel.innerHTML = '';
   if (placeholder != null) { const o = document.createElement('option'); o.value = ''; o.textContent = placeholder; sel.appendChild(o); }
@@ -81,8 +87,8 @@ async function bxLoadCollections() {
   if (!org) return;
   try {
     const colls = await bxGet('/api/browsertrix/collections?org=' + encodeURIComponent(org));
-    fillSelect(document.getElementById('bx-collection'), colls, 'All crawls');
-  } catch (e) { out.textContent = 'Error: ' + e.message; }
+    fillSelect(document.getElementById('bx-collection'), colls, t('js-all-crawls'));
+  } catch (e) { out.textContent = failure(e); }
 }
 // Crawls load reactively (on connect / org / collection change), so a later
 // request can overtake an earlier one — bxSeq drops any stale response.
@@ -93,7 +99,7 @@ async function bxLoadItems() {
   if (!org) return;
   const coll = document.getElementById('bx-collection').value;
   const seq = ++bxSeq;
-  out.textContent = 'Loading crawls…';
+  out.textContent = t('js-loading-crawls');
   try {
     const items = await bxGet('/api/browsertrix/items?org=' + encodeURIComponent(org)
       + '&collection=' + encodeURIComponent(coll));
@@ -101,7 +107,7 @@ async function bxLoadItems() {
     bxItems = items;
     out.textContent = '';
     bxRender();
-  } catch (e) { if (seq === bxSeq) out.textContent = 'Error: ' + e.message; }
+  } catch (e) { if (seq === bxSeq) out.textContent = failure(e); }
 }
 // Render bxItems into the list, applying the client-side QA-status filter.
 function bxRender() {
@@ -109,10 +115,10 @@ function bxRender() {
   const mode = (document.getElementById('bx-qa-filter') || {}).value || 'all';
   const hideImported = !!(document.getElementById('bx-hide-imported') || {}).checked;
   box.innerHTML = '';
-  if (!bxItems.length) { box.textContent = 'No crawls found.'; return; }
+  if (!bxItems.length) { box.textContent = t('js-no-crawls'); return; }
   const items = bxItems.filter(it => (mode === 'reviewed' ? it.reviewed : mode === 'unreviewed' ? !it.reviewed : true)
     && !(hideImported && it.imported));
-  if (!items.length) { box.textContent = 'No crawls match this filter.'; return; }
+  if (!items.length) { box.textContent = t('js-no-crawls-match'); return; }
   for (const it of items) {
     const label = document.createElement('label');
     label.className = 'bx-item' + (it.imported ? ' imported' : '');
@@ -124,28 +130,30 @@ function bxRender() {
     const date = document.createElement('span'); date.className = 'bx-date'; date.textContent = it.date || '';
     const qa = document.createElement('span');
     qa.className = 'bx-qa' + (it.reviewed ? ' yes' : '');
-    qa.textContent = it.reviewed ? ('QA’d' + (it.review_status ? ' ' + it.review_status + '/5' : '')) : 'not QA’d';
+    qa.textContent = it.reviewed
+      ? (it.review_status ? t('js-qa-done-status', { status: it.review_status }) : t('js-qa-done'))
+      : t('js-qa-not-done');
     const size = document.createElement('span'); size.className = 'bx-size';
     size.textContent = it.size_h || '';
     label.append(cb, nm);
-    if (it.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = 'in library'; label.append(b); }
+    if (it.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = t('js-in-library'); label.append(b); }
     label.append(date, qa, size);
     box.appendChild(label);
   }
 }
 let bxConnected = false;
 async function bxConnect() {
-  out.textContent = 'Connecting to Browsertrix…';
+  out.textContent = t('js-connecting-browsertrix');
   try {
     const orgs = await bxGet('/api/browsertrix/orgs');
     fillSelect(document.getElementById('bx-org'), orgs, null);
     document.getElementById('bx-browse').hidden = false;
     bxConnected = true;
-    if (!orgs.length) { out.textContent = 'No organizations visible for these credentials.'; return; }
+    if (!orgs.length) { out.textContent = t('js-no-organizations'); return; }
     out.textContent = '';
     await bxLoadCollections();
     bxLoadItems();
-  } catch (e) { out.textContent = 'Error: ' + e.message; }
+  } catch (e) { out.textContent = failure(e); }
 }
 const bxRefresh = document.getElementById('bx-refresh');
 if (bxRefresh) bxRefresh.addEventListener('click', bxLoadItems);
@@ -165,7 +173,7 @@ let aitCrawls = [];
 // response so a slower earlier request can't overwrite a newer list.
 let aitSeq = 0;
 async function aitConnect() {
-  out.textContent = 'Connecting to Archive-It…';
+  out.textContent = t('js-connecting-archiveit');
   try {
     const colls = await bxGet('/api/archiveit/collections');
     const sel = document.getElementById('ait-collection');
@@ -178,31 +186,31 @@ async function aitConnect() {
     }
     document.getElementById('ait-browse').hidden = false;
     aitConnected = true;
-    if (!colls.length) { out.textContent = 'No Archive-It collections visible for these credentials.'; return; }
+    if (!colls.length) { out.textContent = t('js-no-archiveit-collections'); return; }
     out.textContent = '';
     aitLoadCrawls();
-  } catch (e) { out.textContent = 'Error: ' + e.message; }
+  } catch (e) { out.textContent = failure(e); }
 }
 async function aitLoadCrawls() {
   const coll = document.getElementById('ait-collection').value;
   if (!coll) return;
   const seq = ++aitSeq;
-  out.textContent = 'Loading crawls…';
+  out.textContent = t('js-loading-crawls');
   try {
     const crawls = await bxGet('/api/archiveit/crawls?collection=' + encodeURIComponent(coll));
     if (seq !== aitSeq) return;
     aitCrawls = crawls;
     out.textContent = '';
     aitRender();
-  } catch (e) { if (seq === aitSeq) out.textContent = 'Error: ' + e.message; }
+  } catch (e) { if (seq === aitSeq) out.textContent = failure(e); }
 }
 function aitRender() {
   const box = document.getElementById('ait-crawls');
   const hideImported = !!(document.getElementById('ait-hide-imported') || {}).checked;
   box.innerHTML = '';
-  if (!aitCrawls.length) { box.textContent = 'No importable crawls found.'; return; }
+  if (!aitCrawls.length) { box.textContent = t('js-no-importable-crawls'); return; }
   const crawls = aitCrawls.filter(c => !(hideImported && c.imported));
-  if (!crawls.length) { box.textContent = 'No crawls match this filter.'; return; }
+  if (!crawls.length) { box.textContent = t('js-no-crawls-match'); return; }
   for (const c of crawls) {
     const label = document.createElement('label');
     label.className = 'bx-item' + (c.imported ? ' imported' : '');
@@ -210,14 +218,14 @@ function aitRender() {
     cb.type = 'checkbox'; cb.dataset.id = c.id;
     // Already in the library — can't be re-imported, so it's shown disabled.
     if (c.imported) cb.disabled = true;
-    const nm = document.createElement('span'); nm.className = 'bx-name'; nm.textContent = 'crawl ' + c.id;
+    const nm = document.createElement('span'); nm.className = 'bx-name'; nm.textContent = t('js-crawl-label', { id: c.id });
     // A single (start) date keeps the column within its width; the crawl page
     // shows the full capture-date range.
     const date = document.createElement('span'); date.className = 'bx-date';
     date.textContent = (c.start || c.end || '').slice(0, 10);
     const size = document.createElement('span'); size.className = 'bx-size'; size.textContent = c.size_h || '';
     label.append(cb, nm);
-    if (c.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = 'in library'; label.append(b); }
+    if (c.imported) { const b = document.createElement('span'); b.className = 'bx-badge'; b.textContent = t('js-in-library'); label.append(b); }
     label.append(date, size);
     box.appendChild(label);
   }
@@ -234,14 +242,14 @@ f.addEventListener('submit', async (e) => {
   e.preventDefault();
   const collection = f.collection.value.trim();
   const name = f.name.value.trim();
-  if (!collection) { out.textContent = 'Please name the collection.'; return; }
+  if (!collection) { out.textContent = t('js-name-collection'); return; }
   const active = document.querySelector('.src-tab[aria-selected="true"]');
   const src = active ? active.dataset.src : 'upload';
   let res;
   try {
     if (src === 'upload') {
       const file = f.file.files[0];
-      if (!file) { out.textContent = 'Choose a .wacz file to upload.'; return; }
+      if (!file) { out.textContent = t('js-choose-file'); return; }
       // Refuse here what the server would refuse, so a doomed upload is never
       // sent. The server stops reading an over-limit body and closes, and a
       // browser still sending can report that as a network error rather than
@@ -249,7 +257,7 @@ f.addEventListener('submit', async (e) => {
       const lim = f.dataset;
       if (lim.maxUpload && file.size > Number(lim.maxUpload)) { out.textContent = lim.maxUploadMsg; return; }
       if (lim.room && file.size > Number(lim.room)) { out.textContent = lim.roomMsg; return; }
-      out.textContent = 'Uploading…';
+      out.textContent = t('js-uploading');
       const fd = new FormData();
       fd.append('collection', collection);
       if (name) fd.append('name', name);
@@ -257,8 +265,8 @@ f.addEventListener('submit', async (e) => {
       res = await fetch('/api/archives/upload', { method: 'POST', body: fd });
     } else if (src === 'url') {
       const location = f.location.value.trim();
-      if (!location) { out.textContent = 'Enter an http(s):// URL.'; return; }
-      out.textContent = 'Starting…';
+      if (!location) { out.textContent = t('js-enter-url'); return; }
+      out.textContent = t('js-starting');
       const body = { path: location, collection };
       if (name) body.name = name;
       res = await fetch('/api/archives', {
@@ -266,8 +274,8 @@ f.addEventListener('submit', async (e) => {
       });
     } else if (src === 'bx') {
       const checked = [...document.querySelectorAll('#bx-items input:checked')];
-      if (!checked.length) { out.textContent = 'Select at least one crawl to import.'; return; }
-      out.textContent = 'Importing…';
+      if (!checked.length) { out.textContent = t('js-select-crawl'); return; }
+      out.textContent = t('js-importing');
       const mode = (document.querySelector('input[name="bx-mode"]:checked') || {}).value;
       const body = {
         org: document.getElementById('bx-org').value,
@@ -283,8 +291,8 @@ f.addEventListener('submit', async (e) => {
       });
     } else if (src === 'ait') {
       const checked = [...document.querySelectorAll('#ait-crawls input:checked')];
-      if (!checked.length) { out.textContent = 'Select at least one crawl to import.'; return; }
-      out.textContent = 'Importing…';
+      if (!checked.length) { out.textContent = t('js-select-crawl'); return; }
+      out.textContent = t('js-importing');
       const body = {
         collection_id: parseInt(document.getElementById('ait-collection').value, 10),
         collection,
@@ -294,11 +302,12 @@ f.addEventListener('submit', async (e) => {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
       });
     } else {
-      out.textContent = 'That source isn’t available yet.';
+      out.textContent = t('js-source-unavailable');
       return;
     }
-  } catch (err) { out.textContent = 'Request failed: ' + err; return; }
-  if (!res.ok) { out.textContent = 'Error: ' + (await res.text()); return; }
+  } catch (err) { out.textContent = t('js-request-failed', { detail: err }); return; }
+  // As for a browse call: the server's sentence, as sent.
+  if (!res.ok) { out.textContent = await res.text(); return; }
   const { job } = await res.json();
   stream(job, collection);
 });

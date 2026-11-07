@@ -1,0 +1,363 @@
+//! Interface translations: compiled-in Fluent catalogs and per-request language
+//! negotiation. See DESIGN.md, "Interface languages".
+//!
+//! This module only turns keys into strings; rendering them stays with the views,
+//! so the library keeps its "reports data, binary/views render" split.
+
+use std::sync::LazyLock;
+
+use fluent_bundle::concurrent::FluentBundle;
+use fluent_bundle::{FluentArgs, FluentResource};
+use unic_langid::LanguageIdentifier;
+
+/// Every language indice ships, as (tag, catalog text). The tag is the whole
+/// catalog tag (`zh-Hant`, not `zh`) and matches the file name. Adding a language
+/// is one `.ftl` file plus one line here; English comes first and is the reference.
+pub const CATALOGS: &[(&str, &str)] = &[
+    ("en", include_str!("../../locales/en.ftl")),
+    ("it", include_str!("../../locales/it.ftl")),
+];
+
+/// The language every other catalog falls back to.
+const REFERENCE: &str = "en";
+
+/// A header longer than this is ignored: real browsers send well under 200 bytes,
+/// and negotiation cost grows with the number of tags.
+const MAX_ACCEPT_LANGUAGE: usize = 1024;
+
+type Bundle = FluentBundle<FluentResource>;
+type Bundles = Vec<(LanguageIdentifier, Bundle)>;
+
+/// Language tags in `CATALOGS` order.
+pub fn supported() -> Vec<&'static str> {
+    CATALOGS.iter().map(|(tag, _)| *tag).collect()
+}
+
+/// Right-to-left languages. Their bundles keep Fluent's isolation marks.
+fn is_rtl(lang: &LanguageIdentifier) -> bool {
+    matches!(lang.language.as_str(), "ar" | "fa" | "he" | "ur")
+}
+
+fn build_bundle(tag: &str, source: &str) -> (LanguageIdentifier, Bundle) {
+    let lang: LanguageIdentifier = tag
+        .parse()
+        .unwrap_or_else(|e| panic!("catalog tag {tag:?} is not a language tag: {e}"));
+    // A catalog that fails to parse is a bug in a compiled-in file, caught by the
+    // `every_catalog_parses` test, so panicking at first use cannot reach a user.
+    let resource = FluentResource::try_new(source.to_owned())
+        .unwrap_or_else(|(_, errors)| panic!("catalog {tag} has syntax errors: {errors:?}"));
+    let mut bundle = FluentBundle::new_concurrent(vec![lang.clone()]);
+    // Fluent wraps every argument in U+2068/U+2069 so a name in the opposite
+    // direction cannot reorder the sentence around it. That matters in
+    // right-to-left languages (an LTR collection name or URL inside Arabic text)
+    // but in LTR languages the marks only leak into `title` attributes and JSON,
+    // so they are off there.
+    bundle.set_use_isolating(is_rtl(&lang));
+    bundle
+        .add_resource(resource)
+        .unwrap_or_else(|errors| panic!("catalog {tag} has duplicate ids: {errors:?}"));
+    (lang, bundle)
+}
+
+fn build_bundles(catalogs: &[(&str, &str)]) -> Bundles {
+    catalogs
+        .iter()
+        .map(|(tag, source)| build_bundle(tag, source))
+        .collect()
+}
+
+static BUNDLES: LazyLock<Bundles> = LazyLock::new(|| build_bundles(CATALOGS));
+
+/// Pick the catalog in `bundles` that the requested languages (best first) match.
+/// Filtering with likely subtags means `zh-TW` finds a `zh-Hant` catalog and
+/// `it-CH` finds `it`.
+fn best_match(bundles: &Bundles, requested: &[LanguageIdentifier]) -> Option<usize> {
+    let available: Vec<LanguageIdentifier> = bundles.iter().map(|(l, _)| l.clone()).collect();
+    let matched = fluent_langneg::negotiate_languages(
+        requested,
+        &available,
+        None,
+        fluent_langneg::NegotiationStrategy::Filtering,
+    );
+    let first = matched.first()?;
+    available.iter().position(|l| l == *first)
+}
+
+/// Parse an `Accept-Language` value into tags ordered by q-value, best first.
+/// `fluent_langneg::accepted_languages::parse` keeps header order and drops the
+/// weights, so the ordering is done here. Entries that are not language tags
+/// (`*`, garbage) and `q=0` ("not acceptable") are dropped.
+fn requested_languages(header: &str) -> Vec<LanguageIdentifier> {
+    let mut entries: Vec<(f32, LanguageIdentifier)> = header
+        .split(',')
+        .filter_map(|part| {
+            let mut pieces = part.split(';');
+            let lang: LanguageIdentifier = pieces.next()?.trim().parse().ok()?;
+            let q = pieces
+                .find_map(|p| p.trim().strip_prefix("q="))
+                .map_or(1.0, |v| v.trim().parse::<f32>().unwrap_or(0.0));
+            (q > 0.0).then_some((q, lang))
+        })
+        .collect();
+    // Stable sort: equal weights keep the browser's own order.
+    entries.sort_by(|a, b| b.0.total_cmp(&a.0));
+    entries.into_iter().map(|(_, lang)| lang).collect()
+}
+
+/// The language `tag` negotiates to among the shipped catalogs (`it-IT` is `it`),
+/// for validating `site.language`. The error lists what is available.
+pub fn parse_language(tag: &str) -> anyhow::Result<LanguageIdentifier> {
+    let unsupported = || {
+        anyhow::anyhow!(
+            "unsupported language {tag:?}; supported languages: {}",
+            supported().join(", ")
+        )
+    };
+    let requested: LanguageIdentifier = tag.trim().parse().map_err(|_| unsupported())?;
+    let idx = best_match(&BUNDLES, &[requested]).ok_or_else(unsupported)?;
+    Ok(BUNDLES[idx].0.clone())
+}
+
+/// The English name of `lang` (`Italian`), from the English catalog's
+/// `language-name-*` messages, for prompts written in English that name the
+/// language a model should answer in. Falls back to English for a language whose
+/// name is missing, so a prompt never asks for the bare message key.
+pub fn english_name(lang: &LanguageIdentifier) -> String {
+    let english = L10n::default();
+    let key = format!("language-name-{lang}");
+    if english.has_message(&key) {
+        english.tr(&key)
+    } else {
+        english.tr("language-name-en")
+    }
+}
+
+/// A plural-aware argument for a message. `Num` selects plural forms.
+#[derive(Clone, Copy, Debug)]
+pub enum FluentArg<'a> {
+    Str(&'a str),
+    Num(i64),
+}
+
+/// A chosen interface language: an index into the compiled-in bundles, so it is
+/// cheap to clone and to put in request state.
+#[derive(Clone)]
+pub struct L10n {
+    bundles: &'static Bundles,
+    idx: usize,
+}
+
+// Bundles are not `Debug`, and their contents would be noise anyway.
+impl std::fmt::Debug for L10n {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "L10n({})", self.lang())
+    }
+}
+
+impl Default for L10n {
+    /// English.
+    fn default() -> Self {
+        L10n::in_bundles(&BUNDLES, &REFERENCE.parse().expect("reference tag parses"))
+    }
+}
+
+/// The language for one request: the first `Accept-Language` entry that has a
+/// catalog, else `fallback` (the instance's `site.language`).
+pub fn negotiate(accept_language: Option<&str>, fallback: &LanguageIdentifier) -> L10n {
+    negotiate_in(&BUNDLES, accept_language, fallback)
+}
+
+fn negotiate_in(
+    bundles: &'static Bundles,
+    accept_language: Option<&str>,
+    fallback: &LanguageIdentifier,
+) -> L10n {
+    let header = accept_language.filter(|h| h.len() <= MAX_ACCEPT_LANGUAGE);
+    let idx = header
+        .and_then(|h| best_match(bundles, &requested_languages(h)))
+        .or_else(|| best_match(bundles, std::slice::from_ref(fallback)));
+    match idx {
+        Some(idx) => L10n { bundles, idx },
+        None => L10n::in_bundles(bundles, &REFERENCE.parse().expect("reference tag parses")),
+    }
+}
+
+impl L10n {
+    /// The bundle for `lang` in `bundles`, else the first one.
+    fn in_bundles(bundles: &'static Bundles, lang: &LanguageIdentifier) -> L10n {
+        let idx = bundles.iter().position(|(l, _)| l == lang).unwrap_or(0);
+        L10n { bundles, idx }
+    }
+
+    fn bundle(&self) -> &'static (LanguageIdentifier, Bundle) {
+        &self.bundles[self.idx]
+    }
+
+    /// The catalog's full tag, for `<html lang>`.
+    pub fn lang(&self) -> String {
+        self.bundle().0.to_string()
+    }
+
+    /// `rtl` or `ltr`, for `<html dir>`.
+    pub fn dir(&self) -> &'static str {
+        if is_rtl(&self.bundle().0) {
+            "rtl"
+        } else {
+            "ltr"
+        }
+    }
+
+    /// Whether the chosen language or English has `key`; lets a caller choose
+    /// between two phrasings without `tr_args` logging a missing message.
+    pub fn has_message(&self, key: &str) -> bool {
+        self.bundle().1.has_message(key)
+            || self
+                .bundles
+                .iter()
+                .any(|(l, b)| l.language.as_str() == REFERENCE && b.has_message(key))
+    }
+
+    /// A message that selects on `$count` (and shows `$shown`), formatted once for
+    /// every plural category of the chosen language, for a script that only knows
+    /// the number at run time. The form for a category is the message formatted
+    /// with a number in it, so the catalog's own plural selection does the work.
+    pub fn tr_forms(
+        &self,
+        key: &str,
+        args: &[(&str, FluentArg)],
+    ) -> std::collections::BTreeMap<String, String> {
+        plural_samples(&self.bundle().0)
+            .into_iter()
+            .map(|(category, sample)| {
+                let mut with_count = args.to_vec();
+                with_count.push(("count", FluentArg::Num(sample)));
+                (category.to_string(), self.tr_args(key, &with_count))
+            })
+            .collect()
+    }
+
+    pub fn tr(&self, key: &str) -> String {
+        self.tr_args(key, &[])
+    }
+
+    /// Look `key` up in the chosen language, then English, then give back the key
+    /// itself: a page with a missing translation stays usable. A translation that
+    /// does not format cleanly (a misspelled `$variable` in a hand-edited catalog)
+    /// counts as missing, so the reader gets the English sentence whole rather
+    /// than one with `{$nome}` in it. Each of these means a catalog needs fixing,
+    /// so each is logged.
+    pub fn tr_args(&self, key: &str, args: &[(&str, FluentArg)]) -> String {
+        let mut fluent_args = FluentArgs::new();
+        for (name, value) in args {
+            match value {
+                FluentArg::Str(s) => fluent_args.set(*name, *s),
+                FluentArg::Num(n) => fluent_args.set(*name, *n),
+            }
+        }
+        let chosen = self.bundle();
+        match format(&chosen.1, key, &fluent_args) {
+            Some(Ok(text)) => return text,
+            Some(Err((_, errors))) => warn_once(&chosen.0, key, &errors),
+            None => {}
+        }
+        let english = self
+            .bundles
+            .iter()
+            .find(|(l, _)| l.language.as_str() == REFERENCE);
+        if let Some((lang, bundle)) = english {
+            if let Some(result) = format(bundle, key, &fluent_args) {
+                if lang != &chosen.0 {
+                    tracing::warn!(key, lang = %chosen.0, "message missing or broken in catalog; used English");
+                }
+                return match result {
+                    Ok(text) => text,
+                    // English is the last word: shown even when it is broken,
+                    // which the catalog tests keep from shipping.
+                    Err((text, errors)) => {
+                        warn_once(lang, key, &errors);
+                        text
+                    }
+                };
+            }
+        }
+        tracing::warn!(key, "message missing from every catalog; showing the key");
+        key.to_string()
+    }
+}
+
+/// Log a message that did not format cleanly, once per language and message:
+/// a broken translation is on every page that uses it, and one line says it.
+fn warn_once(lang: &LanguageIdentifier, key: &str, errors: &[fluent_bundle::FluentError]) {
+    static SEEN: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(Default::default);
+    let first = SEEN
+        .lock()
+        .map(|mut seen| seen.insert(format!("{lang}/{key}")))
+        .unwrap_or(true);
+    if first {
+        tracing::warn!(key, %lang, ?errors, "message did not format cleanly");
+    }
+}
+
+/// The plural categories `lang` uses, each with a number that falls in it. The
+/// probe covers every cardinal rule in CLDR for integers: Arabic's `few` and
+/// `many` start at 3 and 11, and French's and Spanish's `many` (millions) is the
+/// last number.
+fn plural_samples(lang: &LanguageIdentifier) -> Vec<(&'static str, i64)> {
+    use intl_pluralrules::{PluralCategory, PluralRuleType, PluralRules};
+    let Ok(rules) = PluralRules::create(lang.clone(), PluralRuleType::CARDINAL) else {
+        return vec![("other", 2)];
+    };
+    let mut found: Vec<(&'static str, i64)> = vec![];
+    for n in (0..=200_i64).chain([1_000_000]) {
+        let Ok(category) = rules.select(n) else {
+            continue;
+        };
+        let name = match category {
+            PluralCategory::ZERO => "zero",
+            PluralCategory::ONE => "one",
+            PluralCategory::TWO => "two",
+            PluralCategory::FEW => "few",
+            PluralCategory::MANY => "many",
+            PluralCategory::OTHER => "other",
+        };
+        if !found.iter().any(|(c, _)| *c == name) {
+            found.push((name, n));
+        }
+    }
+    found
+}
+
+/// `key` formatted with `args`, or `None` when the bundle has no such message.
+/// A message that formats with errors comes back as `Err`, with the text Fluent
+/// made of it anyway and the errors.
+fn format(
+    bundle: &Bundle,
+    key: &str,
+    args: &FluentArgs,
+) -> Option<Result<String, (String, Vec<fluent_bundle::FluentError>)>> {
+    let pattern = bundle.get_message(key)?.value()?;
+    let mut errors = vec![];
+    let text = bundle
+        .format_pattern(pattern, Some(args), &mut errors)
+        .into_owned();
+    Some(if errors.is_empty() {
+        Ok(text)
+    } else {
+        Err((text, errors))
+    })
+}
+
+mod format;
+
+/// A `L10n` for one catalog indice does not ship, so a test elsewhere in the
+/// crate can see what a hostile translation does to a page. Leaked so it is
+/// `'static` like the real bundles; a test process is short-lived.
+#[cfg(test)]
+pub(crate) fn l10n_from_catalog(tag: &str, source: &str) -> L10n {
+    let bundles: &'static Bundles = Box::leak(Box::new(build_bundles(&[(tag, source)])));
+    L10n { bundles, idx: 0 }
+}
+
+#[cfg(test)]
+mod tests;

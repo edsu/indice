@@ -11,6 +11,7 @@ use crate::events::Action;
 use crate::identity::{Principal, Role, SubjectId};
 
 use super::*;
+use crate::i18n::{FluentArg, L10n};
 
 /// The fixed header carrying the proxy↔indice shared secret in forward-auth mode.
 const AUTH_SECRET_HEADER: &str = "x-indice-auth-secret";
@@ -403,16 +404,24 @@ pub(super) fn admin_ctx(state: &AppState, headers: &HeaderMap) -> (bool, Option<
 
 /// Proof that this request may accession and describe: create collections,
 /// add crawls by URL and upload them, edit finding aids, annotate.
-pub(super) struct Curator(Principal);
+///
+/// Carries the language the request asked for too, so a handler that holds one
+/// can answer its errors in it without taking the language as well.
+pub(super) struct Curator(Principal, L10n);
 
 /// Proof that this request may do the irreversible, shared things, and act as
 /// the instance: delete a crawl, delete a collection, moderate anyone's notes,
 /// and import through the instance's Browsertrix and Archive-It credentials.
-pub(super) struct Admin(Principal);
+pub(super) struct Admin(Principal, L10n);
 
 impl Curator {
     pub(super) fn principal(&self) -> &Principal {
         &self.0
+    }
+
+    /// The language this request asked for.
+    pub(super) fn l10n(&self) -> &L10n {
+        &self.1
     }
 
     /// This caller's `Admin` proof, if they are one: the same role check the
@@ -420,14 +429,14 @@ impl Curator {
     /// controls agrees with the routes those controls call. The evidence was
     /// already checked when this `Curator` was made.
     pub(super) fn as_admin(&self) -> Option<Admin> {
-        (self.0.role() >= Role::Admin).then(|| Admin(self.0.clone()))
+        (self.0.role() >= Role::Admin).then(|| Admin(self.0.clone(), self.1.clone()))
     }
 
     /// A `500` that says what went wrong. A method, so only a handler that
     /// has checked the caller may change the archive can send one; a public
     /// handler has no `Curator` and uses [`error_response`], which doesn't.
     pub(super) fn error_response(&self, e: anyhow::Error) -> Response {
-        detailed_failure(StatusCode::INTERNAL_SERVER_ERROR, e)
+        detailed_failure(StatusCode::INTERNAL_SERVER_ERROR, e, &self.1)
     }
 }
 
@@ -436,9 +445,14 @@ impl Admin {
         &self.0
     }
 
+    /// The language this request asked for.
+    pub(super) fn l10n(&self) -> &L10n {
+        &self.1
+    }
+
     /// As [`Curator::error_response`].
     pub(super) fn error_response(&self, e: anyhow::Error) -> Response {
-        detailed_failure(StatusCode::INTERNAL_SERVER_ERROR, e)
+        detailed_failure(StatusCode::INTERNAL_SERVER_ERROR, e, &self.1)
     }
 }
 
@@ -449,9 +463,17 @@ impl Admin {
 /// Private to this module, like the extractors' fields, so the only way to it is
 /// through [`Curator::error_response`] or [`Admin::error_response`]. That is what
 /// keeps the detail off public routes.
-fn detailed_failure(status: StatusCode, e: anyhow::Error) -> Response {
+///
+/// The sentence around the chain is translated; the chain is the error as indice
+/// wrote it, in English, and is passed through unchanged, as the log has it.
+fn detailed_failure(status: StatusCode, e: anyhow::Error, l10n: &L10n) -> Response {
     tracing::error!("{e:#}");
-    (status, with_reference(&format!("{e:#}"))).into_response()
+    let detail = format!("{e:#}");
+    let sentence = l10n.tr_args(
+        "error-request-failed",
+        &[("detail", FluentArg::Str(&detail))],
+    );
+    (status, with_reference(l10n, &sentence)).into_response()
 }
 
 /// Record who performed a state change, to two places at once.
@@ -501,12 +523,34 @@ pub(super) fn audit_detail(
     }
 }
 
+/// What a role refusal says the account was not authorized for, as a message
+/// key rather than a phrase so each language words it as it needs to.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Need {
+    Curating,
+    Administering,
+    DeletingOthersCrawl,
+}
+
+impl Need {
+    /// The message that completes "your account is not authorized for ...".
+    pub(super) fn key(self) -> &'static str {
+        match self {
+            Need::Curating => "denied-need-curating",
+            Need::Administering => "denied-need-administering",
+            Need::DeletingOthersCrawl => "denied-need-delete-others-crawl",
+        }
+    }
+}
+
 /// Why a request was refused. All 403 — indice never issues a challenge (the
 /// front proxy owns login), so a `WWW-Authenticate` header would be a lie.
+/// Each carries the request's language, since a rejection is turned into a
+/// response with no request left to ask.
 pub(super) enum Denied {
-    Unauthenticated,
-    StaleEvidence,
-    Insufficient(&'static str),
+    Unauthenticated(L10n),
+    StaleEvidence(L10n),
+    Insufficient(Need, L10n),
     /// [`Denied::Insufficient`] for someone opening a page in a browser: the
     /// same 403, as a page with the site's chrome that says why.
     Page(maud::Markup),
@@ -517,7 +561,7 @@ impl Denied {
     /// it. An API call, or any other refusal, stays plain text, which is what
     /// `manage.js` shows.
     fn for_page(self, state: &AppState, parts: &axum::http::request::Parts) -> Denied {
-        let Denied::Insufficient(what) = self else {
+        let Denied::Insufficient(need, _) = self else {
             return self;
         };
         let wants_html = parts
@@ -530,7 +574,7 @@ impl Denied {
         }
         Denied::Page(crate::views::access_denied(
             &chrome(state, &parts.headers),
-            what,
+            need.key(),
         ))
     }
 }
@@ -538,15 +582,12 @@ impl Denied {
 impl IntoResponse for Denied {
     fn into_response(self) -> Response {
         let msg: String = match self {
-            Denied::Unauthenticated => {
-                "forbidden: this action requires signing in via the front proxy".into()
-            }
-            Denied::StaleEvidence => {
-                "forbidden: your sign-in has lapsed — reload the page to log in again".into()
-            }
-            Denied::Insufficient(what) => {
-                format!("forbidden: your account is not authorized for {what}")
-            }
+            Denied::Unauthenticated(l10n) => l10n.tr("denied-unauthenticated"),
+            Denied::StaleEvidence(l10n) => l10n.tr("denied-stale"),
+            Denied::Insufficient(need, l10n) => l10n.tr_args(
+                "denied-insufficient",
+                &[("what", FluentArg::Str(&l10n.tr(need.key())))],
+            ),
             Denied::Page(page) => return (StatusCode::FORBIDDEN, page).into_response(),
         };
         (StatusCode::FORBIDDEN, msg).into_response()
@@ -559,19 +600,20 @@ fn require(
     state: &AppState,
     headers: &HeaderMap,
     need: Role,
-    what: &'static str,
+    what: Need,
 ) -> Result<Principal, Denied> {
+    let l10n = super::i18n::negotiate_headers(state, headers);
     let Some((principal, evidence)) = resolve_caller(state, headers) else {
-        return Err(Denied::Unauthenticated);
+        return Err(Denied::Unauthenticated(l10n));
     };
     if !evidence.admits_writes() {
         // A display cookie alone. The user looks signed in and the chrome
         // rendered, but the proxy hasn't vouched for *this* request.
-        return Err(Denied::StaleEvidence);
+        return Err(Denied::StaleEvidence(l10n));
     }
     match principal.role() >= need {
         true => Ok(principal),
-        false => Err(Denied::Insufficient(what)),
+        false => Err(Denied::Insufficient(what, l10n)),
     }
 }
 
@@ -581,14 +623,9 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for Curator {
         parts: &mut axum::http::request::Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
-        require(
-            state,
-            &parts.headers,
-            Role::Curator,
-            "curating this archive",
-        )
-        .map(Curator)
-        .map_err(|d| d.for_page(state, parts))
+        require(state, &parts.headers, Role::Curator, Need::Curating)
+            .map(|p| Curator(p, super::i18n::negotiate_headers(state, &parts.headers)))
+            .map_err(|d| d.for_page(state, parts))
     }
 }
 
@@ -598,14 +635,9 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for Admin {
         parts: &mut axum::http::request::Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
-        require(
-            state,
-            &parts.headers,
-            Role::Admin,
-            "administering this archive",
-        )
-        .map(Admin)
-        .map_err(|d| d.for_page(state, parts))
+        require(state, &parts.headers, Role::Admin, Need::Administering)
+            .map(|p| Admin(p, super::i18n::negotiate_headers(state, &parts.headers)))
+            .map_err(|d| d.for_page(state, parts))
     }
 }
 
@@ -627,6 +659,7 @@ pub(super) fn chrome(state: &AppState, headers: &HeaderMap) -> crate::views::Chr
         signed_in,
         can_login,
         site: state.site.clone(),
+        l10n: super::i18n::negotiate_headers(state, headers),
     }
 }
 

@@ -105,6 +105,24 @@ pub struct SiteConfig {
     /// curator's account. Rendered by [`crate::markdown::render`], which
     /// escapes raw HTML and keeps links to safe schemes.
     pub tagline: Option<String>,
+    /// The interface language for a reader whose browser asks for none that
+    /// indice has: a tag such as `it`. Defaults to `en`. Checked by
+    /// [`SiteConfig::language`].
+    pub language: Option<String>,
+}
+
+impl SiteConfig {
+    /// The fallback interface language: `site.language` if set (a blank value
+    /// counts as unset), else English. An unsupported tag is an error naming the
+    /// setting and the supported languages. Like [`Config::check_upload_limits`]
+    /// it is for the server to call at startup, not [`Config::load`]: a wrong
+    /// language in a setting the command line does not use should not stop it.
+    pub fn language(&self) -> Result<unic_langid::LanguageIdentifier> {
+        match self.language.as_deref().map(str::trim) {
+            None | Some("") => crate::i18n::parse_language("en"),
+            Some(tag) => crate::i18n::parse_language(tag).context("site.language"),
+        }
+    }
 }
 
 /// A web analytics service, such as Plausible, Matomo or GoatCounter. Off
@@ -332,7 +350,21 @@ impl Config {
                     )
                 })?
             }
-            None => crate::describe::BUILT_IN_PROMPT.to_string(),
+            None => {
+                // `Config::load` doesn't validate `site.language` (the server
+                // does, at startup), so a bad one reaches here from the CLI:
+                // draft in English rather than refuse over a setting this
+                // command doesn't use.
+                let language = self
+                    .site
+                    .language()
+                    .map_or_else(|_| "English".to_string(), |l| crate::i18n::english_name(&l));
+                format!(
+                    "{}\n\nWrite every value in {}.\n",
+                    crate::describe::BUILT_IN_PROMPT,
+                    language
+                )
+            }
         };
         Ok(Some((
             crate::llm::LlmSettings {
@@ -568,8 +600,41 @@ mod tests {
             describe.max_input_chars,
             crate::describe::DEFAULT_MAX_INPUT_CHARS
         );
-        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(describe
+            .prompt
+            .starts_with(crate::describe::BUILT_IN_PROMPT));
         assert!(!describe.prompt_is_custom);
+    }
+
+    #[test]
+    fn default_prompt_asks_for_english() {
+        let (_t, r) = llm_of("llm:\n  endpoint: http://localhost:1/v1\n  model: m\n");
+        let (_, describe) = r.unwrap().unwrap();
+        assert!(describe
+            .prompt
+            .ends_with("\n\nWrite every value in English.\n"));
+    }
+
+    #[test]
+    fn builtin_prompt_names_the_site_language() {
+        let (_t, r) =
+            llm_of("site:\n  language: it\nllm:\n  endpoint: http://localhost:1/v1\n  model: m\n");
+        let (_, describe) = r.unwrap().unwrap();
+        assert!(describe
+            .prompt
+            .starts_with(crate::describe::BUILT_IN_PROMPT));
+        assert!(describe.prompt.ends_with("Write every value in Italian.\n"));
+    }
+
+    #[test]
+    fn an_unusable_site_language_drafts_in_english_without_failing() {
+        for lang in ["xx", "''", "'not a tag'"] {
+            let (_t, r) = llm_of(&format!(
+                "site:\n  language: {lang}\nllm:\n  endpoint: http://localhost:1/v1\n  model: m\n"
+            ));
+            let (_, describe) = r.unwrap().unwrap();
+            assert!(describe.prompt.ends_with("Write every value in English.\n"));
+        }
     }
 
     #[test]
@@ -617,7 +682,9 @@ mod tests {
              describe:\n  prompt_file: ''\n",
         );
         let (_, describe) = r.unwrap().unwrap();
-        assert_eq!(describe.prompt, crate::describe::BUILT_IN_PROMPT);
+        assert!(describe
+            .prompt
+            .starts_with(crate::describe::BUILT_IN_PROMPT));
         assert!(!describe.prompt_is_custom, "reported as built in");
     }
 

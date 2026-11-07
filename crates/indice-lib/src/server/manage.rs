@@ -16,6 +16,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::collections::Manifest;
 use crate::events::Action;
+use crate::i18n::{FluentArg, L10n};
 use crate::views;
 
 use super::*;
@@ -81,6 +82,9 @@ impl ProgressEvent {
 /// ignore a dropped receiver (client disconnected mid-job).
 pub(super) struct ChannelProgress {
     pub(super) tx: mpsc::UnboundedSender<ProgressEvent>,
+    /// The language of whoever started the job: phases are data, and this is
+    /// what words them for the page that is watching.
+    pub(super) l10n: L10n,
 }
 
 impl ChannelProgress {
@@ -95,9 +99,9 @@ impl crate::index::IndexProgress for ChannelProgress {
             label: label.to_string(),
         });
     }
-    fn phase(&self, phase: &str) {
+    fn phase(&self, phase: &crate::index::Phase) {
         self.send(ProgressEvent::Phase {
-            phase: phase.to_string(),
+            phase: phase.render(&self.l10n),
         });
     }
     fn set_total(&self, total: u64) {
@@ -137,7 +141,7 @@ impl crate::index::IndexProgress for ChannelProgress {
 /// /path/to.wacz` is unchanged, which is where a mounted archive volume is
 /// accessioned from anyway, and a curator keeps the upload endpoint, which
 /// carries the bytes rather than naming someone else's file.
-fn require_url_location(location: &str) -> Option<Response> {
+fn require_url_location(l10n: &L10n, location: &str) -> Option<Response> {
     // Asked of `Source::parse` rather than re-testing the scheme here. That
     // function owns the rule "an http(s) prefix is a URL, anything else is a
     // path", and a second copy of it would have to be kept in step: teach it an
@@ -147,15 +151,7 @@ fn require_url_location(location: &str) -> Option<Response> {
         crate::collections::Source::parse(location),
         crate::collections::Source::Url(_)
     );
-    (!is_url).then(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "add an archive by an http(s) URL, or upload the file. A path on the \
-             server's own disk is not accepted here; use `indice index` on the \
-             machine itself for that.",
-        )
-            .into_response()
-    })
+    (!is_url).then(|| bad_request(l10n, "error-location-not-url"))
 }
 
 /// Body of `POST /api/archives` — add a crawl by reference. Browser byte-upload
@@ -198,7 +194,7 @@ pub(super) fn acquire_write_lock<'a>(
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => {
-            crate::index::IndexProgress::phase(progress, "waiting for another import to finish…");
+            crate::index::IndexProgress::phase(progress, &crate::index::Phase::WaitingForImport);
             write_lock.lock().unwrap_or_else(|e| e.into_inner())
         }
     }
@@ -221,6 +217,8 @@ fn start_index_job(
     // An upload's staging directory, held until the job ends.
     staged: Option<tempfile::TempDir>,
 ) -> u64 {
+    // The language of whoever started it, for the progress it reports.
+    let l10n = curator.l10n().clone();
     // On a server the person naming the location may be an approved stranger
     // rather than the operator, so a URL may only point at a public address.
     // A workstation keeps the unrestricted policy: there, the two are the same
@@ -247,7 +245,10 @@ fn start_index_job(
         let is_upload = staged.is_some();
         // Held until the job ends; dropping it removes the staging directory.
         let _staged = staged;
-        let progress = ChannelProgress { tx: tx.clone() };
+        let progress = ChannelProgress {
+            tx: tx.clone(),
+            l10n: l10n.clone(),
+        };
         let result = {
             // The cross-process index lock is taken *before* the in-process
             // one, and the order matters more than it looks. `index_location`
@@ -267,7 +268,10 @@ fn start_index_job(
                 Ok(l) => l,
                 Err(e) => {
                     let _ = tx.send(ProgressEvent::Error {
-                        message: format!("could not lock the search index: {e:#}"),
+                        message: l10n.tr_args(
+                            "error-lock-failed",
+                            &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                        ),
                     });
                     return;
                 }
@@ -290,7 +294,7 @@ fn start_index_job(
                 Ok(room) => room,
                 Err(refused) => {
                     let _ = tx.send(ProgressEvent::Error {
-                        message: refused.status_and_message().1,
+                        message: refused.message(&l10n),
                     });
                     return;
                 }
@@ -318,13 +322,19 @@ fn start_index_job(
                     .ok(),
                 Err(e) => tx
                     .send(ProgressEvent::Error {
-                        message: format!("indexed, but reloading the searcher failed: {e:#}"),
+                        message: l10n.tr_args(
+                            "error-reload-failed",
+                            &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                        ),
                     })
                     .ok(),
             },
             Err(e) => tx
                 .send(ProgressEvent::Error {
-                    message: format!("{e:#}"),
+                    message: l10n.tr_args(
+                        "error-job-failed",
+                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                    ),
                 })
                 .ok(),
         };
@@ -344,18 +354,18 @@ pub(super) async fn add_archive(
 ) -> Response {
     // Mirror the CLI's "every crawl belongs to a collection" guard.
     if req.collection.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "collection is required").into_response();
+        return bad_request(curator.l10n(), "error-collection-required");
     }
     // Before the audit record, not after: a refused probe is not an accession,
     // and twenty of them logged as ordinary adds against a collection that
     // stays empty is worse than no log at all.
-    if let Some(refusal) = require_url_location(&req.path) {
+    if let Some(refusal) = require_url_location(curator.l10n(), &req.path) {
         return refusal;
     }
     // A URL files nothing, but indexing it writes temp files, which count
     // against the archive's room: a full archive accepts nothing new.
     if let Err(refused) = accession_budget(&state) {
-        return refused.into_response();
+        return refused.respond(curator.l10n());
     }
     audit_detail(
         &state,
@@ -388,7 +398,7 @@ pub(super) async fn upload_archive(
     // than after a curator has waited for gigabytes to arrive.
     let budget = match accession_budget(&state) {
         Ok(b) => b,
-        Err(refused) => return refused.into_response(),
+        Err(refused) => return refused.respond(curator.l10n()),
     };
     // A body that declares itself too large is refused from its headers.
     // Nothing else would: the route's body limit counts frames as they arrive
@@ -402,7 +412,7 @@ pub(super) async fn upload_archive(
             .and_then(|v| v.parse::<u64>().ok()),
     ) {
         if declared > b.bytes().saturating_add(UPLOAD_FRAMING_ALLOWANCE) {
-            return b.refused().into_response();
+            return b.refused().respond(curator.l10n());
         }
     }
     let mut collection: Option<String> = None;
@@ -414,14 +424,14 @@ pub(super) async fn upload_archive(
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => return multipart_refusal(e, budget),
+            Err(e) => return multipart_refusal(e, budget, curator.l10n()),
         };
         match field.name() {
-            Some("collection") => match read_text_field(field, budget).await {
+            Some("collection") => match read_text_field(field, budget, curator.l10n()).await {
                 Ok(text) => collection = Some(text),
                 Err(refusal) => return refusal,
             },
-            Some("name") => match read_text_field(field, budget).await {
+            Some("name") => match read_text_field(field, budget, curator.l10n()).await {
                 Ok(text) => name = Some(text),
                 Err(refusal) => return refusal,
             },
@@ -456,10 +466,10 @@ pub(super) async fn upload_archive(
 
     let collection = match collection {
         Some(c) if !c.trim().is_empty() => c,
-        _ => return (StatusCode::BAD_REQUEST, "collection is required").into_response(),
+        _ => return bad_request(curator.l10n(), "error-collection-required"),
     };
     let Some(path) = file_path else {
-        return (StatusCode::BAD_REQUEST, "a file is required").into_response();
+        return bad_request(curator.l10n(), "error-file-required");
     };
     let name = name.filter(|n| !n.trim().is_empty());
     let location = path.to_string_lossy().to_string();
@@ -499,14 +509,14 @@ async fn stream_field_to_file(
         let chunk = match field.chunk().await {
             Ok(Some(c)) => c,
             Ok(None) => break,
-            Err(e) => return Err(multipart_refusal(e, budget)),
+            Err(e) => return Err(multipart_refusal(e, budget, curator.l10n())),
         };
         written += chunk.len() as u64;
         if let Some(b) = budget {
             if written > b.bytes() {
                 // The temp directory is dropped with the handler, which
                 // deletes this partial file.
-                return Err(b.refused().into_response());
+                return Err(b.refused().respond(curator.l10n()));
             }
         }
         file.write_all(&chunk)
@@ -578,44 +588,52 @@ pub(super) enum Refused {
 }
 
 impl Refused {
-    /// The status and the message, shared by a handler's response and a job's
-    /// progress error so both say the same thing.
-    pub(super) fn status_and_message(&self) -> (StatusCode, String) {
+    pub(super) fn status(&self) -> StatusCode {
         match self {
-            Refused::TooLarge { cap } => (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "this is larger than the {} limit on a single upload \
-                     (uploads.max_mb in config.yaml)",
-                    human_size(*cap)
-                ),
-            ),
+            Refused::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             // 507 rather than 413: the request is not too large in itself, the
             // archive has no room for it, and a smaller file may still fit.
-            Refused::ArchiveFull { used, cap } => (
-                StatusCode::INSUFFICIENT_STORAGE,
-                format!(
-                    "the archive is limited to {} and holds {}, so there is {} left \
-                     (uploads.max_total_gb in config.yaml)",
-                    human_size(*cap),
-                    human_size(*used),
-                    human_size(cap.saturating_sub(*used)),
-                ),
+            Refused::ArchiveFull { .. } => StatusCode::INSUFFICIENT_STORAGE,
+            Refused::Measure(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    /// The sentence, in the reader's language. The one rendering of a refusal:
+    /// a handler's response, a job's progress error and the limits the
+    /// accession desk hands its page all come from here, so they say the same
+    /// thing whichever one catches it.
+    pub(super) fn message(&self, l10n: &L10n) -> String {
+        let size = |bytes: u64| l10n.size(bytes);
+        match self {
+            Refused::TooLarge { cap } => {
+                l10n.tr_args("refused-too-large", &[("cap", FluentArg::Str(&size(*cap)))])
+            }
+            Refused::ArchiveFull { used, cap } => l10n.tr_args(
+                "refused-archive-full",
+                &[
+                    ("cap", FluentArg::Str(&size(*cap))),
+                    ("used", FluentArg::Str(&size(*used))),
+                    ("left", FluentArg::Str(&size(cap.saturating_sub(*used)))),
+                ],
             ),
-            Refused::Measure(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("could not measure the archive: {e}"),
+            // The io error is the system's own text, passed through.
+            Refused::Measure(e) => l10n.tr_args(
+                "refused-measure",
+                &[("detail", FluentArg::Str(&e.to_string()))],
             ),
         }
     }
-}
 
-impl IntoResponse for Refused {
-    fn into_response(self) -> Response {
+    /// The refusal as a response, in the language of the request it answers.
+    /// Not `IntoResponse`: that has no request to take a language from, which
+    /// is how a refusal once said it in English beside a page saying it in
+    /// Italian.
+    pub(super) fn respond(self, l10n: &L10n) -> Response {
         if let Refused::Measure(_) = &self {
-            tracing::error!("{}", self.status_and_message().1);
+            // The log is the operator's, so it stays English.
+            tracing::error!("{}", self.message(&L10n::default()));
         }
-        self.status_and_message().into_response()
+        (self.status(), self.message(l10n)).into_response()
     }
 }
 
@@ -706,6 +724,7 @@ const MAX_TEXT_FIELD: usize = 4 * 1024;
 async fn read_text_field(
     mut field: axum::extract::multipart::Field<'_>,
     budget: Option<Budget>,
+    l10n: &L10n,
 ) -> Result<String, Response> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -714,8 +733,9 @@ async fn read_text_field(
                 if buf.len() + chunk.len() > MAX_TEXT_FIELD {
                     return Err((
                         StatusCode::PAYLOAD_TOO_LARGE,
-                        format!(
-                            "a text field in this upload is longer than {MAX_TEXT_FIELD} bytes"
+                        l10n.tr_args(
+                            "error-text-field-long",
+                            &[("max", FluentArg::Str(&l10n.number(MAX_TEXT_FIELD as u64)))],
                         ),
                     )
                         .into_response());
@@ -723,11 +743,10 @@ async fn read_text_field(
                 buf.extend_from_slice(&chunk);
             }
             Ok(None) => break,
-            Err(e) => return Err(multipart_refusal(e, budget)),
+            Err(e) => return Err(multipart_refusal(e, budget, l10n)),
         }
     }
-    String::from_utf8(buf)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "a text field is not valid UTF-8").into_response())
+    String::from_utf8(buf).map_err(|_| bad_request(l10n, "error-text-field-utf8"))
 }
 
 /// A multipart error as a response.
@@ -745,16 +764,21 @@ async fn read_text_field(
 fn multipart_refusal(
     e: axum::extract::multipart::MultipartError,
     budget: Option<Budget>,
+    l10n: &L10n,
 ) -> Response {
     if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
         if let Some(b) = budget {
-            return b.refused().into_response();
+            return b.refused().respond(l10n);
         }
+        // axum's own words, passed through.
         return (StatusCode::PAYLOAD_TOO_LARGE, e.body_text()).into_response();
     }
     (
         StatusCode::BAD_REQUEST,
-        format!("upload refused: {}", e.body_text()),
+        l10n.tr_args(
+            "error-upload-refused",
+            &[("detail", FluentArg::Str(&e.body_text()))],
+        ),
     )
         .into_response()
 }
@@ -781,7 +805,7 @@ pub(super) async fn add_archive_events(
         }
     };
     let Some(rx) = rx else {
-        return (StatusCode::NOT_FOUND, "unknown or already-consumed job").into_response();
+        return not_found(curator.l10n(), "error-job-unknown");
     };
 
     let stream = UnboundedReceiverStream::new(rx).map(|ev| {
@@ -829,7 +853,7 @@ pub(super) async fn edit_collection_form(
         Err(e) => return curator.error_response(e),
     };
     let Some(c) = manifest.collections.iter().find(|c| c.id == id) else {
-        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+        return not_found(curator.l10n(), "error-collection-unknown");
     };
     let form = views::CollectionFormData {
         id: c.id.to_string(),
@@ -937,11 +961,7 @@ pub(super) async fn draft_collection(
     let chrome = chrome(&state, &headers);
     let mut data = form_data(&state, &id, &form);
     let Some(drafting) = state.drafting.clone() else {
-        data.error = Some(
-            "No language model is configured, so there is nothing to draft with. An \
-             operator sets one in config.yaml (llm:)."
-                .into(),
-        );
+        data.error = Some(chrome.l10n.tr("draft-error-no-model"));
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             views::collection_form(&data, &chrome),
@@ -953,7 +973,7 @@ pub(super) async fn draft_collection(
         Err(e) => return curator.error_response(e),
     };
     let Some(saved) = manifest.collection_by_id(&id).cloned() else {
-        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+        return not_found(&chrome.l10n, "error-collection-unknown");
     };
     let settings = drafting.llm.settings();
     audit_detail(
@@ -993,7 +1013,10 @@ pub(super) async fn draft_collection(
     let mut material = match gathered {
         Ok(m) => m,
         Err(e) => {
-            data.error = Some(format!("Couldn't gather this collection's pages: {e:#}"));
+            data.error = Some(chrome.l10n.tr_args(
+                "draft-error-gather",
+                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+            ));
             return (StatusCode::CONFLICT, views::collection_form(&data, &chrome)).into_response();
         }
     };
@@ -1013,7 +1036,10 @@ pub(super) async fn draft_collection(
     let draft = match result {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
-            data.error = Some(format!("The draft couldn't be made: {e:#}"));
+            data.error = Some(chrome.l10n.tr_args(
+                "draft-error-failed",
+                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+            ));
             return (
                 StatusCode::BAD_GATEWAY,
                 views::collection_form(&data, &chrome),
@@ -1127,17 +1153,18 @@ pub(super) async fn accession_desk_page(
         })
         .unwrap_or_else(|| id.clone());
     let chrome = chrome(&state, &headers);
-    let room = room_note(&state);
-    // The same refusal text the server would send, so the page and the server
-    // say the same thing whichever one catches it.
+    let room = room_note(&state, &chrome.l10n);
+    // The same refusal text the server would send, in the same language (both
+    // come from `Refused::message`), so the page and the server say the same
+    // thing whichever one catches it.
     let max_upload = state
         .upload_limits
         .per_upload
-        .map(|cap| (cap, Refused::TooLarge { cap }.status_and_message().1));
+        .map(|cap| (cap, Refused::TooLarge { cap }.message(&chrome.l10n)));
     let room_left = archive_usage(&state).ok().flatten().map(|(used, cap)| {
         (
             cap.saturating_sub(used),
-            Refused::ArchiveFull { used, cap }.status_and_message().1,
+            Refused::ArchiveFull { used, cap }.message(&chrome.l10n),
         )
     });
     views::accession_desk(
@@ -1167,35 +1194,47 @@ pub(super) async fn accession_desk_page(
 ///
 /// Best-effort: if the archive cannot be measured the line is left off. The
 /// desk still works and the upload itself reports the real error.
-fn room_note(state: &AppState) -> Option<String> {
-    let per_upload = state
-        .upload_limits
-        .per_upload
-        .map(|cap| format!("Uploads up to {} each.", human_size(cap)));
+fn room_note(state: &AppState, l10n: &L10n) -> Option<String> {
+    let per_upload = state.upload_limits.per_upload.map(|cap| {
+        l10n.tr_args(
+            "room-per-upload",
+            &[("cap", FluentArg::Str(&l10n.size(cap)))],
+        )
+    });
     let archive = archive_usage(state).ok().flatten().map(|(used, cap)| {
+        let (used_text, cap_text) = (l10n.size(used), l10n.size(cap));
         if used >= cap {
             // Uploads and download imports are closed. Adding by URL and a
             // streamed Browsertrix import store nothing locally, so they still
             // work, and saying "nothing can be added" would send a curator away
             // from both.
-            format!(
-                "The archive is full ({} of its {} limit), so uploads and download \
-                 imports are refused until a crawl is removed or the limit is raised. \
-                 Adding by URL still works.",
-                human_size(used),
-                human_size(cap)
+            l10n.tr_args(
+                "room-full",
+                &[
+                    ("used", FluentArg::Str(&used_text)),
+                    ("cap", FluentArg::Str(&cap_text)),
+                ],
             )
         } else {
-            format!(
-                "The archive holds {} of its {} limit; {} left.",
-                human_size(used),
-                human_size(cap),
-                human_size(cap - used)
+            l10n.tr_args(
+                "room-left",
+                &[
+                    ("used", FluentArg::Str(&used_text)),
+                    ("cap", FluentArg::Str(&cap_text)),
+                    ("left", FluentArg::Str(&l10n.size(cap - used))),
+                ],
             )
         }
     });
     match (per_upload, archive) {
-        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        // Two sentences side by side, joined as a language writes them.
+        (Some(a), Some(b)) => Some(l10n.tr_args(
+            "room-both",
+            &[
+                ("upload", FluentArg::Str(&a)),
+                ("archive", FluentArg::Str(&b)),
+            ],
+        )),
         (one, other) => one.or(other),
     }
 }
@@ -1338,7 +1377,7 @@ pub(super) async fn create_collection(
     let drafted = form.take_draft();
     let name = form.name.trim().to_string();
     if name.is_empty() {
-        return (StatusCode::BAD_REQUEST, "collection name is required").into_response();
+        return bad_request(curator.l10n(), "error-collection-name-required");
     }
     audit_detail(
         &state,
@@ -1438,9 +1477,9 @@ pub(super) async fn delete_crawl_handler(
         Ok(Ok(CrawlDeleteOutcome::Deleted(plan))) => {
             Redirect::to(&format!("/collection/{}", plan.collection)).into_response()
         }
-        Ok(Ok(CrawlDeleteOutcome::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(CrawlDeleteOutcome::Busy(holder))) => busy_response(curator.l10n(), &holder),
         Ok(Ok(CrawlDeleteOutcome::Denied)) => {
-            Denied::Insufficient("deleting a crawl someone else added").into_response()
+            Denied::Insufficient(Need::DeletingOthersCrawl, curator.l10n().clone()).into_response()
         }
         Ok(Err(e)) => curator.error_response(e),
         Err(e) => curator.error_response(anyhow::anyhow!(e)),
@@ -1468,6 +1507,7 @@ pub(super) async fn delete_collection_handler(
         .as_deref()
         .is_some_and(|v| matches!(v, "true" | "on" | "1"));
     let actor = admin.principal().clone();
+    let admin_l10n = admin.l10n().clone();
     // This ends in a recursive remove_dir_all, so the id has to be a valid
     // single path component before it goes anywhere near the filesystem.
     let Some(cid) = CollectionId::parse(&id) else {
@@ -1481,7 +1521,7 @@ pub(super) async fn delete_collection_handler(
             collection = %id,
             "refused a collection delete: not a valid collection id"
         );
-        return (StatusCode::NOT_FOUND, "unknown collection").into_response();
+        return not_found(&admin_l10n, "error-collection-unknown");
     };
     let state = state.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -1521,12 +1561,15 @@ pub(super) async fn delete_collection_handler(
     .await;
     match result {
         Ok(Ok(DeleteOutcome::Done)) => Redirect::to("/").into_response(),
-        Ok(Ok(DeleteOutcome::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(DeleteOutcome::Busy(holder))) => busy_response(&admin_l10n, &holder),
         Ok(Ok(DeleteOutcome::Refused(n))) => (
             StatusCode::CONFLICT,
-            format!(
-                "This collection has {n} crawl(s); tick “also delete member crawls” \
-                 to remove them too, or delete/move the crawls first."
+            admin_l10n.tr_args(
+                "error-collection-not-empty",
+                &[
+                    ("count", FluentArg::Num(n as i64)),
+                    ("shown", FluentArg::Str(&admin_l10n.number(n as u64))),
+                ],
             ),
         )
             .into_response(),
@@ -1551,4 +1594,24 @@ enum DeleteOutcome {
     Done,
     Refused(usize),
     Busy(String),
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+    use crate::index::{IndexProgress, Phase};
+
+    /// The page shows the phase text as sent, so the job's language has to be
+    /// applied where the phase is turned into an event.
+    #[test]
+    fn channel_progress_renders_in_its_language() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let l10n = crate::i18n::negotiate(Some("it"), &crate::i18n::parse_language("en").unwrap());
+        let progress = ChannelProgress { tx, l10n };
+        progress.phase(&Phase::BuildingWacz);
+        match rx.try_recv().unwrap() {
+            ProgressEvent::Phase { phase } => assert_eq!(phase, "creazione del WACZ"),
+            other => panic!("expected a phase event, got {other:?}"),
+        }
+    }
 }

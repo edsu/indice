@@ -16,7 +16,7 @@ struct PhaseRecorder {
 
 impl indice_lib::index::IndexProgress for PhaseRecorder {
     // Only the callback this test cares about; the rest default to no-ops.
-    fn phase(&self, p: &str) {
+    fn phase(&self, p: &indice_lib::index::Phase) {
         self.phases.lock().unwrap().push(p.to_string());
     }
 }

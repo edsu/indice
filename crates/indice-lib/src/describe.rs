@@ -64,7 +64,9 @@ strings) and \"dates\" (string).";
 pub struct DescribeSettings {
     /// The most material to send, in characters.
     pub max_input_chars: usize,
-    /// The system prompt: [`BUILT_IN_PROMPT`] or the operator's own.
+    /// The system prompt: [`BUILT_IN_PROMPT`] followed by an instruction to write
+    /// in `site.language`, or the operator's own, used exactly as written (it
+    /// answers for its own language).
     pub prompt: String,
     /// Whether `prompt` came from a `prompt_file`.
     pub prompt_is_custom: bool,

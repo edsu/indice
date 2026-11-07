@@ -16,6 +16,10 @@ tokio = { workspace = true }
 http-body = "1"
 tower-http = { workspace = true }
 maud = { workspace = true }
+fluent-bundle = { workspace = true }
+fluent-langneg = { workspace = true }
+unic-langid = { workspace = true }
+intl_pluralrules = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde-saphyr = { workspace = true }
 tantivy = { workspace = true }
@@ -45,6 +49,9 @@ tokio-stream = { workspace = true }
 version = "3"
 
 [dev-dependencies]
+# The catalogs' syntax tree, so a test can compare each message's `$variables`
+# across languages. Already in the tree through fluent-bundle.
+fluent-syntax = "0.12"
 # Reads the log back in tests/errors.rs, to check a failure's cause is kept there.
 tracing-subscriber = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

@@ -39,7 +39,7 @@ use crate::collections::{wacz_id, Manifest, Source};
 use crate::search::SearchIndex;
 
 use super::paths::{archive_dir, index_dir};
-use super::IndexProgress;
+use super::{IndexProgress, Phase};
 
 /// Documents in the index that no manifest entry claims.
 ///
@@ -167,9 +167,9 @@ pub fn reconcile(home: &Path, progress: &dyn IndexProgress) -> Result<Outcome> {
 
     let (manifest, live) = {
         let _index = super::lock::lock_index(home, "reconciling the index and manifest", progress)?;
-        progress.phase("reading the manifest");
+        progress.phase(&Phase::ReadingManifest);
         let manifest = Manifest::open(&index_dir(home))?;
-        progress.phase("listing crawls in the index");
+        progress.phase(&Phase::ListingCrawls);
         let live = search.live_crawl_ids()?;
         (manifest, live)
     };
@@ -185,7 +185,7 @@ pub fn reconcile(home: &Path, progress: &dyn IndexProgress) -> Result<Outcome> {
     let on_disk = if orphan_ids.is_empty() {
         BTreeMap::new()
     } else {
-        progress.phase("looking for the orphans' files on disk");
+        progress.phase(&Phase::LookingForOrphanFiles);
         wacz_ids_on_disk(home)?
     };
 

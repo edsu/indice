@@ -43,6 +43,15 @@ async fn serve(
     home: &Path,
     access: indice_lib::server::Access,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    let (app, _, handle) = serve_both(home, access).await;
+    (app, handle)
+}
+
+/// As [`serve`], with the replay origin's address too.
+async fn serve_both(
+    home: &Path,
+    access: indice_lib::server::Access,
+) -> (String, String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let replay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -55,6 +64,7 @@ async fn serve(
     config.replay_origin = Some(indice_lib::server::ReplayOrigin::for_listener(
         replay.local_addr().unwrap(),
     ));
+    let replay_base = format!("http://{}", replay.local_addr().unwrap());
     let home = home.to_path_buf();
     let handle = tokio::spawn(async move {
         indice_lib::server::serve_on_listeners(
@@ -68,7 +78,7 @@ async fn serve(
         .await
         .unwrap();
     });
-    (format!("http://127.0.0.1:{port}"), handle)
+    (format!("http://127.0.0.1:{port}"), replay_base, handle)
 }
 
 fn proxy() -> indice_lib::server::Access {
@@ -118,6 +128,58 @@ async fn hammer(
         .into_iter()
         .map(|(s, _)| s)
         .collect()
+}
+
+/// GET `url` until the server refuses it, returning the refusal's body. Three
+/// bursts' worth, for the reason given in the test below.
+async fn first_refusal(url: String, headers: Vec<(&'static str, String)>) -> String {
+    tokio::task::spawn_blocking(move || {
+        let agent = agent();
+        for _ in 0..3 * BURST {
+            let mut req = agent.get(&url);
+            for (k, v) in &headers {
+                req = req.header(*k, v);
+            }
+            let mut res = req.call().unwrap();
+            let body = res.body_mut().read_to_string().unwrap_or_default();
+            if res.status().as_u16() == 429 {
+                return body;
+            }
+        }
+        panic!("{url} was never refused");
+    })
+    .await
+    .unwrap()
+}
+
+/// A refusal is in the reader's language on the app's pages, and in English on
+/// the documented public API and on the replay origin, which answer every
+/// reader the same.
+#[tokio::test]
+async fn a_refusal_speaks_the_readers_language_only_on_pages() {
+    let (tmp, id) = server_home();
+    let (base, replay, server) = serve_both(tmp.path(), proxy()).await;
+    // A client of its own for each, so one's refusals do not cut another short.
+    let italian = |ip: &str| {
+        vec![
+            ("x-forwarded-for", ip.to_string()),
+            ("accept-language", "it".to_string()),
+        ]
+    };
+    let english = "too many requests from this address";
+
+    let page = first_refusal(format!("{base}/"), italian("9.9.9.1")).await;
+    assert!(page.starts_with("troppe richieste"), "{page}");
+    for (url, ip) in [
+        (format!("{base}/api/search?q=x"), "9.9.9.2"),
+        (format!("{base}/api/annotations"), "9.9.9.3"),
+        (format!("{base}/crawl/{id}/replay.json"), "9.9.9.4"),
+        (format!("{replay}/crawl/{id}/replay.json"), "9.9.9.5"),
+    ] {
+        let body = first_refusal(url.clone(), italian(ip)).await;
+        assert!(body.starts_with(english), "{url}: {body}");
+    }
+    server.abort();
 }
 
 /// Past its burst, a client is told to wait, with `Retry-After`; another client

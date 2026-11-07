@@ -26,7 +26,7 @@ pub(super) async fn search_api(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
-    if let Some(refusal) = query_too_long(&params.q) {
+    if let Some(refusal) = query_too_long(&L10n::default(), &params.q) {
         return refusal;
     }
     let limit = params.limit.unwrap_or(20).min(200);
@@ -64,7 +64,7 @@ pub(super) async fn search_api(
             });
             (StatusCode::OK, axum::Json(body)).into_response()
         }
-        Err(e) => error_response(e),
+        Err(e) => error_response(&L10n::default(), e),
     }
 }
 
@@ -229,8 +229,11 @@ pub(super) async fn list_annotations(
             })
             .into_response()
         }
-        Ok(Err(e)) => error_response(e),
-        Err(e) => error_response(anyhow::anyhow!("annotation task panicked: {e}")),
+        Ok(Err(e)) => error_response(&L10n::default(), e),
+        Err(e) => error_response(
+            &L10n::default(),
+            anyhow::anyhow!("annotation task panicked: {e}"),
+        ),
     }
 }
 
@@ -241,17 +244,17 @@ pub(super) async fn create_annotation(
     Json(req): Json<AnnotationCreateReq>,
 ) -> Response {
     if req.note.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "note is empty").into_response();
+        return bad_request(curator.l10n(), "error-note-empty");
     }
     if req.url.trim().is_empty() || req.timestamp.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "url and timestamp are required").into_response();
+        return bad_request(curator.l10n(), "error-note-target-required");
     }
     // A note must attach to a collection the manifest knows about; otherwise a
     // well-formed but unknown slug would create an orphan collections/<slug>/ dir
     // and an orphan search doc for a collection that isn't listed anywhere.
     match Manifest::open(&state.index_dir) {
         Ok(m) if m.collection_by_id(&req.collection).is_some() => {}
-        Ok(_) => return (StatusCode::NOT_FOUND, "collection not found").into_response(),
+        Ok(_) => return not_found(curator.l10n(), "error-collection-not-found"),
         Err(e) => return curator.error_response(e),
     }
     // No invented identity: if we can't say who is writing, we don't write.
@@ -309,7 +312,7 @@ pub(super) async fn create_annotation(
     .await;
     match saved {
         Ok(Ok(Write::Done(()))) => (StatusCode::CREATED, Json(view)).into_response(),
-        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(Write::Busy(holder))) => busy_response(curator.l10n(), &holder),
         Ok(Err(e)) => curator.error_response(e),
         Err(e) => curator.error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
@@ -323,7 +326,7 @@ pub(super) async fn update_annotation(
     Json(req): Json<AnnotationUpdateReq>,
 ) -> Response {
     if req.note.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "note is empty").into_response();
+        return bad_request(curator.l10n(), "error-note-empty");
     }
     let author = curator.principal().clone();
     let audit_actor = author.clone();
@@ -369,12 +372,14 @@ pub(super) async fn update_annotation(
             Json(annotation_view(&a, &scope, Some(&author))).into_response()
         }
         Ok(Ok(Write::Done(UpdateResult::NotFound))) => {
-            (StatusCode::NOT_FOUND, "no such annotation").into_response()
+            not_found(curator.l10n(), "error-annotation-none")
         }
-        Ok(Ok(Write::Done(UpdateResult::Forbidden))) => {
-            (StatusCode::FORBIDDEN, "not your annotation").into_response()
-        }
-        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(Write::Done(UpdateResult::Forbidden))) => (
+            StatusCode::FORBIDDEN,
+            curator.l10n().tr("error-annotation-not-yours"),
+        )
+            .into_response(),
+        Ok(Ok(Write::Busy(holder))) => busy_response(curator.l10n(), &holder),
         Ok(Err(e)) => curator.error_response(e),
         Err(e) => curator.error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }
@@ -420,13 +425,15 @@ pub(super) async fn delete_annotation(
     .await;
     match done {
         Ok(Ok(Write::Done(EditOutcome::Done))) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(Write::Busy(holder))) => busy_response(&holder),
+        Ok(Ok(Write::Busy(holder))) => busy_response(curator.l10n(), &holder),
         Ok(Ok(Write::Done(EditOutcome::NotFound))) => {
-            (StatusCode::NOT_FOUND, "no such annotation").into_response()
+            not_found(curator.l10n(), "error-annotation-none")
         }
-        Ok(Ok(Write::Done(EditOutcome::Forbidden))) => {
-            (StatusCode::FORBIDDEN, "not your annotation").into_response()
-        }
+        Ok(Ok(Write::Done(EditOutcome::Forbidden))) => (
+            StatusCode::FORBIDDEN,
+            curator.l10n().tr("error-annotation-not-yours"),
+        )
+            .into_response(),
         Ok(Err(e)) => curator.error_response(e),
         Err(e) => curator.error_response(anyhow::anyhow!("annotation task panicked: {e}")),
     }

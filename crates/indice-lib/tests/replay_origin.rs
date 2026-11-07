@@ -121,6 +121,119 @@ async fn the_viewer_frames_the_configured_replay_origin() {
     );
 }
 
+/// The viewer is in the reader's language: the page, the strings its scripts
+/// show, and a `Vary` so a cache keeps the two apart.
+#[tokio::test]
+async fn viewer_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let (status, headers, html) =
+        call(&app, Method::GET, VIEWER, &[("accept-language", "it")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"<html lang="it""#), "{html}");
+    assert!(
+        html.contains("Caricamento della pagina archiviata"),
+        "{html}"
+    );
+    assert!(html.contains("<title>Riproduzione - "), "{html}");
+    assert!(html.contains(r#"id="i18n""#), "{html}");
+    assert!(html.contains("Scrivi una nota"), "{html}");
+    assert!(!html.contains("Loading the archived page"), "{html}");
+    let vary = headers
+        .get_all("vary")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(vary.contains("accept-language"), "{vary}");
+
+    // English by default, and the shared script is served for the page to load.
+    let (_, en) = get(&app, VIEWER).await;
+    assert!(en.contains(r#"<html lang="en""#), "{en}");
+    assert!(en.contains("Write a note"), "{en}");
+    assert!(en.contains("/assets/i18n.js"), "{en}");
+}
+
+/// On an instance whose `site.language` is Italian, a reader whose browser asks
+/// for nothing indice has, or for nothing at all, gets the Italian viewer.
+#[tokio::test]
+async fn viewer_falls_back_to_the_site_language() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("config.yaml"), "site:\n  language: it\n").unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    for headers in [&[("accept-language", "ja")][..], &[]] {
+        let (status, _, html) = call(&app, Method::GET, VIEWER, headers).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"<html lang="it""#), "{headers:?}: {html}");
+        assert!(html.contains("Scrivi una nota"), "{headers:?}: {html}");
+    }
+    // A browser that asks for English still gets it.
+    let (_, _, en) = call(&app, Method::GET, VIEWER, &[("accept-language", "en")]).await;
+    assert!(en.contains(r#"<html lang="en""#), "{en}");
+}
+
+/// A crawl named only by its tool's identifier is called by its date in the
+/// viewer's banner too, in the reader's language.
+#[tokio::test]
+async fn viewer_names_a_machine_named_crawl_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let input = tmp.path().join("input.wacz");
+    std::fs::copy(fixture("simple.wacz"), &input).unwrap();
+    indice_lib::index::Ingest::new(tmp.path())
+        .name(Some("20250107171404015-af3df7fa-3fc-0"))
+        .index_location(&input.to_string_lossy(), "m")
+        .unwrap();
+    let id = indice_lib::collections::Manifest::open(&tmp.path().join("index"))
+        .unwrap()
+        .waczs[0]
+        .id
+        .clone();
+    let viewer = format!("/crawl/{id}/20250101000000/https://example.org/");
+    let (status, _, html) = call(&app, Method::GET, &viewer, &[("accept-language", "it")]).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(html.contains("Scansione del "), "{html}");
+    assert!(!html.contains("Crawl of "), "{html}");
+    let (_, en) = get(&app, &viewer).await;
+    assert!(en.contains("Crawl of "), "{en}");
+}
+
+/// A collection's Annotations page is in the reader's language, and its
+/// machine-readable form stays as documented.
+#[tokio::test]
+async fn annotations_page_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let (status, headers, html) = call(
+        &app,
+        Method::GET,
+        "/collection/demo/annotations",
+        &[("accept-language", "it")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("Ancora nessuna annotazione"), "{html}");
+    assert!(html.contains("<title>Annotazioni - demo"), "{html}");
+    assert!(!html.contains("No annotations yet"), "{html}");
+    assert!(headers
+        .get_all("vary")
+        .iter()
+        .any(|v| v.to_str().unwrap().eq_ignore_ascii_case("accept-language")));
+}
+
+/// Without a replay origin the page says so in the reader's language, and a
+/// failure to open the manifest is worded the same way.
+#[tokio::test]
+async fn viewer_without_replay_origin_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("users.yaml"), "users: []\n").unwrap();
+    let app = indice_lib::server::router(tmp.path(), proxy_config()).unwrap();
+    let (status, _, body) = call(&app, Method::GET, VIEWER, &[("accept-language", "it")]).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!body.contains("replay is not configured"), "{body}");
+    assert!(body.contains("riproduzione"), "{body}");
+}
+
 /// The viewer works out what to replay from its address: the collection's
 /// manifest as the source, and the page and time as written. Unknown crawls,
 /// collections and non-web addresses are not pages to replay.
@@ -151,7 +264,7 @@ async fn the_viewer_takes_what_to_replay_from_its_address() {
     .await;
     assert_eq!(
         html.matches("</script>").count(),
-        3,
+        5,
         "only the page's own: {html}"
     );
 
@@ -168,6 +281,52 @@ async fn the_viewer_takes_what_to_replay_from_its_address() {
             "{path}: {status}"
         );
     }
+}
+
+/// A reader who follows a bad replay link or a missing note's link is told so in
+/// their language; the note's JSON-LD form, part of the documented API, stays
+/// English.
+#[tokio::test]
+async fn a_missing_page_says_so_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let it = [("accept-language", "it")];
+    for (path, italian) in [
+        (
+            "/crawl/nope/2025/https://example.org/",
+            "scansione non trovata",
+        ),
+        (
+            "/collection/nope/2025/https://example.org/",
+            "raccolta non trovata",
+        ),
+        (
+            "/collection/demo/2025/not-a-web-address",
+            "non è un collegamento",
+        ),
+        (
+            "/collection/demo/annotations/not-a-key",
+            "annotazione non trovata",
+        ),
+    ] {
+        let (status, _, body) = call(&app, Method::GET, path, &it).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert!(body.to_lowercase().contains(italian), "{path}: {body}");
+        assert!(!body.contains("not found"), "{path}: {body}");
+    }
+    let missing = format!("/collection/demo/annotations/{}", "0".repeat(32));
+    let (status, _, body) = call(
+        &app,
+        Method::GET,
+        &missing,
+        &[("accept-language", "it"), ("accept", "application/ld+json")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("not found"), "{body}");
+    let (status, _, body) = call(&app, Method::GET, &format!("{missing}.jsonld"), &it).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("not found"), "{body}");
 }
 
 /// Anything on the app origin that could boot ReplayWeb.page could be framed

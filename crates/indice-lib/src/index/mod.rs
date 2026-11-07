@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::collections::Source;
+use crate::i18n::{FluentArg, L10n};
 
 // Functionally-aligned submodules. `mod.rs` retains the two public traits and
 // re-exports every public item so external `index::<symbol>` paths keep resolving.
@@ -41,10 +42,12 @@ pub trait IndexProgress: Sync {
     /// directory and CDX must be read first), so this is the cue for an
     /// indeterminate spinner. `label` is the WACZ URL or path.
     fn begin(&self, _label: &str) {}
-    /// Describe the current setup activity (e.g. "downloading", "reading index"),
-    /// so the spinner reflects what's actually happening before the record total
-    /// is known.
-    fn phase(&self, _phase: &str) {}
+    /// Describe the current setup activity (e.g. downloading, reading the
+    /// index), so the spinner reflects what's actually happening before the
+    /// record total is known. A [`Phase`] is data, not text: each sink renders it
+    /// for its own reader (the CLI in English, the web page in the language of
+    /// whoever started the job).
+    fn phase(&self, _phase: &Phase) {}
     /// The CDX has been read: `total` page records will be streamed. Cue to
     /// switch the spinner to a determinate bar.
     fn set_total(&self, _total: u64) {}
@@ -56,6 +59,122 @@ pub trait IndexProgress: Sync {
     fn wacz_indexed(&self, _label: &str, _pages: u64) {}
     /// Work on the current WACZ finished (clear the spinner/bar).
     fn finish(&self) {}
+}
+
+/// What indexing is doing right now, as data. The library names the activity
+/// and its facts (a count, a file name); the sink that shows it chooses the
+/// words, so one phase can read in English on the command line and in Italian
+/// on a curator's page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Phase {
+    Downloading,
+    Resolving,
+    Checksumming,
+    Scanning,
+    ReadingIndex,
+    BuildingIndex,
+    Committing,
+    SkippingAlreadyIndexed {
+        location: String,
+    },
+    NestedWacz {
+        n: usize,
+        of: usize,
+    },
+    /// `holder` describes another process or operation, as the lock layer
+    /// recorded it. It is a fact about someone else, so it is shown as given.
+    WaitingFor {
+        holder: String,
+    },
+    WaitingForImport,
+    BuildingWacz,
+    /// `bytes` is `None` when the source does not say how big the file is.
+    DownloadingFile {
+        name: String,
+        bytes: Option<u64>,
+        n: usize,
+        of: usize,
+    },
+    Segments {
+        count: usize,
+    },
+    ExpungingDeletes {
+        segments: usize,
+    },
+    RemovedOrphans {
+        files: usize,
+    },
+    ReadingManifest,
+    ListingCrawls,
+    LookingForOrphanFiles,
+}
+
+impl Phase {
+    /// The catalog message that words this phase.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Phase::Downloading => "phase-downloading",
+            Phase::Resolving => "phase-resolving",
+            Phase::Checksumming => "phase-checksumming",
+            Phase::Scanning => "phase-scanning",
+            Phase::ReadingIndex => "phase-reading-index",
+            Phase::BuildingIndex => "phase-building-index",
+            Phase::Committing => "phase-committing",
+            Phase::SkippingAlreadyIndexed { .. } => "phase-skipping-already-indexed",
+            Phase::NestedWacz { .. } => "phase-nested-wacz",
+            Phase::WaitingFor { .. } => "phase-waiting-for",
+            Phase::WaitingForImport => "phase-waiting-for-import",
+            Phase::BuildingWacz => "phase-building-wacz",
+            Phase::DownloadingFile { bytes: Some(_), .. } => "phase-downloading-file",
+            Phase::DownloadingFile { bytes: None, .. } => "phase-downloading-file-unsized",
+            Phase::Segments { .. } => "phase-segments",
+            Phase::ExpungingDeletes { .. } => "phase-expunging-deletes",
+            Phase::RemovedOrphans { .. } => "phase-removed-orphans",
+            Phase::ReadingManifest => "phase-reading-manifest",
+            Phase::ListingCrawls => "phase-listing-crawls",
+            Phase::LookingForOrphanFiles => "phase-looking-for-orphan-files",
+        }
+    }
+
+    /// The phase in `l10n`'s language.
+    pub fn render(&self, l10n: &L10n) -> String {
+        let key = self.key();
+        let num = |n: usize| FluentArg::Num(n as i64);
+        match self {
+            Phase::SkippingAlreadyIndexed { location } => {
+                l10n.tr_args(key, &[("location", FluentArg::Str(location))])
+            }
+            Phase::NestedWacz { n, of } => l10n.tr_args(key, &[("n", num(*n)), ("of", num(*of))]),
+            Phase::WaitingFor { holder } => {
+                l10n.tr_args(key, &[("holder", FluentArg::Str(holder))])
+            }
+            Phase::DownloadingFile { name, bytes, n, of } => {
+                let size = bytes.map(|b| l10n.size(b)).unwrap_or_default();
+                l10n.tr_args(
+                    key,
+                    &[
+                        ("name", FluentArg::Str(name)),
+                        ("size", FluentArg::Str(&size)),
+                        ("n", num(*n)),
+                        ("of", num(*of)),
+                    ],
+                )
+            }
+            Phase::Segments { count } => l10n.tr_args(key, &[("count", num(*count))]),
+            Phase::ExpungingDeletes { segments } => {
+                l10n.tr_args(key, &[("segments", num(*segments))])
+            }
+            Phase::RemovedOrphans { files } => l10n.tr_args(key, &[("files", num(*files))]),
+            _ => l10n.tr(key),
+        }
+    }
+}
+
+/// The English text, which is what the command line shows and the log records.
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.render(&L10n::default()))
+    }
 }
 
 /// A progress sink that drops every report.
@@ -141,5 +260,105 @@ pub(super) mod testsupport {
         // index files the WACZ into the collection's folder (collection "test"),
         // so its resting place is archive/test/<name>.
         archive.join("test").join(name)
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::Phase;
+    use crate::i18n::{negotiate, parse_language, L10n};
+
+    /// Every variant, with the text the command line showed before phases were
+    /// data. The CLI prints `Display`, so these strings are its output.
+    fn samples() -> Vec<(Phase, &'static str)> {
+        vec![
+            (Phase::Downloading, "downloading"),
+            (Phase::Resolving, "resolving"),
+            (Phase::Checksumming, "checksumming"),
+            (Phase::Scanning, "scanning"),
+            (Phase::ReadingIndex, "reading index"),
+            (Phase::BuildingIndex, "building index"),
+            (Phase::Committing, "committing"),
+            (
+                Phase::SkippingAlreadyIndexed {
+                    location: "https://x.test/a.wacz".into(),
+                },
+                "skipping already-indexed https://x.test/a.wacz",
+            ),
+            (Phase::NestedWacz { n: 2, of: 5 }, "nested WACZ 2/5"),
+            (
+                Phase::WaitingFor { holder: "x".into() },
+                "waiting for x to finish…",
+            ),
+            (
+                Phase::WaitingForImport,
+                "waiting for another import to finish…",
+            ),
+            (Phase::BuildingWacz, "building WACZ"),
+            (
+                Phase::DownloadingFile {
+                    name: "a.warc.gz".into(),
+                    bytes: Some(2_621_440),
+                    n: 1,
+                    of: 3,
+                },
+                "downloading a.warc.gz (2.5 MB) [1/3]",
+            ),
+            (
+                Phase::DownloadingFile {
+                    name: "a.warc.gz".into(),
+                    bytes: None,
+                    n: 2,
+                    of: 3,
+                },
+                "downloading a.warc.gz [2/3]",
+            ),
+            (Phase::Segments { count: 4 }, "4 segments"),
+            // Counts of a thousand or more print ungrouped, as the CLI always has.
+            (Phase::Segments { count: 12_345 }, "12345 segments"),
+            (
+                Phase::NestedWacz { n: 1000, of: 1500 },
+                "nested WACZ 1000/1500",
+            ),
+            (
+                Phase::ExpungingDeletes { segments: 2 },
+                "expunging deletes (2 segment(s))",
+            ),
+            (
+                Phase::RemovedOrphans { files: 3 },
+                "removed 3 orphaned file(s)",
+            ),
+            (Phase::ReadingManifest, "reading the manifest"),
+            (Phase::ListingCrawls, "listing crawls in the index"),
+            (
+                Phase::LookingForOrphanFiles,
+                "looking for the orphans' files on disk",
+            ),
+        ]
+    }
+
+    #[test]
+    fn phase_display_is_the_english_text() {
+        for (phase, text) in samples() {
+            assert_eq!(phase.to_string(), text, "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn every_phase_has_a_message_in_every_language() {
+        let italian = negotiate(Some("it"), &parse_language("en").unwrap());
+        for (phase, english) in samples() {
+            let key = phase.key();
+            assert!(
+                crate::i18n::CATALOGS
+                    .iter()
+                    .all(|(_, src)| src.contains(&format!("\n{key} ="))),
+                "{key} missing from a catalog"
+            );
+            // A key a catalog lacks renders as the bare key.
+            assert_ne!(phase.render(&italian), key);
+            assert_ne!(phase.render(&italian), english, "{key} not translated");
+            assert_ne!(phase.render(&L10n::default()), key);
+        }
     }
 }
