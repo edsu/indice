@@ -1546,3 +1546,93 @@ fn a_staged_upload_is_moved_into_the_archive() {
     index_path(&original, home.path(), None, "copied").unwrap();
     assert!(original.exists(), "a file from elsewhere should be copied");
 }
+
+// ── A failed ingest takes back only what it filed (#233) ───────────────────
+
+/// Bytes that are named `.wacz` but are not one, so filing succeeds and the
+/// parse that follows it fails.
+fn write_junk(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"not a zip, whatever the name says").unwrap();
+}
+
+/// Every file under `dir`, at any depth. Empty when `dir` does not exist.
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                todo.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// A copy the ingest made is the ingest's to remove. Before, each failed
+/// attempt left its copy in `archive/`, unrecorded, so nothing in the
+/// workroom could show or delete it.
+#[test]
+fn a_failed_ingest_removes_the_copy_it_filed() {
+    let home = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    let original = elsewhere.path().join("x.wacz");
+    write_junk(&original);
+
+    for _ in 0..2 {
+        assert!(index_path(&original, home.path(), None, "junk").is_err());
+    }
+    let left = files_under(&crate::index::archive_dir(home.path()));
+    assert!(left.is_empty(), "failed copies left in archive/: {left:?}");
+    assert!(original.is_file(), "the curator's original is untouched");
+}
+
+/// A file already in its collection's folder was used where it was, so a
+/// failed ingest leaves it there: it is not the ingest's to delete.
+#[test]
+fn a_failed_ingest_leaves_a_file_it_used_in_place() {
+    let home = TempDir::new().unwrap();
+    let filed = crate::index::archive_dir(home.path()).join("junk/x.wacz");
+    write_junk(&filed);
+
+    assert!(index_path(&filed, home.path(), None, "junk").is_err());
+    assert!(
+        filed.is_file(),
+        "a file used in place must survive a failure"
+    );
+}
+
+/// A file moved from elsewhere under `archive/` may be the only copy, so a
+/// failure moves it back rather than deleting it.
+#[test]
+fn a_failed_ingest_moves_a_moved_file_back() {
+    let home = TempDir::new().unwrap();
+    let loose = crate::index::archive_dir(home.path()).join("x.wacz");
+    write_junk(&loose);
+
+    assert!(index_path(&loose, home.path(), None, "junk").is_err());
+    assert!(loose.is_file(), "the file should be back where it was");
+    let filed = crate::index::archive_dir(home.path()).join("junk/x.wacz");
+    assert!(!filed.exists(), "and not left in the collection's folder");
+}
+
+/// An upload staged under `<home>/tmp` is moved in, so a failure moves it back
+/// to the staging directory, which the upload handler removes as the job ends.
+#[test]
+fn a_failed_ingest_returns_a_staged_upload_to_staging() {
+    let home = TempDir::new().unwrap();
+    let upload = crate::index::scratch_dir(home.path()).join("up/x.wacz");
+    write_junk(&upload);
+
+    assert!(index_path(&upload, home.path(), None, "junk").is_err());
+    assert!(upload.is_file(), "the upload is back in staging");
+    let left = files_under(&crate::index::archive_dir(home.path()));
+    assert!(left.is_empty(), "nothing left in archive/: {left:?}");
+}
