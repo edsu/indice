@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use axum::http::{header, request::Parts, HeaderMap, HeaderValue};
+use axum::http::{header, request::Parts, HeaderMap, HeaderValue, Method};
 use axum::response::Response;
 
 use super::AppState;
@@ -32,20 +32,61 @@ impl axum::extract::FromRequestParts<Arc<AppState>> for L10n {
     }
 }
 
+/// Whether the answer at `path` is the same for every reader, whatever their
+/// language: static files, archive bytes and thumbnails, the health probe and
+/// robots.txt, the documented public API (`GET /api/search`, `GET
+/// /api/annotations`), and the manifests and page lists ReplayWeb.page reads.
+/// Every route the replay router serves is here, so the replay origin never
+/// translates. These answer in English, refusals included, and do not vary.
+pub(super) fn same_for_every_language(method: &Method, path: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "/assets/",
+        "/replay/",
+        "/files/",
+        "/thumb/",
+        "/collection-thumb/",
+    ];
+    const EXACT: &[&str] = &["/health", "/robots.txt", "/replay-frame", "/api/search"];
+    if PREFIXES.iter().any(|p| path.starts_with(p)) || EXACT.contains(&path) {
+        return true;
+    }
+    // The read; a curator's `POST /api/annotations` is the workroom's, and
+    // translated.
+    if path == "/api/annotations" {
+        return matches!(*method, Method::GET | Method::HEAD);
+    }
+    // `/crawl/{id}/replay.json`, `/collection/{id}/pages` and the like, and not
+    // a replayed page whose own address ends in `/pages`, which has more parts.
+    matches!(
+        path.split('/').collect::<Vec<_>>()[..],
+        ["", "crawl" | "collection", _, "replay.json" | "pages"]
+    )
+}
+
+/// The language for a refusal made before any handler runs (a rate limit, a
+/// busy server): the reader's on pages, English where
+/// [`same_for_every_language`] holds.
+pub(super) fn refusal_language(state: &AppState, req: &axum::extract::Request) -> L10n {
+    if same_for_every_language(req.method(), req.uri().path()) {
+        L10n::default()
+    } else {
+        negotiate_headers(state, req.headers())
+    }
+}
+
 /// Add `Accept-Language` to `Vary` on every response whose text may depend on
-/// the language, which is all of them but the static files: those are the same
-/// for everyone and should stay cacheable as one copy. Appended, because a
-/// handler may already vary on something else (`Accept`, on a note). The
-/// viewer page itself is at `/crawl/…` and `/collection/…`, not under `/replay/`
-/// (which holds only its script and style), so it varies like any page.
+/// the language: everything but what [`same_for_every_language`] names, which
+/// should stay cacheable as one copy. Appended, because a handler may already
+/// vary on something else (`Accept`, on a note). The viewer page itself is at
+/// `/crawl/…` and `/collection/…`, not under `/replay/` (which holds only its
+/// script and style), so it varies like any page.
 pub(super) async fn vary_accept_language(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path = req.uri().path();
-    let is_static = path.starts_with("/assets/") || path.starts_with("/replay/");
+    let same = same_for_every_language(req.method(), req.uri().path());
     let mut res = next.run(req).await;
-    if !is_static {
+    if !same {
         res.headers_mut()
             .append(header::VARY, HeaderValue::from_static("accept-language"));
     }

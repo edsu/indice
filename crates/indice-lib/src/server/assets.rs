@@ -162,12 +162,16 @@ const LANG_SLOT: &str = "{{lang}}";
 /// sentences its scripts show, as JSON (`views::strings_json`).
 const STRINGS_SLOT: &str = "{{strings}}";
 
-/// The placeholders in `viewer.html` for the two sentences that are on the page
-/// before any script runs: the notes button and the loading notice.
-/// The placeholder in `viewer.html` for the tab's title.
+/// The placeholder in `viewer.html` that [`replay_page`] fills with the tab's
+/// title, in the page's language.
 const TITLE_SLOT: &str = "{{title}}";
 
+/// The placeholder in `viewer.html` for the notes button's label, which is on
+/// the page before any script runs.
 const NOTES_LABEL_SLOT: &str = "{{notes_label}}";
+
+/// The placeholder in `viewer.html` for the notice shown while the archived
+/// page loads, which is on the page before any script runs.
 const LOADING_TEXT_SLOT: &str = "{{loading_text}}";
 
 /// What the viewer needs to replay a page and label it, worked out from the
@@ -207,9 +211,8 @@ pub(super) async fn replay_page(
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> Response {
-    let not_found = || (StatusCode::NOT_FOUND, "not found").into_response();
     let Some(target) = parse_replay_path(uri.path(), uri.query()) else {
-        return not_found();
+        return not_found(&l10n, "error-replay-link");
     };
     let Some(origin) = &state.replay_origin else {
         return (
@@ -224,7 +227,7 @@ pub(super) async fn replay_page(
     };
     let context = if target.kind == ReplayKind::Crawl {
         let Some(w) = manifest.wacz_by_id(&target.id) else {
-            return not_found();
+            return not_found(&l10n, "error-crawl-not-found");
         };
         let col = manifest.collection_by_id(&w.collection);
         ReplayContext {
@@ -239,7 +242,7 @@ pub(super) async fn replay_page(
         }
     } else {
         let Some(c) = manifest.collection_by_id(&target.id) else {
-            return not_found();
+            return not_found(&l10n, "error-collection-not-found");
         };
         ReplayContext {
             base: ReplayScope::Collection(&c.id).base(),
@@ -252,8 +255,9 @@ pub(super) async fn replay_page(
             crawl: String::new(),
         }
     };
+    // Compiled in, so missing only from a broken build: the server's fault.
     let Some(file) = ReplayAssets::get("viewer.html") else {
-        return not_found();
+        return error_response(&l10n, anyhow::anyhow!("viewer.html is not in the build"));
     };
     // JSON in a `<script type="application/json">`: data the page reads, not
     // script it runs, so the policy refusing inline script doesn't apply.

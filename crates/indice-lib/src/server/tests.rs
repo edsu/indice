@@ -1004,16 +1004,52 @@ fn vary_values(headers: &HeaderMap) -> String {
         .to_ascii_lowercase()
 }
 
+/// Pages vary on `Accept-Language`; what is the same in every language (static
+/// files, archive bytes, thumbnails, the health probe, robots.txt, the
+/// documented public API and replay's manifests) does not, so a cache keeps one
+/// copy of it.
 #[tokio::test]
 async fn pages_vary_on_accept_language() {
-    let (_home, app) = app_with_language(None);
-    for path in ["/", "/search?q=x"] {
-        let (_, headers, _) = get_with(&app, path, None).await;
+    let (_home, app, id) = app_with_crawl("c");
+    for path in [
+        "/".to_string(),
+        "/search?q=x".to_string(),
+        "/collection/c".to_string(),
+        format!("/crawl/{id}"),
+    ] {
+        let (_, headers, _) = get_with(&app, &path, None).await;
         assert!(vary_values(&headers).contains("accept-language"), "{path}");
     }
-    let (status, headers, _) = get_with(&app, "/assets/app.css", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(!vary_values(&headers).contains("accept-language"));
+    for path in [
+        "/assets/app.css".to_string(),
+        "/health".to_string(),
+        "/robots.txt".to_string(),
+        format!("/files/{id}"),
+        "/api/search?q=x".to_string(),
+        "/api/annotations".to_string(),
+        format!("/crawl/{id}/replay.json"),
+        "/collection/c/replay.json".to_string(),
+        format!("/thumb/{id}"),
+    ] {
+        let (_, headers, _) = get_with(&app, &path, None).await;
+        assert!(!vary_values(&headers).contains("accept-language"), "{path}");
+    }
+}
+
+/// A replayed page whose own address ends in `/pages` is a page, not a page list,
+/// and a curator's note write is the workroom's: both speak the reader's language.
+#[test]
+fn only_shared_answers_skip_the_readers_language() {
+    use axum::http::Method;
+    let same = i18n::same_for_every_language;
+    assert!(same(&Method::GET, "/crawl/abc/pages"));
+    assert!(same(&Method::GET, "/api/annotations"));
+    assert!(!same(
+        &Method::GET,
+        "/crawl/abc/2025/https://example.org/pages"
+    ));
+    assert!(!same(&Method::POST, "/api/annotations"));
+    assert!(!same(&Method::GET, "/collection/c"));
 }
 
 /// A handler that already varies on `Accept` (a note's page and JSON-LD share a

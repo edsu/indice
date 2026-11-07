@@ -517,13 +517,13 @@ pub(super) async fn limit_quick(
     };
     let Ok(permit) = Arc::clone(&limits.quick).try_acquire_owned() else {
         report(&limits.reporter, Subject::Server, Reason::Busy);
-        return busy(&super::i18n::negotiate_headers(&state, req.headers()));
+        return busy(&super::i18n::refusal_language(&state, &req));
     };
     if let Some(key) = charge(&state, &req) {
         if let Err(wait) = limits.take_quick(key, Instant::now()) {
             report(&limits.reporter, Subject::Client(key), Reason::Rate);
             return too_many(
-                &super::i18n::negotiate_headers(&state, req.headers()),
+                &super::i18n::refusal_language(&state, &req),
                 wait,
                 "error-too-many-requests",
             );
@@ -550,7 +550,7 @@ pub(super) async fn limit_streams(
     };
     let Ok(permit) = Arc::clone(&limits.streams).try_acquire_owned() else {
         report(&limits.reporter, Subject::Server, Reason::StreamsBusy);
-        return busy(&super::i18n::negotiate_headers(&state, req.headers()));
+        return busy(&super::i18n::refusal_language(&state, &req));
     };
     let slot = match charge(&state, &req) {
         Some(key) => match limits.open_stream(key) {
@@ -558,7 +558,7 @@ pub(super) async fn limit_streams(
             None => {
                 report(&limits.reporter, Subject::Client(key), Reason::Streams);
                 return too_many(
-                    &super::i18n::negotiate_headers(&state, req.headers()),
+                    &super::i18n::refusal_language(&state, &req),
                     Duration::from_secs(1),
                     "error-too-many-streams",
                 );

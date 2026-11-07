@@ -265,6 +265,52 @@ async fn the_viewer_takes_what_to_replay_from_its_address() {
     }
 }
 
+/// A reader who follows a bad replay link or a missing note's link is told so in
+/// their language; the note's JSON-LD form, part of the documented API, stays
+/// English.
+#[tokio::test]
+async fn a_missing_page_says_so_in_italian() {
+    let tmp = TempDir::new().unwrap();
+    let Routers { app, .. } = server(tmp.path());
+    let it = [("accept-language", "it")];
+    for (path, italian) in [
+        (
+            "/crawl/nope/2025/https://example.org/",
+            "scansione non trovata",
+        ),
+        (
+            "/collection/nope/2025/https://example.org/",
+            "raccolta non trovata",
+        ),
+        (
+            "/collection/demo/2025/not-a-web-address",
+            "non è un collegamento",
+        ),
+        (
+            "/collection/demo/annotations/not-a-key",
+            "annotazione non trovata",
+        ),
+    ] {
+        let (status, _, body) = call(&app, Method::GET, path, &it).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert!(body.to_lowercase().contains(italian), "{path}: {body}");
+        assert!(!body.contains("not found"), "{path}: {body}");
+    }
+    let missing = format!("/collection/demo/annotations/{}", "0".repeat(32));
+    let (status, _, body) = call(
+        &app,
+        Method::GET,
+        &missing,
+        &[("accept-language", "it"), ("accept", "application/ld+json")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("not found"), "{body}");
+    let (status, _, body) = call(&app, Method::GET, &format!("{missing}.jsonld"), &it).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("not found"), "{body}");
+}
+
 /// Anything on the app origin that could boot ReplayWeb.page could be framed
 /// by a stranger's page with a `source` of their choosing, which would put
 /// archived script back on indice's origin. So none of it is there.

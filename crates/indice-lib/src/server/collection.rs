@@ -398,9 +398,16 @@ pub(super) async fn collection_annotation(
         Some(k) => (k.to_string(), true),
         None => (key, false),
     };
-    let not_found = || (StatusCode::NOT_FOUND, "annotation not found").into_response();
+    // The page is in the reader's language; the JSON-LD is the documented API,
+    // and English.
+    let l10n = if json_ld_url || wants_json_ld(&headers) {
+        L10n::default()
+    } else {
+        super::i18n::negotiate_headers(&state, &headers)
+    };
+    let missing = || not_found(&l10n, "error-annotation-not-found");
     let Some(note_id) = annotations::id_for_key(&key) else {
-        return not_found();
+        return missing();
     };
     // The manifest and the whole store are read and parsed for one note, so
     // off the async workers: note pages are open to crawlers.
@@ -417,7 +424,7 @@ pub(super) async fn collection_annotation(
     };
     let (collection_name, a) = match found {
         Ok(Ok(Some(found))) => found,
-        Ok(Ok(None)) => return not_found(),
+        Ok(Ok(None)) => return missing(),
         Ok(Err(e)) => return error_response(&L10n::default(), e),
         Err(e) => {
             return error_response(
@@ -450,7 +457,7 @@ pub(super) async fn collection_annotation(
         return (vary, ld_headers, ld.to_string()).into_response();
     }
     let Some(path) = annotation_path(&id, &a.id) else {
-        return not_found();
+        return missing();
     };
     let json_ld_href = format!("{path}{JSON_LD_SUFFIX}");
     // Where the JSON-LD is, for a client that reads headers and not pages.
