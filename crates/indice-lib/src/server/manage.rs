@@ -204,19 +204,6 @@ pub(super) fn acquire_write_lock<'a>(
     }
 }
 
-/// An uploaded file staged for indexing, and how many bytes it is.
-///
-/// Together because the job needs both: the directory, to keep the file alive
-/// until it has been filed and then delete it; the size, to check it against the
-/// archive's room. The size is what the upload counted as it streamed, rather
-/// than read back from the path, so the job never asks the filesystem about a
-/// location string, which for an add by URL is request input.
-pub(super) struct StagedUpload {
-    /// Read by nothing: held for its destructor, which deletes the file.
-    pub _dir: tempfile::TempDir,
-    pub bytes: u64,
-}
-
 /// Start a background ingest job.
 ///
 /// Takes a `&Curator` for two reasons. It is read, for
@@ -231,7 +218,8 @@ fn start_index_job(
     location: String,
     collection: String,
     name: Option<String>,
-    staged: Option<StagedUpload>,
+    // An upload's staging directory, held until the job ends.
+    staged: Option<tempfile::TempDir>,
 ) -> u64 {
     // On a server the person naming the location may be an approved stranger
     // rather than the operator, so a URL may only point at a public address.
@@ -250,14 +238,14 @@ fn start_index_job(
     // `index_location` blocks (file IO, network range reads, the Tantivy commit),
     // so run it off the async runtime — never on a request-handling thread.
     tokio::task::spawn_blocking(move || {
-        // Held until the job ends; dropping it deletes any uploaded temp file
-        // (after `index_location` has copied it into `archive/`).
-        // An upload brings a staged file to file into the archive; adding by
-        // URL does not, since a URL is streamed in place or downloaded to a
-        // temp file that is removed afterwards.
-        let admit_bytes = staged.as_ref().map(|s| s.bytes);
-        // Held until the job ends; dropping it deletes the uploaded temp file
-        // (after `index_location` has copied it into `archive/`).
+        // An upload is staged under `<home>/tmp`, which the archive's usage
+        // already counts, so filing it adds nothing more (it is moved into
+        // `archive/`). Adding by URL files nothing either: a URL is streamed in
+        // place or downloaded to a temp file that is removed afterwards. Only
+        // an upload can be what takes the archive past its limit, so only an
+        // upload is admitted rather than given what room there is.
+        let is_upload = staged.is_some();
+        // Held until the job ends; dropping it removes the staging directory.
         let _staged = staged;
         let progress = ChannelProgress { tx: tx.clone() };
         let result = {
@@ -293,9 +281,10 @@ fn start_index_job(
             // measured here is the room there is; the request-time check could
             // not know about uploads queued alongside this one.
             // The room it leaves is what indexing may write to temp files.
-            let room = match admit_bytes {
-                Some(size) => admit(&job_state, size),
-                None => scratch_room(&job_state),
+            let room = if is_upload {
+                admit(&job_state, 0)
+            } else {
+                scratch_room(&job_state)
             };
             let scratch = match room {
                 Ok(room) => room,
@@ -363,6 +352,11 @@ pub(super) async fn add_archive(
     if let Some(refusal) = require_url_location(&req.path) {
         return refusal;
     }
+    // A URL files nothing, but indexing it writes temp files, which count
+    // against the archive's room: a full archive accepts nothing new.
+    if let Err(refused) = accession_budget(&state) {
+        return refused.into_response();
+    }
     audit_detail(
         &state,
         curator.principal(),
@@ -413,7 +407,7 @@ pub(super) async fn upload_archive(
     }
     let mut collection: Option<String> = None;
     let mut name: Option<String> = None;
-    let mut staged: Option<StagedUpload> = None;
+    let mut staged: Option<tempfile::TempDir> = None;
     let mut file_path: Option<PathBuf> = None;
 
     loop {
@@ -440,17 +434,21 @@ pub(super) async fn upload_archive(
                     .map(|s| s.to_string_lossy().to_string())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "upload.wacz".to_string());
-                let dir = match tempfile::TempDir::new() {
+                // Staged under the home, on the archive's volume (see
+                // `index::scratch_dir`), so filing it is a rename.
+                let parent = crate::index::scratch_dir(&state.home);
+                let dir = match std::fs::create_dir_all(&parent)
+                    .and_then(|()| tempfile::TempDir::new_in(&parent))
+                {
                     Ok(d) => d,
                     Err(e) => return curator.error_response(anyhow::anyhow!(e)),
                 };
                 let path = dir.path().join(&fname);
-                let bytes = match stream_field_to_file(&curator, field, &path, budget).await {
-                    Ok(b) => b,
-                    Err(refusal) => return refusal,
-                };
+                if let Err(refusal) = stream_field_to_file(&curator, field, &path, budget).await {
+                    return refusal;
+                }
                 file_path = Some(path);
-                staged = Some(StagedUpload { _dir: dir, bytes });
+                staged = Some(dir);
             }
             _ => {}
         }
@@ -491,7 +489,7 @@ async fn stream_field_to_file(
     mut field: axum::extract::multipart::Field<'_>,
     path: &Path,
     budget: Option<Budget>,
-) -> Result<u64, Response> {
+) -> Result<(), Response> {
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::File::create(path)
         .await
@@ -518,7 +516,7 @@ async fn stream_field_to_file(
     file.flush()
         .await
         .map_err(|e| curator.error_response(e.into()))?;
-    Ok(written)
+    Ok(())
 }
 
 /// The limits on what the browser write surface may add, from `config.yaml`.
@@ -527,7 +525,7 @@ pub(super) struct UploadLimits {
     /// The largest single WACZ a curator may add, in bytes: an upload, or a
     /// URL that has to be downloaded because it cannot be streamed.
     pub per_upload: Option<u64>,
-    /// The most `<home>/archive/` may hold, in bytes. See
+    /// The most `<home>/archive/` and `<home>/tmp/` may hold, in bytes. See
     /// [`crate::index::archive_bytes`].
     pub archive: Option<u64>,
 }
@@ -666,7 +664,10 @@ pub(super) fn accession_budget(state: &AppState) -> Result<Option<Budget>, Refus
 /// Returns the room the archive has left once `size` is filed, which is what
 /// indexing the accession may write to temp files (see [`scratch_room`]), or
 /// `None` when no archive limit is set. Returned rather than measured again,
-/// since measuring walks `archive/` under the lock.
+/// since measuring walks `archive/` and `tmp/` under the lock.
+///
+/// An upload passes `0`: it is already on disk, staged under `<home>/tmp`,
+/// and so already in what is measured.
 pub(super) fn admit(state: &AppState, size: u64) -> Result<Option<u64>, Refused> {
     match archive_usage(state)? {
         Some((used, cap)) if used.saturating_add(size) > cap => {

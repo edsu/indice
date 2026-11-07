@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -131,8 +131,14 @@ pub(crate) fn is_too_large(e: &anyhow::Error) -> bool {
 /// The member limit cannot bound these, because a genuine WARC is often far
 /// larger than any member indice holds in memory. What a hostile WACZ can do
 /// instead is name a zip entry that inflates a thousandfold and fill the temp
-/// volume, which on tmpfs is memory. So everything one WACZ writes to temp
-/// files is charged here, and the copy stops at the limit.
+/// volume. So everything one WACZ writes to temp files is charged here, and
+/// the copy stops at the limit.
+///
+/// The files go in [`Scratch::in_dir`]'s directory, which an ingest sets to
+/// `<home>/tmp` (see `index::scratch_dir`), so the limit is counted on the
+/// volume the archive is on rather than the system temp directory, which
+/// may be a small tmpfs, and so memory. Without one they go in the system
+/// temp directory, which is what the unit tests use.
 ///
 /// The limit is the archive's room under `uploads.max_total_gb`, set by the
 /// server for a curator's accession (see `Ingest::scratch_limit`). `None`
@@ -146,6 +152,7 @@ pub(crate) fn is_too_large(e: &anyhow::Error) -> bool {
 pub struct Scratch {
     limit: Option<u64>,
     used: std::sync::atomic::AtomicU64,
+    dir: Option<PathBuf>,
 }
 
 /// What indexing one WACZ would have written to temp files past
@@ -178,6 +185,26 @@ impl Scratch {
         Self {
             limit,
             used: std::sync::atomic::AtomicU64::new(0),
+            dir: None,
+        }
+    }
+
+    /// Write the temp files in `dir`, which must exist.
+    pub fn in_dir(self, dir: PathBuf) -> Self {
+        Self {
+            dir: Some(dir),
+            ..self
+        }
+    }
+
+    /// A new, empty temp file named with `suffix`, in this allowance's
+    /// directory. Nothing is charged until something is written to it.
+    pub(crate) fn tempfile(&self, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
+        let mut builder = tempfile::Builder::new();
+        builder.suffix(suffix);
+        match &self.dir {
+            Some(dir) => builder.tempfile_in(dir),
+            None => builder.tempfile(),
         }
     }
 
@@ -191,7 +218,7 @@ impl Scratch {
     /// Refuse an entry whose header already says it will not fit, before any
     /// of it is written. Counts nothing: [`Scratch::charge`] counts what is
     /// actually written, whatever the header claimed.
-    fn check_declared(&self, declared: u64, member: &str) -> Result<(), ScratchFull> {
+    fn refuse_declared(&self, declared: u64, member: &str) -> Result<(), ScratchFull> {
         let used = self.used.load(std::sync::atomic::Ordering::Relaxed);
         self.fits(used, declared, member)
     }
@@ -221,14 +248,17 @@ pub(crate) fn inflate_to_temp(
     scratch: &Scratch,
 ) -> Result<tempfile::NamedTempFile> {
     use std::io::Write;
-    scratch.check_declared(declared, member)?;
-    let mut tmp = tempfile::Builder::new().suffix(suffix).tempfile()?;
+    scratch.refuse_declared(declared, member)?;
+    let mut tmp = scratch.tempfile(suffix)?;
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = reader.read(&mut buf).map_err(lift)?;
-        if n == 0 {
-            break;
-        }
+        // Retried, as `std::io::copy` would: a signal is not a failed read.
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(lift(e)),
+        };
         scratch.charge(n as u64, member)?;
         tmp.write_all(&buf[..n])?;
     }
@@ -1446,6 +1476,11 @@ mod tests {
         // No limit, as the CLI has.
         let s = Scratch::new(None);
         inflate_to_temp(zeros(5000), 5000, "any", "", &s).unwrap();
+        // In the directory it is given, which an ingest makes `<home>/tmp`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = Scratch::new(None).in_dir(dir.path().to_path_buf());
+        let file = inflate_to_temp(zeros(10), 10, "here", ".warc", &s).unwrap();
+        assert_eq!(file.path().parent(), Some(dir.path()));
     }
 
     #[test]

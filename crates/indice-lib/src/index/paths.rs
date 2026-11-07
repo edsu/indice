@@ -119,8 +119,25 @@ pub fn archive_dir(home: &Path) -> PathBuf {
     home.join("archive")
 }
 
-/// Bytes on disk under `<home>/archive/`, the figure `uploads.max_total_gb`
-/// limits.
+/// Where indexing writes its temp files: a staged upload, a download of a URL
+/// that can't be streamed, the WARCs a WACZ inflates.
+///
+/// Under the home rather than the system temp directory, so they land on the
+/// volume whose room `uploads.max_total_gb` measures (see
+/// `wacz::Scratch`), and an upload moves into `archive/` with a rename rather
+/// than a copy. Each file is deleted when indexing finishes with it; one left
+/// by a crash stays here until removed.
+pub fn scratch_dir(home: &Path) -> PathBuf {
+    home.join("tmp")
+}
+
+/// Bytes on disk under `<home>/archive/` and `<home>/tmp/`, the figure
+/// `uploads.max_total_gb` limits.
+///
+/// The temp files count because they are on the same volume (see
+/// [`scratch_dir`]): an upload being staged, what an ingest inflates, and
+/// anything a crash left behind. Left out, they could take the volume past
+/// the limit while every check passed.
 ///
 /// Measured from the directory, not from the manifest. The manifest records
 /// only what indexed successfully, and a failed ingest leaves its file behind:
@@ -135,7 +152,7 @@ pub fn archive_dir(home: &Path) -> PathBuf {
 /// otherwise count that tree against the archive, and one pointing at an
 /// ancestor would never finish.
 ///
-/// A missing archive directory is zero, not an error: a fresh home has none.
+/// A missing directory is zero, not an error: a fresh home has neither.
 pub fn archive_bytes(home: &Path) -> std::io::Result<u64> {
     fn walk(dir: &Path) -> std::io::Result<u64> {
         let mut total = 0u64;
@@ -151,10 +168,11 @@ pub fn archive_bytes(home: &Path) -> std::io::Result<u64> {
         }
         Ok(total)
     }
-    match walk(&archive_dir(home)) {
+    let measure = |dir: PathBuf| match walk(&dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
         other => other,
-    }
+    };
+    Ok(measure(archive_dir(home))?.saturating_add(measure(scratch_dir(home))?))
 }
 
 #[cfg(test)]
@@ -220,6 +238,13 @@ mod archive_bytes_tests {
         // A download in progress, which concurrent checks need to see.
         std::fs::write(slug.join("item").join("y.wacz.part.1.0"), vec![0u8; 50]).unwrap();
         assert_eq!(archive_bytes(tmp.path()).unwrap(), 550);
+        // Temp files are on the same volume: a staged upload, and one a
+        // crash left behind.
+        let scratch = scratch_dir(tmp.path());
+        std::fs::create_dir_all(scratch.join(".tmpUP")).unwrap();
+        std::fs::write(scratch.join(".tmpUP").join("up.wacz"), vec![0u8; 40]).unwrap();
+        std::fs::write(scratch.join(".tmpLEFT.warc"), vec![0u8; 10]).unwrap();
+        assert_eq!(archive_bytes(tmp.path()).unwrap(), 600);
     }
 
     #[cfg(unix)]

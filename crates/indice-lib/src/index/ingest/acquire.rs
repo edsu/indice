@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::collections::{file_sha256, Manifest, Source};
-use crate::index::paths::archive_dir;
+use crate::index::paths::{archive_dir, scratch_dir};
 
 use super::WaczAccess;
 
@@ -249,13 +249,17 @@ fn place_local_wacz(
         // reuse it (idempotent re-index), nothing to write.
     } else {
         // A file already under archive/ is on the same filesystem as its
-        // destination, so a rename (move) is cheap and non-duplicating; a file
-        // from elsewhere is copied so the curator's original is left untouched.
-        let under_archive = archive_dir(home)
-            .canonicalize()
-            .map(|a| abs.starts_with(&a))
-            .unwrap_or(false);
-        if under_archive {
+        // destination, so a rename (move) is cheap and non-duplicating; so is
+        // an upload staged under `<home>/tmp`, which is indice's own and would
+        // otherwise sit on disk beside its copy, uncounted, for the whole job.
+        // A file from elsewhere is copied so the curator's original is left
+        // untouched.
+        let under = |dir: PathBuf| {
+            dir.canonicalize()
+                .map(|d| abs.starts_with(&d))
+                .unwrap_or(false)
+        };
+        if under(archive_dir(home)) || under(scratch_dir(home)) {
             std::fs::rename(&abs, &dest)
                 .with_context(|| format!("moving {} to {}", abs.display(), dest.display()))?;
             info!(from = %abs.display(), to = %dest.display(), "moved WACZ into collection archive");

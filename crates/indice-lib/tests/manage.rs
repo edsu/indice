@@ -2199,6 +2199,15 @@ async fn an_upload_may_not_inflate_past_the_archives_room() {
             && transcript.contains("uploads.max_total_gb"),
         "indexing should stop at the room left, naming the entry: {transcript}"
     );
+    // What it inflated went under the home, on the archive's volume, and is
+    // gone. (The staged upload is a directory there, removed as the job ends.)
+    let scratch = indice_lib::index::scratch_dir(tmp.path());
+    let left: Vec<_> = std::fs::read_dir(&scratch)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_file())
+        .collect();
+    assert!(left.is_empty(), "temp files left in {scratch:?}: {left:?}");
     server.abort();
 
     // The same file from the command line is the operator's, and indexes.
@@ -2353,6 +2362,35 @@ async fn a_url_that_must_be_downloaded_is_bounded_by_the_upload_limit() {
     );
     server.abort();
     origin_task.abort();
+}
+
+/// A full archive accepts nothing new, a URL included: indexing one writes
+/// temp files, which count against the archive's room. Refused at once with
+/// the numbers, before any job starts.
+#[tokio::test]
+async fn a_full_archive_refuses_a_url_too() {
+    let (tmp, base, server) = serve_with_config("uploads:\n  max_total_gb: 1\n").await;
+    fill_archive(tmp.path(), GIB);
+    let post = format!("{base}/api/archives");
+    let (status, text) = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&post)
+            .header("content-type", "application/json")
+            .send(
+                serde_json::json!({ "path": "https://example.com/a.wacz", "collection": "net" })
+                    .to_string(),
+            )
+            .unwrap();
+        (
+            res.status().as_u16(),
+            res.body_mut().read_to_string().unwrap(),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 507, "{text}");
+    assert!(text.contains("uploads.max_total_gb"), "{text}");
+    server.abort();
 }
 
 /// The same download counts against the archive's room when only

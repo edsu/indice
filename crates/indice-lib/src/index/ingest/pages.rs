@@ -272,13 +272,14 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
                 let tmp =
                     crate::wacz::inflate_to_temp(entry, declared, &inner.name, "", docs.scratch)
                         .with_context(|| format!("extracting nested {}", inner.name))?;
-                index_inner(
-                    crate::http_range::FileFetch::open(tmp.path())?,
-                    &inner.name,
-                    docs,
-                    workers,
-                    progress,
-                )?
+                let fetch = crate::http_range::FileFetch::open(tmp.path())?;
+                if warcs_streamable(&fetch) {
+                    index_wacz_streaming(fetch, docs, &inner.name, workers, progress)?
+                } else {
+                    // Already a local file: scan it where it is, rather than
+                    // copying it to a second temp file as `index_inner` would.
+                    index_wacz(tmp.path(), docs)?
+                }
             }
         };
         agg.pages += stats.pages;
@@ -305,17 +306,22 @@ fn index_inner<F: RangeFetch + Clone + Send + Sync>(
     workers: usize,
     progress: &dyn IndexProgress,
 ) -> Result<CrawlStats> {
-    let streamable = zip::ZipArchive::new(RangeReader::new(fetch.clone()))
-        .ok()
-        .map(|mut z| crate::wacz::warcs_stored(&mut z).unwrap_or(false))
-        .unwrap_or(false);
-    if streamable {
+    if warcs_streamable(&fetch) {
         index_wacz_streaming(fetch, docs, label, workers, progress)
     } else {
         let tmp = materialize_fetch(&fetch, label, docs.scratch)
             .context("materializing nested WACZ for scan")?;
         index_wacz(tmp.path(), docs)
     }
+}
+
+/// Whether the WACZ behind `fetch` stores its WARCs, so they can be read in
+/// place by range rather than inflated.
+fn warcs_streamable<F: RangeFetch + Clone>(fetch: &F) -> bool {
+    zip::ZipArchive::new(RangeReader::new(fetch.clone()))
+        .ok()
+        .map(|mut z| crate::wacz::warcs_stored(&mut z).unwrap_or(false))
+        .unwrap_or(false)
 }
 
 /// Copy an entire [`RangeFetch`] to a temp file (chunked), for the fallback
@@ -330,7 +336,7 @@ fn materialize_fetch<F: RangeFetch>(
     const CHUNK: u64 = 4 * 1024 * 1024;
     let total = fetch.total_len();
     scratch.charge(total, label)?;
-    let mut tmp = tempfile::NamedTempFile::new()?;
+    let mut tmp = scratch.tempfile(".wacz")?;
     let mut pos = 0u64;
     while pos < total {
         let end = (pos + CHUNK).min(total);

@@ -22,7 +22,7 @@ use crate::identity::SubjectId;
 use crate::search::SearchIndex;
 use crate::wacz::read_datapackage;
 
-use super::paths::index_dir;
+use super::paths::{index_dir, scratch_dir};
 use super::{IndexProgress, SourceResolver};
 
 mod acquire;
@@ -465,8 +465,11 @@ pub(super) fn index_one(
 
     // 1. Acquire: where the WACZ lives, and how we'll read it.
     // Everything this WACZ writes to temp files, from a download to the WARCs
-    // it inflates, is charged here; they are gone once it is indexed.
-    let scratch = crate::wacz::Scratch::new(cx.scratch_limit);
+    // it inflates, is charged here and written under `<home>/tmp`; they are
+    // gone once it is indexed.
+    let dir = scratch_dir(home);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let scratch = crate::wacz::Scratch::new(cx.scratch_limit).in_dir(dir);
     let (effective_source, access) = acquire::open(cx, source, collection.0, &scratch)?;
 
     // Its datapackage metadata, read up front so the title can name the crawl.
