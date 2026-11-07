@@ -48,6 +48,8 @@ pub struct Chrome {
     pub can_login: bool,
     /// The archive's name and tagline, the same on every page.
     pub site: std::sync::Arc<Site>,
+    /// The interface language for this request. English by default.
+    pub l10n: crate::i18n::L10n,
 }
 
 /// What the archive calls itself, resolved once at startup from `site:` in
@@ -60,6 +62,9 @@ pub struct Site {
     /// The operator's analytics snippet (`analytics.head`), for every page's
     /// `<head>`, as they wrote it.
     pub head: Option<maud::PreEscaped<String>>,
+    /// The language for a reader whose browser asks for none indice has
+    /// (`site.language`).
+    pub language: unic_langid::LanguageIdentifier,
 }
 
 /// The tagline when `site.tagline` is unset.
@@ -82,6 +87,9 @@ impl Site {
                 .map(|md| crate::markdown::render(&md))
                 .unwrap_or(default.tagline),
             head: None,
+            // `site.language` is checked at startup (`SiteConfig::language`),
+            // so English here only covers callers that skipped the check.
+            language: cfg.language().unwrap_or_else(|_| Site::default().language),
         }
     }
 }
@@ -92,6 +100,7 @@ impl Default for Site {
             name: "indice".to_string(),
             tagline: crate::markdown::render(DEFAULT_TAGLINE),
             head: None,
+            language: "en".parse().expect("en is a language tag"),
         }
     }
 }
@@ -115,7 +124,7 @@ pub fn layout(
     };
     html! {
         (DOCTYPE)
-        html lang="en" {
+        html lang=(chrome.l10n.lang()) dir=(chrome.l10n.dir()) {
             head {
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";

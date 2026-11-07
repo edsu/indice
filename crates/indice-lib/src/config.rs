@@ -105,6 +105,24 @@ pub struct SiteConfig {
     /// curator's account. Rendered by [`crate::markdown::render`], which
     /// escapes raw HTML and keeps links to safe schemes.
     pub tagline: Option<String>,
+    /// The interface language for a reader whose browser asks for none that
+    /// indice has: a tag such as `it`. Defaults to `en`. Checked by
+    /// [`SiteConfig::language`].
+    pub language: Option<String>,
+}
+
+impl SiteConfig {
+    /// The fallback interface language: `site.language` if set (a blank value
+    /// counts as unset), else English. An unsupported tag is an error naming the
+    /// setting and the supported languages. Like [`Config::check_upload_limits`]
+    /// it is for the server to call at startup, not [`Config::load`]: a wrong
+    /// language in a setting the command line does not use should not stop it.
+    pub fn language(&self) -> Result<unic_langid::LanguageIdentifier> {
+        match self.language.as_deref().map(str::trim) {
+            None | Some("") => crate::i18n::parse_language("en"),
+            Some(tag) => crate::i18n::parse_language(tag).context("site.language"),
+        }
+    }
 }
 
 /// A web analytics service, such as Plausible, Matomo or GoatCounter. Off

@@ -693,6 +693,7 @@ fn blank_site_text_falls_back_to_the_defaults() {
     let cfg = crate::config::SiteConfig {
         name: Some("  ".into()),
         tagline: Some("\n".into()),
+        ..Default::default()
     };
     let site = views::Site::new(&cfg);
     assert_eq!(site.name, "indice");
@@ -883,4 +884,160 @@ fn only_a_minted_note_has_an_address() {
     for id in ["urn:uuid:7b1f", "urn:indice:annotation:0123ABCD", "x"] {
         assert_eq!(annotation_path("c", id), None, "{id:?}");
     }
+}
+
+/// An app router over an empty home, whose `site.language` is `language`.
+fn app_with_language(language: Option<&str>) -> (tempfile::TempDir, Router) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    if let Some(tag) = language {
+        std::fs::write(
+            crate::config::Config::path(tmp.path()),
+            format!("site:\n  language: {tag}\n"),
+        )
+        .unwrap();
+    }
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let app = router(tmp.path(), config).unwrap();
+    (tmp, app)
+}
+
+async fn get_with(
+    app: &Router,
+    path: &str,
+    accept_language: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    use tower::ServiceExt;
+
+    let mut req = axum::http::Request::get(path).header("host", "localhost");
+    if let Some(v) = accept_language {
+        req = req.header("accept-language", v);
+    }
+    let res = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn home_follows_the_browser_language() {
+    let (_home, app) = app_with_language(None);
+    let (status, _, body) = get_with(&app, "/", Some("it")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#"lang="it""#), "{body}");
+    let (_, _, body) = get_with(&app, "/", None).await;
+    assert!(body.contains(r#"lang="en""#), "{body}");
+    assert!(body.contains(r#"dir="ltr""#), "{body}");
+}
+
+#[tokio::test]
+async fn home_falls_back_to_site_language() {
+    let (_home, app) = app_with_language(Some("it"));
+    let (_, _, body) = get_with(&app, "/", Some("ja")).await;
+    assert!(body.contains(r#"lang="it""#), "{body}");
+    // Asking for a language indice has wins over the fallback.
+    let (_, _, body) = get_with(&app, "/", Some("en")).await;
+    assert!(body.contains(r#"lang="en""#), "{body}");
+}
+
+/// Whatever a browser or a hostile client sends, the answer is a page in a
+/// language indice has.
+#[tokio::test]
+async fn a_messy_accept_language_never_breaks_a_page() {
+    let (_home, app) = app_with_language(None);
+    let long = format!("{}it", "xx,".repeat(5000));
+    let cases = [
+        ("en;q=0.5, it;q=0.9", "it"),
+        ("*", "en"),
+        ("it-CH", "it"),
+        ("IT", "it"),
+        ("fr, it;q=0.1", "it"),
+        ("\u{fffd}\u{fffd};;;q=,,,", "en"),
+        ("it;q=0", "en"),
+        (long.as_str(), "en"),
+    ];
+    for (header, lang) in cases {
+        let (status, _, body) = get_with(&app, "/", Some(header)).await;
+        assert_eq!(status, StatusCode::OK, "{header:?}");
+        assert!(body.contains(&format!(r#"lang="{lang}""#)), "{header:?}");
+    }
+    // A header that is not text at all.
+    let res = tower::ServiceExt::oneshot(
+        app.clone(),
+        axum::http::Request::get("/")
+            .header("host", "localhost")
+            .header("accept-language", &[0xffu8, 0xfe][..])
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+fn vary_values(headers: &HeaderMap) -> String {
+    headers
+        .get_all(axum::http::header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(", ")
+        .to_ascii_lowercase()
+}
+
+#[tokio::test]
+async fn pages_vary_on_accept_language() {
+    let (_home, app) = app_with_language(None);
+    for path in ["/", "/search?q=x"] {
+        let (_, headers, _) = get_with(&app, path, None).await;
+        assert!(vary_values(&headers).contains("accept-language"), "{path}");
+    }
+    let (status, headers, _) = get_with(&app, "/assets/app.css", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!vary_values(&headers).contains("accept-language"));
+}
+
+/// A handler that already varies on `Accept` (a note's page and JSON-LD share a
+/// URL) keeps that, and gains `Accept-Language`.
+#[tokio::test]
+async fn vary_is_appended_not_replaced() {
+    use tower::ServiceExt;
+
+    let app = Router::new()
+        .route(
+            "/note",
+            get(|| async { ([(axum::http::header::VARY, "Accept")], "note") }),
+        )
+        .layer(axum::middleware::from_fn(i18n::vary_accept_language));
+    let res = app
+        .oneshot(
+            axum::http::Request::get("/note")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let vary = vary_values(res.headers());
+    assert!(
+        vary.contains("accept") && vary.contains("accept-language"),
+        "{vary}"
+    );
+}
+
+#[test]
+fn an_unsupported_site_language_stops_startup() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        crate::config::Config::path(tmp.path()),
+        "site:\n  language: xx\n",
+    )
+    .unwrap();
+    let config = ServerConfig::new(Access::local("127.0.0.1:0".parse().unwrap()).unwrap());
+    let err = format!("{:#}", router(tmp.path(), config).unwrap_err());
+    assert!(err.contains("site.language") && err.contains("it"), "{err}");
 }

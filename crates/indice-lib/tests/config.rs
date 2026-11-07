@@ -62,3 +62,25 @@ fn index_aborts_on_a_malformed_config() {
     );
     assert_eq!(crawl_count(home), 0, "a broken config indexes nothing");
 }
+
+#[test]
+fn site_language_must_be_supported() {
+    let cfg: indice_lib::config::Config =
+        serde_saphyr::from_str("site:\n  language: xx\n").unwrap();
+    let err = format!("{:#}", cfg.site.language().unwrap_err());
+    for want in ["site.language", "en", "it"] {
+        assert!(err.contains(want), "{want} missing from: {err}");
+    }
+    let cfg: indice_lib::config::Config =
+        serde_saphyr::from_str("site:\n  language: it-IT\n").unwrap();
+    assert_eq!(cfg.site.language().unwrap().to_string(), "it");
+}
+
+#[test]
+fn site_language_defaults_to_english() {
+    let cfg = indice_lib::config::Config::default();
+    assert_eq!(cfg.site.language().unwrap().to_string(), "en");
+    let blank: indice_lib::config::Config =
+        serde_saphyr::from_str("site:\n  language: \"  \"\n").unwrap();
+    assert_eq!(blank.site.language().unwrap().to_string(), "en");
+}

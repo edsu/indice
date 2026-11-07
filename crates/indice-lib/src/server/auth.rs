@@ -627,6 +627,7 @@ pub(super) fn chrome(state: &AppState, headers: &HeaderMap) -> crate::views::Chr
         signed_in,
         can_login,
         site: state.site.clone(),
+        l10n: super::i18n::negotiate_headers(state, headers),
     }
 }
 

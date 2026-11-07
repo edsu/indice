@@ -2059,6 +2059,14 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         }
     );
 
+    match cfg.site.language() {
+        Ok(lang) => println!(
+            "site.language:            {}  ->  {lang}",
+            set(&cfg.site.language)
+        ),
+        Err(e) => println!("site.language:            invalid  ->  {e:#}"),
+    }
+
     match indice_lib::analytics::Analytics::from_config(&cfg.analytics) {
         Ok(Some(a)) => println!(
             "analytics:                set  ->  a snippet on every app page, {} inline script(s), talking to {}",
