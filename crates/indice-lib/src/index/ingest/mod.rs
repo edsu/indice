@@ -22,7 +22,7 @@ use crate::identity::SubjectId;
 use crate::search::SearchIndex;
 use crate::wacz::read_datapackage;
 
-use super::paths::index_dir;
+use super::paths::{index_dir, scratch_dir};
 use super::{IndexProgress, SourceResolver};
 
 mod acquire;
@@ -183,6 +183,10 @@ pub struct Ingest<'a> {
     /// before indexing. `None` (the default, so the CLI is unchanged) is no
     /// limit. See [`Ingest::download_limit`].
     download_limit: Option<u64>,
+    /// The most indexing one WACZ may inflate to temp files. `None` (the
+    /// default, so the CLI is unchanged) is no limit. See
+    /// [`Ingest::scratch_limit`].
+    scratch_limit: Option<u64>,
 }
 
 impl<'a> Ingest<'a> {
@@ -201,6 +205,7 @@ impl<'a> Ingest<'a> {
             actor: None,
             fetch: crate::http_range::FetchPolicy::Unrestricted,
             download_limit: None,
+            scratch_limit: None,
         }
     }
 
@@ -239,6 +244,20 @@ impl<'a> Ingest<'a> {
     #[must_use]
     pub fn download_limit(mut self, bytes: Option<u64>) -> Self {
         self.download_limit = bytes;
+        self
+    }
+
+    /// Cap what indexing one WACZ may inflate to temp files.
+    ///
+    /// A WACZ whose WARCs are compressed inside the zip, or a nested WACZ
+    /// whose inner WACZ is, is inflated to temp files to be read, and a zip
+    /// entry can inflate to a thousand times its size. Without a limit a small
+    /// curator-supplied WACZ could fill the temp volume. The server sets this
+    /// to the archive's room under `uploads.max_total_gb`. See
+    /// [`crate::wacz::Scratch`].
+    #[must_use]
+    pub fn scratch_limit(mut self, bytes: Option<u64>) -> Self {
+        self.scratch_limit = bytes;
         self
     }
     /// Re-index sources already registered in the collection.
@@ -445,7 +464,13 @@ pub(super) fn index_one(
     progress.begin(&source.location());
 
     // 1. Acquire: where the WACZ lives, and how we'll read it.
-    let (effective_source, access) = acquire::open(cx, source, collection.0)?;
+    // Everything this WACZ writes to temp files, from a download to the WARCs
+    // it inflates, is charged here and written under `<home>/tmp`; they are
+    // gone once it is indexed.
+    let dir = scratch_dir(home);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let scratch = crate::wacz::Scratch::new(cx.scratch_limit).in_dir(dir);
+    let (effective_source, access) = acquire::open(cx, source, collection.0, &scratch)?;
 
     // Its datapackage metadata, read up front so the title can name the crawl.
     // Precedence: explicit --name, then the WACZ title, then the filename/URL stem.
@@ -480,6 +505,7 @@ pub(super) fn index_one(
                 search,
                 read_limit,
                 extract_limit,
+                scratch: &scratch,
             },
             workers: resolve_workers(concurrency, access.is_remote()),
             thumbs_dir: &thumbs_dir,

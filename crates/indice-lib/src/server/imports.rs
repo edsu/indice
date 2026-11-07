@@ -373,12 +373,16 @@ pub(super) async fn bx_import(
                             &progress,
                         )?;
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
+                        // Already filed, so the room is what is left now.
+                        let scratch = super::manage::scratch_room(&job_state)
+                            .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                         // force: honor the explicitly selected crawl. No
                         // download: it is already a local file.
                         crate::index::Ingest::new(&job_state.home)
                             .name(name)
                             .force(true)
                             .actor(Some(&actor))
+                            .scratch_limit(scratch)
                             .progress(&progress)
                             .index_location(&dest.to_string_lossy(), &req.collection)?;
                         let abs = dest.canonicalize().unwrap_or(dest.clone());
@@ -416,6 +420,8 @@ pub(super) async fn bx_import(
                             item: item.id.clone(),
                             resource: res.name.clone(),
                         };
+                        let scratch = super::manage::scratch_room(&job_state)
+                            .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                         // Streamed in place (no download), forced because the
                         // crawl was explicitly selected.
                         crate::index::Ingest::new(&job_state.home)
@@ -423,6 +429,7 @@ pub(super) async fn bx_import(
                             .force(true)
                             .resolver(Some(resolver.as_ref()))
                             .actor(Some(&actor))
+                            .scratch_limit(scratch)
                             .progress(&progress)
                             .index_location(&source.location(), &req.collection)?;
                         let crawl_id = crate::collections::wacz_id(&source);
@@ -730,12 +737,13 @@ pub(super) async fn ait_import(
                     .flat_map(|p| p.files.iter())
                     .map(|f| f.size)
                     .sum();
-                super::manage::admit(&job_state, incoming)
+                let scratch = super::manage::admit(&job_state, incoming)
                     .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
                 crate::archiveit::import_crawls(
                     &client,
                     &crate::index::Ingest::new(&job_state.home)
                         .actor(Some(&actor))
+                        .scratch_limit(scratch)
                         .progress(&progress),
                     &req.into,
                     &plans,

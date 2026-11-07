@@ -39,8 +39,12 @@ fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
         search,
         read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
         extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+        scratch: &UNLIMITED,
     }
 }
+
+/// No temp-disk limit, as the CLI has.
+static UNLIMITED: crate::wacz::Scratch = crate::wacz::Scratch::new(None);
 
 #[test]
 fn streaming_matches_scan_on_a_stored_wacz() {
@@ -399,6 +403,104 @@ impl crate::http_range::RangeFetch for MemFetch {
         Ok(self.0[start as usize..end as usize].to_vec())
     }
 }
+/// A nested WACZ whose inner `simple.wacz` is deflated, so it is inflated to
+/// a temp file to be read; returns it with the inner's inflated size.
+fn nested_with_a_deflated_inner(inner: Vec<u8>) -> (Vec<u8>, u64) {
+    use std::io::Write;
+    let inner_name = "inner.wacz";
+    let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zw.start_file(
+        inner_name,
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated),
+    )
+    .unwrap();
+    zw.write_all(&inner).unwrap();
+    zw.start_file("datapackage.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    let dp = format!(
+        r#"{{"profile":"multi-wacz-package","resources":[{{"name":"{inner_name}","path":"{inner_name}"}}]}}"#
+    );
+    zw.write_all(dp.as_bytes()).unwrap();
+    (zw.finish().unwrap().into_inner(), inner.len() as u64)
+}
+
+/// A deflated inner WACZ counts against what the WACZ may inflate to disk.
+#[test]
+fn a_deflated_nested_wacz_is_inflated_within_the_scratch_limit() {
+    let (outer, inner_len) =
+        nested_with_a_deflated_inner(std::fs::read(fixture("simple.wacz")).unwrap());
+    let tmp = TempDir::new().unwrap();
+    let search = Mutex::new(SearchIndex::open(&tmp.path().join("ft")).unwrap());
+    let index = |limit: Option<u64>| {
+        index_nested_from(
+            MemFetch(std::sync::Arc::new(outer.clone())),
+            &Docs {
+                scratch: &crate::wacz::Scratch::new(limit),
+                ..docs(&search)
+            },
+            1,
+            crate::index::no_progress(),
+        )
+    };
+    let err = index(Some(inner_len - 1)).unwrap_err();
+    assert!(
+        err.chain()
+            .any(|c| c.downcast_ref::<crate::wacz::ScratchFull>().is_some()),
+        "{err:#}"
+    );
+    assert!(index(None).unwrap().is_some(), "with room, it indexes");
+}
+
+/// `wacz` repacked with its WARCs deflated, and what they inflate to.
+fn with_deflated_warcs(wacz: &[u8]) -> (Vec<u8>, u64) {
+    use std::io::{Read, Write};
+    let mut src = zip::ZipArchive::new(std::io::Cursor::new(wacz)).unwrap();
+    let mut zw = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut warcs = 0;
+    for i in 0..src.len() {
+        let mut e = src.by_index(i).unwrap();
+        let name = e.name().unwrap().into_owned();
+        let method = if name.starts_with("archive/") {
+            warcs += e.size();
+            zip::CompressionMethod::Deflated
+        } else {
+            e.compression()
+        };
+        let mut bytes = Vec::new();
+        e.read_to_end(&mut bytes).unwrap();
+        zw.start_file(
+            name,
+            zip::write::SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        zw.write_all(&bytes).unwrap();
+    }
+    (zw.finish().unwrap().into_inner(), warcs)
+}
+
+/// A deflated inner WACZ whose own WARCs are deflated is inflated once and
+/// scanned where it is: the allowance it needs is the inner plus its WARCs,
+/// not a second copy of the inner.
+#[test]
+fn a_deflated_nested_wacz_is_not_copied_again_to_scan() {
+    let (inner, warcs) = with_deflated_warcs(&std::fs::read(fixture("simple.wacz")).unwrap());
+    let (outer, inner_len) = nested_with_a_deflated_inner(inner);
+    let tmp = TempDir::new().unwrap();
+    let search = Mutex::new(SearchIndex::open(&tmp.path().join("ft")).unwrap());
+    let stats = index_nested_from(
+        MemFetch(std::sync::Arc::new(outer)),
+        &Docs {
+            scratch: &crate::wacz::Scratch::new(Some(inner_len + warcs)),
+            ..docs(&search)
+        },
+        1,
+        crate::index::no_progress(),
+    )
+    .unwrap();
+    assert!(stats.is_some_and(|s| s.pages > 0), "it indexes");
+}
+
 #[test]
 fn nested_multi_wacz_is_indexed() {
     let outer = nested_multi_wacz();
@@ -447,6 +549,7 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
             extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+            scratch: &UNLIMITED,
         },
         2,
         crate::index::no_progress(),
@@ -1421,4 +1524,25 @@ fn each_source_wins_where_it_should_on_both_paths() {
             "{path}"
         );
     }
+}
+
+/// An upload staged under `<home>/tmp` is moved into the archive, not copied,
+/// so it is never on disk twice; a file from elsewhere is copied, leaving the
+/// original.
+#[test]
+fn a_staged_upload_is_moved_into_the_archive() {
+    let home = TempDir::new().unwrap();
+    let staged = crate::index::scratch_dir(home.path()).join("up");
+    std::fs::create_dir_all(&staged).unwrap();
+    let upload = staged.join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &upload).unwrap();
+    index_path(&upload, home.path(), None, "staged").unwrap();
+    assert!(!upload.exists(), "the staged upload should have been moved");
+    assert!(home.path().join("archive/staged/simple.wacz").exists());
+
+    let elsewhere = TempDir::new().unwrap();
+    let original = elsewhere.path().join("simple.wacz");
+    std::fs::copy(fixture("simple.wacz"), &original).unwrap();
+    index_path(&original, home.path(), None, "copied").unwrap();
+    assert!(original.exists(), "a file from elsewhere should be copied");
 }

@@ -50,6 +50,8 @@ pub(super) struct Docs<'a> {
     /// The most of one page to read for its text (`index.max_extract_mb`).
     /// See [`record_to_raw`].
     pub extract_limit: usize,
+    /// What this WACZ may write to temp files. See [`crate::wacz::Scratch`].
+    pub scratch: &'a crate::wacz::Scratch,
 }
 
 /// Everything the page-indexing pass needs beyond the WACZ itself: which crawl
@@ -259,15 +261,25 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
                 workers,
                 progress,
             )?,
-            // Compressed inner entry: extract it (decompressing) to a temp file,
-            // then full-scan it. Rare — not produced by Browsertrix.
+            // Compressed inner entry: inflate it to a temp file, then read
+            // that like a stored one, so its own stored WARCs are streamed
+            // rather than copied out a second time. Rare — not produced by
+            // Browsertrix.
             None => {
                 let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))?;
-                let mut tmp =
-                    tempfile::NamedTempFile::new().context("temp for compressed nested WACZ")?;
-                std::io::copy(&mut zip.by_name(&inner.name)?, tmp.as_file_mut())
-                    .with_context(|| format!("extracting nested {}", inner.name))?;
-                index_wacz(tmp.path(), docs)?
+                let entry = zip.by_name(&inner.name)?;
+                let declared = entry.size();
+                let tmp =
+                    crate::wacz::inflate_to_temp(entry, declared, &inner.name, "", docs.scratch)
+                        .with_context(|| format!("extracting nested {}", inner.name))?;
+                let fetch = crate::http_range::FileFetch::open(tmp.path())?;
+                if warcs_streamable(&fetch) {
+                    index_wacz_streaming(fetch, docs, &inner.name, workers, progress)?
+                } else {
+                    // Already a local file: scan it where it is, rather than
+                    // copying it to a second temp file as `index_inner` would.
+                    index_wacz(tmp.path(), docs)?
+                }
             }
         };
         agg.pages += stats.pages;
@@ -294,25 +306,37 @@ fn index_inner<F: RangeFetch + Clone + Send + Sync>(
     workers: usize,
     progress: &dyn IndexProgress,
 ) -> Result<CrawlStats> {
-    let streamable = zip::ZipArchive::new(RangeReader::new(fetch.clone()))
-        .ok()
-        .map(|mut z| crate::wacz::warcs_stored(&mut z).unwrap_or(false))
-        .unwrap_or(false);
-    if streamable {
+    if warcs_streamable(&fetch) {
         index_wacz_streaming(fetch, docs, label, workers, progress)
     } else {
-        let tmp = materialize_fetch(&fetch).context("materializing nested WACZ for scan")?;
+        let tmp = materialize_fetch(&fetch, label, docs.scratch)
+            .context("materializing nested WACZ for scan")?;
         index_wacz(tmp.path(), docs)
     }
 }
 
+/// Whether the WACZ behind `fetch` stores its WARCs, so they can be read in
+/// place by range rather than inflated.
+fn warcs_streamable<F: RangeFetch + Clone>(fetch: &F) -> bool {
+    zip::ZipArchive::new(RangeReader::new(fetch.clone()))
+        .ok()
+        .map(|mut z| crate::wacz::warcs_stored(&mut z).unwrap_or(false))
+        .unwrap_or(false)
+}
+
 /// Copy an entire [`RangeFetch`] to a temp file (chunked), for the fallback
-/// paths that need a seekable local file.
-fn materialize_fetch<F: RangeFetch>(fetch: &F) -> Result<tempfile::NamedTempFile> {
+/// paths that need a seekable local file. Its length is known, so it is
+/// charged to `scratch` before anything is written.
+fn materialize_fetch<F: RangeFetch>(
+    fetch: &F,
+    label: &str,
+    scratch: &crate::wacz::Scratch,
+) -> Result<tempfile::NamedTempFile> {
     use std::io::Write;
     const CHUNK: u64 = 4 * 1024 * 1024;
     let total = fetch.total_len();
-    let mut tmp = tempfile::NamedTempFile::new()?;
+    scratch.charge(total, label)?;
+    let mut tmp = scratch.tempfile(".wacz")?;
     let mut pos = 0u64;
     while pos < total {
         let end = (pos + CHUNK).min(total);
@@ -358,7 +382,7 @@ pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
     let mut cdx = Vec::new();
     let mut warcinfo: Option<Warcinfo> = None;
     for (i, entry_name) in warc_paths.iter().enumerate() {
-        let tmp = extract_warc_from_wacz(wacz_path, entry_name)
+        let tmp = extract_warc_from_wacz(wacz_path, entry_name, docs.scratch)
             .with_context(|| format!("extracting {} from {}", entry_name, wacz_path.display()))?;
         let name = format!("warc-{i}");
         for record in iter_records(tmp.path(), limit)? {
@@ -547,7 +571,11 @@ where
     // first, so the second read is from disk rather than a second download of
     // what is usually the crawl's largest member.
     let spooled = if fetch.is_remote() {
-        Some(wacz::spool_page_lists(&mut open_lists()?, limit)?)
+        Some(wacz::spool_page_lists(
+            &mut open_lists()?,
+            limit,
+            docs.scratch,
+        )?)
     } else {
         None
     };
@@ -1436,6 +1464,7 @@ mod tests {
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
             extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+            scratch: &crate::wacz::Scratch::new(None),
         };
         let err = index_pages(
             PageSource {

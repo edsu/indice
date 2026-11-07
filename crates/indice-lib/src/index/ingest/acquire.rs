@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::collections::{file_sha256, Manifest, Source};
-use crate::index::paths::archive_dir;
+use crate::index::paths::{archive_dir, scratch_dir};
 
 use super::WaczAccess;
 
@@ -33,6 +33,7 @@ pub(super) fn open(
     cx: &super::Ingest,
     source: &Source,
     collection_slug: &str,
+    scratch: &crate::wacz::Scratch,
 ) -> Result<(Source, WaczAccess)> {
     let (home, download, resolver, progress) = (cx.home, cx.download, cx.resolver, cx.progress);
     // Where a curator-supplied URL is allowed to point. A Browsertrix source is
@@ -70,7 +71,7 @@ pub(super) fn open(
                 Ok(false) | Err(_) => {
                     info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
                     progress.phase("downloading");
-                    let tmp = download_to_temp(u, fetch, cx.download_limit)
+                    let tmp = download_to_temp(u, fetch, cx.download_limit, scratch)
                         .with_context(|| format!("downloading {u}"))?;
                     let path = tmp.path().to_path_buf();
                     // The temp file must outlive the read, so the handle rides along.
@@ -248,13 +249,17 @@ fn place_local_wacz(
         // reuse it (idempotent re-index), nothing to write.
     } else {
         // A file already under archive/ is on the same filesystem as its
-        // destination, so a rename (move) is cheap and non-duplicating; a file
-        // from elsewhere is copied so the curator's original is left untouched.
-        let under_archive = archive_dir(home)
-            .canonicalize()
-            .map(|a| abs.starts_with(&a))
-            .unwrap_or(false);
-        if under_archive {
+        // destination, so a rename (move) is cheap and non-duplicating; so is
+        // an upload staged under `<home>/tmp`, which is indice's own and would
+        // otherwise sit on disk beside its copy, uncounted, for the whole job.
+        // A file from elsewhere is copied so the curator's original is left
+        // untouched.
+        let under = |dir: PathBuf| {
+            dir.canonicalize()
+                .map(|d| abs.starts_with(&d))
+                .unwrap_or(false)
+        };
+        if under(archive_dir(home)) || under(scratch_dir(home)) {
             std::fs::rename(&abs, &dest)
                 .with_context(|| format!("moving {} to {}", abs.display(), dest.display()))?;
             info!(from = %abs.display(), to = %dest.display(), "moved WACZ into collection archive");
@@ -273,16 +278,18 @@ fn download_to_temp(
     url: &str,
     policy: crate::http_range::FetchPolicy,
     limit: Option<u64>,
+    scratch: &crate::wacz::Scratch,
 ) -> Result<tempfile::NamedTempFile> {
-    use std::io::{copy, Read, Write};
+    use std::io::{Read, Write};
 
-    let mut tmp = tempfile::Builder::new().suffix(".wacz").tempfile()?;
     let reader = crate::http_range::get_reader(url, policy)?;
     // Read one byte past the limit, so "exactly at the limit" and "over it" can
     // be told apart without trusting a Content-Length the host may not send.
-    let mut bounded = reader.take(limit.map_or(u64::MAX, |l| l.saturating_add(1)));
-    let written =
-        copy(&mut bounded, &mut tmp).with_context(|| format!("writing {url} to temp file"))?;
+    // It is temp disk like any other this WACZ costs, so it is charged too.
+    let bounded = reader.take(limit.map_or(u64::MAX, |l| l.saturating_add(1)));
+    let mut tmp = crate::wacz::inflate_to_temp(bounded, 0, url, ".wacz", scratch)
+        .with_context(|| format!("writing {url} to temp file"))?;
+    let written = tmp.as_file().metadata()?.len();
     if let Some(l) = limit {
         if written > l {
             anyhow::bail!(

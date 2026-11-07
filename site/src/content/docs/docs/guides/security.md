@@ -83,7 +83,7 @@ Give the address browsers use, scheme and all; a port only if it is not the sche
 
 ## Limits
 
-- **Uploads.** `uploads.max_mb` caps one WACZ and `uploads.max_total_gb` caps the archive, in [`config.yaml`](/docs/reference/configuration/#upload-limits). Both are **unlimited until you set them**. If your curators include people you do not know, set them.
+- **Uploads.** `uploads.max_mb` caps one WACZ and `uploads.max_total_gb` caps the archive, in [`config.yaml`](/docs/reference/configuration/#upload-limits). The archive limit also caps what indexing a WACZ may inflate to temp files, so a small one cannot fill the disk by naming a zip entry that inflates a thousandfold. Both are **unlimited until you set them**. If your curators include people you do not know, set them.
 - **Requests.** Each client gets a burst of 100 quick requests, then 20 a second, and may hold 64 archive streams open; the whole server allows 256 quick requests in flight and 512 open streams. A client past its limit is told to wait (`429`), and a server past its total answers `503` until the load passes. Curators are not rate-limited, so an institution's own scripts need a roster entry rather than a setting. See the [API reference](/docs/reference/api/) for the details.
 - **Slow work.** A search query is capped at 2 KiB, and every quick request at 30 seconds.
 - **What a WACZ unpacks to.** A WACZ is a zip, so a file of a few megabytes can contain gigabytes once inflated. indice reads no file inside a WACZ past `index.max_member_mb` (1 GiB by default) and refuses one that asks for more; see [Reading a WACZ](/docs/reference/configuration/#reading-a-wacz).
@@ -138,7 +138,8 @@ A server serves reads to anyone. To keep an archive off the open web, gate reads
 
 These are filed and not yet fixed. Each linked issue has the whole writeup.
 
-- A WACZ whose WARCs are deflated is inflated to a temp file to be indexed, and that is not yet bounded, so a hostile one can fill the temp volume ([#231](https://github.com/edsu/indice/issues/231)).
+- The upload limits apply to the whole archive, not to each curator, so one curator can use everyone's share ([#232](https://github.com/edsu/indice/issues/232)).
+- A failed upload leaves its file in `archive/`. It counts against `uploads.max_total_gb` but appears nowhere in the workroom, so only someone with a shell can remove it ([#233](https://github.com/edsu/indice/issues/233)).
 
 ## How it has been tested
 

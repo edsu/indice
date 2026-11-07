@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -121,6 +121,148 @@ pub(crate) fn lift(e: std::io::Error) -> anyhow::Error {
 /// member they cannot read must still pass on.
 pub(crate) fn is_too_large(e: &anyhow::Error) -> bool {
     e.downcast_ref::<MemberTooLarge>().is_some()
+}
+
+/// How much indexing one WACZ may write to temp files: the whole WACZ when a
+/// URL cannot be streamed and is downloaded, a remote WACZ's page lists, the
+/// WARCs of a WACZ that compresses them, and a nested WACZ that has to be read
+/// from a file.
+///
+/// The member limit cannot bound these, because a genuine WARC is often far
+/// larger than any member indice holds in memory. What a hostile WACZ can do
+/// instead is name a zip entry that inflates a thousandfold and fill the temp
+/// volume. So everything one WACZ writes to temp files is charged here, and
+/// the copy stops at the limit.
+///
+/// The files go in [`Scratch::in_dir`]'s directory, which an ingest sets to
+/// `<home>/tmp` (see `index::scratch_dir`), so the limit is counted on the
+/// volume the archive is on rather than the system temp directory, which
+/// may be a small tmpfs, and so memory. Without one they go in the system
+/// temp directory, which is what the unit tests use.
+///
+/// The limit is the archive's room under `uploads.max_total_gb`, set by the
+/// server for a curator's accession (see `Ingest::scratch_limit`). `None`
+/// is no limit, which is what the CLI gets: as for uploads, the person at
+/// the machine is not limited.
+///
+/// Charges are not refunded when a temp file goes, which only matters for a
+/// nested WACZ whose inner files come and go in turn: it is counted as if
+/// they had all been on disk at once.
+#[derive(Debug)]
+pub struct Scratch {
+    limit: Option<u64>,
+    used: std::sync::atomic::AtomicU64,
+    dir: Option<PathBuf>,
+}
+
+/// What indexing one WACZ would have written to temp files past
+/// [`Scratch`]'s limit: the refusal, with what to do about it.
+#[derive(Debug)]
+pub struct ScratchFull {
+    pub member: String,
+    pub limit: u64,
+}
+
+impl std::fmt::Display for ScratchFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "indexing this WACZ would write more than {} to temp files, the room left \
+             in the archive under uploads.max_total_gb; it reached that at {}. If the \
+             archive is genuine, raise uploads.max_total_gb or index it with \
+             `indice index`.",
+            crate::server::human_size(self.limit),
+            self.member
+        )
+    }
+}
+
+impl std::error::Error for ScratchFull {}
+
+impl Scratch {
+    /// An allowance of `limit` bytes; `None` is no limit.
+    pub const fn new(limit: Option<u64>) -> Self {
+        Self {
+            limit,
+            used: std::sync::atomic::AtomicU64::new(0),
+            dir: None,
+        }
+    }
+
+    /// Write the temp files in `dir`, which must exist.
+    pub fn in_dir(self, dir: PathBuf) -> Self {
+        Self {
+            dir: Some(dir),
+            ..self
+        }
+    }
+
+    /// A new, empty temp file named with `suffix`, in this allowance's
+    /// directory. Nothing is charged until something is written to it.
+    pub(crate) fn tempfile(&self, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
+        let mut builder = tempfile::Builder::new();
+        builder.suffix(suffix);
+        match &self.dir {
+            Some(dir) => builder.tempfile_in(dir),
+            None => builder.tempfile(),
+        }
+    }
+
+    /// Refuse writing `n` more bytes for `member` if that would go past the
+    /// limit; otherwise count them.
+    pub(crate) fn charge(&self, n: u64, member: &str) -> Result<(), ScratchFull> {
+        let before = self.used.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        self.fits(before, n, member)
+    }
+
+    /// Refuse an entry whose header already says it will not fit, before any
+    /// of it is written. Counts nothing: [`Scratch::charge`] counts what is
+    /// actually written, whatever the header claimed.
+    fn refuse_declared(&self, declared: u64, member: &str) -> Result<(), ScratchFull> {
+        let used = self.used.load(std::sync::atomic::Ordering::Relaxed);
+        self.fits(used, declared, member)
+    }
+
+    /// Whether `n` more bytes for `member` fit after `used`.
+    fn fits(&self, used: u64, n: u64, member: &str) -> Result<(), ScratchFull> {
+        match self.limit {
+            Some(limit) if used.saturating_add(n) > limit => Err(ScratchFull {
+                member: member.to_string(),
+                limit,
+            }),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Copy `reader` to a new temp file named with `suffix`, charging every byte
+/// to `scratch`. `declared` is what the zip header says the entry inflates to,
+/// which refuses an honest oversized entry before any of it is written; `0`
+/// when nothing says. A [`MemberTooLarge`] from a [`Limited`] reader is
+/// lifted, so callers can still tell it apart.
+pub(crate) fn inflate_to_temp(
+    mut reader: impl Read,
+    declared: u64,
+    member: &str,
+    suffix: &str,
+    scratch: &Scratch,
+) -> Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    scratch.refuse_declared(declared, member)?;
+    let mut tmp = scratch.tempfile(suffix)?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        // Retried, as `std::io::copy` would: a signal is not a failed read.
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(lift(e)),
+        };
+        scratch.charge(n as u64, member)?;
+        tmp.write_all(&buf[..n])?;
+    }
+    Ok(tmp)
 }
 
 /// Metadata extracted from a WACZ file's `datapackage.json` and `pages/pages.jsonl`.
@@ -370,11 +512,13 @@ pub(crate) fn for_each_page_text<R: std::io::Read + std::io::Seek>(
 const PAGE_LISTS: [&str; 2] = ["pages/pages.jsonl", "pages/extraPages.jsonl"];
 
 /// The page lists copied out of the WACZ to local temp files, each read
-/// through [`Limited`] at `limit`. For a remote WACZ, which indexing reads the
-/// page lists of twice: the copy turns the second download into a disk read.
+/// through [`Limited`] at `limit` and charged to `scratch`. For a remote WACZ,
+/// which indexing reads the page lists of twice: the copy turns the second
+/// download into a disk read.
 pub(crate) fn spool_page_lists<R: std::io::Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     limit: u64,
+    scratch: &Scratch,
 ) -> Result<Vec<(u8, tempfile::NamedTempFile)>> {
     let mut out = Vec::new();
     for (file, name) in PAGE_LISTS.into_iter().enumerate() {
@@ -382,10 +526,15 @@ pub(crate) fn spool_page_lists<R: std::io::Read + std::io::Seek>(
             continue;
         };
         check_declared(&entry, limit)?;
-        let mut tmp = tempfile::NamedTempFile::new().context("temp for a page list")?;
-        std::io::copy(&mut Limited::new(entry, limit, name), tmp.as_file_mut())
-            .map_err(lift)
-            .with_context(|| format!("copying {name}"))?;
+        let declared = entry.size();
+        let tmp = inflate_to_temp(
+            Limited::new(entry, limit, name),
+            declared,
+            name,
+            "",
+            scratch,
+        )
+        .with_context(|| format!("copying {name}"))?;
         out.push((file as u8, tmp));
     }
     Ok(out)
@@ -807,17 +956,17 @@ pub fn iter_warc_paths(wacz_path: &Path) -> Result<impl Iterator<Item = Result<S
     Ok(names.into_iter().map(Ok))
 }
 
-/// Extract a single named WARC entry from a WACZ ZIP into a temp file.
+/// Extract a single named WARC entry from a WACZ ZIP into a temp file, within
+/// what `scratch` allows.
 pub fn extract_warc_from_wacz(
     wacz_path: &Path,
     entry_name: &str,
+    scratch: &Scratch,
 ) -> Result<tempfile::NamedTempFile> {
-    use std::io::copy;
-
     let file = std::fs::File::open(wacz_path)
         .with_context(|| format!("opening WACZ {}", wacz_path.display()))?;
     let mut zip = zip::ZipArchive::new(file)?;
-    let mut entry = zip
+    let entry = zip
         .by_name(entry_name)
         .with_context(|| format!("entry {} not found in {}", entry_name, wacz_path.display()))?;
 
@@ -826,10 +975,8 @@ pub fn extract_warc_from_wacz(
     } else {
         ".warc"
     };
-    let mut tmp = tempfile::Builder::new().suffix(suffix).tempfile()?;
-    copy(&mut entry, &mut tmp)?;
-
-    Ok(tmp)
+    let declared = entry.size();
+    inflate_to_temp(entry, declared, entry_name, suffix, scratch)
 }
 
 /// Read a single WARC record located at absolute byte `offset` in a `Read + Seek`
@@ -1060,7 +1207,7 @@ mod tests {
                 Ok(())
             };
             if via_spool {
-                let files = spool_page_lists(&mut zip, MIB).unwrap();
+                let files = spool_page_lists(&mut zip, MIB, &Scratch::new(None)).unwrap();
                 for_each_spooled_page_text(&files, &mut push).unwrap();
             } else {
                 for_each_page_text(&mut zip, MIB, &mut push).unwrap();
@@ -1309,6 +1456,34 @@ mod tests {
     }
 
     #[test]
+    fn scratch_stops_what_a_wacz_inflates_to_disk_at_its_limit() {
+        use std::io::Read;
+        let zeros = |n: u64| std::io::repeat(0).take(n);
+        let full = |r: Result<tempfile::NamedTempFile>| {
+            r.unwrap_err().downcast_ref::<ScratchFull>().is_some()
+        };
+        // An honest header is refused before anything is written.
+        let s = Scratch::new(Some(1000));
+        assert!(full(inflate_to_temp(zeros(5000), 5000, "big", "", &s)));
+        // A header that understates is refused by what is actually written.
+        let s = Scratch::new(Some(1000));
+        assert!(full(inflate_to_temp(zeros(5000), 10, "liar", "", &s)));
+        // One allowance across every file a WACZ inflates.
+        let s = Scratch::new(Some(1000));
+        let first = inflate_to_temp(zeros(600), 600, "a", "", &s).unwrap();
+        assert_eq!(first.path().metadata().unwrap().len(), 600);
+        assert!(full(inflate_to_temp(zeros(600), 600, "b", "", &s)));
+        // No limit, as the CLI has.
+        let s = Scratch::new(None);
+        inflate_to_temp(zeros(5000), 5000, "any", "", &s).unwrap();
+        // In the directory it is given, which an ingest makes `<home>/tmp`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let s = Scratch::new(None).in_dir(dir.path().to_path_buf());
+        let file = inflate_to_temp(zeros(10), 10, "here", ".warc", &s).unwrap();
+        assert_eq!(file.path().parent(), Some(dir.path()));
+    }
+
+    #[test]
     fn extract_warc_from_wacz_succeeds() {
         let paths: Vec<_> = iter_warc_paths(&fixture("simple.wacz"))
             .unwrap()
@@ -1316,7 +1491,8 @@ mod tests {
             .unwrap();
 
         let first = &paths[0];
-        let tmp = extract_warc_from_wacz(&fixture("simple.wacz"), first).unwrap();
+        let tmp =
+            extract_warc_from_wacz(&fixture("simple.wacz"), first, &Scratch::new(None)).unwrap();
         assert!(tmp.path().exists());
         assert!(tmp.path().metadata().unwrap().len() > 0);
     }
