@@ -638,7 +638,7 @@ site:
   tagline: Local news and community sites since 2019. Email [us](mailto:archive@example.org) to curate.
 ```
 
-**The site text** is resolved once at startup into `views::Site` (defaults filled in, a blank value treated as unset, the tagline rendered by `markdown::render`), held in `AppState` and carried to every page by `views::Chrome`. `layout` takes the page's own title and appends the name, so no view spells "indice". The tagline appears only on the homepage, so anything an operator wants every visitor to read first, such as that the archive is a demo or whom to email for a curator's account, goes there. A role refusal of a browser page load (`GET`, `Accept: text/html`) answers 403 with `views::access_denied` rather than plain text (`Denied::for_page`), while API calls keep the plain refusal `manage.js` shows. The replay viewer is a static page, so `server::assets::replay_viewer` fills a `{{site_name}}` slot in it, escaped, after the replay-origin slot, so a name can never write the origin the viewer checks messages against.
+**The site text** is resolved once at startup into `views::Site` (defaults filled in, a blank value treated as unset, the tagline rendered by `markdown::render`), held in `AppState` and carried to every page by `views::Chrome`. `layout` takes the page's own title and appends the name, so no view spells "indice". The tagline appears only on the homepage, so anything an operator wants every visitor to read first, such as that the archive is a demo or whom to email for a curator's account, goes there. A role refusal of a browser page load (`GET`, `Accept: text/html`) answers 403 with `views::access_denied` rather than plain text (`Denied::for_page`), while API calls keep the plain refusal `manage.js` shows. The replay viewer is a static template, so `server::assets::viewer_html` fills its slots (the replay origin, `{{site_name}}`, the page's language and strings, and what to replay) in one pass over the template: it copies the template up to the earliest slot, writes that slot's value, and carries on after it, never looking inside a value it has written. A site name or a translation that contains the text of another slot therefore stays as written and cannot set the origin the viewer checks messages against (`viewer_strings_cannot_fill_slots`).
 
 **The upload limits** bound the browser write surface only; the CLI is the operator at the machine. `max_total_gb` limits the size of `<home>/archive/` and `<home>/tmp/` on disk, measured by walking both (`index::archive_bytes`, symlinks not followed) rather than from the manifest. The manifest records only what indexed successfully, and `place_local_wacz` files an upload into the archive *before* it is parsed, so a failed ingest leaves its file behind with no entry. A manifest-derived total would let a run of uploads that are not really WACZs fill the disk while reading zero. The walk counts what is actually there, including a Browsertrix download still being written as a `.part` file. URL and streamed Browsertrix sources store nothing locally and so add nothing, but a full archive refuses them too (`manage.rs::a_full_archive_refuses_a_url_too`), since indexing one writes temp files: the rule is that a full archive accepts nothing new. What indexing an accession writes to temp files (a download of a URL that can't be streamed, a remote WACZ's page lists, a WACZ whose WARCs are compressed, a compressed nested WACZ) is held to the room left as well (`admit` returns it; `scratch_room` when nothing is filed): those files are not in the archive and go once the WACZ is indexed, but a zip entry can inflate a thousandfold, and the archive limit is the one number that says how much disk an accession may cost. They are written under `<home>/tmp` (`index::scratch_dir`) rather than the system temp directory, so the limit is counted on the volume it measures, not a tmpfs that may be far smaller, and a staged upload is filed with a rename (`a_staged_upload_is_moved_into_the_archive`). `tmp/` is counted with `archive/`: a staged upload is already in the figure when its job is admitted (so `admit` is passed `0` for it), and a file a crash leaves there keeps counting rather than filling the volume unseen. Nothing sweeps them, because a CLI `indice index` on the same home may be using its own. Running the volume to `ENOSPC` is worse than a refused upload: the manifest survives it, since it is written atomically, but a Tantivy commit that fails mid-merge does not leave a tidy state.
 
@@ -1662,7 +1662,7 @@ deciding when the check runs, which is a separate question.
 
 Indexing reports progress through a small, UI-agnostic `IndexProgress` trait
 (`begin` / `phase` / `set_total` / `set_records` / `wacz_indexed` / `finish`):
-the library only emits counts and phase labels, so it stays free of any UI
+the library only emits counts and `index::Phase` values, so it stays free of any UI
 dependency. Every method has a default no-op body, so "no UI" is the value
 `NoProgress` rather than `None` — reporting progress is never a branch inside
 the pipeline. Whether to draw a bar is a UI decision, so that `Option` stops in
@@ -1737,7 +1737,44 @@ as `.gender` for languages whose articles need it.
 
 **Lookup order.** `L10n::tr` tries the chosen language, then English, then returns the
 key itself, logging a warning on the last two. A key missing from a hand-edited
-catalog therefore shows English, never a bare key or a panic.
+catalog therefore shows English, never a bare key or a panic. A translation that
+formats with errors (a misspelled `$variable`) counts as missing: the reader gets the
+English sentence, and the broken message is logged once per language
+(`a_broken_translation_falls_back_to_english`). `catalogs_use_the_same_variables`
+catches the same mistake before it ships, by comparing each message's variables with
+the English message's in the Fluent syntax tree.
+
+**Vary.** Every app response whose text can depend on the language carries
+`Vary: Accept-Language`, appended to any `Vary` a handler set (a note's page and its
+JSON-LD already vary on `Accept`). Answers that are the same for every reader do not:
+static files under `/assets/` and `/replay/`, archive bytes at `/files/`, thumbnails,
+`/health`, `robots.txt`, the documented public API (`GET /api/search`,
+`GET /api/annotations`) and the manifests and page lists ReplayWeb.page reads
+(`/crawl/{id}/replay.json`, `/collection/{id}/pages` and the like).
+`server::i18n::same_for_every_language` names them, and every route on the replay
+origin is among them, so replay never translates. A refusal made before a handler runs
+(a rate limit, a busy server) uses the same rule: the reader's language on pages,
+English on those answers (`pages_vary_on_accept_language`,
+`a_refusal_speaks_the_readers_language_only_on_pages`).
+
+**The replay viewer.** `static/replay/viewer.html` is a template, not a maud view.
+Besides the replay origin, site name and replay context, it has slots for the page's
+language (`{{lang}}`, for `<html lang>`), the tab's title (`{{title}}`), the two
+sentences on the page before any script runs (`{{notes_label}}`, `{{loading_text}}`)
+and the strings its scripts show (`{{strings}}`, the JSON from `views::strings_json`
+for `views::VIEWER_STRINGS`). Text slots are HTML-escaped and the JSON has every `<`
+escaped, and the single-pass fill keeps a translation from filling a later slot
+(`viewer_strings_cannot_fill_slots`).
+
+**Indexing phases are data.** The library reports what indexing is doing as an
+`index::Phase` value (a count or a file name inside it, no words). Each sink chooses
+the words: `Phase::render` with the workroom's `L10n` for the progress stream a curator
+watches, and `Display`, which is English, for the command line and the log.
+
+**Machine-named crawls.** A crawl whose name is only its tool's identifier is shown
+as "Crawl of 7 January 2025, 17:14". `Wacz::display_name_in` words that in the page's
+language (`crawl-name-dated`, `crawl-name-dated-time`); `Wacz::display_name` is the
+English form, for the describe prompt and the replay manifest every reader shares.
 
 **Isolation marks.** Fluent wraps arguments in U+2068/U+2069 so a left-to-right name
 or URL cannot reorder a right-to-left sentence. Bundles for `ar`, `fa`, `he` and `ur`
@@ -1757,6 +1794,10 @@ language (Italian `one`, `other`; Arabic all six) and the script picks with
 escapes every `<` as `\u003c`, so a translation cannot close the element or open a
 comment; that escape is why the element's text is the one place a string is not
 HTML-escaped by maud. `no_english_literals_in_scripts` pins the scripts to `t()`.
+An error the server sends is already a whole sentence in the page's language ("the
+job failed: ..."), so `manage.js` shows it as sent; only a request that never reached
+the server gets the script's own `js-request-failed` frame
+(`the_workroom_shows_server_errors_as_sent`).
 
 **Adding a language.**
 
@@ -1770,8 +1811,9 @@ HTML-escaped by maud. `no_english_literals_in_scripts` pins the scripts to `t()`
    describe prompt names `site.language` with it.
 4. Add one line to `i18n::CATALOGS`.
 5. Run `cargo test -p indice-lib`: `every_catalog_parses`,
-   `catalogs_have_the_same_messages` and `catalogs_have_no_em_dashes` check the
-   file, and `parse_language` then accepts the tag for `site.language`.
+   `catalogs_have_the_same_messages`, `catalogs_use_the_same_variables` and
+   `catalogs_have_no_em_dashes` check the file, and `parse_language` then accepts
+   the tag for `site.language`.
 
 A term is used inside sentences, so a translator who changes a term's gender
 (Italian `scansione` is feminine) also changes the articles and agreements around it;

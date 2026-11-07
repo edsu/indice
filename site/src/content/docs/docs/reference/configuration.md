@@ -94,7 +94,7 @@ site:
 
 An unsupported value stops the server at startup with the list of supported languages. Regional tags match their language (`it-CH` reads as `it`), and a blank value counts as unset. The documented API (`/api/search`, `/api/annotations`, `/health`) and command-line output stay in English. `indice config` shows the language in force.
 
-Translations are compiled into the binary. Adding a language means adding one translation file to indice's source; [DESIGN.md](https://github.com/edsu/indice/blob/main/DESIGN.md#interface-languages) explains how.
+Translations are compiled into the binary, so adding a language is a change to indice's source: a translation file, one line listing it in `i18n::CATALOGS`, and a `language-name-<tag>` message in every catalog. [DESIGN.md](https://github.com/edsu/indice/blob/main/DESIGN.md#interface-languages) explains the steps.
 
 ## Web analytics
 
