@@ -325,7 +325,10 @@ pub(super) async fn bx_import(
     let job_state = state.clone();
     let actor = admin.principal().id().clone();
     tokio::task::spawn_blocking(move || {
-        let progress = ChannelProgress { tx: tx.clone() };
+        let progress = ChannelProgress {
+            tx: tx.clone(),
+            l10n: l10n.clone(),
+        };
         let result = (|| -> Result<Vec<serde_json::Value>> {
             let client = provider.client()?;
             let host = client.host().to_string();
@@ -350,11 +353,6 @@ pub(super) async fn bx_import(
                         let filename =
                             crate::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
                         let dest = item_dir.join(&filename);
-                        let size = if res.size > 0 {
-                            format!(" ({})", l10n.size(res.size))
-                        } else {
-                            String::new()
-                        };
                         // Per resource, just before it downloads. Downloads
                         // run outside the write lock so they do not block other
                         // imports, which means two can overlap, but a download
@@ -366,7 +364,12 @@ pub(super) async fn bx_import(
                             .map_err(|r| anyhow::anyhow!(r.message(&l10n)))?;
                         crate::index::IndexProgress::phase(
                             &progress,
-                            &format!("downloading {filename}{size}"),
+                            &crate::index::Phase::DownloadingFile {
+                                name: filename.to_string(),
+                                bytes: res.size,
+                                n: i + 1,
+                                of: resources.len(),
+                            },
                         );
                         crate::index::download_wacz(&res.path, &dest)?;
                         // Index lock before the in-process one: the ingest
@@ -495,7 +498,10 @@ pub(super) async fn bx_import(
             }
             Err(e) => tx
                 .send(ProgressEvent::Error {
-                    message: format!("{e:#}"),
+                    message: l10n.tr_args(
+                        "error-job-failed",
+                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                    ),
                 })
                 .ok(),
         };
@@ -686,7 +692,10 @@ pub(super) async fn ait_import(
     let job_state = state.clone();
     let actor = admin.principal().id().clone();
     tokio::task::spawn_blocking(move || {
-        let progress = ChannelProgress { tx: tx.clone() };
+        let progress = ChannelProgress {
+            tx: tx.clone(),
+            l10n: l10n.clone(),
+        };
         let result = (|| -> Result<Vec<serde_json::Value>> {
             let client = provider.client()?;
             let selected: std::collections::HashSet<i64> = req.crawls.iter().copied().collect();
@@ -801,7 +810,10 @@ pub(super) async fn ait_import(
             }
             Err(e) => tx
                 .send(ProgressEvent::Error {
-                    message: format!("{e:#}"),
+                    message: l10n.tr_args(
+                        "error-job-failed",
+                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                    ),
                 })
                 .ok(),
         };

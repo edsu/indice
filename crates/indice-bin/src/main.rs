@@ -842,7 +842,7 @@ impl indice_lib::index::IndexProgress for BarProgress {
         pb.enable_steady_tick(std::time::Duration::from_millis(120));
         *guard = Some(Active { pb, label });
     }
-    fn phase(&self, phase: &str) {
+    fn phase(&self, phase: &indice_lib::index::Phase) {
         if let Some(a) = &*self.inner.lock().unwrap() {
             // Reset to the spinner style: `phase` marks an indeterminate phase,
             // including the transition *back* from the determinate records bar

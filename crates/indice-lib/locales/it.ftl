@@ -351,6 +351,7 @@ error-archiveit = Errore di Archive-It: { $detail }
 error-browsertrix-resolver = L'importazione in streaming da Browsertrix richiede il resolver (credenziali).
 error-reload-failed = indicizzato, ma il ricaricamento del motore di ricerca non è riuscito: { $detail }
 error-lock-failed = impossibile bloccare l'indice di ricerca: { $detail }
+error-job-failed = operazione non riuscita: { $detail }
 error-collection-not-empty = { $count ->
     [one] Questa { -collection } contiene { $shown } { -crawl }: spunta la casella per eliminare anche questa, oppure eliminala o spostala prima.
    *[other] Questa { -collection } contiene { $shown } { -crawl-plural }: spunta la casella per eliminare anche queste, oppure eliminale o spostale prima.
@@ -545,3 +546,34 @@ note-heading = Nota
 note-title = Nota - { $name }
 note-json-ld = Questa nota come W3C Web Annotation:
 replay-not-configured = La riproduzione non è configurata: questo server non ha un’origine di riproduzione.
+
+# Cosa sta facendo l'indicizzazione, mostrato nella pagina di aggiunta mentre il
+# lavoro è in corso.
+phase-downloading = scaricamento
+phase-resolving = risoluzione dell'indirizzo
+phase-checksumming = calcolo dell'impronta
+phase-scanning = scansione
+phase-reading-index = lettura dell'indice
+phase-building-index = costruzione dell'indice
+phase-committing = salvataggio
+phase-skipping-already-indexed = salto di { $location }, già indicizzato
+phase-nested-wacz = WACZ annidato { $n }/{ $of }
+phase-waiting-for = in attesa che { $holder } termini…
+phase-waiting-for-import = in attesa che un'altra importazione termini…
+phase-building-wacz = creazione del WACZ
+phase-downloading-file = scaricamento di { $name } ({ $size }) [{ $n }/{ $of }]
+phase-segments = { $count ->
+    [one] { $count } segmento
+   *[other] { $count } segmenti
+  }
+phase-expunging-deletes = rimozione delle eliminazioni ({ $segments ->
+    [one] { $segments } segmento
+   *[other] { $segments } segmenti
+  })
+phase-removed-orphans = { $files ->
+    [one] rimosso { $files } file orfano
+   *[other] rimossi { $files } file orfani
+  }
+phase-reading-manifest = lettura del manifesto
+phase-listing-crawls = elenco delle { -crawl-plural } nell'indice
+phase-looking-for-orphan-files = ricerca dei file orfani sul disco

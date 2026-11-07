@@ -669,15 +669,14 @@ pub fn import_crawls<T: Transport>(
                 tracing::warn!(file = %f.filename, "no download location; skipping file");
                 continue;
             };
-            let status = format!(
-                "downloading {} ({}) [{}/{}]",
-                f.filename,
-                crate::server::human_size(f.size),
-                i + 1,
-                total_files
-            );
-            progress.phase(&status);
-            tracing::info!(crawl = plan.crawl_id, "{status}");
+            let phase = crate::index::Phase::DownloadingFile {
+                name: f.filename.clone(),
+                bytes: f.size,
+                n: i + 1,
+                of: total_files,
+            };
+            progress.phase(&phase);
+            tracing::info!(crawl = plan.crawl_id, "{phase}");
             // Sanitize the server-supplied filename to a safe basename (no path
             // traversal out of staging), and disambiguate a repeated basename so a
             // later WARC can't silently overwrite an earlier one.
@@ -730,7 +729,7 @@ pub fn import_crawls<T: Transport>(
             datapackage_extra,
             ..Default::default()
         };
-        progress.phase("building WACZ");
+        progress.phase(&crate::index::Phase::BuildingWacz);
         tracing::info!(crawl = plan.crawl_id, warcs = warcs.len(), "building WACZ");
         let built = crate::wacz_build::build_wacz(&warcs, &meta, &dest_dir, &out_name)?;
         // Chained off the caller's context, so `actor` (and anything else it

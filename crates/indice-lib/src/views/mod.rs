@@ -341,8 +341,8 @@ fn counted_text(l10n: &L10n, key: &str, n: u64, shown: &str) -> String {
 /// not known until the script runs. A message using a name not listed here comes
 /// out as `{$name}`; the `js_strings_use_known_arguments` test catches that.
 const SCRIPT_ARGS: &[&str] = &[
-    "label", "phase", "total", "name", "detail", "status", "id", "service", "s", "limit", "date",
-    "day", "month", "year", "time", "max", "url",
+    "label", "total", "name", "detail", "status", "id", "service", "s", "limit", "date", "day",
+    "month", "year", "time", "max", "url",
 ];
 
 /// The messages the replay viewer's scripts (`static/replay/viewer.js` and

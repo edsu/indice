@@ -82,6 +82,9 @@ impl ProgressEvent {
 /// ignore a dropped receiver (client disconnected mid-job).
 pub(super) struct ChannelProgress {
     pub(super) tx: mpsc::UnboundedSender<ProgressEvent>,
+    /// The language of whoever started the job: phases are data, and this is
+    /// what words them for the page that is watching.
+    pub(super) l10n: L10n,
 }
 
 impl ChannelProgress {
@@ -96,9 +99,9 @@ impl crate::index::IndexProgress for ChannelProgress {
             label: label.to_string(),
         });
     }
-    fn phase(&self, phase: &str) {
+    fn phase(&self, phase: &crate::index::Phase) {
         self.send(ProgressEvent::Phase {
-            phase: phase.to_string(),
+            phase: phase.render(&self.l10n),
         });
     }
     fn set_total(&self, total: u64) {
@@ -191,7 +194,7 @@ pub(super) fn acquire_write_lock<'a>(
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => {
-            crate::index::IndexProgress::phase(progress, "waiting for another import to finish…");
+            crate::index::IndexProgress::phase(progress, &crate::index::Phase::WaitingForImport);
             write_lock.lock().unwrap_or_else(|e| e.into_inner())
         }
     }
@@ -242,7 +245,10 @@ fn start_index_job(
         let is_upload = staged.is_some();
         // Held until the job ends; dropping it removes the staging directory.
         let _staged = staged;
-        let progress = ChannelProgress { tx: tx.clone() };
+        let progress = ChannelProgress {
+            tx: tx.clone(),
+            l10n: l10n.clone(),
+        };
         let result = {
             // The cross-process index lock is taken *before* the in-process
             // one, and the order matters more than it looks. `index_location`
@@ -325,7 +331,10 @@ fn start_index_job(
             },
             Err(e) => tx
                 .send(ProgressEvent::Error {
-                    message: format!("{e:#}"),
+                    message: l10n.tr_args(
+                        "error-job-failed",
+                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                    ),
                 })
                 .ok(),
         };
@@ -1585,4 +1594,24 @@ enum DeleteOutcome {
     Done,
     Refused(usize),
     Busy(String),
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+    use crate::index::{IndexProgress, Phase};
+
+    /// The page shows the phase text as sent, so the job's language has to be
+    /// applied where the phase is turned into an event.
+    #[test]
+    fn channel_progress_renders_in_its_language() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let l10n = crate::i18n::negotiate(Some("it"), &crate::i18n::parse_language("en").unwrap());
+        let progress = ChannelProgress { tx, l10n };
+        progress.phase(&Phase::BuildingWacz);
+        match rx.try_recv().unwrap() {
+            ProgressEvent::Phase { phase } => assert_eq!(phase, "creazione del WACZ"),
+            other => panic!("expected a phase event, got {other:?}"),
+        }
+    }
 }

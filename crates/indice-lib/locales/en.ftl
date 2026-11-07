@@ -389,6 +389,8 @@ error-archiveit = Archive-It error: { $detail }
 error-browsertrix-resolver = Browsertrix streaming import requires the resolver (credentials).
 error-reload-failed = indexed, but reloading the searcher failed: { $detail }
 error-lock-failed = could not lock the search index: { $detail }
+# A job (an add or an import) failed; `$detail` is the underlying error as reported.
+error-job-failed = the job failed: { $detail }
 # `$count` crawls are still in the collection; `$shown` is the formatted number.
 error-collection-not-empty = { $count ->
     [one] This { -collection } has { $shown } { -crawl }; tick the box to delete it too, or delete or move it first.
@@ -591,3 +593,29 @@ note-heading = Note
 note-title = Note - { $name }
 note-json-ld = This note as a W3C Web Annotation:
 replay-not-configured = Replay is not configured: this server has no replay origin.
+
+# What indexing is doing right now, shown on the add page while a job runs.
+# The command line shows the English text, so these stay short.
+phase-downloading = downloading
+phase-resolving = resolving
+phase-checksumming = checksumming
+phase-scanning = scanning
+phase-reading-index = reading index
+phase-building-index = building index
+phase-committing = committing
+# `$location` is the URL or path of a source already in the collection.
+phase-skipping-already-indexed = skipping already-indexed { $location }
+# The `$n`th of `$of` WACZ files nested inside one.
+phase-nested-wacz = nested WACZ { $n }/{ $of }
+# `$holder` names the process or operation holding the lock, as it described itself.
+phase-waiting-for = waiting for { $holder } to finish…
+phase-waiting-for-import = waiting for another import to finish…
+phase-building-wacz = building WACZ
+# `$size` is the formatted file size; the file is the `$n`th of `$of`.
+phase-downloading-file = downloading { $name } ({ $size }) [{ $n }/{ $of }]
+phase-segments = { $count } segments
+phase-expunging-deletes = expunging deletes ({ $segments } segment(s))
+phase-removed-orphans = removed { $files } orphaned file(s)
+phase-reading-manifest = reading the manifest
+phase-listing-crawls = listing { -crawl-plural } in the index
+phase-looking-for-orphan-files = looking for the orphans' files on disk

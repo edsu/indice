@@ -23,7 +23,7 @@ use crate::search::SearchIndex;
 use crate::wacz::read_datapackage;
 
 use super::paths::{index_dir, scratch_dir};
-use super::{IndexProgress, SourceResolver};
+use super::{IndexProgress, Phase, SourceResolver};
 
 mod acquire;
 mod pages;
@@ -103,7 +103,7 @@ impl WaczAccess {
                 crate::http_range::open_remote(url, *fetch)?.total_len(),
             )),
             WaczAccess::Local { path, .. } => {
-                progress.phase("checksumming");
+                progress.phase(&Phase::Checksumming);
                 let sha_start = std::time::Instant::now();
                 let sha = file_sha256(path)
                     .with_context(|| format!("computing sha256 of {}", path.display()))?;
@@ -394,7 +394,9 @@ impl Ingest<'_> {
                     .wacz_by_id(&wacz_id(source))
                     .is_some_and(|w| w.collection == group.0)
             {
-                progress.phase(&format!("skipping already-indexed {}", source.location()));
+                progress.phase(&Phase::SkippingAlreadyIndexed {
+                    location: source.location().to_string(),
+                });
                 continue;
             }
 
@@ -404,7 +406,7 @@ impl Ingest<'_> {
             // Commit + save per WACZ so an interrupted large ingest keeps every
             // completed crawl (and a re-run resumes past it), rather than losing the
             // whole run's uncommitted work.
-            progress.phase("committing");
+            progress.phase(&Phase::Committing);
             let commit_start = std::time::Instant::now();
             search.lock().unwrap().commit()?;
             debug!(

@@ -122,7 +122,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use super::paths::index_dir;
-use super::IndexProgress;
+use super::{IndexProgress, Phase};
 
 /// Which of the archive's two write locks.
 ///
@@ -423,7 +423,7 @@ fn acquire(
                             // A blocking caller really is about to wait, however
                             // long it takes, so say so where an operator sees it.
                             Wait::Forever => {
-                                progress.phase(&format!("waiting for {h} to finish…"));
+                                progress.phase(&Phase::WaitingFor { holder: h.clone() });
                                 tracing::warn!("{} is locked by {h}; waiting", scope.describe());
                             }
                             // A bounded caller is not going to wait it out — it
