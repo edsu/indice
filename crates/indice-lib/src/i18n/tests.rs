@@ -147,3 +147,49 @@ fn unknown_key_returns_the_key() {
 fn default_is_english() {
     assert_eq!(L10n::default().lang(), "en");
 }
+
+fn italian() -> L10n {
+    negotiate(Some("it"), &en())
+}
+
+#[test]
+fn long_date_in_italian() {
+    assert_eq!(
+        italian().long_date("20250107").as_deref(),
+        Some("7 gennaio 2025")
+    );
+    assert_eq!(
+        L10n::default().long_date("20250107").as_deref(),
+        Some("7 January 2025")
+    );
+    assert_eq!(
+        L10n::default().long_date("2021-05-25T00:00:00Z").as_deref(),
+        Some("25 May 2021")
+    );
+    assert_eq!(L10n::default().long_date("2025"), None);
+    assert_eq!(L10n::default().long_date("20251301"), None);
+    assert_eq!(L10n::default().long_date("20250132"), None);
+}
+
+#[test]
+fn month_year_in_italian() {
+    assert_eq!(italian().month_year(5, 2021), "maggio 2021");
+    assert_eq!(L10n::default().month_year(5, 2021), "May 2021");
+}
+
+#[test]
+fn number_grouping() {
+    assert_eq!(L10n::default().number(23_800), "23,800");
+    assert_eq!(italian().number(23_800), "23.800");
+    assert_eq!(L10n::default().number(999), "999");
+    assert_eq!(italian().number(1_234_567), "1.234.567");
+    assert_eq!(italian().number(0), "0");
+}
+
+#[test]
+fn size_in_italian() {
+    assert_eq!(italian().size(2_621_440), "2,5 MB");
+    assert_eq!(L10n::default().size(2_621_440), "2.5 MB");
+    assert_eq!(L10n::default().size(512), "512 B");
+    assert_eq!(italian().size(1024), "1,0 KB");
+}

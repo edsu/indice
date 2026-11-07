@@ -33,14 +33,16 @@ pub(super) async fn collection_page(
     // Aggregates derived from members.
     let total_size: u64 = members.iter().map(|w| w.file_size).sum();
     let software = collection_software(&members);
-    let range = members_capture_range(&members);
+    let chrome = chrome(&state, &headers);
+    let l10n = &chrome.l10n;
+    let range = members_capture_range(l10n, &members);
 
     let mut meta = Vec::new();
     if let Some(cur) = &c.curator {
         meta.push(views::MetaRow::new("Curator", cur.clone()));
     }
     meta.push(views::MetaRow::new("Crawls", members.len().to_string()));
-    meta.push(views::MetaRow::new("Size", human_size(total_size)));
+    meta.push(views::MetaRow::new("Size", l10n.size(total_size)));
     if !software.is_empty() {
         meta.push(views::MetaRow::new("Software", software.join(", ")));
     }
@@ -72,10 +74,7 @@ pub(super) async fn collection_page(
         .map(|w| views::MemberItem {
             id: w.id.clone(),
             name: w.display_name(),
-            when: w
-                .capture_start
-                .as_deref()
-                .and_then(crate::collections::long_date),
+            when: w.capture_start.as_deref().and_then(|ts| l10n.long_date(ts)),
             present: w.is_present(&state.home),
             remote: w.source.is_remote(),
             provenance: provenance_summary(w),
@@ -94,7 +93,6 @@ pub(super) async fn collection_page(
         .unwrap_or_default();
     let facets = scoped_facet_sections(&overview.facets, &format!("collection:{id}"));
 
-    let chrome = chrome(&state, &headers);
     // Deaccession is an admin act; don't offer a curator a button that 403s.
     let can_delete =
         resolve_caller(&state, &headers).is_some_and(|(p, _)| p.role().can_administer());
@@ -112,6 +110,7 @@ pub(super) async fn collection_page(
         // From the index, like the search timeline, so each bar counts what
         // its `month:` link finds.
         crawl_months: month_axis(
+            l10n,
             &overview
                 .months
                 .iter()

@@ -29,3 +29,37 @@
 # Looking for words in the text of archived pages.
 -search = ricerca
     .gender = feminine
+
+# Nomi dei mesi, per le date e la linea del tempo. In minuscolo, come si scrivono
+# in italiano.
+month-1 = gennaio
+month-2 = febbraio
+month-3 = marzo
+month-4 = aprile
+month-5 = maggio
+month-6 = giugno
+month-7 = luglio
+month-8 = agosto
+month-9 = settembre
+month-10 = ottobre
+month-11 = novembre
+month-12 = dicembre
+
+# Una data per esteso, "7 gennaio 2025".
+date-long = { $day } { $month } { $year }
+# Un mese sulla linea del tempo, "maggio 2021".
+month-year = { $month } { $year }
+# Un intervallo tra due date, "dal 7 gennaio 2025 al 3 agosto 2026".
+date-span = dal { $start } al { $end }
+
+# Separatori decimale e delle migliaia per numeri e dimensioni. Scritti come
+# stringhe letterali perché Fluent elimina gli spazi attorno a un valore semplice.
+number-decimal = { "," }
+number-group = { "." }
+
+# Unità per le dimensioni dei file, a passi di 1024.
+size-b = B
+size-kb = KB
+size-mb = MB
+size-gb = GB
+size-tb = TB

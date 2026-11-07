@@ -47,6 +47,8 @@ pub(super) async fn crawl_page(
         .collect();
     let replay = pages.first().map(|p| p.href.clone());
 
+    let chrome = chrome(&state, &headers);
+    let l10n = &chrome.l10n;
     // Provenance panel: how this crawl was produced. Only rows with data show.
     let mut provenance = Vec::new();
     if let Some(bt) = &c.browsertrix {
@@ -134,7 +136,7 @@ pub(super) async fn crawl_page(
     if let Some(q) = capture_quality(&c.status_counts) {
         provenance.push(views::MetaRow::new("Capture quality", q));
     }
-    if let Some(range) = capture_range(c) {
+    if let Some(range) = capture_range(l10n, c) {
         provenance.push(views::MetaRow::new("Capture dates", range));
     }
     if let Some(m) = &c.modified {
@@ -153,7 +155,6 @@ pub(super) async fn crawl_page(
         provenance.push(views::MetaRow::new("Added by", name));
     }
 
-    let chrome = chrome(&state, &headers);
     // Match the handler's rule exactly: an admin may remove any crawl, a
     // curator only one they accessioned.
     let scope_id = id.clone();
@@ -178,7 +179,7 @@ pub(super) async fn crawl_page(
         remote: c.source.is_remote(),
         provenance,
         source: c.source.describe(),
-        size: human_size(c.file_size),
+        size: l10n.size(c.file_size),
         sha_short: c.sha256.get(..16).unwrap_or(&c.sha256).to_string(),
         sha_full: c.sha256.clone(),
         crawled: c

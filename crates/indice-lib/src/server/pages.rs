@@ -30,6 +30,7 @@ pub(super) async fn homepage(
         Err(e) => return error_response(e).into_response(),
     };
 
+    let chrome = chrome(&state, &headers);
     let cards: Vec<views::CollectionCard> = manifest
         .collections
         .iter()
@@ -43,7 +44,7 @@ pub(super) async fn homepage(
                 replay_href: collection_replay_href(&c.id, collection_default_page(&members)),
                 // Capture date range (temporal span is meaningful at the
                 // collection level; per-tool software lives on the WACZ page).
-                date_range: members_capture_range(&members),
+                date_range: members_capture_range(&chrome.l10n, &members),
                 // Representative image: a curator-set collection thumbnail if
                 // present, else the first member crawl that has one.
                 thumb: collection_thumb_href(&state.home, &c.id).or_else(|| {
@@ -69,7 +70,6 @@ pub(super) async fn homepage(
         sites: browse_links(&overview, "site", "site", 8, false),
     };
 
-    let chrome = chrome(&state, &headers);
     views::home(&cards, &browse, &chrome).into_response()
 }
 
@@ -406,7 +406,9 @@ pub(super) async fn search_page(
             .any(|(f, v)| f == "month" && v == &ym.to_string())
     };
     let counts: Vec<(u64, u64)> = response.timeline.iter().map(|t| (t.ym, t.count)).collect();
+    let chrome = chrome(&state, &headers);
     let timeline = month_axis(
+        &chrome.l10n,
         &counts,
         |ym| {
             let month = ym.to_string();
@@ -419,6 +421,5 @@ pub(super) async fn search_page(
         in_force,
     );
 
-    let chrome = chrome(&state, &headers);
     views::search_results(&q, &page_nav, &sidebar, &timeline, &rows, &chrome).into_response()
 }

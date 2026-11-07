@@ -6,25 +6,15 @@ use axum::response::{IntoResponse, Response};
 use std::time::Duration;
 
 use crate::collections::{Manifest, Wacz};
+use crate::i18n::{FluentArg, L10n};
 
 use super::*;
 
-/// Format a byte count as a short human-readable size.
-/// Format a byte count for display (e.g. `48.2 MB`). Shared by the web UI and
-/// the CLI so both show sizes the same way.
+/// Format a byte count for display (e.g. `48.2 MB`) in English, for the CLI and
+/// log lines. Pages use [`crate::i18n::L10n::size`] with the reader's language;
+/// this is the same code with the English catalog, so the two cannot drift.
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut b = bytes as f64;
-    let mut i = 0;
-    while b >= 1024.0 && i < UNITS.len() - 1 {
-        b /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{b:.1} {}", UNITS[i])
-    }
+    crate::i18n::L10n::default().size(bytes)
 }
 
 pub(super) fn load_waczs(state: &AppState) -> Vec<Wacz> {
@@ -413,25 +403,13 @@ fn ymd(ts: &str) -> String {
 /// first to the last, empty months included, so gaps show. `href` gives a
 /// month's link and `active` whether it is the filter in force. At most the
 /// last ten years, so a stray old capture cannot squeeze the rest to nothing.
+/// Labels are in the reader's language.
 pub(super) fn month_axis(
+    l10n: &crate::i18n::L10n,
     counts: &[(u64, u64)],
     href: impl Fn(u64) -> String,
     active: impl Fn(u64) -> bool,
 ) -> Vec<crate::views::TimelineBar> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
     let valid = |ym: u64| (1..=12).contains(&(ym % 100));
     let mut by_month: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
     for &(ym, n) in counts.iter().filter(|(ym, _)| valid(*ym)) {
@@ -457,7 +435,7 @@ pub(super) fn month_axis(
             let count = by_month.get(&ym).copied().unwrap_or(0);
             let month = (ym % 100) as usize;
             crate::views::TimelineBar {
-                label: format!("{} {}", MONTHS[month - 1], ym / 100),
+                label: l10n.month_year(month as u32, (ym / 100) as i32),
                 year: (i == start || month == 1).then(|| (ym / 100).to_string()),
                 count,
                 step: if count == 0 {
@@ -475,15 +453,18 @@ pub(super) fn month_axis(
 /// Two timestamps as a span of dates in words: "7 January 2025 to 3 August
 /// 2026", or one date when they fall on the same day. A timestamp that is not
 /// a date is shown as it is.
-fn date_span(start: Option<&str>, end: Option<&str>) -> Option<String> {
-    let words = |ts: &str| crate::collections::long_date(ts).unwrap_or_else(|| ymd(ts));
+fn date_span(l10n: &L10n, start: Option<&str>, end: Option<&str>) -> Option<String> {
+    let words = |ts: &str| l10n.long_date(ts).unwrap_or_else(|| ymd(ts));
     match (start, end) {
         (Some(s), Some(e)) => {
             let (sd, ed) = (words(s), words(e));
             Some(if sd == ed {
                 sd
             } else {
-                format!("{sd} to {ed}")
+                l10n.tr_args(
+                    "date-span",
+                    &[("start", FluentArg::Str(&sd)), ("end", FluentArg::Str(&ed))],
+                )
             })
         }
         (Some(t), None) | (None, Some(t)) => Some(words(t)),
@@ -492,8 +473,8 @@ fn date_span(start: Option<&str>, end: Option<&str>) -> Option<String> {
 }
 
 /// When a crawl's captures were made, or `None` when none were recorded.
-pub(super) fn capture_range(c: &Wacz) -> Option<String> {
-    date_span(c.capture_start.as_deref(), c.capture_end.as_deref())
+pub(super) fn capture_range(l10n: &L10n, c: &Wacz) -> Option<String> {
+    date_span(l10n, c.capture_start.as_deref(), c.capture_end.as_deref())
 }
 
 /// A compact "capture quality" summary of an HTTP status histogram: total
@@ -570,10 +551,10 @@ pub(super) fn collection_software(members: &[&Wacz]) -> Vec<String> {
 }
 
 /// The capture date range spanning a collection's member WACZs.
-pub(super) fn members_capture_range(members: &[&Wacz]) -> Option<String> {
+pub(super) fn members_capture_range(l10n: &L10n, members: &[&Wacz]) -> Option<String> {
     let start = members.iter().filter_map(|w| w.capture_start.clone()).min();
     let end = members.iter().filter_map(|w| w.capture_end.clone()).max();
-    date_span(start.as_deref(), end.as_deref())
+    date_span(l10n, start.as_deref(), end.as_deref())
 }
 
 /// A one-sentence provenance summary for a collection's list of crawls: "38

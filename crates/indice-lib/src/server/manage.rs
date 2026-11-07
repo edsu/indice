@@ -16,6 +16,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::collections::Manifest;
 use crate::events::Action;
+use crate::i18n::L10n;
 use crate::views;
 
 use super::*;
@@ -220,6 +221,8 @@ fn start_index_job(
     name: Option<String>,
     // An upload's staging directory, held until the job ends.
     staged: Option<tempfile::TempDir>,
+    // The language of whoever started it, for the progress it reports.
+    l10n: L10n,
 ) -> u64 {
     // On a server the person naming the location may be an approved stranger
     // rather than the operator, so a URL may only point at a public address.
@@ -290,7 +293,7 @@ fn start_index_job(
                 Ok(room) => room,
                 Err(refused) => {
                     let _ = tx.send(ProgressEvent::Error {
-                        message: refused.status_and_message().1,
+                        message: refused.status_and_message(&l10n).1,
                     });
                     return;
                 }
@@ -340,6 +343,7 @@ fn start_index_job(
 pub(super) async fn add_archive(
     State(state): State<Arc<AppState>>,
     curator: Curator,
+    l10n: L10n,
     Json(req): Json<AddArchiveRequest>,
 ) -> Response {
     // Mirror the CLI's "every crawl belongs to a collection" guard.
@@ -367,7 +371,15 @@ pub(super) async fn add_archive(
         &crate::collections::slugify(&req.collection),
         Some(serde_json::json!({ "collection_name": req.collection })),
     );
-    let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
+    let id = start_index_job(
+        &curator,
+        &state,
+        req.path,
+        req.collection,
+        req.name,
+        None,
+        l10n,
+    );
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
@@ -470,7 +482,15 @@ pub(super) async fn upload_archive(
         &crate::collections::slugify(&collection),
         Some(serde_json::json!({ "collection_name": collection })),
     );
-    let id = start_index_job(&curator, &state, location, collection, name, staged);
+    let id = start_index_job(
+        &curator,
+        &state,
+        location,
+        collection,
+        name,
+        staged,
+        super::i18n::negotiate_headers(&state, &headers),
+    );
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
 }
 
@@ -580,14 +600,14 @@ pub(super) enum Refused {
 impl Refused {
     /// The status and the message, shared by a handler's response and a job's
     /// progress error so both say the same thing.
-    pub(super) fn status_and_message(&self) -> (StatusCode, String) {
+    pub(super) fn status_and_message(&self, l10n: &L10n) -> (StatusCode, String) {
         match self {
             Refused::TooLarge { cap } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!(
                     "this is larger than the {} limit on a single upload \
                      (uploads.max_mb in config.yaml)",
-                    human_size(*cap)
+                    l10n.size(*cap)
                 ),
             ),
             // 507 rather than 413: the request is not too large in itself, the
@@ -597,9 +617,9 @@ impl Refused {
                 format!(
                     "the archive is limited to {} and holds {}, so there is {} left \
                      (uploads.max_total_gb in config.yaml)",
-                    human_size(*cap),
-                    human_size(*used),
-                    human_size(cap.saturating_sub(*used)),
+                    l10n.size(*cap),
+                    l10n.size(*used),
+                    l10n.size(cap.saturating_sub(*used)),
                 ),
             ),
             Refused::Measure(e) => (
@@ -613,9 +633,12 @@ impl Refused {
 impl IntoResponse for Refused {
     fn into_response(self) -> Response {
         if let Refused::Measure(_) = &self {
-            tracing::error!("{}", self.status_and_message().1);
+            tracing::error!("{}", self.status_and_message(&L10n::default()).1);
         }
-        self.status_and_message().into_response()
+        // A response has no request to take a language from, so a refusal that
+        // goes out as `into_response` is English; the accession desk and job
+        // progress, which know the reader's language, call `status_and_message`.
+        self.status_and_message(&L10n::default()).into_response()
     }
 }
 
@@ -1127,17 +1150,21 @@ pub(super) async fn accession_desk_page(
         })
         .unwrap_or_else(|| id.clone());
     let chrome = chrome(&state, &headers);
-    let room = room_note(&state);
+    let room = room_note(&state, &chrome.l10n);
     // The same refusal text the server would send, so the page and the server
     // say the same thing whichever one catches it.
-    let max_upload = state
-        .upload_limits
-        .per_upload
-        .map(|cap| (cap, Refused::TooLarge { cap }.status_and_message().1));
+    let max_upload = state.upload_limits.per_upload.map(|cap| {
+        (
+            cap,
+            Refused::TooLarge { cap }.status_and_message(&chrome.l10n).1,
+        )
+    });
     let room_left = archive_usage(&state).ok().flatten().map(|(used, cap)| {
         (
             cap.saturating_sub(used),
-            Refused::ArchiveFull { used, cap }.status_and_message().1,
+            Refused::ArchiveFull { used, cap }
+                .status_and_message(&chrome.l10n)
+                .1,
         )
     });
     views::accession_desk(
@@ -1167,11 +1194,11 @@ pub(super) async fn accession_desk_page(
 ///
 /// Best-effort: if the archive cannot be measured the line is left off. The
 /// desk still works and the upload itself reports the real error.
-fn room_note(state: &AppState) -> Option<String> {
+fn room_note(state: &AppState, l10n: &L10n) -> Option<String> {
     let per_upload = state
         .upload_limits
         .per_upload
-        .map(|cap| format!("Uploads up to {} each.", human_size(cap)));
+        .map(|cap| format!("Uploads up to {} each.", l10n.size(cap)));
     let archive = archive_usage(state).ok().flatten().map(|(used, cap)| {
         if used >= cap {
             // Uploads and download imports are closed. Adding by URL and a
@@ -1182,15 +1209,15 @@ fn room_note(state: &AppState) -> Option<String> {
                 "The archive is full ({} of its {} limit), so uploads and download \
                  imports are refused until a crawl is removed or the limit is raised. \
                  Adding by URL still works.",
-                human_size(used),
-                human_size(cap)
+                l10n.size(used),
+                l10n.size(cap)
             )
         } else {
             format!(
                 "The archive holds {} of its {} limit; {} left.",
-                human_size(used),
-                human_size(cap),
-                human_size(cap - used)
+                l10n.size(used),
+                l10n.size(cap),
+                l10n.size(cap - used)
             )
         }
     });

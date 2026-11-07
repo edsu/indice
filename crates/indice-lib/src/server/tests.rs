@@ -647,6 +647,7 @@ fn every_crawl_replays_through_its_own_files_path() {
 #[test]
 fn a_time_axis_keeps_empty_months_and_marks_years() {
     let bars = month_axis(
+        &crate::i18n::L10n::default(),
         &[(202105, 200), (202207, 1)],
         |ym| format!("/m/{ym}"),
         |ym| ym == 202207,
@@ -666,7 +667,17 @@ fn a_time_axis_keeps_empty_months_and_marks_years() {
     // One page against two hundred still shows.
     assert_eq!(bars[14].step, 1);
     assert!(bars[14].active);
-    assert!(month_axis(&[], |_| String::new(), |_| false).is_empty());
+    assert!(month_axis(
+        &crate::i18n::L10n::default(),
+        &[],
+        |_| String::new(),
+        |_| false
+    )
+    .is_empty());
+    // The labels follow the reader's language.
+    let it = crate::i18n::negotiate(Some("it"), &"en".parse().unwrap());
+    let bars = month_axis(&it, &[(202105, 1)], |ym| ym.to_string(), |_| false);
+    assert_eq!(bars[0].label, "maggio 2021");
 }
 
 /// The axis shows at most ten years, and its heights are scaled to the busiest
@@ -674,6 +685,7 @@ fn a_time_axis_keeps_empty_months_and_marks_years() {
 #[test]
 fn a_time_axis_is_scaled_to_the_months_it_shows() {
     let bars = month_axis(
+        &crate::i18n::L10n::default(),
         &[(200801, 10_000), (202501, 50), (202502, 25)],
         |ym| ym.to_string(),
         |_| false,

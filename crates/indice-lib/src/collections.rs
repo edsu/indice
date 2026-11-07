@@ -178,33 +178,11 @@ impl From<Source> for String {
     }
 }
 
-/// A date written out, "7 January 2025", from a timestamp that starts with
-/// `YYYYMMDD` or `YYYY-MM-DD`.
+/// A date written out in English, "7 January 2025", from a timestamp that
+/// starts with `YYYYMMDD` or `YYYY-MM-DD`. Pages use
+/// [`crate::i18n::L10n::long_date`] with the reader's language.
 pub fn long_date(ts: &str) -> Option<String> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    let digits: String = ts.chars().filter(|c| c.is_ascii_digit()).take(8).collect();
-    if digits.len() < 8 {
-        return None;
-    }
-    let month: usize = digits[4..6].parse().ok()?;
-    let day: u32 = digits[6..8].parse().ok()?;
-    let name = MONTHS.get(month.checked_sub(1)?)?;
-    (1..=31)
-        .contains(&day)
-        .then(|| format!("{day} {name} {}", &digits[..4]))
+    crate::i18n::L10n::default().long_date(ts)
 }
 
 /// The host part of a URL, or the string as given if it has none.

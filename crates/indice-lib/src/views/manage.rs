@@ -86,7 +86,7 @@ impl FormDraft {
 /// Below the Draft button, before anything is sent: which model at which
 /// service, the operator's note about it, and what would be sent, down to the
 /// pages and the full prompt.
-fn draft_panel(m: &DraftingInfo) -> Markup {
+fn draft_panel(m: &DraftingInfo, l10n: &crate::i18n::L10n) -> Markup {
     html! {
         div.draft-panel {
             p.draft-who {
@@ -98,7 +98,7 @@ fn draft_panel(m: &DraftingInfo) -> Markup {
                 details.draft-preview {
                     summary {
                         "What will be sent: " (p.pages.len()) " page" @if p.pages.len() != 1 { "s" }
-                        ", " (thousands(p.chars)) " characters"
+                        ", " (l10n.number(p.chars as u64)) " characters"
                     }
                     ol.draft-pages {
                         @for (title, url) in &p.pages {
@@ -118,19 +118,6 @@ fn draft_panel(m: &DraftingInfo) -> Markup {
         }
         script src="/assets/editor.js" defer {}
     }
-}
-
-/// `23800` as `23,800`.
-fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// The marker on a field a draft filled: say so, so the curator reviews it.
@@ -236,7 +223,7 @@ pub fn collection_form(form: &CollectionFormData, chrome: &Chrome) -> Markup {
                 a.cancel href=(back) { "Cancel" }
             }
             @if let (true, Some(m)) = (form.editing, &form.drafting) {
-                (draft_panel(m))
+                (draft_panel(m, &chrome.l10n))
             }
         }
     };

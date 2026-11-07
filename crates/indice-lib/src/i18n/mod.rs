@@ -237,5 +237,7 @@ fn format(bundle: &Bundle, key: &str, args: &FluentArgs) -> Option<String> {
     Some(text.into_owned())
 }
 
+mod format;
+
 #[cfg(test)]
 mod tests;

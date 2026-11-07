@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::collections::Manifest;
 use crate::events::Action;
+use crate::i18n::L10n;
 
 use super::*;
 
@@ -184,6 +185,7 @@ pub(super) fn imported_browsertrix_ids<'a>(
 pub(super) async fn bx_items(
     State(state): State<Arc<AppState>>,
     admin: Admin,
+    l10n: L10n,
     Query(q): Query<BxBrowse>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -213,7 +215,7 @@ pub(super) async fn bx_items(
                 // Preformatted, unit-scaling size (B→TB) so the list matches the
                 // rest of the app; blank when the size is unknown.
                 let size_h = if it.file_size > 0 {
-                    human_size(it.file_size)
+                    l10n.size(it.file_size)
                 } else {
                     String::new()
                 };
@@ -269,6 +271,7 @@ fn default_true() -> bool {
 pub(super) async fn bx_import(
     State(state): State<Arc<AppState>>,
     admin: Admin,
+    l10n: L10n,
     Json(req): Json<BxImportRequest>,
 ) -> Response {
     let Some(provider) = state.browsertrix.clone() else {
@@ -343,7 +346,7 @@ pub(super) async fn bx_import(
                             crate::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
                         let dest = item_dir.join(&filename);
                         let size = if res.size > 0 {
-                            format!(" ({})", human_size(res.size))
+                            format!(" ({})", l10n.size(res.size))
                         } else {
                             String::new()
                         };
@@ -355,7 +358,7 @@ pub(super) async fn bx_import(
                         // Browsertrix does not report is admitted as zero and
                         // refused only if the archive is already full.
                         super::manage::admit(&job_state, res.size)
-                            .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
+                            .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
                         crate::index::IndexProgress::phase(
                             &progress,
                             &format!("downloading {filename}{size}"),
@@ -375,7 +378,7 @@ pub(super) async fn bx_import(
                         let _guard = acquire_write_lock(&job_state.write_lock, &progress);
                         // Already filed, so the room is what is left now.
                         let scratch = super::manage::scratch_room(&job_state)
-                            .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
+                            .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
                         // force: honor the explicitly selected crawl. No
                         // download: it is already a local file.
                         crate::index::Ingest::new(&job_state.home)
@@ -421,7 +424,7 @@ pub(super) async fn bx_import(
                             resource: res.name.clone(),
                         };
                         let scratch = super::manage::scratch_room(&job_state)
-                            .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
+                            .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
                         // Streamed in place (no download), forced because the
                         // crawl was explicitly selected.
                         crate::index::Ingest::new(&job_state.home)
@@ -550,6 +553,7 @@ pub(super) struct AitBrowse {
 pub(super) async fn ait_crawls(
     State(state): State<Arc<AppState>>,
     admin: Admin,
+    l10n: L10n,
     Query(q): Query<AitBrowse>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
@@ -602,7 +606,7 @@ pub(super) async fn ait_crawls(
                     "start": j.original_start_date,
                     "end": j.end_date,
                     "size": bytes,
-                    "size_h": if bytes > 0 { human_size(bytes) } else { String::new() },
+                    "size_h": if bytes > 0 { l10n.size(bytes) } else { String::new() },
                     "warcs": warcs,
                     "imported": imported.contains(&j.id),
                 })
@@ -634,6 +638,7 @@ pub(super) struct AitImportRequest {
 pub(super) async fn ait_import(
     State(state): State<Arc<AppState>>,
     admin: Admin,
+    l10n: L10n,
     Json(req): Json<AitImportRequest>,
 ) -> Response {
     let Some(provider) = state.archiveit.clone() else {
@@ -738,7 +743,7 @@ pub(super) async fn ait_import(
                     .map(|f| f.size)
                     .sum();
                 let scratch = super::manage::admit(&job_state, incoming)
-                    .map_err(|r| anyhow::anyhow!(r.status_and_message().1))?;
+                    .map_err(|r| anyhow::anyhow!(r.status_and_message(&l10n).1))?;
                 crate::archiveit::import_crawls(
                     &client,
                     &crate::index::Ingest::new(&job_state.home)
