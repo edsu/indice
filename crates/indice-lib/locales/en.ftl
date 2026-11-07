@@ -545,6 +545,7 @@ js-all-crawls = All { -crawl-plural }
 # The replay viewer's banner and the notes panel beside the replay
 # (static/replay/viewer.js and annotations.js). The page hands them over as JSON,
 # like the `js-` messages above, and the script fills the `{name}` placeholders.
+replay-title = Replay - { $name }
 viewer-notes = Notes
 viewer-notes-n = Notes ({ $total })
 viewer-loading = Loading the archived page…

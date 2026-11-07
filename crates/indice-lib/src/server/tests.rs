@@ -1555,12 +1555,12 @@ fn js_string_literals(line: &str) -> Vec<String> {
     found
 }
 
-/// Every sentence the workroom's scripts show comes from `t(...)`, so none can
-/// be left in English on an Italian page. A literal that starts with a letter
+/// Every sentence the workroom's and the replay viewer's scripts show comes
+/// from `t(...)`, so none can be left in English on an Italian page. A literal that starts with a letter
 /// and holds a space reads as prose; selectors, ids, class names, event names and
 /// headers have no space, or start with a symbol.
 #[test]
-fn no_english_literals_in_workroom_js() {
+fn no_english_literals_in_scripts() {
     // Literals that look like prose but are not shown to a reader. Keep this
     // empty unless a literal truly is not UI text, and say why beside it.
     const NOT_UI: &[&str] = &[
@@ -1624,9 +1624,11 @@ fn the_js_literal_scan_catches_prose() {
 /// translator's slip, cannot turn the page's own data into someone else's.
 #[test]
 fn viewer_strings_cannot_fill_slots() {
-    let hostile = "{{replay_context}}</script><b>{{analytics_head}}";
+    // Fluent source: `{"{{"}` is a literal `{{`, so the translation really
+    // contains the text of the slots (a bare `{{x}}` would be a placeable).
+    let hostile = r#"{"{{"}replay_context{"}}"}</script><b>{"{{"}analytics_head{"}}"}"#;
     let catalog = format!(
-        "viewer-notes = {hostile}\nviewer-loading = {hostile}\nviewer-frame-title = {hostile}\n"
+        "viewer-notes = {hostile}\nviewer-loading = {hostile}\nviewer-frame-title = {hostile}\nreplay-title = {hostile}\n"
     );
     let l10n = crate::i18n::l10n_from_catalog("en", &catalog);
     let template = std::str::from_utf8(&assets::ReplayAssets::get("viewer.html").unwrap().data)
@@ -1646,6 +1648,19 @@ fn viewer_strings_cannot_fill_slots() {
         "one replay-context element: {html}"
     );
     assert_eq!(html.matches(r#"id="i18n""#).count(), 1, "{html}");
+    // The slots' text survives as written: in the button (as text), in the
+    // loading notice, and in the JSON, and nothing was filled into it.
+    assert!(
+        html.contains(r#"aria-expanded="true">{{replay_context}}&lt;/script&gt;&lt;b&gt;{{analytics_head}}</button>"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            r#""viewer-notes":"{{replay_context}}\u003c/script>\u003cb>{{analytics_head}}""#
+        ),
+        "{html}"
+    );
+    assert_eq!(html.matches("<!-- head -->").count(), 1, "{html}");
     // The page's own elements and nothing a string opened.
     assert_eq!(html.matches("</script>").count(), 5, "{html}");
     assert!(!html.contains("<b>"), "{html}");

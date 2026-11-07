@@ -164,6 +164,9 @@ const STRINGS_SLOT: &str = "{{strings}}";
 
 /// The placeholders in `viewer.html` for the two sentences that are on the page
 /// before any script runs: the notes button and the loading notice.
+/// The placeholder in `viewer.html` for the tab's title.
+const TITLE_SLOT: &str = "{{title}}";
+
 const NOTES_LABEL_SLOT: &str = "{{notes_label}}";
 const LOADING_TEXT_SLOT: &str = "{{loading_text}}";
 
@@ -292,15 +295,21 @@ pub(super) fn viewer_html(
 ) -> String {
     let lang = html_escape(&l10n.lang());
     let origin = html_escape(origin);
+    let site_name_raw = site_name;
     let site_name = html_escape(site_name);
     let notes_label = html_escape(&l10n.tr("viewer-notes"));
     let loading_text = html_escape(&l10n.tr("viewer-loading"));
+    let title = html_escape(&l10n.tr_args(
+        "replay-title",
+        &[("name", crate::i18n::FluentArg::Str(site_name_raw))],
+    ));
     let strings = crate::views::strings_json(l10n, crate::views::VIEWER_STRINGS);
-    let slots: [(&str, &str); 8] = [
+    let slots: [(&str, &str); 9] = [
         (HEAD_SLOT, head),
         (REPLAY_ORIGIN_SLOT, &origin),
         (SITE_NAME_SLOT, &site_name),
         (LANG_SLOT, &lang),
+        (TITLE_SLOT, &title),
         (STRINGS_SLOT, &strings),
         (NOTES_LABEL_SLOT, &notes_label),
         (LOADING_TEXT_SLOT, &loading_text),

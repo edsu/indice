@@ -135,6 +135,7 @@ async fn viewer_in_italian() {
         html.contains("Caricamento della pagina archiviata"),
         "{html}"
     );
+    assert!(html.contains("<title>Riproduzione - "), "{html}");
     assert!(html.contains(r#"id="i18n""#), "{html}");
     assert!(html.contains("Scrivi una nota"), "{html}");
     assert!(!html.contains("Loading the archived page"), "{html}");

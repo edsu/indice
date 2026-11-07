@@ -1,4 +1,4 @@
-// Sentences for the workroom's scripts, in the page's language. The server
+// Sentences for the page's scripts (the workroom's and the replay viewer's), in the page's language. The server
 // writes them into <script id="i18n" type="application/json"> (see
 // `views::script_strings`), so a script never carries English text of its own.
 // Loaded before manage.js and editor.js.

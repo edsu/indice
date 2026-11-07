@@ -502,6 +502,7 @@ js-all-crawls = Tutte le { -crawl-plural }
 
 # Il banner del visualizzatore e il pannello delle note accanto alla riproduzione
 # (static/replay/viewer.js e annotations.js).
+replay-title = Riproduzione - { $name }
 viewer-notes = Note
 viewer-notes-n = Note ({ $total })
 viewer-loading = Caricamento della pagina archiviata…

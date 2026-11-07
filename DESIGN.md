@@ -1756,7 +1756,7 @@ language (Italian `one`, `other`; Arabic all six) and the script picks with
 `Intl.PluralRules` on the page's `lang`, falling back to `other`. `strings_json`
 escapes every `<` as `\u003c`, so a translation cannot close the element or open a
 comment; that escape is why the element's text is the one place a string is not
-HTML-escaped by maud. `no_english_literals_in_workroom_js` pins the scripts to `t()`.
+HTML-escaped by maud. `no_english_literals_in_scripts` pins the scripts to `t()`.
 
 **Adding a language.** Add `locales/<tag>.ftl` with every id in `en.ftl`, add one line
 to `CATALOGS`, and the tests check parsing and id parity. A right-to-left language
