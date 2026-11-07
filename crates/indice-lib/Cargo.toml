@@ -16,6 +16,9 @@ tokio = { workspace = true }
 http-body = "1"
 tower-http = { workspace = true }
 maud = { workspace = true }
+fluent-bundle = { workspace = true }
+fluent-langneg = { workspace = true }
+unic-langid = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde-saphyr = { workspace = true }
 tantivy = { workspace = true }

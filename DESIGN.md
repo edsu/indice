@@ -1710,6 +1710,52 @@ any of them stops holding, so run it on every upgrade.
 
 ---
 
+## Interface languages
+
+The web interface is translated through `indice-lib/src/i18n`. Each language is one
+Fluent catalog, `crates/indice-lib/locales/<tag>.ftl`, compiled in with `include_str!`
+and listed in `i18n::CATALOGS`, so there are no runtime files and the single binary
+stays single. English is the reference: every other catalog must define exactly the
+same message and term ids (`catalogs_have_the_same_messages`).
+
+**Negotiation.** A request gets the first language in its `Accept-Language` header (by
+q-value) that has a catalog, else the instance's `site.language`; every language
+indice ships is offered on every instance. Matching uses likely subtags, so `zh-TW`
+finds a `zh-Hant` catalog and `it-CH` finds `it`. `fluent_langneg`'s own header parser
+ignores q-values, so `i18n::requested_languages` orders them. A header over 1 KiB is
+treated as absent, and junk is dropped rather than failing the request.
+
+**Tags are kept whole.** A catalog is named by its full tag (`en`, `it`, later
+`zh-Hans`, `zh-Hant`), and `L10n::lang` returns it for `<html lang>`. Cutting a tag to
+its primary subtag would merge Simplified and Traditional Chinese.
+
+**Terms.** The words indice is about (crawl, capture, collection, annotation,
+curator, archive, page, search) are Fluent terms at the top of each catalog, each with
+a comment saying what it means here. Messages refer to `{ -collection }` instead of
+repeating the word, so a translator chooses it once. Terms can carry attributes such
+as `.gender` for languages whose articles need it.
+
+**Lookup order.** `L10n::tr` tries the chosen language, then English, then returns the
+key itself, logging a warning on the last two. A key missing from a hand-edited
+catalog therefore shows English, never a bare key or a panic.
+
+**Isolation marks.** Fluent wraps arguments in U+2068/U+2069 so a left-to-right name
+or URL cannot reorder a right-to-left sentence. Bundles for `ar`, `fa`, `he` and `ur`
+keep them; left-to-right bundles turn them off, because there they only leak into
+`title` attributes and JSON. `L10n::dir` returns `rtl` or `ltr` for `<html dir>`.
+
+**Adding a language.** Add `locales/<tag>.ftl` with every id in `en.ftl`, add one line
+to `CATALOGS`, and the tests check parsing and id parity. A right-to-left language
+also needs the stylesheets converted from physical to logical properties
+(`margin-inline-start` and friends): about 43 physical left/right rules remain across
+`app.css`, `viewer.css` and `annotations.css`. That is separate work from the catalog.
+
+**Library stays dependency-light.** `i18n` looks messages up as data (strings in,
+strings out); it draws nothing. Views and the binary decide how to render them, and
+the binary's UI dependencies stay out of the library.
+
+---
+
 ## Key Crates
 
 | Crate | Role |
@@ -1731,3 +1777,4 @@ any of them stops holding, so run it on every upgrade.
 | `flate2` 1.x | gzip decompression (WARC, WACZ CDX) |
 | `sha2` 0.10 | Collection file hashing |
 | `chrono` 0.4 | Date formatting |
+| `fluent-bundle` 0.16, `fluent-langneg` 0.13 | Interface translations: Fluent catalogs and `Accept-Language` negotiation (pure Rust, no ICU) |
