@@ -138,7 +138,7 @@ impl crate::index::IndexProgress for ChannelProgress {
 /// /path/to.wacz` is unchanged, which is where a mounted archive volume is
 /// accessioned from anyway, and a curator keeps the upload endpoint, which
 /// carries the bytes rather than naming someone else's file.
-fn require_url_location(location: &str) -> Option<Response> {
+fn require_url_location(l10n: &L10n, location: &str) -> Option<Response> {
     // Asked of `Source::parse` rather than re-testing the scheme here. That
     // function owns the rule "an http(s) prefix is a URL, anything else is a
     // path", and a second copy of it would have to be kept in step: teach it an
@@ -148,15 +148,7 @@ fn require_url_location(location: &str) -> Option<Response> {
         crate::collections::Source::parse(location),
         crate::collections::Source::Url(_)
     );
-    (!is_url).then(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "add an archive by an http(s) URL, or upload the file. A path on the \
-             server's own disk is not accepted here; use `indice index` on the \
-             machine itself for that.",
-        )
-            .into_response()
-    })
+    (!is_url).then(|| bad_request(l10n, "error-location-not-url"))
 }
 
 /// Body of `POST /api/archives` — add a crawl by reference. Browser byte-upload
@@ -358,7 +350,7 @@ pub(super) async fn add_archive(
     // Before the audit record, not after: a refused probe is not an accession,
     // and twenty of them logged as ordinary adds against a collection that
     // stays empty is worse than no log at all.
-    if let Some(refusal) = require_url_location(&req.path) {
+    if let Some(refusal) = require_url_location(curator.l10n(), &req.path) {
         return refusal;
     }
     // A URL files nothing, but indexing it writes temp files, which count

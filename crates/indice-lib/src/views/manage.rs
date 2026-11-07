@@ -316,7 +316,7 @@ pub fn accession_desk(
             }
             div.src-panel.active #src-upload {
                 label {
-                    span { (t("desk-upload-label")) }
+                    span { (t("desk-upload-before")) " " code { ".wacz" } " " (t("desk-upload-after")) }
                     input type="file" name="file" accept=".wacz";
                 }
             }

@@ -1475,3 +1475,26 @@ async fn a_refusal_says_why_in_the_readers_language() {
     );
     assert!(!page.contains("You can't change"), "{page}");
 }
+
+#[tokio::test]
+async fn desk_keeps_the_wacz_code_and_a_path_is_refused_in_italian() {
+    let (_home, app) = app_with_language(None);
+    for lang in ["en", "it"] {
+        let (_, _, desk) = get_with(&app, "/manage/add", Some(lang)).await;
+        assert!(desk.contains("<code>.wacz</code>"), "{lang}: {desk}");
+    }
+    let body = r#"{"path":"/etc/x.wacz","collection":"c"}"#;
+    let (status, _, text) = post_with(
+        &app,
+        "/api/archives",
+        &[
+            ("accept-language", "it"),
+            ("content-type", "application/json"),
+        ],
+        Body::from(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(text, l10n("it").tr("error-location-not-url"));
+    assert!(!text.contains("add an archive"), "{text}");
+}

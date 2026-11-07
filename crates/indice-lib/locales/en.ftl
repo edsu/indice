@@ -365,6 +365,8 @@ error-busy = indice is busy; try again in a moment
 error-too-many-requests = too many requests from this address; try again in { $secs }s
 error-too-many-streams = too many open archive streams from this address; try again in { $secs }s
 error-collection-required = collection is required
+# `indice index` is a command and stays as it is.
+error-location-not-url = add an archive by an http(s) URL, or upload the file. A path on the server's own disk is not accepted here; use `indice index` on the machine itself for that.
 error-file-required = a file is required
 error-org-required = org is required
 error-select-crawl = select at least one { -crawl }
@@ -469,7 +471,9 @@ desk-optional = optional
 desk-name-placeholder = override the { -collection }'s display name
 desk-tab-upload = Upload
 desk-tab-url = URL
-desk-upload-label = Upload a .wacz file
+# Around the `.wacz` file extension, which is shown as code between them.
+desk-upload-before = Upload a
+desk-upload-after = file
 desk-location = Location
 desk-location-hint = an http(s):// URL
 desk-bx-intro = Pick { -crawl-plural } to import into the { -collection } above, from the Browsertrix instance this server is configured for (its credentials + host).

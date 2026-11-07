@@ -328,6 +328,7 @@ error-busy = indice è occupato; riprova tra un momento
 error-too-many-requests = troppe richieste da questo indirizzo; riprova tra { $secs } s
 error-too-many-streams = troppi flussi di archivio aperti da questo indirizzo; riprova tra { $secs } s
 error-collection-required = la { -collection } è obbligatoria
+error-location-not-url = aggiungi un archivio tramite un URL http(s), oppure carica il file. Un percorso sul disco del server non è accettato qui; per quello usa `indice index` sulla macchina stessa.
 error-file-required = il file è obbligatorio
 error-org-required = l'organizzazione è obbligatoria
 error-select-crawl = seleziona almeno una { -crawl }
@@ -426,7 +427,10 @@ desk-optional = facoltativo
 desk-name-placeholder = sostituisce il nome visualizzato della { -collection }
 desk-tab-upload = Carica
 desk-tab-url = URL
-desk-upload-label = Carica un file .wacz
+# Intorno all'estensione `.wacz`, mostrata come codice tra i due messaggi.
+desk-upload-before = Carica un file
+# Vuoto: in italiano nulla segue l'estensione. Fluent non ammette valori vuoti.
+desk-upload-after = { "" }
 desk-location = Indirizzo
 desk-location-hint = un URL http(s)://
 desk-bx-intro = Scegli le { -crawl-plural } da importare nella { -collection } qui sopra, dall'istanza di Browsertrix per cui questo server è configurato (credenziali e host).
