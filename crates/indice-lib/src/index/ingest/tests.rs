@@ -39,6 +39,7 @@ fn docs(search: &Mutex<SearchIndex>) -> Docs<'_> {
         search,
         read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
         extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+        pdf: crate::config::Config::default().pdf_limits(),
         scratch: &UNLIMITED,
     }
 }
@@ -549,6 +550,7 @@ fn nested_multi_wacz_streams_over_a_range_fetch() {
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
             extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+            pdf: crate::config::Config::default().pdf_limits(),
             scratch: &UNLIMITED,
         },
         2,

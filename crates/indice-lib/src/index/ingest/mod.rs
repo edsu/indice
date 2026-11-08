@@ -507,6 +507,7 @@ pub(super) fn index_one(
                 search,
                 read_limit,
                 extract_limit,
+                pdf: config.pdf_limits(),
                 scratch: &scratch,
             },
             workers: resolve_workers(concurrency, access.is_remote()),

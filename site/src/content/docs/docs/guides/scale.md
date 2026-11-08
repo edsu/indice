@@ -31,6 +31,12 @@ Search stays interactive as the corpus grows because indice does the result-grou
 cargo run --release --example scale_bench -- 1000000   # docs, [iters], [segments]
 ```
 
+## Memory while indexing
+
+Indexing reads a WACZ a page at a time, so the memory it needs does not grow with the crawl. What it does depend on is the largest page it reads, and PDFs are the hard case: how much memory reading one takes cannot be told from its size. One 8 MB report took 2.2 GB.
+
+So each PDF is read in a process of its own, one at a time, and that process is stopped past `index.pdf_memory_mb` (default 1024 MiB, Linux only) or `index.pdf_timeout_secs` (default 60). A PDF that is stopped is still found by its file name and still replays. To size a server, allow for indice itself plus one PDF's limit, and lower `pdf_memory_mb` on a small machine. See [Operator configuration](/docs/reference/configuration/#reading-a-wacz) for these and the other indexing limits.
+
 ## Index health
 
 A search fans out across every segment, so a fragmented index is a slow one. indice compacts the index on its own: `index` and the management-mode import **auto-compact** when they detect fragmentation, `serve` warns at startup if the index it opens is fragmented, and `indice optimize` merges segments on demand, which reclaims disk from deleted crawls *and* sweeps orphaned segment files left behind by an interrupted (Ctrl-C'd) run. The next `index` run cleans up after an interrupted ingest.

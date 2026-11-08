@@ -10,6 +10,8 @@ use tracing_subscriber::fmt::{
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::EnvFilter;
 
+mod pdf_child;
+
 // Wraps the default log format so that WARN and ERROR lines are highlighted in
 // bold color across the entire line, not just the level label.
 #[derive(Default)]
@@ -57,6 +59,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Extract one PDF's text: the PDF on stdin, the text on stdout. Run by
+    /// indice itself, in a child process with limits; see `pdf_child`.
+    #[command(name = "extract-pdf", hide = true)]
+    ExtractPdf {
+        /// The most text to write, in bytes.
+        #[arg(long)]
+        max_text: usize,
+        /// The most memory to use, in bytes (Linux only).
+        #[arg(long)]
+        memory: Option<u64>,
+    },
     /// Index one or more WACZ files or http(s) URLs into a collection.
     Index {
         /// WACZ files or http(s) URLs to index. A local WACZ may live anywhere;
@@ -897,10 +910,32 @@ fn progress_sink(bar: &Option<BarProgress>) -> &dyn indice_lib::index::IndexProg
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
+    // The PDF child runs before the async runtime exists: see `pdf_child::serve`.
+    if let Commands::ExtractPdf { max_text, memory } = cli.command {
+        return pdf_child::serve(max_text, memory);
+    }
+    // Every ingest this process runs extracts PDFs in a child with limits.
+    // Without our own path we cannot re-run ourselves, and then PDFs are
+    // indexed by file name rather than extracted here without limits.
+    let extractor: Box<dyn indice_lib::pdf::PdfExtractor> = match pdf_child::own_exe() {
+        Ok(exe) => Box::new(pdf_child::ChildExtractor::new(exe)),
+        Err(e) => {
+            eprintln!("warning: PDFs will be indexed by file name only: {e}");
+            Box::new(pdf_child::Unavailable(format!(
+                "cannot find indice's own executable to run it: {e}"
+            )))
+        }
+    };
+    let _ = indice_lib::pdf::set_extractor(extractor);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
 
+async fn run(cli: Cli) -> Result<()> {
     // Progress bar vs. logs (for `index`):
     //  - `-v`         -> debug logs, no bar.
     //  - interactive  -> the bar carries progress, so hush INFO (it would collide
@@ -942,17 +977,13 @@ async fn main() -> Result<()> {
     } else {
         "info"
     };
-    // Default filter: our level, but silence third-party parsers that log noisy,
-    // non-fatal diagnostics through the tracing-log bridge during indexing:
-    //  - pdf-extract/lopdf: per-glyph warnings ("unknown glyph name ...").
-    //  - html5ever: HTML quirks like "foster parenting not implemented" while
-    //    parsing archived pages for text/images — harmless, and it recovers.
-    // We handle these outcomes ourselves, so the log lines are pure noise (and
-    // stomp the progress bar). RUST_LOG overrides the whole thing to see them.
+    // Default filter: our level, but silence html5ever, which logs HTML quirks
+    // like "foster parenting not implemented" through the tracing-log bridge
+    // while parsing archived pages for text/images. It recovers, so the log
+    // lines are pure noise (and stomp the progress bar). RUST_LOG overrides
+    // the whole thing to see them.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(default_level)
-            .add_directive("pdf_extract=off".parse().unwrap())
-            .add_directive("lopdf=off".parse().unwrap())
             .add_directive("html5ever=off".parse().unwrap())
             // ureq's own debug chatter (TCP/resolver/proto, with redacted paths)
             // buries our clean per-request logs under `-v`; keep only its warnings.
@@ -966,30 +997,13 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_ansi(true)
-        // Logs go to stderr so stdout can carry data (and be silenced during
-        // indexing to hide third-party PDF extraction noise).
+        // Logs go to stderr so stdout can carry data.
         .with_writer(std::io::stderr)
         .event_format(ColorLineFormat::default())
         .init();
 
-    // pdf-extract / lopdf can *panic* on malformed PDFs. `extract_pdf_text`
-    // already catches these via `catch_unwind` (a bad PDF is skipped, indexing
-    // continues), but the default panic hook still prints the alarming, progress-
-    // bar-stomping "thread 'main' panicked at pdf-extract..." message. Suppress
-    // panics originating in those crates; delegate everything else to the default
-    // hook. Set once here (thread-safe) so it also holds for parallel indexing.
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let from_pdf = info.location().is_some_and(|loc| {
-            let f = loc.file();
-            f.contains("pdf-extract") || f.contains("lopdf")
-        });
-        if !from_pdf {
-            default_hook(info);
-        }
-    }));
-
     match cli.command {
+        Commands::ExtractPdf { .. } => unreachable!("run by `main` before the runtime starts"),
         // `verbose` is read up front (to set the log level / bar); ignore here.
         Commands::Index {
             paths,
@@ -1072,13 +1086,7 @@ async fn main() -> Result<()> {
                     progress = format!("{}/{}", i + 1, total),
                     "indexing"
                 );
-                // pdf-extract prints font/glyph diagnostics straight to stdout
-                // (e.g. "unknown glyph name '.notdef' ...") that can't be
-                // filtered by log level. Silence stdout while indexing runs;
-                // our logs are on stderr and are unaffected.
-                let quiet = gag::Gag::stdout().ok();
                 let result = ingest.index_location(location, collection);
-                drop(quiet);
                 if let Err(e) = result {
                     // Clear any spinner/bar left up by an aborted WACZ before the
                     // error propagates.
@@ -1364,9 +1372,6 @@ async fn main() -> Result<()> {
             // more welcome here than for `index`. Same gating (interactive, not -v).
             let bar = show_bar.then(BarProgress::new);
             let progress = progress_sink(&bar);
-            // Like `index`, silence stdout to hide third-party PDF extraction
-            // noise; our logs are on stderr.
-            let quiet = gag::Gag::stdout().ok();
             // Resolver for any Browsertrix sources in the manifest (logs in
             // lazily, so a manifest without them needs no credentials).
             let resolver = BrowsertrixResolver::new();
@@ -1375,7 +1380,6 @@ async fn main() -> Result<()> {
                 .resolver(Some(&resolver))
                 .progress(progress)
                 .reindex();
-            drop(quiet);
             if result.is_err() {
                 // Clear any spinner/bar left up before the error propagates.
                 if let Some(b) = &bar {
@@ -1866,12 +1870,10 @@ fn run_wacz_build(args: WaczBuildArgs) -> Result<()> {
     // Index it (shows the same progress bar as `index`).
     let bar = args.show_bar.then(BarProgress::new);
     let progress = progress_sink(&bar);
-    let quiet = gag::Gag::stdout().ok();
     let result = indice_lib::index::Ingest::new(&args.home)
         .name(args.name.as_deref().or(title.as_deref()))
         .progress(progress)
         .index_location(&built.path.to_string_lossy(), &collection);
-    drop(quiet);
     if result.is_err() {
         if let Some(b) = &bar {
             b.clear();
@@ -2014,6 +2016,31 @@ fn run_config(home: &std::path::Path) -> Result<()> {
         )
     };
     println!("index.max_extract_mb:     {extract_set}  ->  {extract_resolved}");
+
+    let set = |v: Option<u64>| v.map_or_else(|| "unset".to_string(), |n| n.to_string());
+    let pdf = cfg.pdf_limits();
+    let memory = match pdf.memory {
+        None => "no limit on the memory reading one PDF may use".to_string(),
+        Some(bytes) if cfg!(target_os = "linux") => {
+            format!("{} MiB to read one PDF", bytes / (1024 * 1024))
+        }
+        Some(bytes) => format!(
+            "{} MiB to read one PDF (not enforced on this platform)",
+            bytes / (1024 * 1024)
+        ),
+    };
+    println!(
+        "index.pdf_memory_mb:      {}  ->  {memory}",
+        set(cfg.index.pdf_memory_mb)
+    );
+    let timeout = match pdf.timeout {
+        None => "no limit on how long reading one PDF may take".to_string(),
+        Some(t) => format!("{}s to read one PDF", t.as_secs()),
+    };
+    println!(
+        "index.pdf_timeout_secs:   {}  ->  {timeout}",
+        set(cfg.index.pdf_timeout_secs)
+    );
 
     // Unset is reported as "no limit" rather than left blank, because for these
     // two that is a decision with consequences: it is what a server exposing
@@ -2755,7 +2782,6 @@ fn run_browsertrix(
                     resource: res.name.clone(),
                 };
                 eprintln!("↻ streaming {}{size}", res.name);
-                let quiet = gag::Gag::stdout().ok();
                 // Streamed in place (no download), forced because the
                 // importer already decided what to bring in.
                 let indexed = indice_lib::index::Ingest::new(home)
@@ -2765,7 +2791,6 @@ fn run_browsertrix(
                     .resolver(Some(&resolver))
                     .progress(progress)
                     .index_location(&source.location(), into);
-                drop(quiet);
                 indexed.with_context(|| format!("streaming {}", res.name))?;
                 indice_lib::collections::wacz_id(&source)
             } else {
@@ -2775,7 +2800,6 @@ fn run_browsertrix(
                 let dest = item_dir.join(&filename);
                 eprintln!("↓ downloading {filename}{size}");
                 indice_lib::index::download_wacz(&res.path, &dest)?;
-                let quiet = gag::Gag::stdout().ok();
                 // Already local, so no download; forced for the same reason.
                 let indexed = indice_lib::index::Ingest::new(home)
                     .name(Some(&item.name))
@@ -2783,7 +2807,6 @@ fn run_browsertrix(
                     .concurrency(opts.concurrency)
                     .progress(progress)
                     .index_location(&dest.to_string_lossy(), into);
-                drop(quiet);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
                 indice_lib::collections::wacz_id(&indice_lib::collections::Source::for_file(
@@ -2959,7 +2982,6 @@ fn run_browsertrix_public(
                     resource: res.name.clone(),
                 };
                 eprintln!("↻ streaming {}{size}", res.name);
-                let quiet = gag::Gag::stdout().ok();
                 // Streamed in place (no download), forced because the
                 // importer already decided what to bring in.
                 let indexed = indice_lib::index::Ingest::new(home)
@@ -2969,7 +2991,6 @@ fn run_browsertrix_public(
                     .resolver(Some(&resolver))
                     .progress(progress)
                     .index_location(&source.location(), into);
-                drop(quiet);
                 indexed.with_context(|| format!("streaming {}", res.name))?;
                 indice_lib::collections::wacz_id(&source)
             } else {
@@ -2983,7 +3004,6 @@ fn run_browsertrix_public(
                 let dest = item_dir.join(&filename);
                 eprintln!("↓ downloading {filename}{size}");
                 indice_lib::index::download_wacz(&res.path, &dest)?;
-                let quiet = gag::Gag::stdout().ok();
                 // Already local, so no download; forced for the same reason.
                 let indexed = indice_lib::index::Ingest::new(home)
                     .name(Some(display))
@@ -2991,7 +3011,6 @@ fn run_browsertrix_public(
                     .concurrency(opts.concurrency)
                     .progress(progress)
                     .index_location(&dest.to_string_lossy(), into);
-                drop(quiet);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
                 indice_lib::collections::wacz_id(&indice_lib::collections::Source::for_file(

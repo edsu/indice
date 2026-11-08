@@ -19,9 +19,15 @@ gag = { workspace = true }
 indicatif = { workspace = true }
 tempfile = "3"
 
+# `setrlimit`, for the memory limit on a PDF extraction child (pdf_child.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # End-to-end test that runs the built binary against a local mock Browsertrix
 # API (axum) — see tests/browsertrix_import.rs.
 axum = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3"
+# Building WACZs that hold test PDFs (tests/pdf_child.rs).
+zip = { workspace = true }
