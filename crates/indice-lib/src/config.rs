@@ -38,6 +38,14 @@ const MIN_WRITER_HEAP_BYTES: usize = 15 * 1024 * 1024;
 /// smaller, so this bounds the worst record without costing real ones.
 pub const DEFAULT_EXTRACT_BYTES: usize = 16 * 1024 * 1024;
 
+/// The default for [`IndexConfig::pdf_memory_mb`]: 1 GiB. Of 805 PDFs in one
+/// CDC crawl, six needed more than this and thirteen more needed over half of
+/// it (#251).
+pub const DEFAULT_PDF_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// The default for [`IndexConfig::pdf_timeout_secs`].
+pub const DEFAULT_PDF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Operator configuration for a indice home. Every section and field is
 /// optional; an absent file (or key) means "use the defaults".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -172,6 +180,18 @@ pub struct IndexConfig {
     /// tens of MiB of memory while it's read, so raise it only with memory
     /// to match.
     pub max_extract_mb: Option<u64>,
+
+    /// The most memory extracting one PDF's text may use, in MiB. A PDF that
+    /// needs more is indexed by its file name alone. How much a PDF needs
+    /// cannot be told from its size, so this is what bounds it. Omit for the
+    /// default (1024 MiB); `0` is no limit. Enforced on Linux only; elsewhere
+    /// the timeout is what applies.
+    pub pdf_memory_mb: Option<u64>,
+
+    /// How long extracting one PDF's text may take, in seconds, after which
+    /// it is indexed by its file name alone. Omit for the default (60); `0`
+    /// is no limit.
+    pub pdf_timeout_secs: Option<u64>,
 }
 
 /// Limits on what the browser write surface may add to the archive.
@@ -423,6 +443,23 @@ impl Config {
         }
     }
 
+    /// What extracting one PDF may cost; see [`IndexConfig::pdf_memory_mb`]
+    /// and [`IndexConfig::pdf_timeout_secs`].
+    pub fn pdf_limits(&self) -> crate::pdf::PdfLimits {
+        crate::pdf::PdfLimits {
+            memory: match self.index.pdf_memory_mb {
+                Some(0) => None,
+                Some(mb) => Some(mb.saturating_mul(1024 * 1024)),
+                None => Some(DEFAULT_PDF_MEMORY_BYTES),
+            },
+            timeout: match self.index.pdf_timeout_secs {
+                Some(0) => None,
+                Some(secs) => Some(std::time::Duration::from_secs(secs)),
+                None => Some(DEFAULT_PDF_TIMEOUT),
+            },
+        }
+    }
+
     /// The Tantivy writer heap in bytes: an explicit MiB value (clamped up to
     /// Tantivy's minimum), else the default.
     pub fn writer_heap_bytes(&self) -> usize {
@@ -468,6 +505,19 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(unbounded.stored_body_cap_bytes(), usize::MAX);
+    }
+
+    #[test]
+    fn pdf_limits_resolve_with_zero_as_no_limit() {
+        let parse = |yaml: &str| -> Config { serde_saphyr::from_str(yaml).unwrap() };
+        let d = Config::default().pdf_limits();
+        assert_eq!(d.memory, Some(DEFAULT_PDF_MEMORY_BYTES));
+        assert_eq!(d.timeout, Some(DEFAULT_PDF_TIMEOUT));
+        let set = parse("index:\n  pdf_memory_mb: 256\n  pdf_timeout_secs: 5\n").pdf_limits();
+        assert_eq!(set.memory, Some(256 * 1024 * 1024));
+        assert_eq!(set.timeout, Some(std::time::Duration::from_secs(5)));
+        let off = parse("index:\n  pdf_memory_mb: 0\n  pdf_timeout_secs: 0\n").pdf_limits();
+        assert_eq!((off.memory, off.timeout), (None, None));
     }
 
     #[test]

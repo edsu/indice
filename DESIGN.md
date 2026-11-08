@@ -426,6 +426,11 @@ only who may frame it.
   is not parsed. `pages.rs::a_pdf_past_the_extract_limit_is_indexed_by_name_unread`,
   `pages.rs::text_past_the_extract_limit_is_not_read`,
   `integration.rs::text_past_max_extract_mb_is_not_indexed`
+- A PDF is read for text in a child process, one at a time, under
+  `index.pdf_memory_mb` (Linux) and `index.pdf_timeout_secs`; one stopped at
+  either is indexed by name and the ingest carries on.
+  `indice-bin/tests/pdf_child.rs::a_pdf_past_its_memory_limit_is_indexed_by_name`,
+  `pdf_child.rs::each_way_a_child_ends_is_told_apart`
 - A remote host that answers a range with more than was asked is refused.
   `http_range.rs::a_range_longer_than_asked_for_is_refused`
 
@@ -1269,10 +1274,51 @@ around 20 times it, and a PDF's cost barely follows its size (a 3.3 MB PDF
 peaked at 750 MB to extract, a 33 MB one at 107 MB). HTML and rendered
 text past the cap are not indexed; a PDF can't be read in part, so a larger one is
 indexed by its file name alone. Below the cap the body is indexed in full.
+
+A size cap cannot bound a PDF, though: an 8.3 MB CDC report peaked at 2.2 GB
+because one page draws a chart in 3.4 million path operators and `pdf-extract`
+decodes them all at once, and a 3.8 MB one at 1.3 GB on a structure tree `lopdf`
+parses eagerly. So PDFs are read in a child process (`pdf::PdfExtractor`, which
+the binary installs process-wide with `pdf::set_extractor`; `indice-bin`'s
+`pdf_child` is the implementation). The binary re-runs itself as the hidden
+`indice extract-pdf`, the PDF on stdin and at most `max_extract_mb` of text on
+stdout, before any async runtime starts, so the child is one thread and its
+memory is the extraction's. On Linux it re-runs `/proc/self/exe`, the image
+actually running, so an upgrade that replaces the file under a running server
+does not change what its children run. The child sets `RLIMIT_AS` on itself to
+`index.pdf_memory_mb` (default 1024), passed as `--memory`: past it an
+allocation fails and Rust aborts. It sets it itself rather than the parent
+setting it between fork and exec, because `pre_exec` makes std fork the whole
+server for each PDF where otherwise it uses `posix_spawn`. Everywhere a watchdog
+kills the child at `index.pdf_timeout_secs` (default 60); the child's exit
+status is read before the watchdog's verdict, so text written just as the
+timeout fires is kept. macOS rejects `RLIMIT_AS` and `RLIMIT_DATA` with
+`EINVAL`, so there only the timeout holds. A child that is stopped, crashes or
+cannot start leaves its PDF indexed by name, with a warning naming why
+(`pages.rs::a_stopped_pdf_is_kept_with_no_text_and_an_empty_one_is_skipped`),
+and so does every PDF when indice cannot find its own executable to re-run:
+the binary never extracts a PDF in its own process. One
+that finds no text exits 3 and the record is skipped, as any unreadable page is.
+Children run one at a time across the whole process, whatever the worker count,
+so the most PDF extraction costs at once is one limit; four children at 1 GiB
+would not fit a 2.5 GB container. The cost is that a PDF running to its timeout
+holds up every other PDF until then, and with `pdf_timeout_secs: 0` for as long
+as it runs; and that a PDF-heavy crawl indexes more slowly (266 PDFs: 11 s
+against 3 s with PDFs read in parallel in process). The extractor is installed
+process-wide rather than per `Ingest` because ingests are built in a dozen
+places, and a setter missed at one would fall back to unlimited extraction
+unnoticed. The library's default, with nothing installed, is in-process, which
+is what `cargo test` of `indice-lib` uses, since there the current executable is
+the test binary. Spawning costs a few milliseconds per PDF (805 runs on a small
+PDF took 10.6 s on an M-series Mac, against 5.2 s for `/usr/bin/true`).
 On Linux, glibc's allocator keeps memory a large extraction freed, so the Docker
 image sets `GLIBC_TUNABLES` to hand it back. A crawl of large PDFs that peaked at
 1.3 to 2.1 GB with them, over three runs, was killed at a 2.5 GB container limit
 without them (`rustyweb-63jk`).
+Measured on Linux with the CDC PDFs behind #251: `mm6929-H.pdf` (8 MB) and
+`ss6009.pdf` (4 MB), which peak at 2.4 GB and 1.4 GB in a child with no limit,
+are both stopped at the default 1 GiB, and the indexing process stays under
+80 MB.
 
 Collapsing to one document per URL deduplicates repeat captures *within a WACZ*;
 repeat captures of the same URL *across* WACZs stay as separate documents and are

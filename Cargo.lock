@@ -1713,6 +1713,7 @@ dependencies = [
  "gag",
  "indicatif",
  "indice-lib",
+ "libc",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1720,6 +1721,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "url",
+ "zip",
 ]
 
 [[package]]

@@ -31,6 +31,12 @@ index:
   # The most of any one page indice reads for its text, in MiB. Omit for the
   # 16 MiB default; 0 is no limit.
   max_extract_mb: 16
+  # The most memory reading one PDF's text may use, in MiB (Linux only). Omit
+  # for the 1024 MiB default; 0 is no limit.
+  pdf_memory_mb: 1024
+  # How long reading one PDF's text may take, in seconds. Omit for the 60
+  # second default; 0 is no limit.
+  pdf_timeout_secs: 60
 ```
 
 A WACZ is a zip, and a file inside a zip can inflate to a thousand times its stored size, so a WACZ of a few megabytes can contain gigabytes of page list or index. indice reads no single file inside a WACZ past this limit. A WACZ whose metadata, page lists or index ask for more is refused, naming the file and this setting, and is not added. A single archived page or record over it is skipped with a warning, and the rest of the crawl is indexed. This applies to `indice index` and `reindex` as well as to the browser, since it protects the machine doing the indexing whoever started it.
@@ -38,6 +44,8 @@ A WACZ is a zip, and a file inside a zip can inflate to a thousand times its sto
 The default leaves room for a legitimate crawl. The largest file in one is usually `pages/extraPages.jsonl`, which holds the rendered text of every page. If a crawl you trust is refused, raise the limit to fit it. Indexing reads a WACZ a page at a time, so the memory it needs does not grow with the crawl; raising the limit only lets a single file or record be larger.
 
 Finding a page's text costs far more memory than the page itself. HTML takes around 20 times its size to read, and a PDF's cost barely follows its size: one of 3.3 MB took 750 MB, one of 12 MB took 1 GB, and one of 33 MB took 107 MB. So indice reads no more than `max_extract_mb` of any page for its text. HTML and rendered text past it are not searchable. A PDF can't be read in part, so a larger one is indexed by its file name alone, and a warning names it; it still replays. A page over 2 MiB is also read on its own rather than alongside others, so only one large page is in memory at a time. Raise the limit only on a machine with memory to match.
+
+Because a PDF's cost can't be told from its size, indice reads each PDF's text in a separate process, one PDF at a time, and stops that process if it needs more than `pdf_memory_mb` or takes longer than `pdf_timeout_secs`. A PDF that is stopped is indexed by its file name alone, like one over `max_extract_mb`, and a warning names it and the limit. The rest of the crawl is indexed as usual. Of 805 PDFs in one government crawl, six needed more than the 1024 MiB default. The memory limit is enforced on Linux only: macOS refuses the limit indice sets, and indice sets none on Windows. There only the timeout applies, so a PDF that needs a lot of memory still gets it, though from a process of its own. Set `pdf_memory_mb` to leave room for the server itself: the most indexing PDFs costs at once is one PDF's limit. Because PDFs are read one at a time, a PDF that runs to its timeout holds up the other PDFs being indexed until then, so keep a timeout set.
 
 On Linux, the system's memory allocator holds on to memory that reading a large page has freed, so each one can leave the process bigger. The Docker image sets `GLIBC_TUNABLES` so that memory is handed back. If you run the `indice` binary directly on a Linux machine with little memory to spare, set the same in its environment:
 

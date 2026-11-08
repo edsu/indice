@@ -50,6 +50,9 @@ pub(super) struct Docs<'a> {
     /// The most of one page to read for its text (`index.max_extract_mb`).
     /// See [`record_to_raw`].
     pub extract_limit: usize,
+    /// What extracting one PDF may cost (`index.pdf_memory_mb`,
+    /// `index.pdf_timeout_secs`). See [`crate::pdf`].
+    pub pdf: crate::pdf::PdfLimits,
     /// What this WACZ may write to temp files. See [`crate::wacz::Scratch`].
     pub scratch: &'a crate::wacz::Scratch,
 }
@@ -560,7 +563,7 @@ where
         concurrency,
         progress,
     } = *run;
-    let (limit, extract) = (docs.read_limit, docs.extract_limit);
+    let (limit, extract, pdf) = (docs.read_limit, docs.extract_limit, docs.pdf);
     let started = std::time::Instant::now();
 
     // 1. Which pages the page lists give text for.
@@ -642,7 +645,8 @@ where
                             lock: &large,
                             held: &mut held,
                         };
-                        for raw in fetch_raw_records(&fetch, starts, c, limit, extract, gate) {
+                        for raw in fetch_raw_records(&fetch, starts, c, limit, extract, &pdf, gate)
+                        {
                             if belongs_to(raw.url(), page, &slot) {
                                 merge_raw(&mut merged, raw);
                             }
@@ -775,6 +779,7 @@ fn fetch_raw_records<F: RangeFetch>(
     c: &crate::wacz::CdxjRecord,
     limit: u64,
     extract: usize,
+    pdf: &crate::pdf::PdfLimits,
     gate: Gate<'_, '_>,
 ) -> Vec<RawRecord> {
     let base = c.filename.rsplit('/').next().unwrap_or(&c.filename);
@@ -809,7 +814,7 @@ fn fetch_raw_records<F: RangeFetch>(
         }) {
         Ok(records) => records
             .iter()
-            .filter_map(|r| record_to_raw(r, extract))
+            .filter_map(|r| record_to_raw(r, extract, pdf))
             .collect(),
         Err(e) => {
             tracing::warn!(url = %c.url, "skipping unreadable CDX record: {e:#}");
@@ -1080,6 +1085,27 @@ impl RawRecord {
     }
 }
 
+/// A PDF's body from how extracting it went: its text; empty for one stopped
+/// at a limit, which is still a capture, found by its file name like one too
+/// large to read; or `None`, skipping a PDF with no text.
+fn pdf_body(uri: &str, bytes: usize, outcome: crate::pdf::Extracted) -> Option<String> {
+    match outcome {
+        crate::pdf::Extracted::Text(text) => Some(text),
+        crate::pdf::Extracted::Nothing => {
+            debug!(url = uri, "PDF text extraction yielded nothing; skipping");
+            None
+        }
+        crate::pdf::Extracted::Stopped(why) => {
+            tracing::warn!(
+                url = uri,
+                bytes,
+                "PDF text extraction stopped ({why}); indexed by its file name only"
+            );
+            Some(String::new())
+        }
+    }
+}
+
 /// Transform one WARC record into an indexable [`RawRecord`], or `None` if it is
 /// not a page: warcinfo, `dns:`, other `urn:` pseudo-records (pageinfo,
 /// thumbnail, …), non-HTML/PDF responses, or empty payloads. Both extraction
@@ -1091,7 +1117,11 @@ impl RawRecord {
 /// A PDF can't be read in part, so one larger is indexed by its file name,
 /// and the text read from a smaller one is cut at `extract` too: a
 /// compressed PDF can hold more text than its size.
-fn record_to_raw(record: &WarcRecord, extract: usize) -> Option<RawRecord> {
+fn record_to_raw(
+    record: &WarcRecord,
+    extract: usize,
+    pdf: &crate::pdf::PdfLimits,
+) -> Option<RawRecord> {
     let uri = record.target_uri.as_str();
     if uri.is_empty() || uri.starts_with("dns:") {
         return None;
@@ -1133,11 +1163,8 @@ fn record_to_raw(record: &WarcRecord, extract: usize) -> Option<RawRecord> {
             );
             String::new()
         } else {
-            let Some(text) = crate::pdf::extract_pdf_text(&record.payload) else {
-                debug!(url = uri, "PDF text extraction yielded nothing; skipping");
-                return None;
-            };
-            cap(text, extract)
+            let outcome = crate::pdf::extract(&record.payload, extract, pdf);
+            pdf_body(uri, record.payload.len(), outcome)?
         };
         return Some(RawRecord::Html {
             url: uri.to_string(),
@@ -1208,6 +1235,29 @@ fn pdf_title_from_url(url: &str) -> String {
 mod tests {
     use super::*;
 
+    /// No limits; the in-process extractor ignores them anyway.
+    const PDF: crate::pdf::PdfLimits = crate::pdf::PdfLimits {
+        memory: None,
+        timeout: None,
+    };
+
+    /// A PDF stopped at a limit is kept, with no text, so it is found by its
+    /// file name; one with no text is skipped. On every platform, since the
+    /// end-to-end test of a stopped PDF needs Linux's memory limit.
+    #[test]
+    fn a_stopped_pdf_is_kept_with_no_text_and_an_empty_one_is_skipped() {
+        use crate::pdf::Extracted;
+        assert_eq!(
+            pdf_body("u", 1, Extracted::Stopped("took longer than 60s".into())),
+            Some(String::new())
+        );
+        assert_eq!(pdf_body("u", 1, Extracted::Nothing), None);
+        assert_eq!(
+            pdf_body("u", 1, Extracted::Text("words".into())),
+            Some("words".into())
+        );
+    }
+
     /// A fetch that must not be called.
     #[derive(Clone)]
     struct NoFetch;
@@ -1240,7 +1290,10 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        assert!(fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, usize::MAX, gate).is_empty());
+        assert!(
+            fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, usize::MAX, &PDF, gate)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1314,7 +1367,7 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        fetch_raw_records(&fetch, &starts, &c, u64::MAX, usize::MAX, gate);
+        fetch_raw_records(&fetch, &starts, &c, u64::MAX, usize::MAX, &PDF, gate);
         assert!(held_during_fetch.load(Ordering::SeqCst));
     }
 
@@ -1350,7 +1403,7 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        fetch_raw_records(&Empty, &starts, &c, u64::MAX, usize::MAX, gate);
+        fetch_raw_records(&Empty, &starts, &c, u64::MAX, usize::MAX, &PDF, gate);
         assert!(held.is_some(), "a 3 MiB record should wait its turn");
     }
 
@@ -1392,7 +1445,7 @@ mod tests {
             body,
             media_type,
             ..
-        }) = record_to_raw(&rec, 32)
+        }) = record_to_raw(&rec, 32, &PDF)
         else {
             panic!("a PDF past the limit should still be a page");
         };
@@ -1400,7 +1453,7 @@ mod tests {
         assert!(body.is_empty());
         assert_eq!(media_type, "pdf");
         // Within the limit the same bytes are parsed, find no PDF, and drop.
-        assert!(record_to_raw(&rec, 64).is_none());
+        assert!(record_to_raw(&rec, 64, &PDF).is_none());
     }
 
     /// HTML and rendered text are read only as far as the limit, and a cut in
@@ -1412,14 +1465,14 @@ mod tests {
             "text/html",
             b"<html><body><p>kept</p><p>dropped</p></body></html>",
         );
-        let Some(RawRecord::Html { body, .. }) = record_to_raw(&html, 25) else {
+        let Some(RawRecord::Html { body, .. }) = record_to_raw(&html, 25, &PDF) else {
             panic!("the page's start should be read");
         };
         assert!(body.contains("kept") && !body.contains("dropped"), "{body}");
 
         // "é" is two bytes, so 5 bytes in falls inside the third one.
         let text = response("urn:text:https://ex.test/", "text/plain", "éééé".as_bytes());
-        let Some(RawRecord::Text { text, .. }) = record_to_raw(&text, 5) else {
+        let Some(RawRecord::Text { text, .. }) = record_to_raw(&text, 5, &PDF) else {
             panic!("rendered text should be read");
         };
         assert_eq!(text, "éé");
@@ -1467,6 +1520,7 @@ mod tests {
             search: &search,
             read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
             extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+            pdf: PDF,
             scratch: &crate::wacz::Scratch::new(None),
         };
         let err = index_pages(
