@@ -382,7 +382,7 @@ impl Ingest<'_> {
         search_index.set_stored_body_cap(config.stored_body_cap_bytes());
         let search = Mutex::new(search_index);
 
-        for source in &sources {
+        for (source, placement) in &sources {
             // Resume-friendly: skip a source already indexed *into this collection*
             // on an earlier run (unless --force). Commit + save happen per WACZ below,
             // so a source is "registered" only once its docs are durable. Scoping to
@@ -400,27 +400,34 @@ impl Ingest<'_> {
                 continue;
             }
 
-            let indexed = index_one(cx, source, &search, name, (&group.0, group.1.as_str()))?;
-            let (wacz_name, pages) = (indexed.display_name.clone(), indexed.stats.pages);
+            // Everything from parsing to the manifest save, as one unit: until
+            // the save, the crawl is in no manifest, so a failure anywhere in
+            // here takes back what filing put in archive/ (see `Placement`).
+            let ingested = (|| -> Result<(String, u64)> {
+                let indexed = index_one(cx, source, &search, name, (&group.0, group.1.as_str()))?;
+                let (wacz_name, pages) = (indexed.display_name.clone(), indexed.stats.pages);
 
-            // Commit + save per WACZ so an interrupted large ingest keeps every
-            // completed crawl (and a re-run resumes past it), rather than losing the
-            // whole run's uncommitted work.
-            progress.phase(&Phase::Committing);
-            let commit_start = std::time::Instant::now();
-            search.lock().unwrap().commit()?;
-            debug!(
-                commit_ms = commit_start.elapsed().as_millis() as u64,
-                wacz = %wacz_name,
-                "committed index"
-            );
-            // One brief manifest hold per crawl, opened and saved inside it, so
-            // a curator saving a description is never waiting on the whole
-            // ingest — and so this ingest cannot erase what they saved.
-            super::manifest::manifest_write(home, "an ingest", |m| {
-                record::upsert(m, indexed);
-                Ok(())
-            })?;
+                // Commit + save per WACZ so an interrupted large ingest keeps every
+                // completed crawl (and a re-run resumes past it), rather than losing the
+                // whole run's uncommitted work.
+                progress.phase(&Phase::Committing);
+                let commit_start = std::time::Instant::now();
+                search.lock().unwrap().commit()?;
+                debug!(
+                    commit_ms = commit_start.elapsed().as_millis() as u64,
+                    wacz = %wacz_name,
+                    "committed index"
+                );
+                // One brief manifest hold per crawl, opened and saved inside it, so
+                // a curator saving a description is never waiting on the whole
+                // ingest — and so this ingest cannot erase what they saved.
+                super::manifest::manifest_write(home, "an ingest", |m| {
+                    record::upsert(m, indexed);
+                    Ok(())
+                })?;
+                Ok((wacz_name, pages))
+            })();
+            let (wacz_name, pages) = ingested.inspect_err(|_| placement.undo())?;
 
             // Per-WACZ summary persists above the next WACZ's progress bar.
             progress.wacz_indexed(&wacz_name, pages);

@@ -57,9 +57,6 @@ Filed, documented, and not news. Each linked issue has the whole writeup.
   files, so without it a small hostile WACZ can fill the temp volume. The
   limits apply to the whole archive, not to each curator.
   [#232](https://github.com/edsu/indice/issues/232)
-- A failed upload leaves its file in `archive/`. It counts against
-  `uploads.max_total_gb` but appears nowhere in the workroom, so only someone
-  with a shell can remove it. [#233](https://github.com/edsu/indice/issues/233)
 
 A report that one of these is worse than I have described, or reachable from a
 principal I did not consider, is worth sending.

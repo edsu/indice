@@ -2799,6 +2799,8 @@ fn run_browsertrix(
                     indice_lib::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
                 let dest = item_dir.join(&filename);
                 eprintln!("↓ downloading {filename}{size}");
+                // Removed again if it fails to index (see `NewArchiveFile`).
+                let fresh = indice_lib::index::NewArchiveFile::at(&dest);
                 indice_lib::index::download_wacz(&res.path, &dest)?;
                 // Already local, so no download; forced for the same reason.
                 let indexed = indice_lib::index::Ingest::new(home)
@@ -2808,6 +2810,7 @@ fn run_browsertrix(
                     .progress(progress)
                     .index_location(&dest.to_string_lossy(), into);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
+                fresh.keep();
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
                 indice_lib::collections::wacz_id(&indice_lib::collections::Source::for_file(
                     &abs, home,
@@ -3003,6 +3006,8 @@ fn run_browsertrix_public(
                     indice_lib::index::safe_wacz_filename(&res.name, &format!("resource-{i}"));
                 let dest = item_dir.join(&filename);
                 eprintln!("↓ downloading {filename}{size}");
+                // Removed again if it fails to index (see `NewArchiveFile`).
+                let fresh = indice_lib::index::NewArchiveFile::at(&dest);
                 indice_lib::index::download_wacz(&res.path, &dest)?;
                 // Already local, so no download; forced for the same reason.
                 let indexed = indice_lib::index::Ingest::new(home)
@@ -3012,6 +3017,7 @@ fn run_browsertrix_public(
                     .progress(progress)
                     .index_location(&dest.to_string_lossy(), into);
                 indexed.with_context(|| format!("indexing {}", dest.display()))?;
+                fresh.keep();
                 let abs = dest.canonicalize().unwrap_or(dest.clone());
                 indice_lib::collections::wacz_id(&indice_lib::collections::Source::for_file(
                     &abs, home,

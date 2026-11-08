@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::collections::{file_sha256, Manifest, Source};
 use crate::index::paths::{archive_dir, scratch_dir};
@@ -132,16 +132,61 @@ pub(super) fn open(
 /// own space), **copied** otherwise (the original is left intact) — so the home
 /// directory stays self-contained and portable and the archive is browsable by
 /// collection. Directories and non-`.wacz` paths are errors with guidance.
+///
+/// Each source comes with the [`Placement`] that filed it, so an ingest that
+/// fails can take back what it put in `archive/` and nothing else.
 pub(super) fn resolve_sources(
     location: &str,
     home: &Path,
     collection_slug: &str,
     manifest: &Manifest,
-) -> Result<Vec<Source>> {
+) -> Result<Vec<(Source, Placement)>> {
     match Source::parse(location) {
-        url @ Source::Url(_) => Ok(vec![url]),
-        bt @ (Source::Browsertrix { .. } | Source::BrowsertrixPublic { .. }) => Ok(vec![bt]),
+        url @ Source::Url(_) => Ok(vec![(url, Placement::InPlace)]),
+        bt @ (Source::Browsertrix { .. } | Source::BrowsertrixPublic { .. }) => {
+            Ok(vec![(bt, Placement::InPlace)])
+        }
         Source::File(p) => Ok(vec![place_local_wacz(&p, home, collection_slug, manifest)?]),
+    }
+}
+
+/// What filing a source into `archive/` did, and so what undoing it means.
+///
+/// A WACZ is filed before it is parsed, so one that fails to parse is already
+/// in `archive/`. Left there it is in no manifest, which means no workroom
+/// shows it and nobody can delete it without a shell, while it still counts
+/// against `uploads.max_total_gb`. Only a file the ingest itself put there is
+/// its to take back.
+#[derive(Debug)]
+pub(super) enum Placement {
+    /// Nothing was written: a URL, a file already in its collection's folder,
+    /// or a byte-identical file already filed there. Never undone.
+    InPlace,
+    /// A new copy at this path; the original is untouched elsewhere.
+    Copied(PathBuf),
+    /// Renamed from `from` to `to`. The file may be someone's only copy, so
+    /// undoing renames it back rather than deleting it. For an upload, `from`
+    /// is its staging directory, which the upload handler removes anyway.
+    Moved { from: PathBuf, to: PathBuf },
+}
+
+impl Placement {
+    /// Take back what filing did, after the ingest failed.
+    ///
+    /// Best effort: the ingest's own error is what the curator needs to see,
+    /// so a failure here is logged rather than returned in its place.
+    pub(super) fn undo(&self) {
+        let result = match self {
+            Placement::InPlace => return,
+            Placement::Copied(dest) => std::fs::remove_file(dest),
+            Placement::Moved { from, to } => std::fs::rename(to, from),
+        };
+        match result {
+            Ok(()) => info!(placement = ?self, "took back a WACZ whose ingest failed"),
+            Err(e) => {
+                warn!(placement = ?self, error = %e, "could not take back a WACZ whose ingest failed")
+            }
+        }
     }
 }
 
@@ -185,13 +230,14 @@ fn pick_archive_dest(
 /// home-relative File [`Source`]. Moves it if it's already under `archive/`
 /// (reorganizing within the managed space); copies it otherwise. A file already
 /// in the collection folder is used in place; a byte-identical file already
-/// filed there is reused (idempotent re-index).
+/// filed there is reused (idempotent re-index). Returns what it did, so a failed
+/// ingest can undo it (see [`Placement`]).
 fn place_local_wacz(
     path: &Path,
     home: &Path,
     collection_slug: &str,
     manifest: &Manifest,
-) -> Result<Source> {
+) -> Result<(Source, Placement)> {
     if path.is_dir() {
         anyhow::bail!(
             "{} is a directory; pass individual .wacz files instead \
@@ -215,7 +261,7 @@ fn place_local_wacz(
         .map(|d| abs.starts_with(&d))
         .unwrap_or(false)
     {
-        return Ok(Source::for_file(&abs, home));
+        return Ok((Source::for_file(&abs, home), Placement::InPlace));
     }
 
     // Guard against silent re-collection: if this exact file is already a
@@ -245,9 +291,10 @@ fn place_local_wacz(
         .with_context(|| format!("{} has no file name", abs.display()))?;
     let dest = pick_archive_dest(&dest_dir, filename, &abs)?;
 
-    if dest.exists() {
+    let placement = if dest.exists() {
         // pick_archive_dest returned a byte-identical file already filed here —
         // reuse it (idempotent re-index), nothing to write.
+        Placement::InPlace
     } else {
         // A file already under archive/ is on the same filesystem as its
         // destination, so a rename (move) is cheap and non-duplicating; so is
@@ -264,14 +311,19 @@ fn place_local_wacz(
             std::fs::rename(&abs, &dest)
                 .with_context(|| format!("moving {} to {}", abs.display(), dest.display()))?;
             info!(from = %abs.display(), to = %dest.display(), "moved WACZ into collection archive");
+            Placement::Moved {
+                from: abs.clone(),
+                to: dest.clone(),
+            }
         } else {
             std::fs::copy(&abs, &dest)
                 .with_context(|| format!("copying {} to {}", abs.display(), dest.display()))?;
             info!(from = %abs.display(), to = %dest.display(), "copied WACZ into collection archive");
+            Placement::Copied(dest.clone())
         }
-    }
+    };
     let dest_abs = dest.canonicalize().unwrap_or(dest);
-    Ok(Source::for_file(&dest_abs, home))
+    Ok((Source::for_file(&dest_abs, home), placement))
 }
 
 /// Download a remote WACZ to a temp file for indexing.

@@ -2217,6 +2217,72 @@ async fn an_upload_may_not_inflate_past_the_archives_room() {
     indice_lib::index::index_path(&path, cli.path(), None, "cli").unwrap();
 }
 
+/// An upload that fails to index leaves nothing behind. It is filed into
+/// `archive/` before it is parsed, and a failure used to leave it there, in no
+/// manifest: invisible in the workroom, so no curator or admin could delete it,
+/// while it still counted against `uploads.max_total_gb` (#233). Twice, because
+/// a second attempt used to file beside the first as `big-2.wacz`.
+#[tokio::test]
+async fn an_upload_that_fails_to_index_leaves_nothing_behind() {
+    let (tmp, base, server) = serve_with_config("").await;
+    for _ in 0..2 {
+        let junk = format!("not a zip {}", unique());
+        let (ct, body) = upload_body("Junk", junk.as_bytes());
+        let (status, text) = post_upload(&base, ct, body, false).await;
+        assert_eq!(
+            status, 202,
+            "accepted, since it has not been parsed yet: {text}"
+        );
+        let job: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let (_, transcript) = get(format!(
+            "{base}/api/archives/{}/events",
+            job["job"].as_u64().unwrap()
+        ))
+        .await;
+        assert!(
+            transcript.contains("event: error"),
+            "the job should fail: {transcript}"
+        );
+    }
+    for dir in [
+        indice_lib::index::archive_dir(tmp.path()),
+        indice_lib::index::scratch_dir(tmp.path()),
+    ] {
+        let left: Vec<_> = files_under(&dir);
+        assert!(left.is_empty(), "files left under {dir:?}: {left:?}");
+    }
+    server.abort();
+}
+
+/// A different body per attempt, so the second upload cannot be taken for a
+/// byte-identical copy of the first and reused.
+fn unique() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+/// Every file under `dir`, at any depth. Empty when `dir` does not exist.
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                todo.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
 /// An upload that would take the archive past `uploads.max_total_gb` is refused
 /// with the numbers, as is any upload once it is full, and the desk says which.
 #[tokio::test]

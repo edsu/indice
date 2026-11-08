@@ -139,7 +139,6 @@ A server serves reads to anyone. To keep an archive off the open web, gate reads
 These are filed and not yet fixed. Each linked issue has the whole writeup.
 
 - The upload limits apply to the whole archive, not to each curator, so one curator can use everyone's share ([#232](https://github.com/edsu/indice/issues/232)).
-- A failed upload leaves its file in `archive/`. It counts against `uploads.max_total_gb` but appears nowhere in the workroom, so only someone with a shell can remove it ([#233](https://github.com/edsu/indice/issues/233)).
 
 ## How it has been tested
 

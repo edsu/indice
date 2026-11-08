@@ -371,6 +371,9 @@ pub(super) async fn bx_import(
                                 of: resources.len(),
                             },
                         );
+                        // Removed again if it fails to index (see
+                        // `NewArchiveFile`).
+                        let fresh = crate::index::NewArchiveFile::at(&dest);
                         crate::index::download_wacz(&res.path, &dest)?;
                         // Index lock before the in-process one: the ingest
                         // below takes it re-entrantly, and waiting for it from
@@ -396,6 +399,7 @@ pub(super) async fn bx_import(
                             .scratch_limit(scratch)
                             .progress(&progress)
                             .index_location(&dest.to_string_lossy(), &req.collection)?;
+                        fresh.keep();
                         let abs = dest.canonicalize().unwrap_or(dest.clone());
                         let crawl_id = crate::collections::wacz_id(
                             &crate::collections::Source::for_file(&abs, &job_state.home),
