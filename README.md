@@ -31,7 +31,7 @@ are revision control ready.
 > the actual replay) and adds a thin Rust layer for indexing, search, and
 > serving. Webrecorder did the heavy lifting; please support them.
 
-## The readings room
+## The reading room
 
 - **Full-text search with faceted, temporal browsing**: hit-highlighted
   snippets, then narrow by collection, site, date, type, or language, with a
