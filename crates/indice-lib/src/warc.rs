@@ -481,8 +481,14 @@ fn parse_one_warc_record<R: BufRead>(
 
     let timestamp = iso_to_14digit(&date);
 
-    let mut block = vec![0u8; content_length];
-    r.read_exact(&mut block).unwrap_or(());
+    // `Content-Length` is the record's claim, not what is there: the buffer
+    // grows as bytes arrive, so it is never larger than the record. Sized from
+    // the claim, one header asking for terabytes aborts the process.
+    let mut block = Vec::new();
+    let _ = r
+        .by_ref()
+        .take(content_length as u64)
+        .read_to_end(&mut block);
 
     // Consume the mandatory trailing \r\n\r\n that follows every WARC block.
     let mut trailing = [0u8; 4];
@@ -630,6 +636,15 @@ mod tests {
 
     fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(FIXTURES).join(name)
+    }
+
+    #[test]
+    fn a_record_claiming_more_than_it_holds_gets_what_it_holds() {
+        let record = b"WARC/1.0\r\nWARC-Type: resource\r\n\
+            Content-Length: 100000000000000\r\n\r\nhi";
+        let records = parse_warc_records(record, 0, record.len() as u64);
+        let rec = records[0].as_ref().unwrap();
+        assert_eq!(rec.payload, b"hi");
     }
 
     #[test]
