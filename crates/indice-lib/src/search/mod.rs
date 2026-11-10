@@ -175,7 +175,7 @@ impl SearchIndex {
     /// collection document survived would still look present, hiding the
     /// damage this is supposed to find.
     pub fn live_crawl_ids(&self) -> Result<BTreeMap<String, u64>> {
-        let searcher = self.index.reader()?.searcher();
+        let searcher = self.reader()?.searcher();
         let schema = self.index.schema();
         let field = schema.get_field(FIELD_CRAWL_ID)?;
 
@@ -231,7 +231,7 @@ impl SearchIndex {
     /// for an orphan that entry is exactly what is missing, so the documents
     /// are the only remaining record of where it belonged.
     pub fn crawl_collection(&self, crawl_id: &str) -> Result<Option<String>> {
-        let searcher = self.index.reader()?.searcher();
+        let searcher = self.reader()?.searcher();
         let schema = self.index.schema();
         let hits = searcher.search(
             &self.page_of_crawl(crawl_id)?,
@@ -405,7 +405,7 @@ impl SearchIndex {
     /// Total number of live documents across all segments — the denominator for
     /// the bytes-per-doc size/scale model.
     pub fn num_docs(&self) -> Result<u64> {
-        Ok(self.index.reader()?.searcher().num_docs())
+        Ok(self.reader()?.searcher().num_docs())
     }
 
     /// Uncompressed stored-text bytes per field, over up to `scan_cap` live docs
@@ -416,7 +416,7 @@ impl SearchIndex {
     /// the exact on-disk split. Scans only live docs, so deleted-but-unmerged
     /// docs don't skew it.
     pub fn stored_field_sizes(&self, scan_cap: usize) -> Result<StoredFieldStats> {
-        let searcher = self.index.reader()?.searcher();
+        let searcher = self.reader()?.searcher();
         let schema = self.index.schema();
         let mut by: std::collections::HashMap<String, (u64, u64)> =
             std::collections::HashMap::new();
@@ -596,6 +596,21 @@ impl SearchIndex {
         let after = self.index.searchable_segment_ids()?.len();
         progress.finish();
         Ok((before, after))
+    }
+
+    /// A reader on the index as last committed, opened for one search.
+    ///
+    /// `ReloadPolicy::Manual` because the reader is dropped straight after,
+    /// so it has nothing to reload, and the default policy subscribes it to
+    /// the directory's commit notifications: Tantivy keeps a dead entry for
+    /// each one until the next commit prunes the list, about 40 bytes per
+    /// search, so a server that only serves searches grows without limit.
+    pub(crate) fn reader(&self) -> Result<tantivy::IndexReader> {
+        Ok(self
+            .index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()?)
     }
 
     /// Disable Tantivy's automatic segment merging on this writer, so each
