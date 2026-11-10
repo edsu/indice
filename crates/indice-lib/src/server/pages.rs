@@ -205,7 +205,9 @@ pub(super) async fn search_page(
     }
 
     let page = params.page.unwrap_or(1).max(1);
-    let offset = (page - 1) * PAGE_SIZE;
+    // Saturating: `?page=` is anyone's to set, and a page past the last
+    // is an empty one, not an overflow.
+    let offset = (page - 1).saturating_mul(PAGE_SIZE);
     let for_index = q.clone();
     let response = match state
         .read_index(move |s| s.search_faceted(&for_index, PAGE_SIZE, offset))
