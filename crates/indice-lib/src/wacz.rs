@@ -1347,6 +1347,28 @@ mod tests {
         assert!(urls.contains(&"https://example.com/a") && urls.contains(&"https://example.com/b"));
     }
 
+    /// Only stored and deflated members are read, which is all a WACZ uses:
+    /// with the zip crate's other methods built in, a PPMd member made the
+    /// decoder allocate 256 MB from a few bytes of header (found by the `wacz`
+    /// fuzz target). Pins `default-features = false` on `zip`.
+    #[test]
+    fn a_member_in_a_method_a_wacz_never_uses_is_refused() {
+        let zip = zip_of(&[("datapackage.json", b"{}", true)]);
+        let mut bytes = zip.into_inner().into_inner();
+        // The method is at offset 8 of the local header and 10 of the
+        // central directory entry; 98 is PPMd.
+        for (sig, at) in [(b"PK\x03\x04", 8), (b"PK\x01\x02", 10)] {
+            let i = bytes.windows(4).position(|w| w == sig).unwrap() + at;
+            bytes[i..i + 2].copy_from_slice(&98u16.to_le_bytes());
+        }
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        // Opening is lazy: the method is refused on the first read. Built in,
+        // PPMd would decode these bytes and fail on their length instead.
+        let mut member = zip.by_name("datapackage.json").unwrap();
+        let err = std::io::Read::read_to_end(&mut member, &mut Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("not supported"), "{err}");
+    }
+
     #[test]
     fn cdx_records_recognizes_a_plain_cdxj_index() {
         use std::io::Write;

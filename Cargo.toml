@@ -47,7 +47,10 @@ tantivy = { version = "0.27", features = ["zstd-compression"] }
 
 # WARC / WACZ
 warc = "0.4"
-zip = "9.2"
+# Stored and deflate only, which is all a WACZ uses. The other methods are
+# code a hostile WACZ could reach and an honest one never does: a PPMd entry
+# makes the decoder allocate up to 256 MB from a few bytes of header.
+zip = { version = "9.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # URL / HTML
 url = "2"
