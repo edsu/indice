@@ -7,10 +7,13 @@ nothing behind it to backport them to.
 If you *are* running indice somewhere, please tell me, in an issue or privately.
 It changes how I weigh everything below.
 
-indice has had no independent security review, and its parsers have not been
-fuzzed. Its testing is the test suite, which pins each guarantee in the threat
-model, CodeQL and a RustSec advisory check on every change, and AI-assisted
-review.
+indice has had no independent security review. Its WARC and WACZ parsers,
+the CDX index included, have fuzz targets in `fuzz/`, which have run for about
+an hour each; the two problems they found are fixed in 0.6.1
+([GHSA-p9fc-fmpp-x86j](https://github.com/edsu/indice/security/advisories/GHSA-p9fc-fmpp-x86j)).
+PDF and HTML text extraction are not fuzzed. The rest of its testing is the
+test suite, which pins each guarantee in the threat model, CodeQL and a RustSec
+advisory check on every change, and AI-assisted review.
 
 ## Reporting
 
