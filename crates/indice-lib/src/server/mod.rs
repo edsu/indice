@@ -69,6 +69,10 @@ mod tests;
 
 pub use util::human_size;
 
+// For the fuzz targets (`crate::fuzz`), which reach no further into `server`.
+pub(crate) use assets::parse_byte_range;
+pub(crate) use util::MAX_QUERY_LEN;
+
 /// Who is trusted, which is the only question that separates indice's two
 /// deployment shapes.
 ///
