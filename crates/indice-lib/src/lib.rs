@@ -7,6 +7,8 @@ pub mod config;
 pub mod describe;
 pub mod events;
 mod fsio;
+#[doc(hidden)]
+pub mod fuzz;
 pub mod http_range;
 pub mod i18n;
 pub mod identity;
