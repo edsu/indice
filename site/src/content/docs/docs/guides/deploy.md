@@ -13,7 +13,7 @@ No read-only server shape exists. A server you cannot write to sends you back to
 :::note[Read this before a public instance]
 indice is alpha, and its security boundaries are documented: [Securing a server](/docs/guides/security/) is the operator's version, [*Threat Model*](https://github.com/edsu/indice/blob/main/DESIGN.md#threat-model) in the design notes is the full argument, and [SECURITY.md](https://github.com/edsu/indice/blob/main/SECURITY.md) lists what is already filed. Several of the open items matter more when your curators are strangers than when they are colleagues, so read them before you put one on the open web.
 
-indice was created entirely by an AI agent: Claude Code, using Claude Opus 4.8, 5 and 5.5. It has had no independent security review, and its parsers have not been fuzzed. Its testing is its own test suite, CodeQL and a RustSec advisory check on every change, and AI-assisted review. [Securing a server](/docs/guides/security/#how-it-has-been-tested) says what is planned.
+indice was created entirely by an AI agent: Claude Code, using Claude Opus 4.8, 5 and 5.5. It has had no independent security review. Its WARC and WACZ parsers have been fuzzed, but not its PDF and HTML text extraction. Its other testing is its own test suite, CodeQL and a RustSec advisory check on every change, and AI-assisted review. [Securing a server](/docs/guides/security/#how-it-has-been-tested) says what is planned.
 :::
 
 ## Container image

@@ -1,0 +1,52 @@
+# Fuzz targets for indice's parsers (#225). Its own workspace, built with
+# nightly by cargo-fuzz: see README.md. The main workspace and CI don't
+# build it.
+[package]
+name = "indice-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+flate2 = "1"
+indice-lib = { path = "../crates/indice-lib" }
+libfuzzer-sys = "0.4"
+# Without the default methods, as in the workspace: Cargo merges features
+# across the build, so the defaults here would turn them back on for
+# indice-lib too.
+zip = { version = "9.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "warc"
+path = "fuzz_targets/warc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "warc_slice"
+path = "fuzz_targets/warc_slice.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wacz"
+path = "fuzz_targets/wacz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wacz_members"
+path = "fuzz_targets/wacz_members.rs"
+test = false
+doc = false
+bench = false

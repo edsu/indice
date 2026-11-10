@@ -19,12 +19,12 @@ are revision control ready.
 > See [DESIGN.md](DESIGN.md) for the overall design principles. Technical reviews
 > of the code and design are always welcome!*
 
-> **Security:** indice has had no independent security review, and its parsers
-> have not been fuzzed. Its testing is its own test suite, CodeQL and a RustSec
-> advisory check on every change, and AI-assisted review. Read
-> [Securing a server] before putting it on the open web. The plan for fuzzing,
-> penetration testing and an outside review is in
-> [#223](https://github.com/edsu/indice/issues/223).
+> **Security:** indice has had no independent security review. Its WARC and
+> WACZ parsers have been fuzzed, but not its PDF and HTML text extraction. Its
+> other testing is its own test suite, CodeQL and a RustSec advisory check on
+> every change, and AI-assisted review. Read [Securing a server] before putting
+> it on the open web. The plan for the rest of the fuzzing, penetration testing
+> and an outside review is in [#223](https://github.com/edsu/indice/issues/223).
 
 > **The web archive replay is entirely [Webrecorder]'s work.** indice bundles and
 > serves [ReplayWeb.page] and [wabac.js] (the browser-side engine that does all
