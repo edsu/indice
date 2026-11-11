@@ -120,22 +120,34 @@ pub(super) async fn serve_file(
     }
 }
 
-fn parse_byte_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
+/// The bytes a `Range: bytes=…` header asks for, as inclusive `(start, end)`
+/// offsets within a file of `file_size` bytes, or `None` to serve the whole
+/// file, which RFC 9110 allows for any range a server chooses to ignore.
+///
+/// Ignored: a range that starts past the end, ends before it starts, or asks
+/// for the last zero bytes, an empty file, and anything but one range. The
+/// length sent is `end - start + 1`, so `start <= end < file_size` is what
+/// keeps it from wrapping to a `Content-Length` of 2^64 bytes.
+pub(crate) fn parse_byte_range(range: &str, file_size: u64) -> Option<(u64, u64)> {
+    let last = file_size.checked_sub(1)?;
     let s = range.strip_prefix("bytes=")?;
-    if let Some(suffix_len) = s.strip_prefix('-') {
+    let (start, end) = if let Some(suffix_len) = s.strip_prefix('-') {
         let n: u64 = suffix_len.parse().ok()?;
-        let start = file_size.saturating_sub(n);
-        Some((start, file_size - 1))
+        if n == 0 {
+            return None;
+        }
+        (file_size.saturating_sub(n), last)
     } else {
         let (start_str, end_str) = s.split_once('-')?;
         let start: u64 = start_str.parse().ok()?;
         let end = if end_str.is_empty() {
-            file_size - 1
+            last
         } else {
-            end_str.parse::<u64>().ok()?.min(file_size - 1)
+            end_str.parse::<u64>().ok()?.min(last)
         };
-        Some((start, end))
-    }
+        (start, end)
+    };
+    (start <= end).then_some((start, end))
 }
 
 /// The placeholder in `viewer.html` that [`replay_page`] fills with the

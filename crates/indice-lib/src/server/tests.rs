@@ -1802,3 +1802,28 @@ fn filter_names_follow_the_page_language() {
         assert!(it.has_message(&key), "no {key} message");
     }
 }
+
+#[test]
+fn a_range_that_cannot_be_served_is_ignored() {
+    // Served as asked.
+    assert_eq!(parse_byte_range("bytes=0-9", 100), Some((0, 9)));
+    assert_eq!(parse_byte_range("bytes=90-", 100), Some((90, 99)));
+    assert_eq!(parse_byte_range("bytes=90-500", 100), Some((90, 99)));
+    assert_eq!(parse_byte_range("bytes=-10", 100), Some((90, 99)));
+    assert_eq!(parse_byte_range("bytes=-500", 100), Some((0, 99)));
+    // Ignored, so the whole file is sent. Each of these made `end - start + 1`
+    // wrap, or `file_size - 1` underflow.
+    for range in ["bytes=10-5", "bytes=100-", "bytes=500-600", "bytes=-0"] {
+        assert_eq!(parse_byte_range(range, 100), None, "{range}");
+    }
+    assert_eq!(parse_byte_range("bytes=0-", 0), None);
+    assert_eq!(parse_byte_range("bytes=-5", 0), None);
+    assert_eq!(parse_byte_range("bytes=0-1,5-6", 100), None);
+}
+
+#[tokio::test]
+async fn a_search_page_past_the_last_is_empty() {
+    let (_home, app) = app_with_language(None);
+    let (status, _, _) = get_with(&app, &format!("/search?q=x&page={}", usize::MAX), None).await;
+    assert_eq!(status, StatusCode::OK);
+}

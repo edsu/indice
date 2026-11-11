@@ -222,7 +222,7 @@ pub(super) fn collection_default_page(members: &[&Wacz]) -> Option<(String, Stri
 ///
 /// 2 KiB is far more than a person types — roughly 300 words, or sixty
 /// `field:value` filters — and far less than a weapon.
-pub(super) const MAX_QUERY_LEN: usize = 2048;
+pub(crate) const MAX_QUERY_LEN: usize = 2048;
 
 /// The refusal for an over-length query, or `None` to carry on.
 ///

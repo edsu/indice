@@ -63,7 +63,7 @@ impl SearchIndex {
     /// browse entry points. Runs only the aggregation — no result fetching or
     /// URL grouping — so it is cheap.
     pub fn facet_overview(&self) -> Result<Vec<FacetGroup>> {
-        let reader = self.index.reader()?;
+        let reader = self.reader()?;
         let searcher = reader.searcher();
         let agg_collector =
             AggregationCollector::from_aggs(facet_aggregations(), AggContextParams::default());
@@ -82,7 +82,7 @@ impl SearchIndex {
             FacetScope::Collection(v) => (schema.get_field(FIELD_COLLECTION).unwrap(), v),
             FacetScope::Crawl(v) => (schema.get_field(FIELD_CRAWL_ID).unwrap(), v),
         };
-        let reader = self.index.reader()?;
+        let reader = self.reader()?;
         let searcher = reader.searcher();
         let query = tantivy::query::TermQuery::new(
             Term::from_field_text(field, value),
@@ -118,7 +118,7 @@ impl SearchIndex {
         // Map the `crawl:` filter alias onto its real `crawl_id` field before
         // parsing (the query parser resolves against schema field names).
         let query_str = &rewrite_crawl_alias(query_str);
-        let reader = self.index.reader()?;
+        let reader = self.reader()?;
         let searcher = reader.searcher();
         let schema = self.index.schema();
 
@@ -287,7 +287,7 @@ impl SearchIndex {
         let (url_f, title_f, ts_f) = (f(FIELD_URL)?, f(FIELD_TITLE)?, f(FIELD_TS)?);
         let (site_f, desc_f, snip_f) = (f(FIELD_SITE)?, f(FIELD_DESCRIPTION)?, f(FIELD_BODY_SNIP)?);
         let status_f = f(FIELD_STATUS)?;
-        let searcher = self.index.reader()?.searcher();
+        let searcher = self.reader()?.searcher();
 
         // Up to `n` pages of this collection that also match `field = value`,
         // leaving out captured error pages (a 404, a redirect): archived
@@ -416,7 +416,7 @@ impl SearchIndex {
         let crawl_id_f = schema.get_field(FIELD_CRAWL_ID).unwrap();
         let status_f = schema.get_field(FIELD_STATUS).unwrap();
 
-        let reader = self.index.reader()?;
+        let reader = self.reader()?;
         let searcher = reader.searcher();
 
         let term = |field, text: &str| -> Box<dyn Query> {

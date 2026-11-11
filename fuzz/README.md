@@ -8,6 +8,11 @@ These are [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the 
 | `warc_slice` | One record's bytes as a CDX lookup fetches them, gzipped or plain |
 | `wacz` | Whole WACZ files: `datapackage.json`, nested WACZs, stored WARCs, `warcinfo`, the CDX index |
 | `wacz_members` | WACZs built from the member names indice looks for, so the fuzzer spends its time on member contents rather than on ZIP structure |
+| `search` | Search queries up to the server's 2 KiB limit, against a small index built once per run |
+| `byte_range` | `Range` headers on a WACZ download, checking that what is served lies inside the file |
+| `markdown` | Curator Markdown, checking that the HTML has no tag, attribute or link scheme that could run script (`indice_lib::fuzz::unsafe_html`) |
+
+`search`, `byte_range` and `markdown` take input anyone who reaches a server can send, or, for Markdown, that every visitor's browser renders. The `search` index has two pages, so the target finds panics and parser hangs, not queries that are slow on a large index. Run it with `cargo +nightly fuzz run -O --sanitizer none search`. `-O` builds as indice ships, without debug assertions: Tantivy 0.27's phrase scorer has a `debug_assert!` that a negated phrase repeating a term, such as `-"sea sea"`, trips within minutes, though a release build answers that query correctly. With AddressSanitizer on, the process grows past `-rss_limit_mb` in under an hour from the sanitizer's own bookkeeping; without it, memory grew from 98 to 104 MB over an hour and 4.7 million inputs. The search path is safe Rust, which is what AddressSanitizer would add the least to.
 
 ## Running
 

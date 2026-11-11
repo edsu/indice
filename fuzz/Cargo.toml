@@ -50,3 +50,24 @@ path = "fuzz_targets/wacz_members.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "search"
+path = "fuzz_targets/search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "byte_range"
+path = "fuzz_targets/byte_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown"
+path = "fuzz_targets/markdown.rs"
+test = false
+doc = false
+bench = false
