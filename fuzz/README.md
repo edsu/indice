@@ -18,12 +18,13 @@ These are [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the 
 
 ## Running
 
-cargo-fuzz needs nightly Rust, for the coverage instrumentation and AddressSanitizer flags it passes to the compiler. The fuzz crate is its own workspace, so the main build and CI never compile it.
+cargo-fuzz needs nightly Rust, for the coverage instrumentation and AddressSanitizer flags it passes to the compiler. The fuzz crate is its own workspace, so the main build never compiles it. Its `Cargo.lock` is not committed: copy the main one in before building, so that what is fuzzed is the dependency versions indice ships, and copy it again after the main one changes.
 
 ```sh
 rustup toolchain install nightly
 cargo install cargo-fuzz
 cd fuzz
+cp ../Cargo.lock Cargo.lock
 ./seed.sh    # copies the test fixtures into corpus/ as starting inputs
 ASAN_OPTIONS=quarantine_size_mb=32 cargo +nightly fuzz run wacz -- \
     -max_total_time=3600 -rss_limit_mb=1024 -malloc_limit_mb=256 \
