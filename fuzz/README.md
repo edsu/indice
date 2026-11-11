@@ -16,14 +16,17 @@ These are [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the 
 
 `search`, `byte_range` and `markdown` take input anyone who reaches a server can send, or, for Markdown, that every visitor's browser renders. The `search` index has two pages, so the target finds panics and parser hangs, not queries that are slow on a large index. Run it with `cargo +nightly fuzz run -O --sanitizer none search`. `-O` builds as indice ships, without debug assertions: Tantivy 0.27's phrase scorer has a `debug_assert!` that a negated phrase repeating a term, such as `-"sea sea"`, trips within minutes, though a release build answers that query correctly. With AddressSanitizer on, the process grows past `-rss_limit_mb` in under an hour from the sanitizer's own bookkeeping; without it, memory grew from 98 to 104 MB over an hour and 4.7 million inputs. The search path is safe Rust, which is what AddressSanitizer would add the least to.
 
+`image` runs with `-malloc_limit_mb=600 -rss_limit_mb=2048`, above the `image` crate's 512 MiB default, so that the allocations thumbnailing allows (see `MAX_DECODE_BYTES` in `thumbnail.rs`) don't stop it and one past the crate's own cap does.
+
 ## Running
 
-cargo-fuzz needs nightly Rust, for the coverage instrumentation and AddressSanitizer flags it passes to the compiler. The fuzz crate is its own workspace, so the main build and CI never compile it.
+cargo-fuzz needs nightly Rust, for the coverage instrumentation and AddressSanitizer flags it passes to the compiler. The fuzz crate is its own workspace, so the main build never compiles it. Its `Cargo.lock` is not committed: copy the main one in before building, so that what is fuzzed is the dependency versions indice ships, and copy it again after the main one changes.
 
 ```sh
 rustup toolchain install nightly
 cargo install cargo-fuzz
 cd fuzz
+cp ../Cargo.lock Cargo.lock
 ./seed.sh    # copies the test fixtures into corpus/ as starting inputs
 ASAN_OPTIONS=quarantine_size_mb=32 cargo +nightly fuzz run wacz -- \
     -max_total_time=3600 -rss_limit_mb=1024 -malloc_limit_mb=256 \
@@ -38,6 +41,10 @@ What the settings are for:
 - `-timeout=10` counts an input that takes more than 10 seconds as a hang.
 - `-max_len=1048576` lets inputs grow to 1 MiB, enough for a WACZ with a few members.
 
+## In CI
+
+`.github/workflows/fuzz.yml` runs every target, with the settings above and the exceptions for `search` and `image`. On a pull request that changes code a target reaches, or `Cargo.lock`, each runs for 60 seconds. Every Monday each runs for an hour, then the corpus is minimized with `cargo fuzz cmin` and cached, and the next run, weekly or pull request, starts from it.
+
 ## A finding
 
 libFuzzer writes the input to `artifacts/<target>/`. Replay it alone:
@@ -46,4 +53,4 @@ libFuzzer writes the input to `artifacts/<target>/`. Replay it alone:
 cargo +nightly fuzz run wacz artifacts/wacz/<file> -- -malloc_limit_mb=256
 ```
 
-A finding someone could use against a running server goes in a private security advisory, not an issue (see `SECURITY.md`). Fix it with a regression test beside the parser, and keep the artifact out of the repository until the fix is released.
+A finding someone could use against a running server goes in a private security advisory, not an issue (see `SECURITY.md`). Fix it with a regression test beside the parser, and keep the artifact out of the repository until the fix is released. A finding in CI is already public: the job uploads the input as an artifact, and the log shows the stack trace.

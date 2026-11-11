@@ -1,0 +1,125 @@
+name: Fuzz
+
+# Runs the cargo-fuzz targets in fuzz/ (see fuzz/README.md). On a pull
+# request that touches code they reach, each target runs for a minute, from
+# the corpus the weekly run left. The weekly run gives each an hour, then
+# minimizes the corpus and caches it for the next run, so coverage builds up
+# from week to week rather than starting from the seeds each time.
+#
+# A finding fails the job and uploads the input as a workflow artifact, which
+# anyone can download from a public repository, as they can read the log.
+on:
+  pull_request:
+    paths:
+      - "crates/indice-lib/src/warc.rs"
+      - "crates/indice-lib/src/wacz.rs"
+      - "crates/indice-lib/src/http_range.rs"
+      - "crates/indice-lib/src/search/**"
+      - "crates/indice-lib/src/markdown.rs"
+      - "crates/indice-lib/src/thumbnail.rs"
+      - "crates/indice-lib/src/fuzz.rs"
+      - "crates/indice-lib/src/server/assets.rs"
+      - "crates/indice-lib/src/server/util.rs"
+      - "Cargo.lock"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: warc
+          - target: warc_slice
+          - target: wacz
+          - target: wacz_members
+          - target: html
+          - target: markdown
+          - target: byte_range
+          # Without debug assertions or AddressSanitizer: see fuzz/README.md.
+          - target: search
+            build: -O --sanitizer none
+            args: -max_len=65536
+          # Above the image crate's own 512 MiB cap, so that only an
+          # allocation past it stops the run.
+          - target: image
+            args: -malloc_limit_mb=600 -rss_limit_mb=2048
+    defaults:
+      run:
+        working-directory: fuzz
+    env:
+      SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && 60 || 3600 }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install nightly Rust and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+
+      # The fuzz crate is its own workspace. Its lockfile starts from the
+      # main one, so it fuzzes the dependency versions indice ships.
+      - name: Use the main Cargo.lock
+        run: cp ../Cargo.lock Cargo.lock
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+          key: ${{ matrix.target }}
+
+      - name: Restore the corpus
+        uses: actions/cache/restore@v6
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Seed
+        run: ./seed.sh
+
+      - name: Fuzz
+        env:
+          ASAN_OPTIONS: quarantine_size_mb=32
+        run: >
+          cargo +nightly fuzz run ${{ matrix.build }} ${{ matrix.target }} --
+          -max_total_time=$SECONDS_PER_TARGET -rss_limit_mb=1024
+          -malloc_limit_mb=256 -timeout=10 -max_len=1048576 ${{ matrix.args }}
+
+      - name: Upload the finding
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          retention-days: 30
+
+      # Only the weekly run saves the corpus, so a pull request's inputs never
+      # reach the cache that other runs start from.
+      - name: Minimize the corpus
+        if: github.event_name != 'pull_request'
+        run: cargo +nightly fuzz cmin ${{ matrix.build }} ${{ matrix.target }} -- -rss_limit_mb=2048 -timeout=10
+
+      - name: Save the corpus
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v6
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
