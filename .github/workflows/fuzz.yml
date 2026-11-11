@@ -79,11 +79,14 @@ jobs:
       - name: Use the main Cargo.lock
         run: cp ../Cargo.lock Cargo.lock
 
+      # One cache per set of build flags, not per target: the targets share
+      # their dependencies, and nine copies of them overfill the repository's
+      # cache space, which would then evict the saved corpora.
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-          key: ${{ matrix.target }}
+          key: ${{ matrix.build && 'no-sanitizer' || 'asan' }}
 
       - name: Restore the corpus
         uses: actions/cache/restore@v6
