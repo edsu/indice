@@ -29,6 +29,15 @@ const MIN_IMAGE_BYTES: u64 = 5_000;
 /// 400px thumbnail, and plenty of usable images sit below it. A curator can still
 /// pin a bigger one with `crawl set --image`.
 const MAX_IMAGE_BYTES: u64 = 3_000_000;
+/// The most a decoded image may take, in place of the `image` crate's
+/// 512 MiB. An image's header declares its size, so a few kilobytes of PNG
+/// or WebP can decode to hundreds of megabytes: 64 MiB is 4096 x 4096 RGBA,
+/// far more than a 400-pixel thumbnail needs. The crate checks this against
+/// the decoded image, not every buffer a decoder holds, and lossless WebP
+/// keeps an RGBA copy beside an RGB result: a 9 KB WebP just under the limit
+/// peaks at 160 MB. Without the limit, a 71 KB one took 1.26 GB
+/// (`a_decode_larger_than_the_limit_is_refused`).
+const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Path of a crawl's cached (auto-selected) thumbnail.
 fn thumb_file(thumbs_dir: &Path, crawl_id: &str) -> PathBuf {
@@ -38,19 +47,31 @@ fn thumb_file(thumbs_dir: &Path, crawl_id: &str) -> PathBuf {
 /// Decode `bytes`, downscale to fit `THUMB_MAX_EDGE` (aspect preserved), and
 /// write the JPEG to `dest`, creating its parent directory.
 fn write_thumbnail(dest: &Path, bytes: &[u8]) -> Result<()> {
-    let img = image::load_from_memory(bytes).context("decoding image")?;
+    let jpeg = thumbnail_jpeg(bytes)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(dest, jpeg).with_context(|| format!("writing {}", dest.display()))?;
+    Ok(())
+}
+
+/// `bytes` decoded, downscaled to fit `THUMB_MAX_EDGE` (aspect preserved), and
+/// encoded as a JPEG.
+pub(crate) fn thumbnail_jpeg(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .context("decoding image")?;
+    reader.limits(limits);
+    let img = reader.decode().context("decoding image")?;
     let rgb = img.thumbnail(THUMB_MAX_EDGE, THUMB_MAX_EDGE).into_rgb8();
     let mut out = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(rgb)
         .write_to(&mut out, image::ImageFormat::Jpeg)
         .context("encoding thumbnail")?;
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(dest, out.into_inner())
-        .with_context(|| format!("writing {}", dest.display()))?;
-    Ok(())
+    Ok(out.into_inner())
 }
 
 /// Pin a curator-supplied local image at `dest` (a committable path under the
@@ -328,6 +349,37 @@ mod tests {
         // it's a valid, downscaled JPEG
         let out = image::load_from_memory(&std::fs::read(&dest).unwrap()).unwrap();
         assert!(out.width() <= THUMB_MAX_EDGE && out.height() <= THUMB_MAX_EDGE);
+    }
+
+    #[test]
+    fn a_decode_larger_than_the_limit_is_refused() {
+        // A PNG header declaring 8193 x 8193 grayscale, 64 MiB and a bit,
+        // with no pixel data: refused from the header, before any decoding.
+        let chunk = |kind: &[u8], data: &[u8]| {
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            let mut c = (data.len() as u32).to_be_bytes().to_vec();
+            c.extend_from_slice(kind);
+            c.extend_from_slice(data);
+            c.extend_from_slice(&crc.sum().to_be_bytes());
+            c
+        };
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&8193u32.to_be_bytes());
+        ihdr.extend_from_slice(&8193u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(chunk(b"IHDR", &ihdr));
+        png.extend(chunk(b"IDAT", &[]));
+        png.extend(chunk(b"IEND", &[]));
+
+        let err = thumbnail_jpeg(&png).unwrap_err();
+        assert!(
+            matches!(err.downcast_ref(), Some(image::ImageError::Limits(_))),
+            "{err:#}"
+        );
+        assert!(thumbnail_jpeg(&png_bytes(64, 48)).is_ok());
     }
 
     #[test]
