@@ -8,7 +8,8 @@ If you *are* running indice somewhere, please tell me, in an issue or privately.
 It changes how I weigh everything below.
 
 indice has had no independent security review. It has fuzz targets in
-`fuzz/`, each run for about an hour: for the WARC and WACZ parsers, the CDX
+`fuzz/`, which CI runs for an hour each week and for a minute on a pull
+request that changes code they reach: for the WARC and WACZ parsers, the CDX
 index included, whose two findings are fixed in 0.6.1
 ([GHSA-p9fc-fmpp-x86j](https://github.com/edsu/indice/security/advisories/GHSA-p9fc-fmpp-x86j)),
 and for what anyone can send a server: search queries, `Range` headers, and
@@ -16,8 +17,9 @@ the curator Markdown every visitor's browser renders, whose findings (memory
 held for every search, and two overflows) are fixed in 0.6.2. HTML text
 extraction, the page lists and thumbnail images are fuzzed too, and an image
 of a few kilobytes that decoded to over a gigabyte is fixed in 0.6.2. PDF
-text extraction is not fuzzed. The rest of its testing is the test suite, which pins each guarantee in the threat model, CodeQL and a RustSec
-advisory check on every change, and AI-assisted review.
+text extraction is not fuzzed. The rest of its testing is the test suite,
+which pins each guarantee in the threat model, CodeQL and a RustSec advisory
+check on every change, and AI-assisted review.
 
 ## Reporting
 
