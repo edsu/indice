@@ -43,6 +43,24 @@ pub fn wacz(data: &[u8]) {
     let _ = crate::wacz::warc_data_starts(&mut zip);
     let _ = crate::wacz::find_warcinfo_streaming(&mut zip, LIMIT);
     let _ = crate::wacz::cdx_records(&mut zip, LIMIT);
+    let _ = crate::wacz::for_each_page_text(&mut zip, LIMIT, |_, _| Ok(()));
+    let scratch = crate::wacz::Scratch::new(Some(LIMIT));
+    if let Ok(files) = crate::wacz::spool_page_lists(&mut zip, LIMIT, &scratch) {
+        let _ = crate::wacz::for_each_spooled_page_text(&files, |_, _| Ok(()));
+    }
+}
+
+/// An HTML response as indexing reads it for text, and as thumbnailing reads
+/// the main page for images. Any page in an uploaded WACZ reaches both.
+pub fn html(data: &[u8]) {
+    let _ = crate::search::extract_html_text(data);
+    let _ = crate::thumbnail::candidate_images(data);
+}
+
+/// A captured image as thumbnailing decodes, downscales and re-encodes it.
+/// Any image in an uploaded WACZ can be picked as a crawl's thumbnail.
+pub fn image(data: &[u8]) {
+    let _ = crate::thumbnail::thumbnail_jpeg(data);
 }
 
 /// A search as the search box and `/api/search` run it, on queries no longer
@@ -307,5 +325,12 @@ mod tests {
         search(b"title:\"sea levels\" -crawl:c2 year:[1990 TO 2022]");
         byte_range(&[100, 0, 0, 0, 0, 0, 0, 0, b'b']);
         markdown(b"[x](javascript:alert(1)) <script>");
+        html(b"<title>T</title><h1>H</h1><img srcset=\"a.jpg 1x\">");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(4, 3)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        assert!(crate::thumbnail::thumbnail_jpeg(png.get_ref()).is_ok());
+        image(png.get_ref());
     }
 }
