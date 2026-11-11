@@ -10,7 +10,7 @@ for f in "$fixtures"/*.warc.gz; do
 done
 
 # The rest start from a few hand-written inputs.
-mkdir -p corpus/search corpus/byte_range corpus/markdown
+mkdir -p corpus/search corpus/byte_range corpus/markdown corpus/html corpus/image
 i=0
 for q in 'climate' 'title:"sea levels"' 'climate -crawl:c2' 'year:[1990 TO 2022]' \
     'domain:example.com AND (sea OR mer)' 'collection:climate status:404' 'sea*' '"le climat"~2'; do
@@ -22,3 +22,6 @@ for r in 'bytes=0-9' 'bytes=90-' 'bytes=-10' 'bytes=10-5'; do
 done
 printf '# T\n\n*a* [l](https://x.test "t") <b>x</b>\n\n3. one\n\n```rust\nx\n```\n' > corpus/markdown/1
 printf '[x](javascript:alert(1)) [y](&#106;avascript:1) ![i](data:x)\n' > corpus/markdown/2
+printf '<!doctype html><html lang="en"><head><title>T</title><meta name="description" content="d"><meta name="keywords" content="k"><meta name="author" content="a"><meta property="og:image" content="/i.png"></head><body><h1>H</h1><h2>S</h2><p>text <b>b</b></p><script>x()</script><style>p{}</style><noscript>n</noscript><img src="a.jpg"><img srcset="b.jpg 1x, c.jpg 2x"></body></html>' > corpus/html/1
+printf '<html><head><meta property="og:description" content="o"><meta property="article:author" content="r"><meta name="twitter:image" content="t.png"><table><tr><td><b><i>x</b>y</i><select><option>z</table>' > corpus/html/2
+cp seeds/image/* corpus/image/

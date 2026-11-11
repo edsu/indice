@@ -195,7 +195,7 @@ fn resolve(base: &str, href: &str) -> Option<String> {
 }
 
 /// The og:image (or twitter:image) plus the `<img>` sources on a page.
-fn candidate_images(html: &[u8]) -> (Option<String>, Vec<String>) {
+pub(crate) fn candidate_images(html: &[u8]) -> (Option<String>, Vec<String>) {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(&String::from_utf8_lossy(html));
 
