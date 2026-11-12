@@ -393,6 +393,7 @@ error-upload-refused = upload refused: { $detail }
 error-job-unknown = unknown or already-consumed job
 error-collection-unknown = unknown { -collection }
 error-collection-name-required = { -collection } name is required
+error-collection-name-too-long = { -collection } name is too long
 error-collection-not-found = { -collection } not found
 error-crawl-not-found = { -crawl } not found
 error-annotation-not-found = { -annotation } not found

@@ -354,6 +354,7 @@ error-upload-refused = caricamento rifiutato: { $detail }
 error-job-unknown = operazione sconosciuta o già consumata
 error-collection-unknown = { -collection } sconosciuta
 error-collection-name-required = il nome della { -collection } è obbligatorio
+error-collection-name-too-long = il nome della { -collection } è troppo lungo
 error-collection-not-found = { -collection } non trovata
 error-crawl-not-found = { -crawl } non trovata
 error-annotation-not-found = { -annotation } non trovata

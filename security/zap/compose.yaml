@@ -1,0 +1,71 @@
+# A server-shaped indice for OWASP ZAP to scan. See README.md beside this file.
+#
+#   docker compose -f security/zap/compose.yaml up -d --build --wait
+#
+# It is the stack in the repository root's compose.yaml with oauth2-proxy
+# taken out: Caddy here gives each request the identity its X-Zap-Role header
+# names, so a scanner can be anonymous, a reader, a curator or an admin
+# without signing in. Never expose it: anyone who can reach it can be admin.
+# It publishes no ports, and only containers on its network can reach it.
+name: indice-zap
+
+# The secret Caddy sends with an identity, and indice requires before it trusts
+# one. Named once, so the two cannot drift apart: if they did, indice would
+# refuse every identity, and every role would scan as anonymous without error.
+x-proxy-secret: &proxy-secret zap-test-secret
+
+services:
+  # Indexes the test fixtures into a fresh home, then exits. A volume holds the
+  # home, and `down -v` empties it, so each scan starts from the same archive.
+  seed:
+    build: ../..
+    image: indice:zap
+    command: ["index", "--home", "/data", "--collection", "fixtures",
+              "/fixtures/simple.wacz", "/fixtures/a.wacz", "/fixtures/pdf-doc.wacz",
+              "/fixtures/github-bitcoin-mining.wacz"]
+    volumes:
+      - indice-data:/data
+      - ../../crates/indice-lib/tests/fixtures:/fixtures:ro
+
+  indice:
+    image: indice:zap
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    command: ["serve", "--bind", "0.0.0.0:8080", "--replay-bind", "0.0.0.0:8081",
+              "--home", "/data", "--auth-proxy-header", "X-Forwarded-Email"]
+    environment:
+      INDICE_SITE_URL: http://site
+      INDICE_REPLAY_URL: http://replay
+      INDICE_AUTH_PROXY_SECRET: *proxy-secret
+    volumes:
+      - indice-data:/data
+      - ./users.yaml:/data/users.yaml:ro
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      indice:
+        condition: service_healthy
+    environment:
+      INDICE_AUTH_PROXY_SECRET: *proxy-secret
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      default:
+        # The site and replay hostnames, as the scanner sees them.
+        aliases: [site, replay]
+
+  # `docker compose run --rm zap <zap-baseline.py|zap-full-scan.py> ...`; scan.sh
+  # runs it for each role. Reports land in ./reports.
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    profiles: [scan]
+    depends_on:
+      caddy:
+        condition: service_started
+    volumes:
+      - ./:/zap/wrk
+
+volumes:
+  indice-data:

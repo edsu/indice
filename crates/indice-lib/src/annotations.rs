@@ -241,6 +241,12 @@ pub fn annotations_path(home: &Path, collection: &CollectionId) -> PathBuf {
 /// preserving file order. A malformed line aborts the load with context, rather
 /// than being silently dropped.
 pub fn load(home: &Path, collection: &CollectionId) -> Result<Vec<Annotation>> {
+    // An id from a request can be any length, and one too long to be a
+    // directory is a collection that was never saved, so it has no notes,
+    // rather than a filesystem error.
+    if collection.as_str().len() > CollectionId::MAX_LEN {
+        return Ok(Vec::new());
+    }
     let path = annotations_path(home, collection);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -391,6 +397,15 @@ mod tests {
 
     fn creator() -> Creator {
         Creator::person("mailto:ada@example.org", "Ada")
+    }
+
+    /// A request can name a collection too long to be a directory, which
+    /// reading its notes from disk would fail on. It has none.
+    #[test]
+    fn a_collection_too_long_to_exist_has_no_notes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let long = cid(&"a".repeat(4096));
+        assert!(load(tmp.path(), &long).unwrap().is_empty());
     }
 
     #[test]

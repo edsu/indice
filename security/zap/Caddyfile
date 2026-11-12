@@ -1,0 +1,36 @@
+# The ZAP stack's proxy: the repository root's Caddyfile with oauth2-proxy
+# replaced by a fixed identity per X-Zap-Role. Anyone who can send that header
+# is whoever it names, so this file must never front a real server.
+#
+# Like the real one, it forwards an identity only together with the shared
+# secret, strips both from anything a client sent, and keeps no access log.
+http://site {
+	header Strict-Transport-Security "max-age=31536000"
+
+	route {
+		request_header -X-Forwarded-Email
+		request_header -X-Indice-Auth-Secret
+
+		@reader header X-Zap-Role reader
+		request_header @reader X-Forwarded-Email reader@zap.test
+		@curator header X-Zap-Role curator
+		request_header @curator X-Forwarded-Email curator@zap.test
+		@admin header X-Zap-Role admin
+		request_header @admin X-Forwarded-Email admin@zap.test
+
+		@signed_in header_regexp X-Zap-Role ^(reader|curator|admin)$
+		request_header @signed_in X-Indice-Auth-Secret {$INDICE_AUTH_PROXY_SECRET}
+
+		request_header -X-Zap-Role
+		reverse_proxy indice:8080
+	}
+}
+
+http://replay {
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy indice:8081 {
+		header_up -X-Forwarded-Email
+		header_up -X-Indice-Auth-Secret
+		header_up -X-Zap-Role
+	}
+}

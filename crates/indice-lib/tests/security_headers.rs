@@ -88,6 +88,11 @@ async fn the_app_origin_allows_only_its_own_code() {
     ] {
         let h = headers(&app, Method::GET, path, &[]).await;
         assert_common(&h, path);
+        assert_eq!(
+            h.get("cross-origin-opener-policy").unwrap(),
+            "same-origin",
+            "{path}"
+        );
         let policy = csp(&h);
         assert_eq!(
             directive(&policy, "script-src"),
@@ -170,6 +175,9 @@ async fn the_replay_origin_says_only_who_may_frame_it() {
             "frame-ancestors 'self' https://archive.example.test",
             "{path}"
         );
+        // Only the site's own pages get an opener policy: replay is a frame,
+        // and the archived pages in it are left to behave as they did.
+        assert_eq!(h.get("cross-origin-opener-policy"), None, "{path}");
     }
 
     // The site's scheme is kept, so a site on plain http still matches when

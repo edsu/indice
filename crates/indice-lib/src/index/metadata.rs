@@ -10,6 +10,17 @@ use crate::collections::Manifest;
 
 use super::paths::index_dir;
 
+/// The id of the collection `name` names, or an error if it is too long to be
+/// a directory (see [`crate::collections::CollectionId::try_from_name`]).
+pub(crate) fn checked_id(name: &str) -> Result<crate::collections::CollectionId> {
+    crate::collections::CollectionId::try_from_name(name).with_context(|| {
+        format!(
+            "collection name is too long: its id would be over {} bytes",
+            crate::collections::CollectionId::MAX_LEN
+        )
+    })
+}
+
 /// Create or update a collection's curatorial (finding-aid) metadata (its id is
 /// the slug of `name`). Only fields set in `fields` change; the finding aid is
 /// written to `<home>/collections/<slug>/README.md`. Returns the collection id.
@@ -21,6 +32,7 @@ pub fn set_collection(
     // identity — an unattributed edit is recorded as such rather than invented.
     actor: Option<&crate::identity::SubjectId>,
 ) -> Result<String> {
+    checked_id(name)?;
     // No `create_dir_all` here: `manifest_write` takes the lock, and taking the
     // lock creates `index/`. Doing it twice is two syscalls for nothing and a
     // second place that has to agree about where the index dir comes from.
@@ -42,7 +54,7 @@ pub fn seed_collection(
     fields: &crate::collections::CollectionFields,
 ) -> Result<String> {
     // See `set_collection`: taking the manifest lock creates `index/`.
-    let id = crate::collections::CollectionId::from_name(name);
+    let id = checked_id(name)?;
     super::manifest::manifest_write(home, "a collection seed", |manifest| {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         manifest.seed_fields(&id, name, fields, &now);
@@ -55,7 +67,7 @@ pub fn seed_collection(
 /// thumbnail, committed at `collections/<slug>/thumbnail.jpg`. The collection is
 /// identified by name (its slug); create it first with `collection set`.
 pub fn set_collection_thumbnail(home: &Path, name: &str, image_file: &Path) -> Result<()> {
-    let slug = crate::collections::CollectionId::from_name(name);
+    let slug = checked_id(name)?;
     let dest = crate::collections::collection_thumb_path(home, &slug);
     crate::thumbnail::set_manual(&dest, image_file)
         .with_context(|| format!("setting thumbnail for collection {slug}"))?;

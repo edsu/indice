@@ -205,6 +205,13 @@ impl SecurityHeaders {
                 (header::CONTENT_SECURITY_POLICY, csp),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
                 (header::REFERRER_POLICY, REFERRER_POLICY.into()),
+                // A page of another site that opens indice, or that indice
+                // opens, gets no handle on its window. Nothing of indice's
+                // uses one, and replay is a frame, which this leaves alone.
+                (
+                    HeaderName::from_static("cross-origin-opener-policy"),
+                    "same-origin".into(),
+                ),
             ],
             &APP_CRAWL,
         )

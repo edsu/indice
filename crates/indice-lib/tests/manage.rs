@@ -556,6 +556,22 @@ async fn manage_delete_crawl_removes_it_from_index_and_disk() {
         "reloaded searcher no longer finds the deleted crawl"
     );
 
+    // Deleting it again is a 404, and records no second deletion: the event
+    // log holds what was done, not what was asked for.
+    let del_url = format!("{base}/api/crawls/{id}/delete");
+    let status = tokio::task::spawn_blocking(move || {
+        agent().post(&del_url).send("").unwrap().status().as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 404, "a crawl that is gone is not found");
+    let deletes: usize = std::fs::read_dir(home.join("events"))
+        .unwrap()
+        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
+        .map(|log| log.matches("crawl_delete").count())
+        .sum();
+    assert_eq!(deletes, 1, "one deletion happened, so one is recorded");
+
     server.abort();
 }
 
@@ -776,6 +792,81 @@ async fn local_manage_mode_is_csrf_protected_too() {
         dir.is_dir(),
         "the collection must survive a cross-site delete"
     );
+
+    server.abort();
+}
+
+/// A collection that is gone, or never was, is not found. It was a 500, the
+/// server's fault, for what is the caller's mistake, such as a second click.
+#[tokio::test]
+async fn deleting_a_collection_that_is_gone_is_not_found() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    let post = |path: &str, body: &'static str| {
+        post_form_with_headers(
+            format!("{base}{path}"),
+            body,
+            vec![("origin", base.clone())],
+        )
+    };
+
+    assert_eq!(post("/api/collections", "name=Keepsakes").await.0, 303);
+    let delete = "/api/collections/keepsakes/delete";
+    assert_eq!(post(delete, "").await.0, 303);
+    assert_eq!(post(delete, "").await.0, 404);
+    assert_eq!(post("/api/collections/nowhere/delete", "").await.0, 404);
+
+    server.abort();
+}
+
+/// A name whose id would be too long for a directory is refused as the
+/// caller's mistake, not attempted and failed as the server's.
+#[tokio::test]
+async fn a_collection_name_too_long_for_a_directory_is_refused() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    let name: &'static str = "a".repeat(256).leak();
+    let body: &'static str = format!("name={name}").leak();
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        body,
+        vec![("origin", base.clone())],
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(!tmp.path().join("collections").join(name).exists());
+
+    // The longest id that fits is a collection like any other.
+    let name: &'static str = "a".repeat(255).leak();
+    let body: &'static str = format!("name={name}").leak();
+    post_form_with_headers(
+        format!("{base}/api/collections"),
+        body,
+        vec![("origin", base.clone())],
+    )
+    .await;
+    assert!(tmp.path().join("collections").join(name).exists());
+
+    // Adding a crawl to one is refused at once too, before a job starts.
+    let post = format!("{base}/api/archives");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&post)
+            .header("content-type", "application/json")
+            .send(
+                serde_json::json!({
+                    "path": "https://example.com/a.wacz",
+                    "collection": "a".repeat(256),
+                })
+                .to_string(),
+            )
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 400);
 
     server.abort();
 }

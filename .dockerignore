@@ -24,5 +24,6 @@ env.sh
 /events
 *.md
 /compose*.yaml
+/security
 /Caddyfile
 /Makefile

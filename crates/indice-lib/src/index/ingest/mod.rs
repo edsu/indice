@@ -331,8 +331,10 @@ impl Ingest<'_> {
             ..
         } = *self;
         // Every crawl belongs to a collection (its id is the slug of the name).
+        // Checked first: a name too long to be a directory would otherwise fail
+        // only once the crawl's documents were committed.
         let group = (
-            crate::collections::CollectionId::from_name(collection),
+            crate::index::metadata::checked_id(collection)?,
             collection.to_string(),
         );
 

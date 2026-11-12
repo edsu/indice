@@ -150,19 +150,23 @@ pub struct CollectionDeletion {
     pub crawls_deleted: Vec<String>,
 }
 
-/// Inspect what [`delete_collection`] would remove, changing nothing. Errors if
-/// the id is unknown.
-pub fn plan_collection_deletion(home: &Path, id: &CollectionId) -> Result<CollectionDeletion> {
+/// Inspect what [`delete_collection`] would remove, changing nothing. `None` if
+/// there is no collection with that id, which a caller may want to answer
+/// differently from a failure to read the manifest.
+pub fn plan_collection_deletion(
+    home: &Path,
+    id: &CollectionId,
+) -> Result<Option<CollectionDeletion>> {
     let manifest = Manifest::open(&index_dir(home))?;
-    let coll = manifest
-        .collection_by_id(id)
-        .ok_or_else(|| anyhow::anyhow!("no collection with id \"{id}\""))?;
-    Ok(CollectionDeletion {
+    let Some(coll) = manifest.collection_by_id(id) else {
+        return Ok(None);
+    };
+    Ok(Some(CollectionDeletion {
         id: id.to_string(),
         name: coll.name.clone(),
         member_count: manifest.members_of(id).count(),
         crawls_deleted: Vec::new(),
-    })
+    }))
 }
 
 /// Delete a collection grouping (its finding aid). Without `with_crawls` a
@@ -178,7 +182,8 @@ pub fn delete_collection(
     // members and resurrect the ones already removed.
     let _index =
         super::lock::lock_index(home, "a collection deletion", crate::index::no_progress())?;
-    let mut plan = plan_collection_deletion(home, id)?;
+    let mut plan = plan_collection_deletion(home, id)?
+        .ok_or_else(|| anyhow::anyhow!("no collection with id \"{id}\""))?;
     if plan.member_count > 0 && !with_crawls {
         anyhow::bail!(
             "collection \"{id}\" still has {} crawl(s); pass --with-crawls to delete them too, \

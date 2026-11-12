@@ -1,0 +1,9 @@
+# The roster for the ZAP stack. reader@zap.test is not listed, so it reads
+# the site as a signed-in stranger does.
+users:
+  - id: curator@zap.test
+    name: ZAP Curator
+    role: curator
+  - id: admin@zap.test
+    name: ZAP Admin
+    role: admin

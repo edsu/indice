@@ -356,6 +356,10 @@ pub(super) async fn add_archive(
     if req.collection.trim().is_empty() {
         return bad_request(curator.l10n(), "error-collection-required");
     }
+    let Some(collection_id) = crate::collections::CollectionId::try_from_name(&req.collection)
+    else {
+        return bad_request(curator.l10n(), "error-collection-name-too-long");
+    };
     // Before the audit record, not after: a refused probe is not an accession,
     // and twenty of them logged as ordinary adds against a collection that
     // stays empty is worse than no log at all.
@@ -374,7 +378,7 @@ pub(super) async fn add_archive(
         // The slug, not the typed name: the crawl has no id yet, so the
         // collection is the target, and a log you grep by collection wants the
         // same spelling whichever endpoint wrote the record.
-        &crate::collections::slugify(&req.collection),
+        &collection_id,
         Some(serde_json::json!({ "collection_name": req.collection })),
     );
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
@@ -468,6 +472,9 @@ pub(super) async fn upload_archive(
         Some(c) if !c.trim().is_empty() => c,
         _ => return bad_request(curator.l10n(), "error-collection-required"),
     };
+    let Some(collection_id) = crate::collections::CollectionId::try_from_name(&collection) else {
+        return bad_request(curator.l10n(), "error-collection-name-too-long");
+    };
     let Some(path) = file_path else {
         return bad_request(curator.l10n(), "error-file-required");
     };
@@ -477,7 +484,7 @@ pub(super) async fn upload_archive(
         &state,
         curator.principal(),
         Action::CrawlUpload,
-        &crate::collections::slugify(&collection),
+        &collection_id,
         Some(serde_json::json!({ "collection_name": collection })),
     );
     let id = start_index_job(&curator, &state, location, collection, name, staged);
@@ -1379,11 +1386,14 @@ pub(super) async fn create_collection(
     if name.is_empty() {
         return bad_request(curator.l10n(), "error-collection-name-required");
     }
+    let Some(id) = crate::collections::CollectionId::try_from_name(&name) else {
+        return bad_request(curator.l10n(), "error-collection-name-too-long");
+    };
     audit_detail(
         &state,
         curator.principal(),
         Action::CollectionSet,
-        &crate::collections::slugify(&name),
+        &id,
         // The display name is what was actually set, and it can change while
         // the slug stays put, so it is worth keeping alongside.
         Some(serde_json::json!({ "collection_name": name })),
@@ -1459,11 +1469,16 @@ pub(super) async fn delete_crawl_handler(
         // source, so the entry can be deleted and the same WACZ re-added under
         // a different owner in between, and the check would have passed against
         // the owner who is no longer there.
-        let added_by = Manifest::open(&state.index_dir)?
-            .wacz_by_id(&id)
-            .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string()));
-        if !principal.may_delete_crawl(added_by.as_deref()) {
+        let manifest = Manifest::open(&state.index_dir)?;
+        let wacz = manifest.wacz_by_id(&id);
+        let added_by = wacz.and_then(|w| w.added_by.as_ref().map(|s| s.as_str()));
+        if !principal.may_delete_crawl(added_by) {
             return Ok(CrawlDeleteOutcome::Denied);
+        }
+        // An unknown id, or a crawl already deleted, is a 404 for whoever may
+        // delete it, and comes before the audit: there is nothing to delete.
+        if wacz.is_none() {
+            return Ok(CrawlDeleteOutcome::Unknown);
         }
         // Audited here rather than before the check, so a refused delete is not
         // recorded as an authorized attempt.
@@ -1481,6 +1496,7 @@ pub(super) async fn delete_crawl_handler(
         Ok(Ok(CrawlDeleteOutcome::Denied)) => {
             Denied::Insufficient(Need::DeletingOthersCrawl, curator.l10n().clone()).into_response()
         }
+        Ok(Ok(CrawlDeleteOutcome::Unknown)) => not_found(curator.l10n(), "error-crawl-not-found"),
         Ok(Err(e)) => curator.error_response(e),
         Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
@@ -1539,7 +1555,10 @@ pub(super) async fn delete_collection_handler(
         // add a member while we waited up to ten seconds for the lock, leaving
         // the library to re-check, `bail!`, and surface a 500 telling a browser
         // user to pass a CLI flag.
-        let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
+        let Some(plan) = crate::index::plan_collection_deletion(&state.home, &cid)? else {
+            // Already deleted, or never there: a 404, as for a malformed id.
+            return Ok(DeleteOutcome::Unknown);
+        };
         if plan.member_count > 0 && !with_crawls {
             return Ok(DeleteOutcome::Refused(plan.member_count));
         }
@@ -1562,6 +1581,7 @@ pub(super) async fn delete_collection_handler(
     match result {
         Ok(Ok(DeleteOutcome::Done)) => Redirect::to("/").into_response(),
         Ok(Ok(DeleteOutcome::Busy(holder))) => busy_response(&admin_l10n, &holder),
+        Ok(Ok(DeleteOutcome::Unknown)) => not_found(&admin_l10n, "error-collection-unknown"),
         Ok(Ok(DeleteOutcome::Refused(n))) => (
             StatusCode::CONFLICT,
             admin_l10n.tr_args(
@@ -1585,6 +1605,8 @@ enum CrawlDeleteOutcome {
     Denied,
     /// Another process holds the index lock (503); `String` describes it.
     Busy(String),
+    /// No crawl has this id (404).
+    Unknown,
 }
 
 /// Outcome of a collection-delete attempt: done, refused because it still has
@@ -1594,6 +1616,7 @@ enum DeleteOutcome {
     Done,
     Refused(usize),
     Busy(String),
+    Unknown,
 }
 
 #[cfg(test)]
