@@ -1459,11 +1459,16 @@ pub(super) async fn delete_crawl_handler(
         // source, so the entry can be deleted and the same WACZ re-added under
         // a different owner in between, and the check would have passed against
         // the owner who is no longer there.
-        let added_by = Manifest::open(&state.index_dir)?
-            .wacz_by_id(&id)
-            .and_then(|w| w.added_by.as_ref().map(|s| s.as_str().to_string()));
-        if !principal.may_delete_crawl(added_by.as_deref()) {
+        let manifest = Manifest::open(&state.index_dir)?;
+        let wacz = manifest.wacz_by_id(&id);
+        let added_by = wacz.and_then(|w| w.added_by.as_ref().map(|s| s.as_str()));
+        if !principal.may_delete_crawl(added_by) {
             return Ok(CrawlDeleteOutcome::Denied);
+        }
+        // An unknown id, or a crawl already deleted, is a 404 for whoever may
+        // delete it, and comes before the audit: there is nothing to delete.
+        if wacz.is_none() {
+            return Ok(CrawlDeleteOutcome::Unknown);
         }
         // Audited here rather than before the check, so a refused delete is not
         // recorded as an authorized attempt.
@@ -1481,6 +1486,7 @@ pub(super) async fn delete_crawl_handler(
         Ok(Ok(CrawlDeleteOutcome::Denied)) => {
             Denied::Insufficient(Need::DeletingOthersCrawl, curator.l10n().clone()).into_response()
         }
+        Ok(Ok(CrawlDeleteOutcome::Unknown)) => not_found(curator.l10n(), "error-crawl-not-found"),
         Ok(Err(e)) => curator.error_response(e),
         Err(e) => curator.error_response(anyhow::anyhow!(e)),
     }
@@ -1539,6 +1545,13 @@ pub(super) async fn delete_collection_handler(
         // add a member while we waited up to ten seconds for the lock, leaving
         // the library to re-check, `bail!`, and surface a 500 telling a browser
         // user to pass a CLI flag.
+        // Already deleted, or never there: a 404, as for a malformed id.
+        if Manifest::open(&state.index_dir)?
+            .collection_by_id(&cid)
+            .is_none()
+        {
+            return Ok(DeleteOutcome::Unknown);
+        }
         let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
         if plan.member_count > 0 && !with_crawls {
             return Ok(DeleteOutcome::Refused(plan.member_count));
@@ -1562,6 +1575,7 @@ pub(super) async fn delete_collection_handler(
     match result {
         Ok(Ok(DeleteOutcome::Done)) => Redirect::to("/").into_response(),
         Ok(Ok(DeleteOutcome::Busy(holder))) => busy_response(&admin_l10n, &holder),
+        Ok(Ok(DeleteOutcome::Unknown)) => not_found(&admin_l10n, "error-collection-unknown"),
         Ok(Ok(DeleteOutcome::Refused(n))) => (
             StatusCode::CONFLICT,
             admin_l10n.tr_args(
@@ -1585,6 +1599,8 @@ enum CrawlDeleteOutcome {
     Denied,
     /// Another process holds the index lock (503); `String` describes it.
     Busy(String),
+    /// No crawl has this id (404).
+    Unknown,
 }
 
 /// Outcome of a collection-delete attempt: done, refused because it still has
@@ -1594,6 +1610,7 @@ enum DeleteOutcome {
     Done,
     Refused(usize),
     Busy(String),
+    Unknown,
 }
 
 #[cfg(test)]
