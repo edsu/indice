@@ -1531,7 +1531,8 @@ async fn run(cli: Cli) -> Result<()> {
                 };
                 drop(manifest);
 
-                let plan = indice_lib::index::plan_collection_deletion(&home, &coll_id)?;
+                let plan = indice_lib::index::plan_collection_deletion(&home, &coll_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no collection with id \"{coll_id}\""))?;
                 println!(
                     "About to delete collection {} \"{}\" ({} crawl(s))",
                     plan.id, plan.name, plan.member_count

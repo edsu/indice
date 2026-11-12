@@ -1555,14 +1555,10 @@ pub(super) async fn delete_collection_handler(
         // add a member while we waited up to ten seconds for the lock, leaving
         // the library to re-check, `bail!`, and surface a 500 telling a browser
         // user to pass a CLI flag.
-        // Already deleted, or never there: a 404, as for a malformed id.
-        if Manifest::open(&state.index_dir)?
-            .collection_by_id(&cid)
-            .is_none()
-        {
+        let Some(plan) = crate::index::plan_collection_deletion(&state.home, &cid)? else {
+            // Already deleted, or never there: a 404, as for a malformed id.
             return Ok(DeleteOutcome::Unknown);
-        }
-        let plan = crate::index::plan_collection_deletion(&state.home, &cid)?;
+        };
         if plan.member_count > 0 && !with_crawls {
             return Ok(DeleteOutcome::Refused(plan.member_count));
         }
