@@ -819,6 +819,26 @@ async fn deleting_a_collection_that_is_gone_is_not_found() {
     server.abort();
 }
 
+/// A name whose id would be too long for a directory is refused as the
+/// caller's mistake, not attempted and failed as the server's.
+#[tokio::test]
+async fn a_collection_name_too_long_for_a_directory_is_refused() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (base, server) = serve(tmp.path().to_path_buf(), local_access()).await;
+    let name: &'static str = "a".repeat(256).leak();
+    let body: &'static str = format!("name={name}").leak();
+    let (status, _) = post_form_with_headers(
+        format!("{base}/api/collections"),
+        body,
+        vec![("origin", base.clone())],
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(!tmp.path().join("collections").join(name).exists());
+
+    server.abort();
+}
+
 /// Every management write reachable without a CORS preflight (`Form` and
 /// `Multipart` bodies are "simple" content types) must refuse a foreign Origin.
 /// The `Json` routes are preflighted and so already unreachable cross-site, but

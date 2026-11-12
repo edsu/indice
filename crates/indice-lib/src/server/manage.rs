@@ -1379,6 +1379,9 @@ pub(super) async fn create_collection(
     if name.is_empty() {
         return bad_request(curator.l10n(), "error-collection-name-required");
     }
+    if crate::collections::slugify(&name).len() > crate::collections::CollectionId::MAX_LEN {
+        return bad_request(curator.l10n(), "error-collection-name-too-long");
+    }
     audit_detail(
         &state,
         curator.principal(),

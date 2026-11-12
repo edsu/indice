@@ -1032,6 +1032,12 @@ impl Default for CollectionId {
 }
 
 impl CollectionId {
+    /// The longest id a collection can be saved under, in bytes. An id is a
+    /// directory name, and most filesystems refuse a name over 255 bytes.
+    /// Checked where a collection is written, not in [`Self::parse`], so that
+    /// whatever [`Self::from_name`] makes still parses.
+    pub const MAX_LEN: usize = 255;
+
     /// Validate an existing id (e.g. from a URL path segment or the manifest).
     /// `None` if it isn't a safe single path component.
     pub fn parse(s: &str) -> Option<Self> {

@@ -21,6 +21,12 @@ pub fn set_collection(
     // identity — an unattributed edit is recorded as such rather than invented.
     actor: Option<&crate::identity::SubjectId>,
 ) -> Result<String> {
+    if crate::collections::slugify(name).len() > crate::collections::CollectionId::MAX_LEN {
+        anyhow::bail!(
+            "collection name is too long: its id would be over {} bytes",
+            crate::collections::CollectionId::MAX_LEN
+        );
+    }
     // No `create_dir_all` here: `manifest_write` takes the lock, and taking the
     // lock creates `index/`. Doing it twice is two syscalls for nothing and a
     // second place that has to agree about where the index dir comes from.
