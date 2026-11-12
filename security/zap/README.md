@@ -36,7 +36,7 @@ Both scans, all four roles. ZAP raised no alert for cross-site scripting, and no
 | 500 for deleting a crawl that is already gone or never was (Application Error Disclosure, and behind SQL Injection and Integer Overflow) | admin | **Fixed**: 404. It also recorded a deletion in the event log for a crawl that was not there; now nothing is recorded. `manage_delete_crawl_removes_it_from_index_and_disk` |
 | 500 for deleting a collection that is already gone | admin | **Fixed**: 404. `deleting_a_collection_that_is_gone_is_not_found` |
 | 500 on public pages read while a collection was being deleted: the finding aid went between the check that it exists and the read | anyone, during a delete | **Fixed**: a finding aid that goes between the two is a deleted collection |
-| 500 for a collection name whose id is too long to be a directory | curator, admin | **Fixed**: 400. `a_collection_name_too_long_for_a_directory_is_refused` |
+| 500 for a collection name whose id is too long to be a directory | curator, admin | **Fixed**: 400, also for adding or uploading a crawl into one; the CLI and importers refuse it before indexing. `a_collection_name_too_long_for_a_directory_is_refused`, `a_collection_name_too_long_for_a_directory_is_refused_before_indexing` |
 | 500 for the notes of a collection named in a request with an id too long to be a directory | anyone | **Fixed**: no notes, as for any collection that does not exist. `a_collection_too_long_to_exist_has_no_notes` |
 | Cross-Origin-Opener-Policy missing | all | **Fixed**: `same-origin` on the site's pages |
 | Cross-Origin-Embedder-Policy missing | all | **Explained**: `require-corp` would stop the viewer framing replay |

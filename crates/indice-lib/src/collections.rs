@@ -1034,8 +1034,9 @@ impl Default for CollectionId {
 impl CollectionId {
     /// The longest id a collection can be saved under, in bytes. An id is a
     /// directory name, and most filesystems refuse a name over 255 bytes.
-    /// Checked where a collection is written, not in [`Self::parse`], so that
-    /// whatever [`Self::from_name`] makes still parses.
+    /// Checked by [`Self::try_from_name`] for anything that writes a
+    /// collection, not in [`Self::parse`], so that whatever [`Self::from_name`]
+    /// makes still parses.
     pub const MAX_LEN: usize = 255;
 
     /// Validate an existing id (e.g. from a URL path segment or the manifest).
@@ -1049,6 +1050,15 @@ impl CollectionId {
     /// `bay-area-transit`). Infallible: [`slugify`] only emits safe characters.
     pub fn from_name(name: &str) -> Self {
         CollectionId(slugify(name))
+    }
+
+    /// [`Self::from_name`] for a collection about to be written: `None` if the
+    /// id would be over [`Self::MAX_LEN`], too long to be its directory. Every
+    /// path that creates a collection from a typed name goes through here, so
+    /// a name is refused before anything is indexed or filed under it.
+    pub fn try_from_name(name: &str) -> Option<Self> {
+        let id = Self::from_name(name);
+        (id.0.len() <= Self::MAX_LEN).then_some(id)
     }
 
     pub fn as_str(&self) -> &str {
@@ -1515,6 +1525,17 @@ mod tests {
             "the sweep must be exhaustive"
         );
         assert!(accepted > 0, "the sweep must include accepted inputs too");
+    }
+
+    #[test]
+    fn try_from_name_refuses_an_id_too_long_for_a_directory() {
+        let fits = "a".repeat(CollectionId::MAX_LEN);
+        assert_eq!(CollectionId::try_from_name(&fits).unwrap().as_str(), fits);
+        assert!(CollectionId::try_from_name(&"a".repeat(CollectionId::MAX_LEN + 1)).is_none());
+        // The limit is on the id, not the name: punctuation slugify drops
+        // does not count.
+        let padded = format!("{fits}!!!");
+        assert!(CollectionId::try_from_name(&padded).is_some());
     }
 
     /// Whatever `from_name` produces — from any input, including hostile ones —

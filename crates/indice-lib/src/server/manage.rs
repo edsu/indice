@@ -356,6 +356,10 @@ pub(super) async fn add_archive(
     if req.collection.trim().is_empty() {
         return bad_request(curator.l10n(), "error-collection-required");
     }
+    let Some(collection_id) = crate::collections::CollectionId::try_from_name(&req.collection)
+    else {
+        return bad_request(curator.l10n(), "error-collection-name-too-long");
+    };
     // Before the audit record, not after: a refused probe is not an accession,
     // and twenty of them logged as ordinary adds against a collection that
     // stays empty is worse than no log at all.
@@ -374,7 +378,7 @@ pub(super) async fn add_archive(
         // The slug, not the typed name: the crawl has no id yet, so the
         // collection is the target, and a log you grep by collection wants the
         // same spelling whichever endpoint wrote the record.
-        &crate::collections::slugify(&req.collection),
+        &collection_id,
         Some(serde_json::json!({ "collection_name": req.collection })),
     );
     let id = start_index_job(&curator, &state, req.path, req.collection, req.name, None);
@@ -468,6 +472,9 @@ pub(super) async fn upload_archive(
         Some(c) if !c.trim().is_empty() => c,
         _ => return bad_request(curator.l10n(), "error-collection-required"),
     };
+    let Some(collection_id) = crate::collections::CollectionId::try_from_name(&collection) else {
+        return bad_request(curator.l10n(), "error-collection-name-too-long");
+    };
     let Some(path) = file_path else {
         return bad_request(curator.l10n(), "error-file-required");
     };
@@ -477,7 +484,7 @@ pub(super) async fn upload_archive(
         &state,
         curator.principal(),
         Action::CrawlUpload,
-        &crate::collections::slugify(&collection),
+        &collection_id,
         Some(serde_json::json!({ "collection_name": collection })),
     );
     let id = start_index_job(&curator, &state, location, collection, name, staged);
@@ -1379,14 +1386,14 @@ pub(super) async fn create_collection(
     if name.is_empty() {
         return bad_request(curator.l10n(), "error-collection-name-required");
     }
-    if crate::collections::slugify(&name).len() > crate::collections::CollectionId::MAX_LEN {
+    let Some(id) = crate::collections::CollectionId::try_from_name(&name) else {
         return bad_request(curator.l10n(), "error-collection-name-too-long");
-    }
+    };
     audit_detail(
         &state,
         curator.principal(),
         Action::CollectionSet,
-        &crate::collections::slugify(&name),
+        &id,
         // The display name is what was actually set, and it can change while
         // the slug stays put, so it is worth keeping alongside.
         Some(serde_json::json!({ "collection_name": name })),

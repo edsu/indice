@@ -121,3 +121,22 @@ fn rerun_skips_already_indexed_unless_forced() {
 // collections. Exercising the URL case needs a network fetch, so it isn't
 // unit-tested here; `rerun_skips_already_indexed_unless_forced` above guards
 // that the same-collection resume path still works after the scoping change.
+
+/// A collection name too long to be a directory is refused before anything is
+/// filed or indexed, so a failed ingest leaves no search documents behind for
+/// a crawl the manifest never records.
+#[test]
+fn a_collection_name_too_long_for_a_directory_is_refused_before_indexing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let input = home.join("in.wacz");
+    std::fs::copy(Path::new(FIXTURES).join("simple.wacz"), &input).unwrap();
+
+    let err = indice_lib::index::Ingest::new(home)
+        .index_location(&input.to_string_lossy(), &"a".repeat(256))
+        .unwrap_err();
+    assert!(err.to_string().contains("too long"), "{err:#}");
+    assert!(!home.join("index").exists(), "nothing was indexed");
+    assert!(!home.join("archive").exists(), "nothing was filed");
+    assert!(input.exists(), "the source is left where it was");
+}

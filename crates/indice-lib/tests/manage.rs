@@ -836,6 +836,38 @@ async fn a_collection_name_too_long_for_a_directory_is_refused() {
     assert_eq!(status, 400);
     assert!(!tmp.path().join("collections").join(name).exists());
 
+    // The longest id that fits is a collection like any other.
+    let name: &'static str = "a".repeat(255).leak();
+    let body: &'static str = format!("name={name}").leak();
+    post_form_with_headers(
+        format!("{base}/api/collections"),
+        body,
+        vec![("origin", base.clone())],
+    )
+    .await;
+    assert!(tmp.path().join("collections").join(name).exists());
+
+    // Adding a crawl to one is refused at once too, before a job starts.
+    let post = format!("{base}/api/archives");
+    let status = tokio::task::spawn_blocking(move || {
+        agent()
+            .post(&post)
+            .header("content-type", "application/json")
+            .send(
+                serde_json::json!({
+                    "path": "https://example.com/a.wacz",
+                    "collection": "a".repeat(256),
+                })
+                .to_string(),
+            )
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 400);
+
     server.abort();
 }
 
