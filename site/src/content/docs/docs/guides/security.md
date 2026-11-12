@@ -67,9 +67,10 @@ ReplayWeb.page, the player, will replay whatever WACZ its page's address names. 
 | `X-Content-Type-Options: nosniff` | Yes | Yes |
 | `X-Robots-Tag: noindex` | On everything but indice's own pages (below) | Yes |
 | `Referrer-Policy: same-origin` | Yes | Yes |
+| `Cross-Origin-Opener-Policy: same-origin` | Yes | No; replay is a frame, which it does not affect |
 | `Strict-Transport-Security` | Set by the proxy | Set by the proxy |
 
-`nosniff` matters because `/files/{id}` serves archived bytes, and a browser that guesses a file's type can be talked into running it as a page. The referrer policy keeps an archive's URLs, which say what someone searched for and which page they are reading, out of the logs of every site a reader follows a link to. HSTS belongs to the proxy, which is what terminates TLS; the shipped `Caddyfile` sets it on both hostnames for a year.
+`nosniff` matters because `/files/{id}` serves archived bytes, and a browser that guesses a file's type can be talked into running it as a page. The referrer policy keeps an archive's URLs, which say what someone searched for and which page they are reading, out of the logs of every site a reader follows a link to. The opener policy means a page on another site that opens indice in a window, or that indice opens, gets no handle on it. HSTS belongs to the proxy, which is what terminates TLS; the shipped `Caddyfile` sets it on both hostnames for a year.
 
 ## What `--site-url` does
 

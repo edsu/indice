@@ -88,6 +88,11 @@ async fn the_app_origin_allows_only_its_own_code() {
     ] {
         let h = headers(&app, Method::GET, path, &[]).await;
         assert_common(&h, path);
+        assert_eq!(
+            h.get("cross-origin-opener-policy").unwrap(),
+            "same-origin",
+            "{path}"
+        );
         let policy = csp(&h);
         assert_eq!(
             directive(&policy, "script-src"),
