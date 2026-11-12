@@ -1188,8 +1188,17 @@ pub fn load_finding_aids(collections_dir: &Path) -> Result<Vec<Collection>> {
             continue;
         };
         let readme = dir.join("README.md");
-        let text = std::fs::read_to_string(&readme)
-            .with_context(|| format!("reading finding aid {}", readme.display()))?;
+        // A reader opens the manifest without its lock, so a collection can be
+        // deleted between the `is_file` above and this read. Gone is gone,
+        // whichever side of the check it went.
+        let text = match std::fs::read_to_string(&readme) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(anyhow::Error::new(e))
+                    .with_context(|| format!("reading finding aid {}", readme.display()))
+            }
+        };
         out.push(
             parse_finding_aid(&id, &text)
                 .with_context(|| format!("parsing finding aid {}", readme.display()))?,
