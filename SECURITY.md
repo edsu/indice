@@ -17,7 +17,11 @@ the curator Markdown every visitor's browser renders, whose findings (memory
 held for every search, and two overflows) are fixed in 0.6.2. HTML text
 extraction, the page lists and thumbnail images are fuzzed too, and an image
 of a few kilobytes that decoded to over a gigabyte is fixed in 0.6.2. PDF
-text extraction is not fuzzed. The rest of its testing is the test suite,
+text extraction is not fuzzed. OWASP ZAP has scanned a running 0.6.2 server,
+passively and actively, as an anonymous visitor, a reader, a curator and an
+admin, with the stack in `security/zap/`. It found no injection or cross-site
+scripting, and server errors for a few requests, fixed in 0.6.3 (see
+`security/zap/README.md`). The rest of its testing is the test suite,
 which pins each guarantee in the threat model, CodeQL and a RustSec advisory
 check on every change, and AI-assisted review.
 

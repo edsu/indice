@@ -1,0 +1,4 @@
+reports/
+# The root .gitignore keeps a real roster out of git. This one names only
+# made-up test accounts, and the stack needs it.
+!users.yaml
