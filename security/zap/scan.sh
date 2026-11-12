@@ -46,15 +46,26 @@ for role in $roles; do
 			-config replacer.full_list(0).replacement=$role"
 	fi
 
-	# ZAP exits 1 or 2 when it reports warnings or failures; that is the
-	# result, not an error in this script.
+	status=0
 	$compose run --rm zap $script -t http://site/ -c rules.conf -j -m 5 \
 		${ZAP_ARGS:-} \
 		-r "reports/$mode-$role.html" -J "reports/$mode-$role.json" \
 		-w "reports/$mode-$role.md" \
-		-z "$role_config" || echo "   ZAP exited $? as $role"
+		-z "$role_config" || status=$?
 	# indice's log says why a request failed, which ZAP's report does not.
 	$compose logs --no-color indice >"$dir/reports/$mode-$role-indice.log" 2>&1
+	# ZAP exits 1 or 2 when it reports warnings or failures, which is the
+	# result. Anything else means the scan itself failed, and its reports are
+	# missing or partial, so the run stops rather than going on to the next role.
+	case $status in
+	0) ;;
+	1 | 2) echo "   ZAP exited $status as $role" ;;
+	*)
+		echo "ZAP failed as $role (exit $status); its output is above" >&2
+		$compose down -v --remove-orphans >/dev/null 2>&1
+		exit "$status"
+		;;
+	esac
 done
 
 $compose down -v --remove-orphans >/dev/null 2>&1

@@ -1,4 +1,6 @@
 reports/
+# ZAP writes the automation plan it ran here, on every run.
+zap.yaml
 # The root .gitignore keeps a real roster out of git. This one names only
 # made-up test accounts, and the stack needs it.
 !users.yaml

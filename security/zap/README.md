@@ -4,7 +4,7 @@
 
 ## Running it
 
-Docker is all it needs. From the repository root:
+Docker is all it needs. It has been run with Docker Desktop on macOS; on a Linux host, ZAP's container runs as uid 1000 and must be able to write to `security/zap`. From the repository root:
 
 ```sh
 security/zap/scan.sh baseline   # spider, then passive checks only: about 5 minutes a role
