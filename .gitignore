@@ -40,3 +40,6 @@ compose.override.yaml
 
 # beads (br) is a local tracker; issues live on GitHub
 .beads/
+
+# The pen test stack's DNS zone, written as it runs.
+/security/pentest/run/

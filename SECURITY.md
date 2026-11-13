@@ -21,9 +21,13 @@ text extraction is not fuzzed. OWASP ZAP has scanned a running 0.6.2 server,
 passively and actively, as an anonymous visitor, a reader, a curator and an
 admin, with the stack in `security/zap/`. It found no injection or cross-site
 scripting, and server errors for a few requests, fixed in 0.6.3 (see
-`security/zap/README.md`). The rest of its testing is the test suite,
-which pins each guarantee in the threat model, CodeQL and a RustSec advisory
-check on every change, and AI-assisted review.
+`security/zap/README.md`). A penetration test, run by the project with an
+AI assistant rather than an outside tester, attacked a server behind the
+shipped `Caddyfile`, and replay in Chrome, by hand. It found eight problems,
+none of them injection or cross-site scripting, all fixed in 0.6.4; the log,
+the stack and the attacks are in `security/pentest/`. The rest of its testing
+is the test suite, which pins each guarantee in the threat model, CodeQL and a
+RustSec advisory check on every change, and AI-assisted review.
 
 ## Reporting
 
