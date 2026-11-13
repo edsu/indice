@@ -469,6 +469,43 @@ async fn forward_auth_gates_management_routes() {
     server.abort();
 }
 
+/// Two copies of the identity header, or of the secret, make the caller
+/// anonymous. A proxy that adds its header after the client's would otherwise
+/// hand indice the client's copy first.
+#[tokio::test]
+async fn a_duplicated_identity_or_secret_is_anonymous() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let manage = format!("{base}/manage/add");
+
+    for headers in [
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+            ("x-forwarded-email", "bob@x.edu"),
+        ],
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+            ("x-forwarded-email", "alice@x.edu"),
+        ],
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+        ],
+    ] {
+        let (status, _) = get_with_headers(manage.clone(), headers.clone()).await;
+        assert_eq!(status, 403, "{headers:?}");
+    }
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn browsertrix_import_reports_unconfigured_without_creds() {
     // Management on, but the test server injects no Browsertrix provider (no

@@ -277,6 +277,9 @@ matter, and it is the one indice cannot detect.
 - A forwarded identity is trusted only when the shared secret arrives with it, so
   a client that forges the identity header, or a request that bypassed the proxy,
   gets 403. `manage.rs::forward_auth_gates_management_routes`
+- Either header arriving twice makes the caller anonymous, so a proxy that adds
+  its header after a client's copy cannot be made to vouch for the client's.
+  `manage.rs::a_duplicated_identity_or_secret_is_anonymous`
 - The local operator identity cannot be claimed by a remote caller.
   `identity.rs::the_local_operator_is_not_claimable_by_a_remote_user`
 - `Access::local` refuses a public bind at construction, and `serve_on_listeners`
