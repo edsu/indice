@@ -62,13 +62,19 @@ pub(super) fn open(
             // refused address logged "can't be streamed (no range support or
             // compressed WARCs)", told the curator we were downloading, and
             // then refused the same address again: a misleading log for the
-            // operator and a second free probe for whoever chose it.
+            // operator and a second free probe for whoever chose it. A host
+            // that stalled stops here too: the download would wait on it again.
             match remote_warcs_streamable(u, fetch) {
                 Ok(true) => WaczAccess::Stream {
                     url: u.clone(),
                     fetch,
                 },
-                Err(e) if crate::http_range::is_policy_refusal(&e) => return Err(e),
+                Err(e)
+                    if crate::http_range::is_policy_refusal(&e)
+                        || crate::http_range::is_stall(&e) =>
+                {
+                    return Err(e)
+                }
                 Ok(false) | Err(_) => {
                     info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
                     progress.phase(&Phase::Downloading);
