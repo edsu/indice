@@ -13,6 +13,20 @@ use tantivy::{TantivyDocument, Term};
 
 use super::*;
 
+/// Run a query parsed from what a reader typed. The schema is indice's own,
+/// so a schema error here can only be the query asking for something the
+/// schema cannot do, and is the reader's: see [`UnsearchableQuery`].
+fn run_readers<C: tantivy::collector::Collector>(
+    searcher: &tantivy::Searcher,
+    query: &dyn Query,
+    collector: &C,
+) -> Result<C::Fruit> {
+    searcher.search(query, collector).map_err(|e| match e {
+        tantivy::TantivyError::SchemaError(why) => UnsearchableQuery(why).into(),
+        e => e.into(),
+    })
+}
+
 /// How much more a title match counts than a body/url match when ranking.
 const TITLE_BOOST: tantivy::Score = 3.0;
 
@@ -172,7 +186,7 @@ impl SearchIndex {
         let agg_collector =
             AggregationCollector::from_aggs(facet_aggregations(), AggContextParams::default());
         let (candidates, total_captures, agg_results) =
-            searcher.search(&query, &(top_collector, Count, agg_collector))?;
+            run_readers(&searcher, &query, &(top_collector, Count, agg_collector))?;
 
         // Collapse repeat captures of the same URL: walking the candidates in
         // score order, the first (best-ranked) capture of a URL becomes the
@@ -506,12 +520,15 @@ impl SearchIndex {
         // Deep pages of a page list are not worth their cost: collecting the
         // top `offset + limit` hits allocates for all of them.
         if offset > Self::MAX_PAGES_OFFSET {
-            let total = searcher.search(&query, &Count)?;
+            let total = run_readers(&searcher, &query, &Count)?;
             return Ok((total, Vec::new()));
         }
         let want = (offset + limit).max(1);
-        let (total, top) =
-            searcher.search(&query, &(Count, TopDocs::with_limit(want).order_by_score()))?;
+        let (total, top) = run_readers(
+            &searcher,
+            &query,
+            &(Count, TopDocs::with_limit(want).order_by_score()),
+        )?;
 
         let mut hits = Vec::new();
         for (_score, addr) in top.into_iter().skip(offset).take(limit) {

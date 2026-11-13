@@ -170,3 +170,19 @@ pub struct StoredFieldStats {
     /// `(field name, total uncompressed bytes, doc count)`, largest field first.
     pub fields: Vec<(String, u64, u64)>,
 }
+
+/// A reader's query that parses but that the index cannot run, for a route to
+/// answer as the reader's mistake rather than the server's. `title:*` is one:
+/// Tantivy parses `field:*` as "has this field", which it can answer only for
+/// a fast field, so on the facet fields (`domain:*`, `year:*`) it works and on
+/// a text field the search fails.
+#[derive(Debug)]
+pub struct UnsearchableQuery(pub String);
+
+impl std::fmt::Display for UnsearchableQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UnsearchableQuery {}

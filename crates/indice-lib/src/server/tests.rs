@@ -1827,3 +1827,25 @@ async fn a_search_page_past_the_last_is_empty() {
     let (status, _, _) = get_with(&app, &format!("/search?q=x&page={}", usize::MAX), None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// A search that parses but that the index cannot run is a 400 that says so,
+/// not a 500 (pen test #228, J1). `field:*` on a text field is one; on a facet
+/// field it is answered as before.
+#[tokio::test]
+async fn a_search_the_index_cannot_run_is_the_readers_mistake() {
+    let (_home, app, _) = app_with_crawl("c");
+    for path in [
+        "/search?q=url:*",
+        "/search?q=simple%20AND%20title:*",
+        "/api/search?q=title:*",
+        "/collection/c/pages?search=title:*",
+    ] {
+        let (status, _, body) = get_with(&app, path, Some("en")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert!(body.contains("this search can't be run"), "{path}: {body}");
+    }
+    for path in ["/search?q=domain:*", "/api/search?q=year:*"] {
+        let (status, _, body) = get_with(&app, path, Some("en")).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+    }
+}

@@ -339,6 +339,7 @@ error-reference = { $message } (riferimento { $id }).
 error-no-reference = { $message }.
 error-request-failed = Richiesta non riuscita: { $detail }
 error-query-too-long = query di ricerca troppo lunga: { $bytes } byte, limite { $limit }
+error-query-unsearchable = questa ricerca non si può eseguire: { $detail }
 error-index-busy = L'indice di ricerca è occupato ({ $holder }). La modifica non è stata salvata: riprova tra poco.
 error-busy = indice è occupato; riprova tra un momento
 error-too-many-requests = troppe richieste da questo indirizzo; riprova tra { $secs } s

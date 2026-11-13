@@ -596,7 +596,7 @@ Queries go through Tantivy's `QueryParser`, configured in `search_faceted`:
 - **Default fields** are `title`, `headings`, `body`, `description`, and `url_tokens`, so a bare word matches any of them. Other fields are reachable with explicit `field:` syntax (`title:climate`, `domain:example.com`).
 - **AND by default** (`set_conjunction_by_default`): `climate policy` requires both terms. Users can still write `OR`, `-`, `+`, `"phrases"`, `(groups)`, and `^boost`.
 - **Field boosts** (`set_field_boost`): title matches rank highest, headings next, then body/description/URL.
-- **Lenient parsing** (`parse_query_lenient`): a malformed query (stray quote, empty `field:`) yields a best-effort query rather than an error, so the search box never returns a 500 while a user experiments with syntax.
+- **Lenient parsing** (`parse_query_lenient`): a malformed query (stray quote, empty `field:`) yields a best-effort query rather than an error, so the search box never returns a 500 while a user experiments with syntax. A query that parses but that the index cannot run, `field:*` on a field that is not a fast field, is a 400 that says why (`search::UnsearchableQuery`). `server/tests.rs::a_search_the_index_cannot_run_is_the_readers_mistake`
 
 The `<details>` "Search tips" panel on the homepage and results page documents this syntax for end users; its examples must stay in sync with this configuration.
 
