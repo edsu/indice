@@ -502,6 +502,43 @@ fn a_deflated_nested_wacz_is_not_copied_again_to_scan() {
     assert!(stats.is_some_and(|s| s.pages > 0), "it indexes");
 }
 
+/// One inner WACZ listed under many names, or one WARC that has to be
+/// scanned, is refused before anything is read, rather than read once per
+/// name (pen test #228, J4). Neither is anything a tool writes.
+#[test]
+fn a_wacz_whose_entries_share_bytes_is_refused() {
+    let names: Vec<String> = (0..50).map(|i| format!("{i:04}.wacz")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let nested = crate::wacz::list_again(&nested_multi_wacz(), "20250101000000-abc-0.wacz", &names);
+    let (deflated, _) = with_deflated_warcs(&std::fs::read(fixture("simple.wacz")).unwrap());
+    let warc = zip::ZipArchive::new(std::io::Cursor::new(&deflated))
+        .unwrap()
+        .file_names()
+        .map(|n| n.unwrap().into_owned())
+        .find(|n| n.starts_with("archive/"))
+        .unwrap();
+    let scanned = crate::wacz::list_again(&deflated, &warc, &["archive/again.warc"]);
+    for (label, wacz) in [("nested", nested), ("scanned", scanned)] {
+        // It is a zip that opens, so what refuses it is the check.
+        assert!(
+            zip::ZipArchive::new(std::io::Cursor::new(&wacz)).is_ok(),
+            "{label}"
+        );
+        let tmp = TempDir::new().unwrap();
+        let archive = tmp.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        let path = archive.join("overlap.wacz");
+        std::fs::write(&path, &wacz).unwrap();
+        let err = index_path(&path, tmp.path(), None, "test").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("over the same bytes"),
+            "{label}: {err:#}"
+        );
+        let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
+        assert!(manifest.waczs.is_empty(), "{label}: nothing indexed");
+    }
+}
+
 #[test]
 fn nested_multi_wacz_is_indexed() {
     let outer = nested_multi_wacz();

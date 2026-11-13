@@ -417,6 +417,9 @@ only who may frame it.
   `wacz.rs::a_record_that_inflates_past_the_limit_is_refused`
 - A WACZ that asks for more is refused whole, naming the member and the setting.
   `integration.rs::a_wacz_bomb_is_refused_and_not_added`
+- A WACZ whose zip lists the same bytes under more than one name is refused
+  before anything is read, so a crawl cannot be indexed, or a WARC scanned,
+  once per name. `ingest/tests.rs::a_wacz_whose_entries_share_bytes_is_refused`
 - Indexing does not hold the crawl's text: a page's sources are merged a page at
   a time, and each source still wins where it should.
   `ingest/tests.rs::each_source_wins_where_it_should_on_both_paths`

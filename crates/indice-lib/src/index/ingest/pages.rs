@@ -245,6 +245,8 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
     let inners = {
         let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))
             .context("opening WACZ to check for nesting")?;
+        // Every WACZ indexed comes through here first.
+        crate::wacz::ensure_entries_apart(&zip)?;
         crate::wacz::nested_wacz_locations(&mut zip)
     };
     if inners.is_empty() {
@@ -379,6 +381,9 @@ fn merge_max(acc: &mut Option<String>, v: Option<String>) {
 /// From there it is indexed like any other WACZ, a page at a time; see
 /// [`index_pages`].
 pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
+    // Each WARC is extracted and read in turn, so one listed under many names
+    // would be read once for each.
+    crate::wacz::ensure_entries_apart(&zip::ZipArchive::new(std::fs::File::open(wacz_path)?)?)?;
     let warc_paths: Vec<_> = iter_warc_paths(wacz_path)?
         .collect::<Result<Vec<_>>>()
         .with_context(|| format!("listing WARC entries in {}", wacz_path.display()))?;
@@ -479,6 +484,8 @@ where
     let (cdx, starts, warcinfo) = {
         let mut zip =
             zip::ZipArchive::new(RangeReader::new(fetch.clone())).context("opening WACZ ZIP")?;
+        // Again for an inner WACZ of a multi-WACZ, which is a zip of its own.
+        wacz::ensure_entries_apart(&zip)?;
         wacz::ensure_warcs_stored(&mut zip)?;
         let cdx = wacz::cdx_records(&mut zip, limit)?;
         let starts = wacz::warc_data_starts(&mut zip)?;
