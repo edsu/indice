@@ -227,15 +227,30 @@ fn route(
 /// enough into the handler to prove the *gate* ran (not that the operation
 /// succeeded — hence asserting `!= 403` rather than a specific success code,
 /// which would couple this table to each endpoint's semantics).
+///
+/// Two routes under `/manage/` are not here, since neither grants anything:
+/// `/manage/login` sends anyone the proxy signed in back where they came from,
+/// and `POST /logout` clears the display cookie for anyone.
 fn routes() -> Vec<Route> {
     let json = "application/json";
     let form = "application/x-www-form-urlencoded";
     vec![
+        route("GET", "/manage/add", Needs::Curator, None),
+        route("GET", "/manage/collections/new", Needs::Curator, None),
+        route("GET", "/manage/edit/table", Needs::Curator, None),
         route(
             "POST",
             "/api/collections",
             Needs::Curator,
             Some((form, "name=Table".into())),
+        ),
+        // An empty multipart body: the gate runs before the handler finds no
+        // file, which a curator is told with a 400.
+        route(
+            "POST",
+            "/api/archives/upload",
+            Needs::Curator,
+            Some(("multipart/form-data; boundary=x", "--x--\r\n".into())),
         ),
         // Drafting sends archived text to the configured model, so it is a
         // curator's, like the editor it serves. No model is configured here,

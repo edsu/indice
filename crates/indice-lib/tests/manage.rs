@@ -469,6 +469,43 @@ async fn forward_auth_gates_management_routes() {
     server.abort();
 }
 
+/// Two copies of the identity header, or of the secret, make the caller
+/// anonymous. A proxy that adds its header after the client's would otherwise
+/// hand indice the client's copy first.
+#[tokio::test]
+async fn a_duplicated_identity_or_secret_is_anonymous() {
+    let tmp = home_with_roster();
+    let cfg = indice_lib::server::ServerConfig::new(indice_lib::server::Access::proxy(
+        "x-forwarded-email",
+        "s3cret",
+    ));
+    let (base, server) = serve(tmp.path().to_path_buf(), cfg).await;
+    let manage = format!("{base}/manage/add");
+
+    for headers in [
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+            ("x-forwarded-email", "bob@x.edu"),
+        ],
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+            ("x-forwarded-email", "alice@x.edu"),
+        ],
+        vec![
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-indice-auth-secret", "s3cret"),
+            ("x-forwarded-email", "alice@x.edu"),
+        ],
+    ] {
+        let (status, _) = get_with_headers(manage.clone(), headers.clone()).await;
+        assert_eq!(status, 403, "{headers:?}");
+    }
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn browsertrix_import_reports_unconfigured_without_creds() {
     // Management on, but the test server injects no Browsertrix provider (no
@@ -2335,6 +2372,30 @@ async fn an_upload_that_fails_to_index_leaves_nothing_behind() {
             "the job should fail: {transcript}"
         );
     }
+    for dir in [
+        indice_lib::index::archive_dir(tmp.path()),
+        indice_lib::index::scratch_dir(tmp.path()),
+    ] {
+        let left: Vec<_> = files_under(&dir);
+        assert!(left.is_empty(), "files left under {dir:?}: {left:?}");
+    }
+    server.abort();
+}
+
+/// An upload is staged and filed under its own name, so a name longer than a
+/// file's may be is refused with a 400, and nothing is left behind.
+#[tokio::test]
+async fn an_upload_whose_name_is_too_long_for_a_file_is_refused() {
+    let (tmp, base, server) = serve_with_config("").await;
+    let (ct, body) = upload_body("Long", b"not a zip");
+    let name = format!("{}.wacz", "x".repeat(300));
+    let body = String::from_utf8(body)
+        .unwrap()
+        .replace("big.wacz", &name)
+        .into_bytes();
+    let (status, text) = post_upload(&base, ct, body, false).await;
+    assert_eq!(status, 400, "{text}");
+    assert!(text.contains("too long"), "{text}");
     for dir in [
         indice_lib::index::archive_dir(tmp.path()),
         indice_lib::index::scratch_dir(tmp.path()),

@@ -1037,7 +1037,7 @@ impl CollectionId {
     /// Checked by [`Self::try_from_name`] for anything that writes a
     /// collection, not in [`Self::parse`], so that whatever [`Self::from_name`]
     /// makes still parses.
-    pub const MAX_LEN: usize = 255;
+    pub const MAX_LEN: usize = crate::index::MAX_NAME_LEN;
 
     /// Validate an existing id (e.g. from a URL path segment or the manifest).
     /// `None` if it isn't a safe single path component.

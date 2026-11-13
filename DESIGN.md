@@ -277,6 +277,9 @@ matter, and it is the one indice cannot detect.
 - A forwarded identity is trusted only when the shared secret arrives with it, so
   a client that forges the identity header, or a request that bypassed the proxy,
   gets 403. `manage.rs::forward_auth_gates_management_routes`
+- Either header arriving twice makes the caller anonymous, so a proxy that adds
+  its header after a client's copy cannot be made to vouch for the client's.
+  `manage.rs::a_duplicated_identity_or_secret_is_anonymous`
 - The local operator identity cannot be claimed by a remote caller.
   `identity.rs::the_local_operator_is_not_claimable_by_a_remote_user`
 - `Access::local` refuses a public bind at construction, and `serve_on_listeners`
@@ -433,11 +436,26 @@ only who may frame it.
   `pdf_child.rs::each_way_a_child_ends_is_told_apart`
 - A remote host that answers a range with more than was asked is refused.
   `http_range.rs::a_range_longer_than_asked_for_is_refused`
+- A remote host that stalls is given up on, so it cannot hold the index lock
+  that every other ingest and deletion waits for: a fetch waits at most 30s for
+  the name to resolve and to connect, and 60s for headers or any read, and fails
+  once a minute brings less than 64 KiB. The first timeout fails the ingest; it
+  is not retried, and no later record goes back to that host. The Archive-It and
+  Browsertrix clients have the same timeouts.
+  `http_range.rs::every_agent_has_timeouts`,
+  `http_range.rs::a_body_that_trickles_is_stopped`,
+  `http_range.rs::a_host_that_stalls_is_given_up_on_once`,
+  `pages.rs::a_stalled_host_fails_the_crawl_where_a_bad_record_is_skipped`,
+  `archiveit.rs::the_real_transport_has_timeouts`
 
 **Curator-supplied content does not become executable or escape its directory.**
 
 - Note HTML is sanitized. `manage.rs::annotation_note_html_cannot_carry_executable_markup`,
   `markdown.rs::raw_html_is_escaped_not_passed_through`
+- An upload whose name is too long to be a file is refused with a 400 before
+  any of it is read, and a WACZ is filed under a name that fits, a suffix for a
+  name already taken included. `manage.rs::an_upload_whose_name_is_too_long_for_a_file_is_refused`,
+  `acquire.rs::every_filed_name_fits`
 - A hostile timestamp cannot escape the events directory.
   `events.rs::a_hostile_timestamp_cannot_escape_the_events_directory`
 - The public annotation API never discloses a login address.

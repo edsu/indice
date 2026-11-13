@@ -42,6 +42,8 @@ pub trait Transport {
 
 /// A [`Transport`] backed by `ureq`. 4xx/5xx come back as ordinary responses so
 /// the client can read the API's status + message (matching `browsertrix.rs`).
+/// It has [`crate::http_range`]'s timeouts: an import downloads its WARCs while
+/// it holds the index lock, so a WASAPI host that stalls would hold it too.
 #[derive(Clone)]
 pub struct UreqTransport {
     agent: ureq::Agent,
@@ -50,10 +52,7 @@ pub struct UreqTransport {
 impl Default for UreqTransport {
     fn default() -> Self {
         Self {
-            agent: ureq::Agent::config_builder()
-                .http_status_as_error(false)
-                .build()
-                .new_agent(),
+            agent: crate::http_range::http_agent(crate::http_range::FetchPolicy::Unrestricted),
         }
     }
 }
@@ -81,7 +80,11 @@ impl Transport for UreqTransport {
         if !(200..300).contains(&status) {
             bail!("GET {url} failed: HTTP {status}");
         }
-        Ok(Box::new(resp.into_body().into_reader()))
+        // Read straight through to disk by `download`, which is what the
+        // minimum rate needs of its reader.
+        Ok(Box::new(crate::http_range::MinRate::new(
+            resp.into_body().into_reader(),
+        )))
     }
 }
 
@@ -984,6 +987,15 @@ mod tests {
         assert_eq!(files[0].checksums.sha1.as_deref(), Some("s1"));
         assert_eq!(files[1].filename, "B.warc.gz");
         assert_eq!(files[1].crawl, Some(304245));
+    }
+
+    /// The real transport gives up on a host that stalls: an Archive-It import downloads its WARCs holding the index lock.
+    #[test]
+    fn the_real_transport_has_timeouts() {
+        let agent = UreqTransport::default().agent;
+        let t = agent.config().timeouts();
+        assert!(t.resolve.is_some() && t.connect.is_some() && t.recv_response.is_some());
+        assert!(agent.config().timeout_per_read().is_some());
     }
 
     #[test]

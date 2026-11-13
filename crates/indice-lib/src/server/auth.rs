@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 
 use crate::events::Action;
@@ -307,20 +307,30 @@ fn request_authority<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str
 /// non-empty identity in the configured user header — both injected by the
 /// trusted proxy. A forged identity header, or a request that skipped the proxy,
 /// lacks the secret and yields `None`.
+///
+/// Either header arriving more than once also yields `None`. A proxy that
+/// replaces the client's copy, as the shipped Caddyfile does, never sends two;
+/// one that adds its own after the client's would, and reading the first copy
+/// would then let the client say who they are.
 fn check_forward_auth(fa: &ForwardAuth, headers: &HeaderMap) -> Option<String> {
-    let secret_ok = headers
-        .get(AUTH_SECRET_HEADER)
+    let secret_ok = only_one(headers, AUTH_SECRET_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(|v| constant_time_eq(v.as_bytes(), fa.secret.as_bytes()))
         .unwrap_or(false);
     if !secret_ok {
         return None;
     }
-    headers
-        .get(fa.user_header.as_str())
+    only_one(headers, fa.user_header.as_str())
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// The header's value if it arrived exactly once.
+fn only_one<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a HeaderValue> {
+    let mut values = headers.get_all(name).iter();
+    let first = values.next()?;
+    values.next().is_none().then_some(first)
 }
 
 /// How a request's identity was established.

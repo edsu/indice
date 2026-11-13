@@ -448,6 +448,11 @@ pub(super) async fn upload_archive(
                     .map(|s| s.to_string_lossy().to_string())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "upload.wacz".to_string());
+                // Staged and then filed under this name, so one longer than a
+                // file name may be is refused before anything is read.
+                if fname.len() > crate::index::MAX_NAME_LEN {
+                    return bad_request(curator.l10n(), "error-file-name-too-long");
+                }
                 // Staged under the home, on the archive's volume (see
                 // `index::scratch_dir`), so filing it is a rename.
                 let parent = crate::index::scratch_dir(&state.home);

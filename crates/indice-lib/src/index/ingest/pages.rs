@@ -645,7 +645,7 @@ where
                             lock: &large,
                             held: &mut held,
                         };
-                        for raw in fetch_raw_records(&fetch, starts, c, limit, extract, &pdf, gate)
+                        for raw in fetch_raw_records(&fetch, starts, c, limit, extract, &pdf, gate)?
                         {
                             if belongs_to(raw.url(), page, &slot) {
                                 merge_raw(&mut merged, raw);
@@ -773,6 +773,10 @@ struct Gate<'a, 'g> {
 /// read for at most `extract` bytes of text. A record that cannot be read,
 /// including one that inflates past the limit, is skipped with a warning: one
 /// bad record should not cost the crawl.
+///
+/// A host that stalled is the exception, and fails the crawl: every record
+/// after it is on the same host, and skipping each in turn would hold the
+/// index for as long as the crawl has records.
 fn fetch_raw_records<F: RangeFetch>(
     fetch: &F,
     starts: &HashMap<String, u64>,
@@ -781,17 +785,17 @@ fn fetch_raw_records<F: RangeFetch>(
     extract: usize,
     pdf: &crate::pdf::PdfLimits,
     gate: Gate<'_, '_>,
-) -> Vec<RawRecord> {
+) -> Result<Vec<RawRecord>> {
     let base = c.filename.rsplit('/').next().unwrap_or(&c.filename);
     let Some(&start) = starts.get(base) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let (from, len) = (start + c.offset, c.length);
     // The CDX says how long the record is, and the fetch allocates that much
     // before reading, so a length past the limit is refused unfetched.
     if len > limit {
         tracing::warn!(url = %c.url, "skipping a CDX record longer than the limit ({len} bytes)");
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // A record already large as fetched waits its turn before the fetch, not
     // after it: the bytes themselves are what would be held at once.
@@ -812,13 +816,14 @@ fn fetch_raw_records<F: RangeFetch>(
                 gate.held,
             )
         }) {
-        Ok(records) => records
+        Ok(records) => Ok(records
             .iter()
             .filter_map(|r| record_to_raw(r, extract, pdf))
-            .collect(),
+            .collect()),
+        Err(e) if crate::http_range::is_stall(&e) => Err(e),
         Err(e) => {
             tracing::warn!(url = %c.url, "skipping unreadable CDX record: {e:#}");
-            Vec::new()
+            Ok(Vec::new())
         }
     }
 }
@@ -1292,6 +1297,7 @@ mod tests {
         };
         assert!(
             fetch_raw_records(&NoFetch, &starts, &c, 1024 * 1024, usize::MAX, &PDF, gate)
+                .unwrap()
                 .is_empty()
         );
     }
@@ -1367,8 +1373,55 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        fetch_raw_records(&fetch, &starts, &c, u64::MAX, usize::MAX, &PDF, gate);
+        fetch_raw_records(&fetch, &starts, &c, u64::MAX, usize::MAX, &PDF, gate).unwrap();
         assert!(held_during_fetch.load(Ordering::SeqCst));
+    }
+
+    /// A record whose host stalled fails the crawl; any other unreadable
+    /// record is skipped. Skipped, a stall would be waited out again for
+    /// every record after it.
+    #[test]
+    fn a_stalled_host_fails_the_crawl_where_a_bad_record_is_skipped() {
+        struct Failing(std::io::ErrorKind);
+        impl RangeFetch for Failing {
+            fn total_len(&self) -> u64 {
+                u64::MAX
+            }
+            fn fetch(&self, _: u64, _: u64) -> std::io::Result<Vec<u8>> {
+                Err(std::io::Error::new(self.0, "no"))
+            }
+        }
+        let starts = HashMap::from([("w".to_string(), 0)]);
+        let c = crate::wacz::CdxjRecord {
+            url: "https://ex.test/".into(),
+            timestamp: String::new(),
+            mime: "text/html".into(),
+            status: 200,
+            filename: "w".into(),
+            offset: 0,
+            length: 10,
+        };
+        let lock = Mutex::new(());
+        let fetch = |kind| {
+            let mut held = None;
+            let gate = Gate {
+                lock: &lock,
+                held: &mut held,
+            };
+            fetch_raw_records(
+                &Failing(kind),
+                &starts,
+                &c,
+                u64::MAX,
+                usize::MAX,
+                &PDF,
+                gate,
+            )
+        };
+        assert!(fetch(std::io::ErrorKind::TimedOut).is_err());
+        assert!(fetch(std::io::ErrorKind::ConnectionReset)
+            .unwrap()
+            .is_empty());
     }
 
     /// A record of a few MiB is read alone, not just one past 16 MiB: PDFs
@@ -1403,7 +1456,7 @@ mod tests {
             lock: &lock,
             held: &mut held,
         };
-        fetch_raw_records(&Empty, &starts, &c, u64::MAX, usize::MAX, &PDF, gate);
+        fetch_raw_records(&Empty, &starts, &c, u64::MAX, usize::MAX, &PDF, gate).unwrap();
         assert!(held.is_some(), "a 3 MiB record should wait its turn");
     }
 
