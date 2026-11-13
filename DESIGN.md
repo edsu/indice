@@ -440,11 +440,13 @@ only who may frame it.
   that every other ingest and deletion waits for: a fetch waits at most 30s for
   the name to resolve and to connect, and 60s for headers or any read, and fails
   once a minute brings less than 64 KiB. The first timeout fails the ingest; it
-  is not retried, and no later record goes back to that host.
+  is not retried, and no later record goes back to that host. The Archive-It and
+  Browsertrix clients have the same timeouts.
   `http_range.rs::every_agent_has_timeouts`,
   `http_range.rs::a_body_that_trickles_is_stopped`,
   `http_range.rs::a_host_that_stalls_is_given_up_on_once`,
-  `pages.rs::a_stalled_host_fails_the_crawl_where_a_bad_record_is_skipped`
+  `pages.rs::a_stalled_host_fails_the_crawl_where_a_bad_record_is_skipped`,
+  `archiveit.rs::the_real_transport_has_timeouts`
 
 **Curator-supplied content does not become executable or escape its directory.**
 

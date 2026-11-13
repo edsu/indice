@@ -53,7 +53,7 @@ pub trait Transport {
 
 /// A [`Transport`] backed by `ureq`. The agent returns 4xx/5xx as ordinary
 /// responses (not transport errors) so the client can read the API's status +
-/// message, matching [`crate::http_range`]'s agent.
+/// message, matching [`crate::http_range`]'s agent, whose timeouts it shares.
 #[derive(Clone)]
 pub struct UreqTransport {
     agent: ureq::Agent,
@@ -62,10 +62,7 @@ pub struct UreqTransport {
 impl Default for UreqTransport {
     fn default() -> Self {
         Self {
-            agent: ureq::Agent::config_builder()
-                .http_status_as_error(false)
-                .build()
-                .new_agent(),
+            agent: crate::http_range::http_agent(crate::http_range::FetchPolicy::Unrestricted),
         }
     }
 }
@@ -785,6 +782,15 @@ mod tests {
         };
         let res = c.resources("o1", &upload).unwrap();
         assert_eq!(res[0].path, "https://files/b.wacz?sig=2");
+    }
+
+    /// The real transport gives up on a host that stalls: a Browsertrix host that stalls should not hang an import.
+    #[test]
+    fn the_real_transport_has_timeouts() {
+        let agent = UreqTransport::default().agent;
+        let t = agent.config().timeouts();
+        assert!(t.resolve.is_some() && t.connect.is_some() && t.recv_response.is_some());
+        assert!(agent.config().timeout_per_read().is_some());
     }
 
     #[test]

@@ -488,7 +488,7 @@ const TIMEOUTS: Timeouts = Timeouts {
 /// must read it through without stopping, as every caller does by copying it
 /// straight to memory or disk. A caller that paused for a minute between
 /// reads would be told the host was too slow.
-struct MinRate<R> {
+pub(crate) struct MinRate<R> {
     inner: R,
     window: Duration,
     min_bytes: u64,
@@ -497,7 +497,7 @@ struct MinRate<R> {
 }
 
 impl<R> MinRate<R> {
-    fn new(inner: R) -> Self {
+    pub(crate) fn new(inner: R) -> Self {
         Self::with_limits(inner, RATE_WINDOW, MIN_BYTES_PER_WINDOW)
     }
 
@@ -535,14 +535,15 @@ impl<R: Read> Read for MinRate<R> {
     }
 }
 
-/// The shared HTTP agent. `http_status_as_error(false)` returns 4xx/5xx as a
-/// normal response we can inspect (status + `Retry-After`), rather than an opaque
-/// error — needed to classify 429/503 for retry.
+/// The shared HTTP agent, for every host indice fetches from: a curator's
+/// URL here, and the Archive-It and Browsertrix APIs. `http_status_as_error(false)`
+/// returns 4xx/5xx as a normal response we can inspect (status + `Retry-After`),
+/// rather than an opaque error — needed to classify 429/503 for retry.
 ///
 /// Under [`FetchPolicy::PublicOnly`] the agent is built with a resolver that
 /// refuses internal addresses; see [`PublicOnlyResolver`]. Both policies get
 /// the timeouts above: an operator's own host can stall as well.
-fn http_agent(policy: FetchPolicy) -> ureq::Agent {
+pub(crate) fn http_agent(policy: FetchPolicy) -> ureq::Agent {
     http_agent_with(policy, TIMEOUTS)
 }
 
