@@ -346,6 +346,7 @@ error-too-many-streams = troppi flussi di archivio aperti da questo indirizzo; r
 error-collection-required = la { -collection } è obbligatoria
 error-location-not-url = aggiungi un archivio tramite un URL http(s), oppure carica il file. Un percorso sul disco del server non è accettato qui; per quello usa `indice index` sulla macchina stessa.
 error-file-required = il file è obbligatorio
+error-file-name-too-long = il nome del file è troppo lungo
 error-org-required = l'organizzazione è obbligatoria
 error-select-crawl = seleziona almeno una { -crawl }
 error-text-field-long = un campo di testo in questo caricamento supera { $max } byte

@@ -385,6 +385,7 @@ error-collection-required = collection is required
 # `indice index` is a command and stays as it is.
 error-location-not-url = add an archive by an http(s) URL, or upload the file. A path on the server's own disk is not accepted here; use `indice index` on the machine itself for that.
 error-file-required = a file is required
+error-file-name-too-long = the file name is too long
 error-org-required = org is required
 error-select-crawl = select at least one { -crawl }
 error-text-field-long = a text field in this upload is longer than { $max } bytes

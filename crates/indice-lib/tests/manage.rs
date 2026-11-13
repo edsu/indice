@@ -2382,6 +2382,30 @@ async fn an_upload_that_fails_to_index_leaves_nothing_behind() {
     server.abort();
 }
 
+/// An upload is staged and filed under its own name, so a name longer than a
+/// file's may be is refused with a 400, and nothing is left behind.
+#[tokio::test]
+async fn an_upload_whose_name_is_too_long_for_a_file_is_refused() {
+    let (tmp, base, server) = serve_with_config("").await;
+    let (ct, body) = upload_body("Long", b"not a zip");
+    let name = format!("{}.wacz", "x".repeat(300));
+    let body = String::from_utf8(body)
+        .unwrap()
+        .replace("big.wacz", &name)
+        .into_bytes();
+    let (status, text) = post_upload(&base, ct, body, false).await;
+    assert_eq!(status, 400, "{text}");
+    assert!(text.contains("too long"), "{text}");
+    for dir in [
+        indice_lib::index::archive_dir(tmp.path()),
+        indice_lib::index::scratch_dir(tmp.path()),
+    ] {
+        let left: Vec<_> = files_under(&dir);
+        assert!(left.is_empty(), "files left under {dir:?}: {left:?}");
+    }
+    server.abort();
+}
+
 /// A different body per attempt, so the second upload cannot be taken for a
 /// byte-identical copy of the first and reused.
 fn unique() -> u128 {
