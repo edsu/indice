@@ -263,3 +263,43 @@ async fn the_log_keeps_no_search_terms_and_no_addresses() {
         );
     }
 }
+
+/// A crawl added by URL that fails is in the operator's log, with who added it
+/// and why, and not only in the curator's progress: here a URL refused as
+/// internal, which is what an operator would want to see.
+#[tokio::test]
+async fn a_failed_add_is_in_the_log() {
+    let s = serve(tempfile::TempDir::new().unwrap(), None).await;
+    let url = format!("{}/api/archives", s.app);
+    let status = tokio::task::spawn_blocking(move || {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        sign_in(agent.post(&url), Some("curator@x.edu"))
+            .content_type("application/json")
+            .send(r#"{"path": "http://127.0.0.1:9/refused.wacz", "collection": "c"}"#)
+            .unwrap()
+            .status()
+            .as_u16()
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 202);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let line = loop {
+        let log = String::from_utf8(log().lock().unwrap().clone()).unwrap();
+        if let Some(l) = log
+            .lines()
+            .find(|l| l.contains("an add failed") && l.contains("refused.wacz"))
+        {
+            break l.to_string();
+        }
+        assert!(std::time::Instant::now() < deadline, "not logged:\n{log}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("refusing to fetch 127.0.0.1"), "{line}");
+    assert!(line.contains("actor="), "{line}");
+}

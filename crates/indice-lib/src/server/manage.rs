@@ -249,6 +249,14 @@ fn start_index_job(
             tx: tx.clone(),
             l10n: l10n.clone(),
         };
+        // A job that fails tells its curator, and the operator's log as well:
+        // a URL refused as internal, or a host that stalled, is something the
+        // operator needs to be able to see, and the curator's progress is
+        // seen only by them.
+        let fail = |why: &dyn std::fmt::Display, message: String| {
+            tracing::warn!(job = id, actor = %actor, location = %location, "an add failed: {why}");
+            let _ = tx.send(ProgressEvent::Error { message });
+        };
         let result = {
             // The cross-process index lock is taken *before* the in-process
             // one, and the order matters more than it looks. `index_location`
@@ -267,12 +275,11 @@ fn start_index_job(
             ) {
                 Ok(l) => l,
                 Err(e) => {
-                    let _ = tx.send(ProgressEvent::Error {
-                        message: l10n.tr_args(
-                            "error-lock-failed",
-                            &[("detail", FluentArg::Str(&format!("{e:#}")))],
-                        ),
-                    });
+                    let detail = format!("{e:#}");
+                    fail(
+                        &detail,
+                        l10n.tr_args("error-lock-failed", &[("detail", FluentArg::Str(&detail))]),
+                    );
                     return;
                 }
             };
@@ -293,9 +300,7 @@ fn start_index_job(
             let scratch = match room {
                 Ok(room) => room,
                 Err(refused) => {
-                    let _ = tx.send(ProgressEvent::Error {
-                        message: refused.message(&l10n),
-                    });
+                    fail(&refused.message(&L10n::default()), refused.message(&l10n));
                     return;
                 }
             };
@@ -320,23 +325,26 @@ fn start_index_job(
                         crawls: Vec::new(),
                     })
                     .ok(),
-                Err(e) => tx
-                    .send(ProgressEvent::Error {
-                        message: l10n.tr_args(
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    fail(
+                        &detail,
+                        l10n.tr_args(
                             "error-reload-failed",
-                            &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                            &[("detail", FluentArg::Str(&detail))],
                         ),
-                    })
-                    .ok(),
+                    );
+                    None
+                }
             },
-            Err(e) => tx
-                .send(ProgressEvent::Error {
-                    message: l10n.tr_args(
-                        "error-job-failed",
-                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
-                    ),
-                })
-                .ok(),
+            Err(e) => {
+                let detail = format!("{e:#}");
+                fail(
+                    &detail,
+                    l10n.tr_args("error-job-failed", &[("detail", FluentArg::Str(&detail))]),
+                );
+                None
+            }
         };
         // `tx` (and the `progress` clone) drop here → the SSE stream ends once the
         // client has read the terminal event.
