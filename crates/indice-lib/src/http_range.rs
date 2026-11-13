@@ -397,18 +397,95 @@ fn retry_after<B>(resp: &ureq::http::Response<B>) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+// ── How long a remote host may take ─────────────────────────────────────────
+//
+// The host is a curator's choice, or whoever controls it now, and a fetch holds
+// the index lock for the whole ingest: while a host stalls, no other crawl is
+// added and nothing is deleted. ureq has no timeouts by default, so without
+// these a host that accepts the connection and never answers holds the lock
+// until the process is killed, and a SIGTERM waits on the job as well.
+
+/// How long to wait for a connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long to wait, once the request is sent, for the response's headers.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a single read may wait for any bytes at all.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The least a body must deliver in each [`RATE_WINDOW`], so a host that
+/// sends a byte just inside [`READ_TIMEOUT`], forever, is stopped too. About
+/// 1 KiB/s: far below any working host, and a gigabyte download still has no
+/// deadline.
+const MIN_BYTES_PER_WINDOW: u64 = 64 * 1024;
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// A body reader that fails once a [`RATE_WINDOW`] passes with less than
+/// [`MIN_BYTES_PER_WINDOW`] read in it. A read that blocks is bounded by
+/// [`READ_TIMEOUT`], so this only has to judge the reads that return.
+struct MinRate<R> {
+    inner: R,
+    window: Duration,
+    min_bytes: u64,
+    window_start: std::time::Instant,
+    window_bytes: u64,
+}
+
+impl<R> MinRate<R> {
+    fn new(inner: R) -> Self {
+        Self::with_limits(inner, RATE_WINDOW, MIN_BYTES_PER_WINDOW)
+    }
+
+    fn with_limits(inner: R, window: Duration, min_bytes: u64) -> Self {
+        Self {
+            inner,
+            window,
+            min_bytes,
+            window_start: std::time::Instant::now(),
+            window_bytes: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for MinRate<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.window_bytes += n as u64;
+        // At the end of the body there is nothing left to be slow about.
+        if n > 0 && self.window_start.elapsed() >= self.window {
+            if self.window_bytes < self.min_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "the host sent {} bytes in {}s, too slowly to go on reading",
+                        self.window_bytes,
+                        self.window_start.elapsed().as_secs()
+                    ),
+                ));
+            }
+            self.window_start = std::time::Instant::now();
+            self.window_bytes = 0;
+        }
+        Ok(n)
+    }
+}
+
 /// The shared HTTP agent. `http_status_as_error(false)` returns 4xx/5xx as a
 /// normal response we can inspect (status + `Retry-After`), rather than an opaque
 /// error — needed to classify 429/503 for retry.
 ///
 /// Under [`FetchPolicy::PublicOnly`] the agent is built with a resolver that
-/// refuses internal addresses; see [`PublicOnlyResolver`].
+/// refuses internal addresses; see [`PublicOnlyResolver`]. Both policies get
+/// the timeouts above: an operator's own host can stall as well.
 fn http_agent(policy: FetchPolicy) -> ureq::Agent {
-    let config = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .build();
+    let builder = || {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_recv_response(Some(RESPONSE_TIMEOUT))
+            .timeout_per_read(Some(READ_TIMEOUT))
+    };
     match policy {
-        FetchPolicy::Unrestricted => config.new_agent(),
+        FetchPolicy::Unrestricted => builder().build().new_agent(),
         FetchPolicy::PublicOnly => {
             // An HTTP proxy turns this guard off, so refuse to use one.
             //
@@ -428,10 +505,7 @@ fn http_agent(policy: FetchPolicy) -> ureq::Agent {
             // institutional network, which is the deployment it exists for.
             // `--allow-internal-fetch` is the way out, and it says plainly that
             // the operator is taking responsibility for the address.
-            let config = ureq::Agent::config_builder()
-                .http_status_as_error(false)
-                .proxy(None)
-                .build();
+            let config = builder().proxy(None).build();
             // Once, not once per ranged read.
             if !PROXY_IGNORED.swap(true, std::sync::atomic::Ordering::Relaxed)
                 && ureq::Proxy::try_from_env().is_some()
@@ -551,9 +625,7 @@ impl RangeFetch for HttpFetch {
             // be read into memory until it stopped.
             let want = end - start;
             let mut v = Vec::with_capacity(want as usize);
-            match resp
-                .into_body()
-                .into_reader()
+            match MinRate::new(resp.into_body().into_reader())
                 .take(want + 1)
                 .read_to_end(&mut v)
             {
@@ -666,12 +738,66 @@ pub fn get_reader(url: &str, policy: FetchPolicy) -> Result<impl Read> {
             Attempt::Fatal(io::Error::other(format!("HTTP {code} for {url}")))
         }
     })?;
-    Ok(resp.into_body().into_reader())
+    Ok(MinRate::new(resp.into_body().into_reader()))
 }
 
 /// Open a remote WACZ as a `Read + Seek` HTTP range stream.
 pub fn open_remote(url: &str, policy: FetchPolicy) -> Result<RangeReader<HttpFetch>> {
     Ok(RangeReader::new(HttpFetch::open(url, policy)?))
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// Both kinds of agent give up on a host that stalls: before connecting,
+    /// before its headers, and between reads. Without these a stalled host holds
+    /// the index lock for as long as it likes.
+    #[test]
+    fn every_agent_has_timeouts() {
+        for policy in [FetchPolicy::Unrestricted, FetchPolicy::PublicOnly] {
+            let agent = http_agent(policy);
+            let t = agent.config().timeouts();
+            assert_eq!(t.connect, Some(CONNECT_TIMEOUT), "{policy:?}");
+            assert_eq!(t.recv_response, Some(RESPONSE_TIMEOUT), "{policy:?}");
+            assert_eq!(
+                agent.config().timeout_per_read(),
+                Some(READ_TIMEOUT),
+                "{policy:?}"
+            );
+        }
+    }
+
+    /// A reader that hands back one byte per call, after a pause.
+    struct Trickle(Duration);
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            std::thread::sleep(self.0);
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn a_body_that_trickles_is_stopped() {
+        let mut r = MinRate::with_limits(
+            Trickle(Duration::from_millis(10)),
+            Duration::from_millis(50),
+            100,
+        );
+        let err = io::copy(&mut r, &mut io::sink()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+    }
+
+    #[test]
+    fn a_body_that_keeps_up_is_read_to_the_end() {
+        let body = vec![0u8; 1 << 20];
+        let mut r = MinRate::with_limits(&body[..], Duration::ZERO, 1);
+        assert_eq!(
+            io::copy(&mut r, &mut io::sink()).unwrap(),
+            body.len() as u64
+        );
+    }
 }
 
 #[cfg(test)]

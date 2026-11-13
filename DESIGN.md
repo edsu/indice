@@ -436,6 +436,11 @@ only who may frame it.
   `pdf_child.rs::each_way_a_child_ends_is_told_apart`
 - A remote host that answers a range with more than was asked is refused.
   `http_range.rs::a_range_longer_than_asked_for_is_refused`
+- A remote host that stalls is given up on, so it cannot hold the index lock
+  that every other ingest and deletion waits for: a fetch waits at most 30s to
+  connect and 60s for headers or any read, and fails once a minute brings less
+  than 64 KiB. `http_range.rs::every_agent_has_timeouts`,
+  `http_range.rs::a_body_that_trickles_is_stopped`
 
 **Curator-supplied content does not become executable or escape its directory.**
 
