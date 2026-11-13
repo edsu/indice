@@ -207,20 +207,29 @@ fn collection_archive_dir(home: &Path, slug: &str) -> PathBuf {
 /// re-indexing the same WACZ is idempotent); a name clash with different content
 /// gets a `-2`, `-3`, … suffix. Returns an existing path only when it's
 /// byte-identical to `source`.
+///
+/// Every name it returns is short enough to be a file: a name from a URL can
+/// be any length, and a suffix can push one that fit past the limit, so the
+/// stem is shortened to make room.
 fn pick_archive_dest(
     dir: &Path,
     filename: &std::ffi::OsStr,
     source: &Path,
 ) -> Result<std::path::PathBuf> {
-    let first = dir.join(filename);
-    if !first.exists() {
-        return Ok(first);
-    }
-    let source_sha = file_sha256(source)?;
+    use crate::index::{fit_name, MAX_NAME_LEN};
     let stem = Path::new(filename)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("wacz");
+    let first = if filename.len() <= MAX_NAME_LEN {
+        dir.join(filename)
+    } else {
+        dir.join(fit_name(stem, ".wacz"))
+    };
+    if !first.exists() {
+        return Ok(first);
+    }
+    let source_sha = file_sha256(source)?;
     let mut path = first;
     let mut n = 1u32;
     loop {
@@ -228,7 +237,7 @@ fn pick_archive_dest(
             return Ok(path);
         }
         n += 1;
-        path = dir.join(format!("{stem}-{n}.wacz"));
+        path = dir.join(fit_name(stem, &format!("-{n}.wacz")));
     }
 }
 
@@ -470,4 +479,41 @@ pub(super) fn file_display_name(path: &Path) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::MAX_NAME_LEN;
+
+    /// A name that only just fits still gets a suffix when it is taken by a
+    /// different WACZ, and one from a URL that is too long to be a file at all
+    /// is shortened: either would otherwise fail after the whole WACZ was read.
+    #[test]
+    fn every_filed_name_fits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("source");
+        std::fs::write(&source, b"new").unwrap();
+
+        let full = format!("{}.wacz", "a".repeat(MAX_NAME_LEN - 5));
+        std::fs::write(dir.path().join(&full), b"old").unwrap();
+        let second = pick_archive_dest(dir.path(), full.as_ref(), &source).unwrap();
+        let name = second.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.len() <= MAX_NAME_LEN && name.ends_with("-2.wacz"),
+            "{name}"
+        );
+        std::fs::write(&second, b"newer").unwrap();
+        let third = pick_archive_dest(dir.path(), full.as_ref(), &source).unwrap();
+        assert!(third.to_str().unwrap().ends_with("-3.wacz"));
+
+        let long = format!("{}.wacz", "b".repeat(300));
+        let first = pick_archive_dest(dir.path(), long.as_ref(), &source).unwrap();
+        let name = first.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.len() <= MAX_NAME_LEN && name.ends_with("b.wacz"),
+            "{name}"
+        );
+        std::fs::write(&first, b"x").unwrap();
+    }
 }

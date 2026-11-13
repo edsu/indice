@@ -452,6 +452,10 @@ only who may frame it.
 
 - Note HTML is sanitized. `manage.rs::annotation_note_html_cannot_carry_executable_markup`,
   `markdown.rs::raw_html_is_escaped_not_passed_through`
+- An upload whose name is too long to be a file is refused with a 400 before
+  any of it is read, and a WACZ is filed under a name that fits, a suffix for a
+  name already taken included. `manage.rs::an_upload_whose_name_is_too_long_for_a_file_is_refused`,
+  `acquire.rs::every_filed_name_fits`
 - A hostile timestamp cannot escape the events directory.
   `events.rs::a_hostile_timestamp_cannot_escape_the_events_directory`
 - The public annotation API never discloses a login address.

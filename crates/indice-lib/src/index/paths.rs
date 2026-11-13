@@ -53,6 +53,19 @@ pub fn download_wacz(url: &str, dest: &Path) -> Result<u64> {
     Ok(written)
 }
 
+/// The longest name, in bytes, most filesystems allow a file or directory.
+pub const MAX_NAME_LEN: usize = 255;
+
+/// `stem` followed by `suffix`, with the stem cut short (at a character
+/// boundary) so the whole fits in [`MAX_NAME_LEN`].
+pub(crate) fn fit_name(stem: &str, suffix: &str) -> String {
+    let mut end = stem.len().min(MAX_NAME_LEN.saturating_sub(suffix.len()));
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{suffix}", &stem[..end])
+}
+
 /// Sanitize a string into a single safe path component: keep `[A-Za-z0-9._-]`,
 /// map everything else (including separators) to `_`, and neutralize `.`/`..`
 /// so a hostile id can't traverse out of its directory.
@@ -235,6 +248,17 @@ mod tests {
         // A normal id is untouched.
         assert_eq!(safe_component("manual-20250101-abc"), "manual-20250101-abc");
     }
+    #[test]
+    fn fit_name_shortens_only_what_does_not_fit() {
+        assert_eq!(fit_name("crawl", "-2.wacz"), "crawl-2.wacz");
+        let long = fit_name(&"a".repeat(300), "-2.wacz");
+        assert_eq!(long.len(), MAX_NAME_LEN);
+        assert!(long.ends_with("a-2.wacz"));
+        // Cut at a character boundary, so a multi-byte stem stays UTF-8.
+        let accented = fit_name(&"é".repeat(200), ".wacz");
+        assert!(accented.len() <= MAX_NAME_LEN && accented.ends_with("é.wacz"));
+    }
+
     #[test]
     fn safe_wacz_filename_sanitizes_and_ensures_extension() {
         assert_eq!(safe_wacz_filename("my crawl.wacz", "id1"), "my_crawl.wacz");
