@@ -26,7 +26,7 @@ maud = { version = "0.27", features = ["axum"] }
 # Interface translations: Fluent catalogs (pure Rust, no ICU) and Accept-Language
 # negotiation. `cldr` adds likely-subtags matching so zh-TW finds a zh-Hant catalog.
 fluent-bundle = "0.16"
-fluent-langneg = { version = "0.13", features = ["cldr"] }
+fluent-langneg = { version = "0.14", features = ["cldr"] }
 unic-langid = "0.9"
 # The CLDR plural categories of a language, so the JS strings can carry them all.
 # Already in the tree through fluent-bundle, which uses the same rules to pick forms.
