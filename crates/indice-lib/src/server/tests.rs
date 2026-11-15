@@ -1843,6 +1843,10 @@ async fn a_search_the_index_cannot_run_is_the_readers_mistake() {
         let (status, _, body) = get_with(&app, path, Some("en")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
         assert!(body.contains("this search can't be run"), "{path}: {body}");
+        assert!(
+            !body.contains("fast field"),
+            "Tantivy's own words stay out of a public answer: {path}: {body}"
+        );
     }
     for path in ["/search?q=domain:*", "/api/search?q=year:*"] {
         let (status, _, body) = get_with(&app, path, Some("en")).await;

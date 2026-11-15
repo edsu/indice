@@ -13,18 +13,19 @@ use tantivy::{TantivyDocument, Term};
 
 use super::*;
 
-/// Run a query parsed from what a reader typed. The schema is indice's own,
-/// so a schema error here can only be the query asking for something the
-/// schema cannot do, and is the reader's: see [`UnsearchableQuery`].
-fn run_readers<C: tantivy::collector::Collector>(
-    searcher: &tantivy::Searcher,
-    query: &dyn Query,
-    collector: &C,
-) -> Result<C::Fruit> {
-    searcher.search(query, collector).map_err(|e| match e {
-        tantivy::TantivyError::SchemaError(why) => UnsearchableQuery(why).into(),
-        e => e.into(),
-    })
+/// Check that a query parsed from what a reader typed can run. The schema is
+/// indice's own, so a schema error here can only be the query asking a field
+/// for something it cannot do, and is the reader's: see [`UnsearchableQuery`].
+/// It is checked alone, before indice's own clauses and collectors join it, so
+/// a schema error in those is still the server's.
+fn check_readers(searcher: &tantivy::Searcher, query: &dyn Query) -> Result<()> {
+    match query.weight(tantivy::query::EnableScoring::disabled_from_searcher(
+        searcher,
+    )) {
+        Ok(_) => Ok(()),
+        Err(tantivy::TantivyError::SchemaError(why)) => Err(UnsearchableQuery(why).into()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// How much more a title match counts than a body/url match when ranking.
@@ -178,6 +179,7 @@ impl SearchIndex {
         // a best-effort query instead of a hard error, so the search box never
         // 500s while someone is experimenting with syntax.
         let (query, _errors) = query_parser.parse_query_lenient(query_str);
+        check_readers(&searcher, &*query)?;
 
         // One pass over the query: a bounded window of top-scored captures (for
         // grouping), the total capture count, and the facet counts (a terms
@@ -186,7 +188,7 @@ impl SearchIndex {
         let agg_collector =
             AggregationCollector::from_aggs(facet_aggregations(), AggContextParams::default());
         let (candidates, total_captures, agg_results) =
-            run_readers(&searcher, &query, &(top_collector, Count, agg_collector))?;
+            searcher.search(&query, &(top_collector, Count, agg_collector))?;
 
         // Collapse repeat captures of the same URL: walking the candidates in
         // score order, the first (best-ranked) capture of a URL becomes the
@@ -492,6 +494,7 @@ impl SearchIndex {
             );
             qp.set_conjunction_by_default();
             let (text_query, _errors) = qp.parse_query_lenient(q);
+            check_readers(&searcher, &*text_query)?;
             clauses.push((Occur::Must, text_query));
         }
 
@@ -520,15 +523,12 @@ impl SearchIndex {
         // Deep pages of a page list are not worth their cost: collecting the
         // top `offset + limit` hits allocates for all of them.
         if offset > Self::MAX_PAGES_OFFSET {
-            let total = run_readers(&searcher, &query, &Count)?;
+            let total = searcher.search(&query, &Count)?;
             return Ok((total, Vec::new()));
         }
         let want = (offset + limit).max(1);
-        let (total, top) = run_readers(
-            &searcher,
-            &query,
-            &(Count, TopDocs::with_limit(want).order_by_score()),
-        )?;
+        let (total, top) =
+            searcher.search(&query, &(Count, TopDocs::with_limit(want).order_by_score()))?;
 
         let mut hits = Vec::new();
         for (_score, addr) in top.into_iter().skip(offset).take(limit) {
