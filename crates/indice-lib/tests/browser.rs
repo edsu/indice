@@ -1065,7 +1065,11 @@ async fn a_hostile_capture_cannot_read_reach_or_steer_the_viewer() {
         );
     }
     assert!(r["top"].as_str().unwrap().starts_with("blocked"), "{both}");
-    assert!(!r["opener"].as_str().unwrap().contains("indice"), "{both}");
+    let opener = r["opener"].as_str().unwrap();
+    assert!(
+        opener == "reached: none" || opener.starts_with("blocked"),
+        "{both}"
+    );
     // The top window's frames: replay's own is on this origin, so it is
     // reachable; none on the app's is.
     let app = format!("reached: http://{addr}/");
