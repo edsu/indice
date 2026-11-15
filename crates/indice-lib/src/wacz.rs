@@ -1022,11 +1022,16 @@ fn parse_cdx_line(line: &str) -> Option<CdxjRecord> {
     })
 }
 
-/// Iterate over the paths of WARC archives embedded inside a WACZ file.
+/// Iterate over the paths of WARC archives embedded inside a WACZ file. A
+/// WACZ that lists the same bytes under more than one name is refused, since
+/// each WARC listed is read in turn, and one listed under many names would be
+/// read once for each.
 pub fn iter_warc_paths(wacz_path: &Path) -> Result<impl Iterator<Item = Result<String>>> {
     let file = std::fs::File::open(wacz_path)
         .with_context(|| format!("opening WACZ {}", wacz_path.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file))
+        .with_context(|| format!("reading ZIP in {}", wacz_path.display()))?;
+    ensure_entries_apart(&zip)
         .with_context(|| format!("reading ZIP in {}", wacz_path.display()))?;
 
     let mut names: Vec<String> = Vec::new();

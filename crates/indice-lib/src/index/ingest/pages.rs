@@ -381,9 +381,6 @@ fn merge_max(acc: &mut Option<String>, v: Option<String>) {
 /// From there it is indexed like any other WACZ, a page at a time; see
 /// [`index_pages`].
 pub(super) fn index_wacz(wacz_path: &Path, docs: &Docs) -> Result<CrawlStats> {
-    // Each WARC is extracted and read in turn, so one listed under many names
-    // would be read once for each.
-    crate::wacz::ensure_entries_apart(&zip::ZipArchive::new(std::fs::File::open(wacz_path)?)?)?;
     let warc_paths: Vec<_> = iter_warc_paths(wacz_path)?
         .collect::<Result<Vec<_>>>()
         .with_context(|| format!("listing WARC entries in {}", wacz_path.display()))?;
