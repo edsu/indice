@@ -420,6 +420,10 @@ only who may frame it.
 - A WACZ whose zip lists the same bytes under more than one name is refused
   before anything is read, so a crawl cannot be indexed, or a WARC scanned,
   once per name. `ingest/tests.rs::a_wacz_whose_entries_share_bytes_is_refused`
+- A record that many CDX lines point at is fetched by the first page to list
+  it, and by another only when the record holds that page's own URL, so it is
+  not extracted, or written as a page, once per line.
+  `pages.rs::a_record_many_pages_point_at_is_fetched_once`
 - Indexing does not hold the crawl's text: a page's sources are merged a page at
   a time, and each source still wins where it should.
   `ingest/tests.rs::each_source_wins_where_it_should_on_both_paths`
