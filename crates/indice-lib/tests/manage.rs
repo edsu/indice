@@ -3160,3 +3160,193 @@ async fn without_a_model_there_is_nothing_to_draft_with() {
     );
     server.abort();
 }
+
+/// Markup that must stay text, wherever a WACZ, a curator or a model puts it:
+/// an element, an event handler, a way out of a textarea and a script block,
+/// and a `javascript:` link.
+const HOSTILE: &str = "\"><img src=x onerror=alert(1)></textarea></script><script>alert(2)</script><a href='javascript:alert(3)'>x</a>";
+
+/// Whether `html` has any of [`HOSTILE`] as markup rather than text.
+fn has_hostile_markup(html: &str) -> Option<&'static str> {
+    [
+        "<img src=x",
+        "<script>alert",
+        "<a href='javascript",
+        "</textarea></script>",
+    ]
+    .into_iter()
+    .find(|m| html.contains(m))
+}
+
+/// Stored XSS, from every source at once (pen test #228, section 8 and 9):
+/// a WACZ's title, description and page title, text captured on a page, a
+/// collection's finding aid and narrative, a note, and a model's draft, all
+/// carrying [`HOSTILE`], and every page that shows them read back. The CSP
+/// would stop an inline script, so what this pins is that none of it becomes
+/// markup in the first place.
+#[tokio::test]
+async fn hostile_text_from_every_source_stays_text() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let html = format!(
+        "<html><head><title>{HOSTILE}</title></head><body><p>zebra {}</p></body></html>",
+        HOSTILE.replace('<', "&lt;")
+    );
+    let http = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{html}",
+        html.len()
+    );
+    let warc = home.join("hostile.warc");
+    std::fs::write(
+        &warc,
+        format!(
+            "WARC/1.1\r\nWARC-Type: response\r\n\
+             WARC-Record-ID: <urn:uuid:00000000-0000-4000-8000-000000000001>\r\n\
+             WARC-Date: 2026-01-01T00:00:00Z\r\nWARC-Target-URI: https://ex.test/page\r\n\
+             Content-Type: application/http; msgtype=response\r\nContent-Length: {}\r\n\r\n\
+             {http}\r\n\r\n",
+            http.len()
+        ),
+    )
+    .unwrap();
+    let meta = indice_lib::wacz_build::WaczBuildMeta {
+        title: Some(HOSTILE.into()),
+        description: Some(HOSTILE.into()),
+        ..Default::default()
+    };
+    let built =
+        indice_lib::wacz_build::build_wacz(&[warc], &meta, &home.join("archive"), "hostile")
+            .unwrap();
+    indice_lib::index::index_path(&built.path, home, None, "coll").unwrap();
+    let crawl = indice_lib::collections::Manifest::open(&home.join("index"))
+        .unwrap()
+        .waczs[0]
+        .id
+        .clone();
+    let draft = serde_json::json!({
+        "description": HOSTILE, "narrative": HOSTILE, "subjects": [HOSTILE], "dates": HOSTILE,
+    });
+    // The stand-in wants its answer for the life of the test binary.
+    let (endpoint, _) = fake_llm(draft.to_string().leak());
+    std::fs::write(
+        home.join("config.yaml"),
+        format!("llm:\n  endpoint: {endpoint}\n  model: fake-model\n"),
+    )
+    .unwrap();
+    let (base, server) = serve(home.to_path_buf(), local_access()).await;
+
+    let mut pages = Vec::new();
+    // The model's draft, as the curator sees it before saving.
+    let (status, drafted) = post_fields(
+        format!("{base}/manage/edit/coll/draft"),
+        vec![("name", "coll".into())],
+    )
+    .await;
+    assert_eq!(status, 200, "{drafted}");
+    assert!(
+        drafted.contains("&lt;img src=x"),
+        "the draft is shown: {drafted}"
+    );
+    pages.push(("the draft".to_string(), drafted));
+    // A finding aid saved with the hostile text in every field.
+    let fields = [
+        "description",
+        "curator",
+        "creator",
+        "dates",
+        "rights",
+        "subjects",
+        "narrative",
+    ];
+    let mut form = vec![("name", "coll".to_string())];
+    form.extend(fields.iter().map(|f| (*f, HOSTILE.to_string())));
+    let (status, saved) = post_fields(format!("{base}/api/collections"), form).await;
+    assert_eq!(status, 200, "{saved}");
+    // A note.
+    let body = serde_json::json!({
+        "collection": "coll", "url": "https://ex.test/page",
+        "timestamp": "20260101000000", "note": HOSTILE,
+    })
+    .to_string();
+    let url = format!("{base}/api/annotations");
+    let note: serde_json::Value = tokio::task::spawn_blocking(move || {
+        let mut res = agent()
+            .post(&url)
+            .header("content-type", "application/json")
+            .send(body)
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 201);
+        serde_json::from_str(&res.body_mut().read_to_string().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    let note_key = note["id"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("urn:indice:annotation:")
+        .to_string();
+
+    for path in [
+        "/".to_string(),
+        "/collection/coll".to_string(),
+        format!("/crawl/{crawl}"),
+        "/search?q=zebra".to_string(),
+        "/manage/edit/coll".to_string(),
+        format!("/collection/coll/annotations/{note_key}"),
+    ] {
+        let (status, page) = get(format!("{base}{path}")).await;
+        assert_eq!(status, 200, "{path}");
+        pages.push((path, page));
+    }
+    for (path, page) in &pages {
+        // Shown on every one, escaped, so the check below is not vacuous.
+        assert!(
+            page.contains("&lt;img src=x"),
+            "{path} does not show it:\n{page}"
+        );
+        if let Some(markup) = has_hostile_markup(page) {
+            panic!("{path}: {markup:?} is markup:\n{page}");
+        }
+    }
+    server.abort();
+}
+
+/// A model's answer that is not a draft is an error for the curator, and
+/// saves nothing (pen test #228, I2): one that is not JSON, one over the 4 MiB
+/// an answer may be, and one whose fields are none of them text.
+#[tokio::test]
+async fn a_botched_draft_is_an_error_and_saves_nothing() {
+    let oversized: &'static str = format!(r#"{{"narrative": "{}"}}"#, "x".repeat(5 << 20)).leak();
+    for answer in [
+        "I'm sorry, I can't help with that.",
+        oversized,
+        r#"{"description": 5, "narrative": {"a": 1}, "dates": null}"#,
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let dest = home.join("archive/github-bitcoin-mining.wacz");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::copy(fixture("github-bitcoin-mining.wacz"), &dest).unwrap();
+        indice_lib::index::index_path(&dest, home, None, "coll").unwrap();
+        let (endpoint, _) = fake_llm(answer);
+        std::fs::write(
+            home.join("config.yaml"),
+            format!("llm:\n  endpoint: {endpoint}\n  model: fake-model\n"),
+        )
+        .unwrap();
+        let readme = home.join("collections/coll/README.md");
+        let before = std::fs::read_to_string(&readme).unwrap();
+        let (base, server) = serve(home.to_path_buf(), local_access()).await;
+
+        let (status, page) = post_fields(
+            format!("{base}/manage/edit/coll/draft"),
+            vec![("name", "coll".into())],
+        )
+        .await;
+        let label = &answer[..answer.len().min(40)];
+        assert_eq!(status, 502, "{label}: {page}");
+        assert!(page.contains("The draft couldn"), "{label}: {page}");
+        assert_eq!(std::fs::read_to_string(&readme).unwrap(), before, "{label}");
+        server.abort();
+    }
+}

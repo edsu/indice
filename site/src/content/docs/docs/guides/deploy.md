@@ -289,3 +289,5 @@ The shipped `Caddyfile` needs three changes first, and all of them are easy to m
 **Replace the `handle_errors` fallback with a failure.** It exists so a dead login service does not take a public archive offline, which means it serves every request anonymously. On a private archive that turns an oauth2-proxy outage into an open door. Swap the body for `respond "authentication unavailable" 503`.
 
 Once reads are gated, `OIDC_EMAIL_DOMAINS` controls who can read: without it, anyone with an account at your issuer can read the archive.
+
+**Download Browsertrix imports rather than streaming them.** A crawl imported with `--stream` is not on your server: replay reads it from Browsertrix's storage through a presigned URL, which the replay manifest hands the reader and `/files/{id}` redirects to. That URL goes to the storage service, not through your proxy, so the gate does not cover it. Anyone a signed-in reader passes it to can download the whole WACZ, until it expires about 48 hours after Browsertrix issued it, and deleting the crawl from indice does not stop it. Downloaded imports, the default, are served by indice like any other crawl, behind the gate.

@@ -375,8 +375,12 @@ fn provenance_is_recorded_on_the_manifest() {
 /// real Browsertrix combined download: no top-level archive/ WARCs, the inner
 /// .wacz a top-level *Stored* entry, and a multi-wacz-package datapackage.
 fn nested_multi_wacz() -> Vec<u8> {
+    nested_around(std::fs::read(fixture("a.wacz")).unwrap())
+}
+
+/// A nested WACZ, shaped like Browsertrix's, around `inner`.
+fn nested_around(inner: Vec<u8>) -> Vec<u8> {
     use std::io::Write;
-    let inner = std::fs::read(fixture("a.wacz")).unwrap();
     let inner_name = "20250101000000-abc-0.wacz";
     let mut outer = Vec::new();
     let stored =
@@ -500,6 +504,59 @@ fn a_deflated_nested_wacz_is_not_copied_again_to_scan() {
     )
     .unwrap();
     assert!(stats.is_some_and(|s| s.pages > 0), "it indexes");
+}
+
+/// One inner WACZ listed under many names, or one WARC that has to be
+/// scanned, is refused before anything is read, rather than read once per
+/// name (pen test #228, J4). Neither is anything a tool writes. An inner
+/// WACZ is a zip of its own, which the outer's check cannot see into, so it
+/// is checked too, whichever way it is read.
+#[test]
+fn a_wacz_whose_entries_share_bytes_is_refused() {
+    let names: Vec<String> = (0..50).map(|i| format!("{i:04}.wacz")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let nested = crate::wacz::list_again(&nested_multi_wacz(), "20250101000000-abc-0.wacz", &names);
+    let (deflated, _) = with_deflated_warcs(&std::fs::read(fixture("simple.wacz")).unwrap());
+    let warc = zip::ZipArchive::new(std::io::Cursor::new(&deflated))
+        .unwrap()
+        .file_names()
+        .map(|n| n.unwrap().into_owned())
+        .find(|n| n.starts_with("archive/"))
+        .unwrap();
+    let scanned = crate::wacz::list_again(&deflated, &warc, &["archive/again.warc"]);
+    let streamed = crate::wacz::list_again(
+        &std::fs::read(fixture("simple.wacz")).unwrap(),
+        &warc,
+        &["archive/again.warc"],
+    );
+    for (label, wacz) in [
+        ("nested", nested),
+        ("inner, streamed", nested_around(streamed)),
+        ("inner, scanned", nested_around(scanned.clone())),
+        (
+            "deflated inner, scanned",
+            nested_with_a_deflated_inner(scanned.clone()).0,
+        ),
+        ("scanned", scanned),
+    ] {
+        // It is a zip that opens, so what refuses it is the check.
+        assert!(
+            zip::ZipArchive::new(std::io::Cursor::new(&wacz)).is_ok(),
+            "{label}"
+        );
+        let tmp = TempDir::new().unwrap();
+        let archive = tmp.path().join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        let path = archive.join("overlap.wacz");
+        std::fs::write(&path, &wacz).unwrap();
+        let err = index_path(&path, tmp.path(), None, "test").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("over the same bytes"),
+            "{label}: {err:#}"
+        );
+        let manifest = Manifest::open(&tmp.path().join("index")).unwrap();
+        assert!(manifest.waczs.is_empty(), "{label}: nothing indexed");
+    }
 }
 
 #[test]

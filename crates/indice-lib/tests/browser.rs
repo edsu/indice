@@ -800,7 +800,12 @@ const HOSTILE_PAGE: &str = r#"<!DOCTYPE html>
 /// A one-page WACZ of [`HOSTILE_PAGE`], built from a WARC written here, so no
 /// opaque binary is committed and the attack is readable in this file.
 fn hostile_wacz(dir: &Path) -> std::path::PathBuf {
-    let body = HOSTILE_PAGE.as_bytes();
+    wacz_of_page(dir, HOSTILE_PAGE)
+}
+
+/// A one-page WACZ serving `page` at `https://hostile.example/`.
+fn wacz_of_page(dir: &Path, page: &str) -> std::path::PathBuf {
+    let body = page.as_bytes();
     let mut http = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n",
         body.len()
@@ -917,6 +922,176 @@ async fn replay_hostile(driver: &WebDriver, addr: SocketAddr, id: &str) -> Resul
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// A capture that tries everything else archived script might against the
+/// person replaying it, short of a write (for which see [`HOSTILE_PAGE`]).
+/// From ReplayWeb.page's own window it reads the app's pages and APIs with the
+/// reader's credentials, walks every frame of the top window and its opener,
+/// sends the viewer every message the frame's agent may send, with hostile
+/// values, and points the top window at a `javascript:` URL. The messages
+/// are sent with `eval` in that window's realm, so the viewer sees them come
+/// from its own frame, exactly as the agent's do: the worst case, since the
+/// replay origin's policy does not stop it. Names wombat rewrites in archived
+/// script (`postMessage`, `location`) are spelled in pieces, as an attacker
+/// would, so its rewriting does not get in the way. Anything that ran on the app's
+/// origin would set the viewer's title to `pwned-…`.
+const PROBING_PAGE: &str = r#"<!DOCTYPE html>
+<html><head><title>Probing capture</title></head>
+<body><h1>Probing capture</h1><p id="quote">quoted</p>
+<script>
+(async function () {
+  var out = {};
+  try {
+    var host = null;
+    var w = window.__WB_top_frame || window;
+    for (var i = 0; i < 12; i++) {
+      try {
+        if (w.location.pathname === '/replay-frame') { host = w; break; }
+      } catch (e) { break; }
+      var p = null;
+      try { p = w.parent; } catch (e) { break; }
+      if (!p || p === w) break;
+      w = p;
+    }
+    out.found = !!host;
+    function attempt(f) {
+      try { return 'reached: ' + String(f()); } catch (e) { return 'blocked: ' + e.name; }
+    }
+    if (host) {
+      var app = new URLSearchParams(host.location.search).get('parent');
+      out.reads = {};
+      var paths = ['/', '/manage/add', '/manage/edit/hostile', '/api/search?q=hostile',
+                   '/api/annotations?collection=hostile'];
+      for (var k = 0; k < paths.length; k++) {
+        var url = app + paths[k];
+        try {
+          var r = await host.fetch(url, { credentials: 'include' });
+          out.reads[paths[k]] = 'read: ' + r.status + ', ' + (await r.text()).length + ' bytes';
+        } catch (e) {
+          out.reads[paths[k]] = 'blocked: ' + e.name;
+        }
+      }
+      var top = host.top;
+      out.top = attempt(function () { return top.document.title; });
+      out.opener = attempt(function () { return host.opener === null ? 'none' : host.opener.document.title; });
+      out.frames = [];
+      for (var f = 0; f < top.frames.length; f++) {
+        out.frames.push(attempt(function () { return top.frames[f].document.location.href; }));
+      }
+      host.eval(
+        "var v = parent, o = " + JSON.stringify(app) + ";" +
+        "[{type: 'url', url: 'javascript:document.title=`pwned-url`'}," +
+        " {type: 'url', url: o + '/manage/add'}," +
+        " {type: 'url', url: 'https://hostile.example/../../../../manage/add'}," +
+        " {type: 'url', url: 'https://hostile.example/%2e%2e/%2e%2e/manage/add'}," +
+        " {type: 'url', url: 'https://hostile.example/<img src=x onerror=document.title=1>'," +
+        "  ts: '\"><img src=x onerror=document.title=`pwned-ts`>'}," +
+        " {type: 'selection', selector: {exact: '<img src=x onerror=document.title=`pwned-sel`>'}}," +
+        " {type: 'loaded'}, {type: 'ready'}, {type: 'url', url: {toString: 1}}, {type: 7}]" +
+        ".forEach(function (m) { m.indice = 'replay'; v['post' + 'Message'](m, o); });"
+      );
+      out.sent = true;
+      out.topnav = attempt(function () {
+        host.eval("top['loc' + 'ation'] = 'javascript:document.title=`pwned-top`'");
+        return 'no error';
+      });
+    }
+  } catch (e) {
+    out.error = e.name + ': ' + e.message;
+  }
+  document.body.setAttribute('data-hostile', JSON.stringify(out));
+})();
+</script></body></html>"#;
+
+/// Archived JavaScript cannot read what the reader may read, reach into the
+/// viewer, or steer it anywhere but another page of the crawl, even sending
+/// the viewer the frame agent's own messages (pen test #228, section 4).
+///
+/// As a workstation, where every caller is the operator, so a read that gets
+/// through gets the operator's view of the workroom.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a running WebDriver (chromedriver) and browser; run with --ignored"]
+async fn a_hostile_capture_cannot_read_reach_or_steer_the_viewer() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let build = tempfile::TempDir::new().unwrap();
+    let wacz = wacz_of_page(build.path(), PROBING_PAGE);
+    indice_lib::index::index_path(&wacz, tmp.path(), None, "hostile").unwrap();
+    let manifest = indice_lib::collections::Manifest::open(&tmp.path().join("index")).unwrap();
+    let id = manifest.waczs[0].id.clone();
+    let (addr, server) = serve(tmp.path(), workstation()).await;
+
+    let driver = connect().await;
+    let result = async {
+        let report = replay_hostile(&driver, addr, &id).await?;
+        // Let the viewer act on the messages before looking at it.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        driver
+            .enter_default_frame()
+            .await
+            .map_err(|e| e.to_string())?;
+        let viewer = driver
+            .execute(
+                "return JSON.stringify({
+                    title: document.title,
+                    path: location.pathname,
+                    banner: document.getElementById('current-url').textContent,
+                    injected: document.querySelectorAll('img[src=x]').length,
+                    alive: document.getElementById('replay-frame') !== null,
+                });",
+                vec![],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((
+            report,
+            viewer.json().as_str().unwrap_or_default().to_string(),
+        ))
+    }
+    .await;
+    let _ = driver.quit().await;
+    server.abort();
+    let (report, viewer) = result.unwrap();
+    let r: serde_json::Value = serde_json::from_str(&report).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&viewer).unwrap();
+    let both = format!("the page reported: {report}\nthe viewer: {viewer}");
+
+    assert!(r["error"].is_null(), "the page's script failed: {both}");
+    assert_eq!(r["sent"], true, "the attack was never made: {both}");
+    for (path, read) in r["reads"].as_object().unwrap() {
+        assert!(
+            read.as_str().is_some_and(|s| s.starts_with("blocked")),
+            "archived script read {path}: {both}"
+        );
+    }
+    assert!(r["top"].as_str().unwrap().starts_with("blocked"), "{both}");
+    let opener = r["opener"].as_str().unwrap();
+    assert!(
+        opener == "reached: none" || opener.starts_with("blocked"),
+        "{both}"
+    );
+    // The top window's frames: replay's own is on this origin, so it is
+    // reachable; none on the app's is.
+    let app = format!("reached: http://{addr}/");
+    for f in r["frames"].as_array().unwrap() {
+        let f = f.as_str().unwrap();
+        assert!(!f.starts_with(&app), "reached {f}: {both}");
+    }
+    assert_eq!(v["injected"], 0, "{both}");
+    // The messages arrived: the banner shows the last good URL, as text.
+    assert!(
+        v["banner"].as_str().unwrap().contains("<img src=x"),
+        "the viewer never took a message, so this proves nothing: {both}"
+    );
+    assert!(!v["title"].as_str().unwrap().contains("pwned"), "{both}");
+    assert!(
+        v["path"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("/crawl/{id}/")),
+        "the viewer was steered off the crawl: {both}"
+    );
+    assert_eq!(v["alive"], true, "{both}");
 }
 
 /// A headless Chrome session, honouring `WEBDRIVER_URL` and `CHROME_BIN`.

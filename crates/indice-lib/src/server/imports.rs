@@ -16,7 +16,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
-use tokio::sync::mpsc;
 
 use crate::collections::Manifest;
 use crate::events::Action;
@@ -67,11 +66,8 @@ fn compact_after_import(job_state: &Arc<AppState>, progress: &ChannelProgress) {
 /// passed the check to call this at all. Imports spend the operator's own
 /// Browsertrix/Archive-It credentials, which is exactly the kind of thing that
 /// should not be reachable by forgetting an extractor.
-fn new_import_job(
-    admin: &Admin,
-    state: &Arc<AppState>,
-) -> (u64, mpsc::UnboundedSender<ProgressEvent>) {
-    state.start_job(admin.principal())
+fn new_import_job(admin: &Admin, state: &Arc<AppState>, what: &str) -> JobTx {
+    state.start_job(admin.principal(), what)
 }
 
 /// Response when a Browsertrix endpoint is hit but no credentials are configured.
@@ -320,13 +316,18 @@ pub(super) async fn bx_import(
             "org": req.org,
         })),
     );
-    let (id, tx) = new_import_job(&admin, &state);
+    let what = format!(
+        "a Browsertrix import from org {} into {}",
+        req.org, req.collection
+    );
+    let job = new_import_job(&admin, &state, &what);
+    let id = job.id;
 
     let job_state = state.clone();
     let actor = admin.principal().id().clone();
     tokio::task::spawn_blocking(move || {
         let progress = ChannelProgress {
-            tx: tx.clone(),
+            tx: job.sender(),
             l10n: l10n.clone(),
         };
         let result = (|| -> Result<Vec<serde_json::Value>> {
@@ -484,31 +485,30 @@ pub(super) async fn bx_import(
                 // lock (the per-resource loop above released it each time).
                 compact_after_import(&job_state, &progress);
                 match job_state.reload_searcher() {
-                    Ok(()) => tx
-                        .send(ProgressEvent::Done {
-                            collection: crate::collections::slugify(&req.collection),
-                            crawls,
-                        })
-                        .ok(),
-                    Err(e) => tx
-                        .send(ProgressEvent::Error {
-                            message: l10n.tr_args(
+                    Ok(()) => job.send(ProgressEvent::Done {
+                        collection: crate::collections::slugify(&req.collection),
+                        crawls,
+                    }),
+                    Err(e) => {
+                        let detail = format!("{e:#}");
+                        job.fail(
+                            &detail,
+                            l10n.tr_args(
                                 "error-reload-failed",
-                                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                                &[("detail", FluentArg::Str(&detail))],
                             ),
-                        })
-                        .ok(),
+                        );
+                    }
                 }
             }
-            Err(e) => tx
-                .send(ProgressEvent::Error {
-                    message: l10n.tr_args(
-                        "error-job-failed",
-                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
-                    ),
-                })
-                .ok(),
-        };
+            Err(e) => {
+                let detail = format!("{e:#}");
+                job.fail(
+                    &detail,
+                    l10n.tr_args("error-job-failed", &[("detail", FluentArg::Str(&detail))]),
+                );
+            }
+        }
     });
 
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()
@@ -691,13 +691,18 @@ pub(super) async fn ait_import(
             "source_collection": req.collection_id,
         })),
     );
-    let (id, tx) = new_import_job(&admin, &state);
+    let what = format!(
+        "an Archive-It import from collection {} into {}",
+        req.collection_id, req.into
+    );
+    let job = new_import_job(&admin, &state, &what);
+    let id = job.id;
 
     let job_state = state.clone();
     let actor = admin.principal().id().clone();
     tokio::task::spawn_blocking(move || {
         let progress = ChannelProgress {
-            tx: tx.clone(),
+            tx: job.sender(),
             l10n: l10n.clone(),
         };
         let result = (|| -> Result<Vec<serde_json::Value>> {
@@ -796,31 +801,30 @@ pub(super) async fn ait_import(
                 // left the index fragmented (best-effort — see `bx_import`).
                 compact_after_import(&job_state, &progress);
                 match job_state.reload_searcher() {
-                    Ok(()) => tx
-                        .send(ProgressEvent::Done {
-                            collection: crate::collections::slugify(&req.into),
-                            crawls,
-                        })
-                        .ok(),
-                    Err(e) => tx
-                        .send(ProgressEvent::Error {
-                            message: l10n.tr_args(
+                    Ok(()) => job.send(ProgressEvent::Done {
+                        collection: crate::collections::slugify(&req.into),
+                        crawls,
+                    }),
+                    Err(e) => {
+                        let detail = format!("{e:#}");
+                        job.fail(
+                            &detail,
+                            l10n.tr_args(
                                 "error-reload-failed",
-                                &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                                &[("detail", FluentArg::Str(&detail))],
                             ),
-                        })
-                        .ok(),
+                        );
+                    }
                 }
             }
-            Err(e) => tx
-                .send(ProgressEvent::Error {
-                    message: l10n.tr_args(
-                        "error-job-failed",
-                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
-                    ),
-                })
-                .ok(),
-        };
+            Err(e) => {
+                let detail = format!("{e:#}");
+                job.fail(
+                    &detail,
+                    l10n.tr_args("error-job-failed", &[("detail", FluentArg::Str(&detail))]),
+                );
+            }
+        }
     });
 
     (StatusCode::ACCEPTED, Json(AddArchiveResponse { job: id })).into_response()

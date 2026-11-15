@@ -464,6 +464,43 @@ pub(crate) struct PageText {
     pub text: String,
 }
 
+/// `zip` with its entry `name` listed again under each of `copies`, every
+/// copy pointing at the same bytes: the shape [`ensure_entries_apart`]
+/// refuses. Only the central directory changes, so the zip still opens.
+#[cfg(test)]
+pub(crate) fn list_again(zip: &[u8], name: &str, copies: &[&str]) -> Vec<u8> {
+    let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]) as usize;
+    let u32_at = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+    let eocd = zip.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+    let (cd_len, cd_at) = (u32_at(zip, eocd + 12), u32_at(zip, eocd + 16));
+    let mut cd = zip[cd_at..cd_at + cd_len].to_vec();
+    let (mut i, mut found, mut count) = (0, None, 0);
+    while i < cd_len {
+        let n = u16_at(&cd, i + 28);
+        let len = 46 + n + u16_at(&cd, i + 30) + u16_at(&cd, i + 32);
+        if &cd[i + 46..i + 46 + n] == name.as_bytes() {
+            found = Some((i, len, n));
+        }
+        i += len;
+        count += 1;
+    }
+    let (at, len, n) = found.expect("no such entry");
+    let entry = cd[at..at + len].to_vec();
+    for copy in copies {
+        let mut e = entry[..46].to_vec();
+        e[28..30].copy_from_slice(&(copy.len() as u16).to_le_bytes());
+        e.extend_from_slice(copy.as_bytes());
+        e.extend_from_slice(&entry[46 + n..]);
+        cd.extend_from_slice(&e);
+    }
+    let total = (count + copies.len()) as u16;
+    let mut end = zip[eocd..].to_vec();
+    end[8..10].copy_from_slice(&total.to_le_bytes());
+    end[10..12].copy_from_slice(&total.to_le_bytes());
+    end[12..16].copy_from_slice(&(cd.len() as u32).to_le_bytes());
+    [&zip[..cd_at], &cd, &end].concat()
+}
+
 /// Read extracted page text from a WACZ's `pages/pages.jsonl` and
 /// `pages/extraPages.jsonl`, all of it, in order. See [`for_each_page_text`],
 /// which this collects; indexing streams it instead.
@@ -714,6 +751,54 @@ fn is_warc_entry(name: &str) -> bool {
     name.starts_with("archive/") && (name.ends_with(".warc.gz") || name.ends_with(".warc"))
 }
 
+/// The fixed part of a zip entry's local header, before its name.
+const LOCAL_HEADER_LEN: u64 = 30;
+
+/// Refuse a WACZ whose zip entries share bytes.
+///
+/// A zip's central directory says where each entry's bytes are, and nothing
+/// stops it pointing two names at the same ones. Indexing reads each entry it
+/// lists, every inner WACZ of a multi-WACZ and every WARC of one that must be
+/// scanned, so one crawl listed under ten thousand names is indexed ten
+/// thousand times, under the index lock, from a file a few hundred KB larger
+/// than the crawl. No tool writes a zip like that; it is the shape of the
+/// overlapping zip bomb.
+///
+/// Read from the central directory alone, so a remote WACZ costs no request
+/// per entry. Each entry runs from its local header to the end of its data;
+/// the local header's extra field is not counted, as only the central copy is
+/// known here, so the check is short of the true span by at most that much,
+/// which no entry could hide another in.
+pub(crate) fn ensure_entries_apart<R: std::io::Read + std::io::Seek>(
+    zip: &zip::ZipArchive<R>,
+) -> Result<()> {
+    let meta = zip.metadata();
+    let mut spans = Vec::with_capacity(meta.len());
+    for i in 0..meta.len() {
+        let e = meta.entry(i)?;
+        let start = e.header_start();
+        let end = start
+            .saturating_add(LOCAL_HEADER_LEN + e.name_raw().len() as u64)
+            .saturating_add(e.compressed_size());
+        spans.push((
+            start,
+            end,
+            String::from_utf8_lossy(e.name_raw()).into_owned(),
+        ));
+    }
+    spans.sort_unstable();
+    for pair in spans.windows(2) {
+        let ((_, end, a), (start, _, b)) = (&pair[0], &pair[1]);
+        if start < end {
+            anyhow::bail!(
+                "this WACZ's zip lists {a} and {b} over the same bytes, which no WACZ \
+                 needs; refused, as indexing would read those bytes once for each name"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The inner `.wacz` entry names of a **nested multi-WACZ** — a WACZ whose
 /// payload is other WACZ files rather than `archive/` WARCs. This is what
 /// Browsertrix's combined collection `/download` returns for a collection with
@@ -937,11 +1022,16 @@ fn parse_cdx_line(line: &str) -> Option<CdxjRecord> {
     })
 }
 
-/// Iterate over the paths of WARC archives embedded inside a WACZ file.
+/// Iterate over the paths of WARC archives embedded inside a WACZ file. A
+/// WACZ that lists the same bytes under more than one name is refused, since
+/// each WARC listed is read in turn, and one listed under many names would be
+/// read once for each.
 pub fn iter_warc_paths(wacz_path: &Path) -> Result<impl Iterator<Item = Result<String>>> {
     let file = std::fs::File::open(wacz_path)
         .with_context(|| format!("opening WACZ {}", wacz_path.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file))
+        .with_context(|| format!("reading ZIP in {}", wacz_path.display()))?;
+    ensure_entries_apart(&zip)
         .with_context(|| format!("reading ZIP in {}", wacz_path.display()))?;
 
     let mut names: Vec<String> = Vec::new();

@@ -375,6 +375,7 @@ error-reference = { $message } (reference { $id }).
 error-no-reference = { $message }.
 error-request-failed = The request failed: { $detail }
 error-query-too-long = search query too long: { $bytes } bytes, limit { $limit }
+error-query-unsearchable = this search can't be run: `field:*` finds pages that have a field only for the fields you can filter by, such as `domain:*` or `year:*`
 # `$holder` names what holds the lock, in indice's own English ("a workroom add").
 error-index-busy = The search index is busy: { $holder } is running. Your change was not saved; try again shortly.
 error-busy = indice is busy; try again in a moment

@@ -327,6 +327,13 @@ pub(super) fn with_reference(l10n: &L10n, message: &str) -> String {
 /// operator can find it. A handler serving someone who may change the archive
 /// uses [`Curator::error_response`] instead, which says what went wrong.
 pub(super) fn error_response(l10n: &L10n, e: anyhow::Error) -> Response {
+    // A search the reader typed that the index cannot run is the reader's to
+    // change, so it is a 400 that says what to change, and not logged as a
+    // failure. It says so in indice's words: Tantivy's name the schema.
+    if e.is::<crate::search::UnsearchableQuery>() {
+        let text = l10n.tr("error-query-unsearchable");
+        return (StatusCode::BAD_REQUEST, text).into_response();
+    }
     failure(
         l10n,
         StatusCode::INTERNAL_SERVER_ERROR,

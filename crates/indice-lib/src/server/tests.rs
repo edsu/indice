@@ -1827,3 +1827,50 @@ async fn a_search_page_past_the_last_is_empty() {
     let (status, _, _) = get_with(&app, &format!("/search?q=x&page={}", usize::MAX), None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// A search that parses but that the index cannot run is a 400 that says so,
+/// not a 500 (pen test #228, J1). `field:*` on a text field is one; on a facet
+/// field it is answered as before.
+#[tokio::test]
+async fn a_search_the_index_cannot_run_is_the_readers_mistake() {
+    let (_home, app, _) = app_with_crawl("c");
+    for path in [
+        "/search?q=url:*",
+        "/search?q=simple%20AND%20title:*",
+        "/api/search?q=title:*",
+        "/collection/c/pages?search=title:*",
+    ] {
+        let (status, _, body) = get_with(&app, path, Some("en")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert!(body.contains("this search can't be run"), "{path}: {body}");
+        assert!(
+            !body.contains("fast field"),
+            "Tantivy's own words stay out of a public answer: {path}: {body}"
+        );
+    }
+    for path in ["/search?q=domain:*", "/api/search?q=year:*"] {
+        let (status, _, body) = get_with(&app, path, Some("en")).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+    }
+}
+
+/// A URL in a log line keeps its scheme, host and path, and loses what could
+/// be a password or a presigned signature.
+#[test]
+fn a_url_in_the_log_loses_its_secrets() {
+    assert_eq!(
+        super::without_secrets(
+            "fetching https://who:pw@bucket.s3.test/x.wacz?X-Amz-Signature=abc#f: 403 Forbidden"
+        ),
+        "fetching https://bucket.s3.test/x.wacz: 403 Forbidden"
+    );
+    assert_eq!(
+        super::without_secrets("an add of /srv/crawls/a.wacz"),
+        "an add of /srv/crawls/a.wacz",
+        "a path is left alone"
+    );
+    assert_eq!(
+        super::without_secrets("from (s3://k:s@b/w.wacz?v=1), then http://h"),
+        "from (s3://b/w.wacz), then http://h"
+    );
+}

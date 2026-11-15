@@ -228,7 +228,8 @@ fn start_index_job(
     } else {
         crate::http_range::FetchPolicy::Unrestricted
     };
-    let (id, tx) = state.start_job(curator.principal());
+    let job = state.start_job(curator.principal(), &format!("an add of {location}"));
+    let id = job.id;
 
     let job_state = state.clone();
     // Who to credit for whatever this ingest creates.
@@ -246,7 +247,7 @@ fn start_index_job(
         // Held until the job ends; dropping it removes the staging directory.
         let _staged = staged;
         let progress = ChannelProgress {
-            tx: tx.clone(),
+            tx: job.sender(),
             l10n: l10n.clone(),
         };
         let result = {
@@ -267,12 +268,11 @@ fn start_index_job(
             ) {
                 Ok(l) => l,
                 Err(e) => {
-                    let _ = tx.send(ProgressEvent::Error {
-                        message: l10n.tr_args(
-                            "error-lock-failed",
-                            &[("detail", FluentArg::Str(&format!("{e:#}")))],
-                        ),
-                    });
+                    let detail = format!("{e:#}");
+                    job.fail(
+                        &detail,
+                        l10n.tr_args("error-lock-failed", &[("detail", FluentArg::Str(&detail))]),
+                    );
                     return;
                 }
             };
@@ -293,9 +293,7 @@ fn start_index_job(
             let scratch = match room {
                 Ok(room) => room,
                 Err(refused) => {
-                    let _ = tx.send(ProgressEvent::Error {
-                        message: refused.message(&l10n),
-                    });
+                    job.fail(&refused.message(&L10n::default()), refused.message(&l10n));
                     return;
                 }
             };
@@ -314,31 +312,30 @@ fn start_index_job(
         };
         match result {
             Ok(()) => match job_state.reload_searcher() {
-                Ok(()) => tx
-                    .send(ProgressEvent::Done {
-                        collection: crate::collections::slugify(&collection),
-                        crawls: Vec::new(),
-                    })
-                    .ok(),
-                Err(e) => tx
-                    .send(ProgressEvent::Error {
-                        message: l10n.tr_args(
+                Ok(()) => job.send(ProgressEvent::Done {
+                    collection: crate::collections::slugify(&collection),
+                    crawls: Vec::new(),
+                }),
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    job.fail(
+                        &detail,
+                        l10n.tr_args(
                             "error-reload-failed",
-                            &[("detail", FluentArg::Str(&format!("{e:#}")))],
+                            &[("detail", FluentArg::Str(&detail))],
                         ),
-                    })
-                    .ok(),
+                    );
+                }
             },
-            Err(e) => tx
-                .send(ProgressEvent::Error {
-                    message: l10n.tr_args(
-                        "error-job-failed",
-                        &[("detail", FluentArg::Str(&format!("{e:#}")))],
-                    ),
-                })
-                .ok(),
-        };
-        // `tx` (and the `progress` clone) drop here → the SSE stream ends once the
+            Err(e) => {
+                let detail = format!("{e:#}");
+                job.fail(
+                    &detail,
+                    l10n.tr_args("error-job-failed", &[("detail", FluentArg::Str(&detail))]),
+                );
+            }
+        }
+        // `job` (and the `progress` clone) drop here → the SSE stream ends once the
         // client has read the terminal event.
     });
 

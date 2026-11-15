@@ -417,6 +417,13 @@ only who may frame it.
   `wacz.rs::a_record_that_inflates_past_the_limit_is_refused`
 - A WACZ that asks for more is refused whole, naming the member and the setting.
   `integration.rs::a_wacz_bomb_is_refused_and_not_added`
+- A WACZ whose zip lists the same bytes under more than one name is refused
+  before anything is read, so a crawl cannot be indexed, or a WARC scanned,
+  once per name. `ingest/tests.rs::a_wacz_whose_entries_share_bytes_is_refused`
+- A record that many CDX lines point at is fetched by the first page to list
+  it, and by another only when the record holds that page's own URL, so it is
+  not extracted, or written as a page, once per line.
+  `pages.rs::a_record_many_pages_point_at_is_fetched_once`
 - Indexing does not hold the crawl's text: a page's sources are merged a page at
   a time, and each source still wins where it should.
   `ingest/tests.rs::each_source_wins_where_it_should_on_both_paths`
@@ -593,7 +600,7 @@ Queries go through Tantivy's `QueryParser`, configured in `search_faceted`:
 - **Default fields** are `title`, `headings`, `body`, `description`, and `url_tokens`, so a bare word matches any of them. Other fields are reachable with explicit `field:` syntax (`title:climate`, `domain:example.com`).
 - **AND by default** (`set_conjunction_by_default`): `climate policy` requires both terms. Users can still write `OR`, `-`, `+`, `"phrases"`, `(groups)`, and `^boost`.
 - **Field boosts** (`set_field_boost`): title matches rank highest, headings next, then body/description/URL.
-- **Lenient parsing** (`parse_query_lenient`): a malformed query (stray quote, empty `field:`) yields a best-effort query rather than an error, so the search box never returns a 500 while a user experiments with syntax.
+- **Lenient parsing** (`parse_query_lenient`): a malformed query (stray quote, empty `field:`) yields a best-effort query rather than an error, so the search box never returns a 500 while a user experiments with syntax. A query that parses but that the index cannot run, `field:*` on a field that is not a fast field, is a 400 in indice's own words (`search::UnsearchableQuery`). Only the query the reader typed is checked for this, before indice's own clauses and collectors join it, so a schema error in indice's own part of a search is still a 500 and is logged. `server/tests.rs::a_search_the_index_cannot_run_is_the_readers_mistake`
 
 The `<details>` "Search tips" panel on the homepage and results page documents this syntax for end users; its examples must stay in sync with this configuration.
 

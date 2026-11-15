@@ -13,6 +13,21 @@ use tantivy::{TantivyDocument, Term};
 
 use super::*;
 
+/// Check that a query parsed from what a reader typed can run. The schema is
+/// indice's own, so a schema error here can only be the query asking a field
+/// for something it cannot do, and is the reader's: see [`UnsearchableQuery`].
+/// It is checked alone, before indice's own clauses and collectors join it, so
+/// a schema error in those is still the server's.
+fn check_readers(searcher: &tantivy::Searcher, query: &dyn Query) -> Result<()> {
+    match query.weight(tantivy::query::EnableScoring::disabled_from_searcher(
+        searcher,
+    )) {
+        Ok(_) => Ok(()),
+        Err(tantivy::TantivyError::SchemaError(why)) => Err(UnsearchableQuery(why).into()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// How much more a title match counts than a body/url match when ranking.
 const TITLE_BOOST: tantivy::Score = 3.0;
 
@@ -164,6 +179,7 @@ impl SearchIndex {
         // a best-effort query instead of a hard error, so the search box never
         // 500s while someone is experimenting with syntax.
         let (query, _errors) = query_parser.parse_query_lenient(query_str);
+        check_readers(&searcher, &*query)?;
 
         // One pass over the query: a bounded window of top-scored captures (for
         // grouping), the total capture count, and the facet counts (a terms
@@ -478,6 +494,7 @@ impl SearchIndex {
             );
             qp.set_conjunction_by_default();
             let (text_query, _errors) = qp.parse_query_lenient(q);
+            check_readers(&searcher, &*text_query)?;
             clauses.push((Occur::Must, text_query));
         }
 

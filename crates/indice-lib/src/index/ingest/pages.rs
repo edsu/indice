@@ -245,6 +245,8 @@ pub(super) fn index_nested_from<F: RangeFetch + Clone + Send + Sync>(
     let inners = {
         let mut zip = zip::ZipArchive::new(RangeReader::new(outer.clone()))
             .context("opening WACZ to check for nesting")?;
+        // Every WACZ indexed comes through here first.
+        crate::wacz::ensure_entries_apart(&zip)?;
         crate::wacz::nested_wacz_locations(&mut zip)
     };
     if inners.is_empty() {
@@ -479,6 +481,8 @@ where
     let (cdx, starts, warcinfo) = {
         let mut zip =
             zip::ZipArchive::new(RangeReader::new(fetch.clone())).context("opening WACZ ZIP")?;
+        // Again for an inner WACZ of a multi-WACZ, which is a zip of its own.
+        wacz::ensure_entries_apart(&zip)?;
         wacz::ensure_warcs_stored(&mut zip)?;
         let cdx = wacz::cdx_records(&mut zip, limit)?;
         let starts = wacz::warc_data_starts(&mut zip)?;
@@ -620,6 +624,27 @@ where
         }
     }
 
+    // A record more than one page lists, and the page that lists it first.
+    // A gzip member can hold several pages' records, so each of those pages
+    // fetches it; but a CDX can also point any number of pages at one record,
+    // and fetching it for each would extract it again for each. So only the
+    // first page takes whatever the record holds, and any other fetches it
+    // only if one of the record's own URLs is that page's.
+    let mut owner: HashMap<(&str, u64), usize> = HashMap::new();
+    let mut shared = std::collections::HashSet::new();
+    for (i, (_, records)) in groups.iter().enumerate() {
+        for c in records {
+            let key = (c.filename.as_str(), c.offset);
+            if *owner.entry(key).or_insert(i) != i {
+                shared.insert(key);
+            }
+        }
+    }
+    owner.retain(|key, _| shared.contains(key));
+    // The URLs each shared record holds, once a page has fetched it. Until one
+    // has, any page fetches it, so at most a worker each.
+    let holds: Mutex<HashMap<(&str, u64), Vec<String>>> = Mutex::new(HashMap::new());
+
     let writer = PageWriter::new(docs);
     let waiting: Mutex<HashMap<String, MergedPage>> = Mutex::new(HashMap::new());
     // Taken by a worker whose record grows past SMALL_RECORD, and held until
@@ -633,21 +658,37 @@ where
     pool.install(|| {
         groups
             .par_iter()
-            .try_for_each(|(page, records)| -> Result<()> {
+            .enumerate()
+            .try_for_each(|(i, (page, records))| -> Result<()> {
                 let mut merged = MergedPage::default();
                 let mut held = None;
                 // One gzip member can hold several records, each with its own CDX
                 // line at the member's offset; fetch it once.
                 let mut fetched = std::collections::HashSet::new();
                 for c in records {
-                    if fetched.insert((c.filename.as_str(), c.offset)) {
+                    let key = (c.filename.as_str(), c.offset);
+                    let first = owner.get(&key).is_none_or(|&o| o == i);
+                    let not_ours = || {
+                        holds
+                            .lock()
+                            .unwrap()
+                            .get(&key)
+                            .is_some_and(|urls| !urls.iter().any(|u| u == page))
+                    };
+                    if fetched.insert(key) && (first || !not_ours()) {
                         let gate = Gate {
                             lock: &large,
                             held: &mut held,
                         };
-                        for raw in fetch_raw_records(&fetch, starts, c, limit, extract, &pdf, gate)?
-                        {
-                            if belongs_to(raw.url(), page, &slot) {
+                        let raws =
+                            fetch_raw_records(&fetch, starts, c, limit, extract, &pdf, gate)?;
+                        if owner.contains_key(&key) {
+                            holds.lock().unwrap().entry(key).or_insert_with(|| {
+                                raws.iter().map(|r| r.url().to_string()).collect()
+                            });
+                        }
+                        for raw in raws {
+                            if belongs_to(raw.url(), page, &slot, first) {
                                 merge_raw(&mut merged, raw);
                             }
                         }
@@ -723,9 +764,11 @@ where
 /// can hold another page's record, which that page's own group merges; any
 /// other record is this page's, even when its WARC URI is spelled differently
 /// from the CDX's key (a different indexer's normalisation, say), which would
-/// otherwise drop it unseen.
-fn belongs_to(url: &str, page: &str, pages: &HashMap<&str, usize>) -> bool {
-    url == page || !pages.contains_key(url)
+/// otherwise drop it unseen. That goes only for the `first` page to list the
+/// record, though, or a CDX pointing many pages at one record would copy it
+/// into each.
+fn belongs_to(url: &str, page: &str, pages: &HashMap<&str, usize>, first: bool) -> bool {
+    url == page || (first && !pages.contains_key(url))
 }
 
 /// What [`index_pages`] reads: the WACZ's bytes, the CDX that says where its
@@ -1322,15 +1365,30 @@ mod tests {
     #[test]
     fn a_record_belongs_to_its_page_unless_another_page_claims_it() {
         let pages = HashMap::from([("https://ex.test/a", 0), ("https://ex.test/b", 1)]);
-        assert!(belongs_to("https://ex.test/a", "https://ex.test/a", &pages));
+        assert!(belongs_to(
+            "https://ex.test/a",
+            "https://ex.test/a",
+            &pages,
+            true
+        ));
         assert!(
-            !belongs_to("https://ex.test/b", "https://ex.test/a", &pages),
+            !belongs_to("https://ex.test/b", "https://ex.test/a", &pages, true),
             "another page's record, fetched in the same member, is that page's"
         );
         assert!(
-            belongs_to("https://ex.test/a/", "https://ex.test/a", &pages),
+            belongs_to("https://ex.test/a/", "https://ex.test/a", &pages, true),
             "a URI spelled differently from the CDX key is still this page's"
         );
+        assert!(
+            !belongs_to("https://ex.test/a/", "https://ex.test/b", &pages, false),
+            "but only the first page's, of the pages that list the record"
+        );
+        assert!(belongs_to(
+            "https://ex.test/b",
+            "https://ex.test/b",
+            &pages,
+            false
+        ));
     }
 
     /// A record already large as fetched is fetched with the lock held, so
@@ -1529,6 +1587,107 @@ mod tests {
             panic!("rendered text should be read");
         };
         assert_eq!(text, "éé");
+    }
+
+    /// A record that many pages' CDX lines point at is fetched once, and
+    /// copied into only the first of them, rather than extracted again for
+    /// each (pen test #228). A record that does hold several pages' records
+    /// still reaches each of them.
+    #[test]
+    fn a_record_many_pages_point_at_is_fetched_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        #[derive(Clone)]
+        struct Counting(Arc<Vec<u8>>, Arc<AtomicUsize>);
+        impl RangeFetch for Counting {
+            fn total_len(&self) -> u64 {
+                self.0.len() as u64
+            }
+            fn fetch(&self, start: u64, end: u64) -> std::io::Result<Vec<u8>> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                Ok(self.0[start as usize..end as usize].to_vec())
+            }
+        }
+        let record = |uri: &str, words: &str| {
+            let html = format!("<html><title>{words}</title><body>{words}</body></html>");
+            let http = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{html}",
+                html.len()
+            );
+            format!(
+                "WARC/1.0\r\nWARC-Type: response\r\nWARC-Target-URI: {uri}\r\n\
+                 WARC-Date: 2024-11-17T10:26:01Z\r\nWARC-Record-ID: <urn:uuid:{uri}>\r\n\
+                 Content-Type: application/http; msgtype=response\r\n\
+                 Content-Length: {}\r\n\r\n{http}\r\n\r\n",
+                http.len()
+            )
+        };
+        let line = |url: &str, length: usize| crate::wacz::CdxjRecord {
+            url: url.into(),
+            timestamp: "20241117102601".into(),
+            mime: "text/html".into(),
+            status: 200,
+            filename: "w.warc".into(),
+            offset: 0,
+            length: length as u64,
+        };
+        let no_lists = {
+            let mut buf = Vec::new();
+            zip::ZipWriter::new(std::io::Cursor::new(&mut buf))
+                .finish()
+                .unwrap();
+            buf
+        };
+        let index = |warc: String, cdx: Vec<crate::wacz::CdxjRecord>| {
+            let fetches = Arc::new(AtomicUsize::new(0));
+            let tmp = tempfile::TempDir::new().unwrap();
+            let search = Mutex::new(SearchIndex::open(tmp.path()).unwrap());
+            let docs = Docs {
+                crawl_id: "c",
+                crawl_name: "c",
+                collection: "c",
+                search: &search,
+                read_limit: crate::wacz::DEFAULT_MEMBER_LIMIT,
+                extract_limit: crate::config::DEFAULT_EXTRACT_BYTES,
+                pdf: PDF,
+                scratch: &crate::wacz::Scratch::new(None),
+            };
+            let stats = index_pages(
+                PageSource {
+                    fetch: Counting(Arc::new(warc.into_bytes()), fetches.clone()),
+                    cdx: &cdx,
+                    starts: &HashMap::from([("w.warc".to_string(), 0)]),
+                    open_lists: || -> Result<_> {
+                        Ok(zip::ZipArchive::new(std::io::Cursor::new(
+                            no_lists.clone(),
+                        ))?)
+                    },
+                },
+                &Run {
+                    docs: &docs,
+                    label: "t",
+                    concurrency: 1,
+                    progress: crate::index::no_progress(),
+                },
+            )
+            .unwrap();
+            (stats.pages, fetches.load(Ordering::SeqCst))
+        };
+
+        // One record, under a URL no line names, and a thousand lines at it.
+        let warc = record("https://ex.test/real", "real");
+        let cdx = (0..1000)
+            .map(|i| line(&format!("https://ex.test/{i}"), warc.len()))
+            .collect();
+        assert_eq!(index(warc, cdx), (1, 1), "(pages, fetches)");
+
+        // Two pages' records in one member, each with its line at it.
+        let warc = record("https://ex.test/a", "aaa") + &record("https://ex.test/b", "bbb");
+        let cdx = vec![
+            line("https://ex.test/a", warc.len()),
+            line("https://ex.test/b", warc.len()),
+        ];
+        assert_eq!(index(warc, cdx), (2, 2), "(pages, fetches)");
     }
 
     /// The second pass over the page lists must reach every page the first
