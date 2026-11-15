@@ -54,6 +54,15 @@ async fn serve(
     home: tempfile::TempDir,
     resolver: Option<Arc<dyn indice_lib::index::SourceResolver>>,
 ) -> Server {
+    serve_with(home, resolver, server::Providers::default()).await
+}
+
+/// As [`serve`], with these import providers.
+async fn serve_with(
+    home: tempfile::TempDir,
+    resolver: Option<Arc<dyn indice_lib::index::SourceResolver>>,
+    providers: server::Providers,
+) -> Server {
     log();
     std::fs::write(
         home.path().join("users.yaml"),
@@ -79,7 +88,7 @@ async fn serve(
             &path,
             resolver,
             config,
-            server::Providers::default(),
+            providers,
         )
         .await
     });
@@ -266,7 +275,8 @@ async fn the_log_keeps_no_search_terms_and_no_addresses() {
 
 /// A crawl added by URL that fails is in the operator's log, with who added it
 /// and why, and not only in the curator's progress: here a URL refused as
-/// internal, which is what an operator would want to see.
+/// internal, which is what an operator would want to see. Its password and
+/// query, which could be a presigned signature, are not.
 #[tokio::test]
 async fn a_failed_add_is_in_the_log() {
     let s = serve(tempfile::TempDir::new().unwrap(), None).await;
@@ -278,7 +288,7 @@ async fn a_failed_add_is_in_the_log() {
             .into();
         sign_in(agent.post(&url), Some("curator@x.edu"))
             .content_type("application/json")
-            .send(r#"{"path": "http://127.0.0.1:9/refused.wacz", "collection": "c"}"#)
+            .send(r#"{"path": "http://who:hunter2@127.0.0.1:9/refused.wacz?X-Amz-Signature=sekrit", "collection": "c"}"#)
             .unwrap()
             .status()
             .as_u16()
@@ -292,7 +302,7 @@ async fn a_failed_add_is_in_the_log() {
         let log = String::from_utf8(log().lock().unwrap().clone()).unwrap();
         if let Some(l) = log
             .lines()
-            .find(|l| l.contains("an add failed") && l.contains("refused.wacz"))
+            .find(|l| l.contains("a job failed") && l.contains("refused.wacz"))
         {
             break l.to_string();
         }
@@ -302,4 +312,82 @@ async fn a_failed_add_is_in_the_log() {
     assert!(line.contains("WARN"), "{line}");
     assert!(line.contains("refusing to fetch 127.0.0.1"), "{line}");
     assert!(line.contains("actor="), "{line}");
+    assert!(line.contains("http://127.0.0.1:9/refused.wacz"), "{line}");
+    assert!(
+        !line.contains("hunter2") && !line.contains("sekrit"),
+        "{line}"
+    );
+}
+
+/// An import that fails is in the log as an add is: every job fails through
+/// the same place.
+#[tokio::test]
+async fn a_failed_import_is_in_the_log() {
+    struct DownBx;
+    impl indice_lib::browsertrix::BrowsertrixProvider for DownBx {
+        fn client(&self) -> anyhow::Result<indice_lib::browsertrix::Client> {
+            anyhow::bail!("Browsertrix is down for the test")
+        }
+    }
+    struct DownAit;
+    impl indice_lib::archiveit::ArchiveItProvider for DownAit {
+        fn client(&self) -> anyhow::Result<indice_lib::archiveit::Client> {
+            anyhow::bail!("Archive-It is down for the test")
+        }
+    }
+    let s = serve_with(
+        tempfile::TempDir::new().unwrap(),
+        None,
+        server::Providers {
+            browsertrix: Some(Arc::new(DownBx)),
+            archiveit: Some(Arc::new(DownAit)),
+            llm_key: None,
+        },
+    )
+    .await;
+    for (path, body, what) in [
+        (
+            "/api/browsertrix/import",
+            r#"{"org": "o", "collection": "c", "items": [{"id": "i", "name": "n"}], "download": true}"#,
+            "Browsertrix is down",
+        ),
+        (
+            "/api/archiveit/import",
+            r#"{"collection_id": 1, "collection": "c", "crawls": [1]}"#,
+            "Archive-It is down",
+        ),
+    ] {
+        let url = format!("{}{path}", s.app);
+        let status = tokio::task::spawn_blocking(move || {
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .into();
+            sign_in(agent.post(&url), Some("boss@x.edu"))
+                .content_type("application/json")
+                .send(body)
+                .unwrap()
+                .status()
+                .as_u16()
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 202, "{path}");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let log = String::from_utf8(log().lock().unwrap().clone()).unwrap();
+            if log
+                .lines()
+                .any(|l| l.contains("WARN") && l.contains("a job failed") && l.contains(what))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{path} not logged:\n{log}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }

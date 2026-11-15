@@ -228,7 +228,8 @@ fn start_index_job(
     } else {
         crate::http_range::FetchPolicy::Unrestricted
     };
-    let (id, tx) = state.start_job(curator.principal());
+    let job = state.start_job(curator.principal(), &format!("an add of {location}"));
+    let id = job.id;
 
     let job_state = state.clone();
     // Who to credit for whatever this ingest creates.
@@ -246,16 +247,8 @@ fn start_index_job(
         // Held until the job ends; dropping it removes the staging directory.
         let _staged = staged;
         let progress = ChannelProgress {
-            tx: tx.clone(),
+            tx: job.sender(),
             l10n: l10n.clone(),
-        };
-        // A job that fails tells its curator, and the operator's log as well:
-        // a URL refused as internal, or a host that stalled, is something the
-        // operator needs to be able to see, and the curator's progress is
-        // seen only by them.
-        let fail = |why: &dyn std::fmt::Display, message: String| {
-            tracing::warn!(job = id, actor = %actor, location = %location, "an add failed: {why}");
-            let _ = tx.send(ProgressEvent::Error { message });
         };
         let result = {
             // The cross-process index lock is taken *before* the in-process
@@ -276,7 +269,7 @@ fn start_index_job(
                 Ok(l) => l,
                 Err(e) => {
                     let detail = format!("{e:#}");
-                    fail(
+                    job.fail(
                         &detail,
                         l10n.tr_args("error-lock-failed", &[("detail", FluentArg::Str(&detail))]),
                     );
@@ -300,7 +293,7 @@ fn start_index_job(
             let scratch = match room {
                 Ok(room) => room,
                 Err(refused) => {
-                    fail(&refused.message(&L10n::default()), refused.message(&l10n));
+                    job.fail(&refused.message(&L10n::default()), refused.message(&l10n));
                     return;
                 }
             };
@@ -319,34 +312,30 @@ fn start_index_job(
         };
         match result {
             Ok(()) => match job_state.reload_searcher() {
-                Ok(()) => tx
-                    .send(ProgressEvent::Done {
-                        collection: crate::collections::slugify(&collection),
-                        crawls: Vec::new(),
-                    })
-                    .ok(),
+                Ok(()) => job.send(ProgressEvent::Done {
+                    collection: crate::collections::slugify(&collection),
+                    crawls: Vec::new(),
+                }),
                 Err(e) => {
                     let detail = format!("{e:#}");
-                    fail(
+                    job.fail(
                         &detail,
                         l10n.tr_args(
                             "error-reload-failed",
                             &[("detail", FluentArg::Str(&detail))],
                         ),
                     );
-                    None
                 }
             },
             Err(e) => {
                 let detail = format!("{e:#}");
-                fail(
+                job.fail(
                     &detail,
                     l10n.tr_args("error-job-failed", &[("detail", FluentArg::Str(&detail))]),
                 );
-                None
             }
-        };
-        // `tx` (and the `progress` clone) drop here → the SSE stream ends once the
+        }
+        // `job` (and the `progress` clone) drop here → the SSE stream ends once the
         // client has read the terminal event.
     });
 

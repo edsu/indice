@@ -456,6 +456,75 @@ struct Job {
     rx: mpsc::UnboundedReceiver<ProgressEvent>,
 }
 
+/// A job's end of its progress, and what the operator's log says when it
+/// fails. Every job fails through [`JobTx::fail`], because the progress is
+/// seen only by whoever started the job, and a URL refused as internal, or a
+/// host that stalled, is something the operator needs to see too.
+struct JobTx {
+    id: u64,
+    tx: mpsc::UnboundedSender<ProgressEvent>,
+    owner: crate::identity::SubjectId,
+    /// What the job was asked to do, as the log has it.
+    what: String,
+}
+
+impl JobTx {
+    /// A sender for the job's progress, for the work to report through.
+    fn sender(&self) -> mpsc::UnboundedSender<ProgressEvent> {
+        self.tx.clone()
+    }
+
+    fn send(&self, event: ProgressEvent) {
+        let _ = self.tx.send(event);
+    }
+
+    /// Tell whoever started the job, in `message`, that it failed, and the
+    /// log `why`, in the log's own words.
+    fn fail(&self, why: &dyn std::fmt::Display, message: String) {
+        tracing::warn!(
+            job = self.id,
+            actor = %self.owner,
+            what = %self.what,
+            "a job failed: {}",
+            without_secrets(&why.to_string())
+        );
+        self.send(ProgressEvent::Error { message });
+    }
+}
+
+/// `text` with each URL in it cut to its scheme, host and path. A URL a
+/// curator gives can carry a password (`user:pass@`) or a presigned
+/// signature in its query, and the log keeps neither: it is read by whoever
+/// runs the server, and kept as long as they keep logs.
+fn without_secrets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let start = rest[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || "+-.".contains(c)))
+            .map_or(0, |i| i + 1);
+        let end = rest[at..]
+            .find(|c: char| c.is_whitespace() || "\"'<>`".contains(c))
+            .map_or(rest.len(), |i| at + i);
+        // Punctuation after a URL is the sentence's, not the URL's.
+        let url = rest[start..end].trim_end_matches([':', ',', '.', ';', ')']);
+        let (scheme, after) = url.split_at(at - start + 3);
+        let after = after.split(['?', '#']).next().unwrap_or("");
+        let (authority, path) = after.split_at(after.find('/').unwrap_or(after.len()));
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        out.push_str(&rest[..start]);
+        out.push_str(scheme);
+        out.push_str(host);
+        out.push_str(path);
+        out.push_str(&rest[start + url.len()..end]);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 impl AppState {
     /// `Access-Control-Allow-Origin` for what any site may read: the archive
     /// bytes and a note's JSON-LD. `*` on a server, whose archive is public, so
@@ -467,12 +536,10 @@ impl AppState {
         self.forward_auth.is_some().then_some("*")
     }
 
-    /// Register a job started by `owner`: mint its id and keep its progress
-    /// receiver for the SSE endpoint, which hands it only to the owner.
-    fn start_job(
-        &self,
-        owner: &crate::identity::Principal,
-    ) -> (u64, mpsc::UnboundedSender<ProgressEvent>) {
+    /// Register a job started by `owner` to do `what`: mint its id and keep its
+    /// progress receiver for the SSE endpoint, which hands it only to the
+    /// owner.
+    fn start_job(&self, owner: &crate::identity::Principal, what: &str) -> JobTx {
         let id = self
             .job_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -482,7 +549,12 @@ impl AppState {
             rx,
         };
         self.jobs.lock().unwrap().insert(id, job);
-        (id, tx)
+        JobTx {
+            id,
+            tx,
+            owner: owner.id().clone(),
+            what: without_secrets(what),
+        }
     }
 
     /// Run a read against the search index on a blocking thread.
