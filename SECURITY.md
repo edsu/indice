@@ -1,6 +1,6 @@
 # Security
 
-indice is alpha software (0.6.3). There is no stable release, no supported
+indice is alpha software (0.6.4). There is no stable release, no supported
 release line, and no deployment I know of. Fixes land on `main`, and there is
 nothing behind it to backport them to.
 
@@ -25,9 +25,10 @@ scripting, and server errors for a few requests, fixed in 0.6.3 (see
 AI assistant rather than an outside tester, attacked a server behind the
 shipped `Caddyfile`, and replay in Chrome, by hand. It found eight problems,
 none of them injection or cross-site scripting, all fixed in 0.6.4; the log,
-the stack and the attacks are in `security/pentest/`. The rest of its testing
-is the test suite, which pins each guarantee in the threat model, CodeQL and a
-RustSec advisory check on every change, and AI-assisted review.
+the stack and the attacks are in `security/pentest/`. `security/README.md`
+says what each part of this testing covered and what it did not. The rest of
+its testing is the test suite, which pins each guarantee in the threat model,
+CodeQL and a RustSec advisory check on every change, and AI-assisted review.
 
 ## Reporting
 

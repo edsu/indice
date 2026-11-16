@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "indice"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "indice-lib"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "axum",

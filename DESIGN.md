@@ -311,6 +311,12 @@ mutates cannot be written without one and a forgotten gate is a compile error.
   `security_headers.rs::crawlers_list_only_indices_own_pages_and_skip_what_is_costly`
 - The request log keeps a request's path, never its query string or the
   client's address. `errors.rs::the_log_keeps_no_search_terms_and_no_addresses`
+- A job that fails, an add or an import, is logged as a warning with who
+  started it, what it was asked to do and why, and each URL in the warning is
+  cut to its scheme, host and path, so a password or a presigned signature in
+  it is not. `errors.rs::a_failed_add_is_in_the_log`,
+  `errors.rs::a_failed_import_is_in_the_log`,
+  `server/tests.rs::a_url_in_the_log_loses_its_secrets`
 - A failure tells a public caller only that something went wrong, with a request
   id, and logs the whole error under that id. The helper that answers with the
   detail is reachable only through `Curator::error_response` and
