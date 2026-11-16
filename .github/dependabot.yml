@@ -12,6 +12,13 @@ updates:
       cargo-minor:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # fluent-bundle requires fluent-langneg 0.13, whose language tags are
+      # unic-langid's; 0.14 takes icu-locid's, which do not fit fluent-bundle's.
+      # Move it when fluent-bundle requires 0.14:
+      # https://github.com/edsu/indice/issues/270
+      - dependency-name: fluent-langneg
+        versions: [">= 0.14"]
 
   # GitHub Actions used by the CI workflow.
   - package-ecosystem: github-actions
