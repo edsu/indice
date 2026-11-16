@@ -486,43 +486,10 @@ impl JobTx {
             actor = %self.owner,
             what = %self.what,
             "a job failed: {}",
-            without_secrets(&why.to_string())
+            crate::http_range::without_secrets(&why.to_string())
         );
         self.send(ProgressEvent::Error { message });
     }
-}
-
-/// `text` with each URL in it cut to its scheme, host and path. A URL a
-/// curator gives can carry a password (`user:pass@`) or a presigned
-/// signature in its query, and the log keeps neither: it is read by whoever
-/// runs the server, and kept as long as they keep logs.
-fn without_secrets(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find("://") {
-        let start = rest[..at]
-            .rfind(|c: char| !(c.is_ascii_alphanumeric() || "+-.".contains(c)))
-            .map_or(0, |i| i + 1);
-        let end = rest[at..]
-            .find(|c: char| c.is_whitespace() || "\"'<>`".contains(c))
-            .map_or(rest.len(), |i| at + i);
-        // Punctuation after a URL is the sentence's, not the URL's.
-        let url = rest[start..end].trim_end_matches([':', ',', '.', ';', ')']);
-        let (scheme, after) = url.split_at(at - start + 3);
-        let after = after.split(['?', '#']).next().unwrap_or("");
-        let (authority, path) = after.split_at(after.find('/').unwrap_or(after.len()));
-        let host = authority
-            .rsplit_once('@')
-            .map_or(authority, |(_, host)| host);
-        out.push_str(&rest[..start]);
-        out.push_str(scheme);
-        out.push_str(host);
-        out.push_str(path);
-        out.push_str(&rest[start + url.len()..end]);
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
 }
 
 impl AppState {
@@ -553,7 +520,7 @@ impl AppState {
             id,
             tx,
             owner: owner.id().clone(),
-            what: without_secrets(what),
+            what: crate::http_range::without_secrets(what),
         }
     }
 

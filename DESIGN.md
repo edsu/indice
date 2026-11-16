@@ -314,9 +314,12 @@ mutates cannot be written without one and a forgotten gate is a compile error.
 - A job that fails, an add or an import, is logged as a warning with who
   started it, what it was asked to do and why, and each URL in the warning is
   cut to its scheme, host and path, so a password or a presigned signature in
-  it is not. `errors.rs::a_failed_add_is_in_the_log`,
+  it is not. A failed fetch names its URL the same way, in the error and in
+  the indexer's warning for a record it skips.
+  `errors.rs::a_failed_add_is_in_the_log`,
   `errors.rs::a_failed_import_is_in_the_log`,
-  `server/tests.rs::a_url_in_the_log_loses_its_secrets`
+  `http_range.rs::a_url_in_the_log_loses_its_secrets`,
+  `http_range.rs::a_host_that_stalls_is_given_up_on_once`
 - A failure tells a public caller only that something went wrong, with a request
   id, and logs the whole error under that id. The helper that answers with the
   detail is reachable only through `Curator::error_response` and

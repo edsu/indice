@@ -76,7 +76,7 @@ pub(super) fn open(
                     return Err(e)
                 }
                 Ok(false) | Err(_) => {
-                    info!(url = %u, "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
+                    info!(url = %crate::http_range::without_secrets(u), "remote WACZ can't be streamed (no range support or compressed WARCs); downloading to index");
                     progress.phase(&Phase::Downloading);
                     let tmp = download_to_temp(u, fetch, cx.download_limit, scratch)
                         .with_context(|| format!("downloading {u}"))?;
@@ -118,10 +118,12 @@ pub(super) fn open(
                 Source::Browsertrix { .. } => crate::http_range::FetchPolicy::Unrestricted,
                 _ => fetch,
             };
-            if !remote_warcs_streamable(&url, fetch).unwrap_or(false) {
+            // Only a WACZ read and found compressed is reported as one: a
+            // probe that failed says why, rather than blaming the WACZ.
+            if !remote_warcs_streamable(&url, fetch)? {
                 anyhow::bail!(
-                    "this Browsertrix WACZ can't be stream-indexed (compressed WARCs or \
-                     no range support); import it in download mode instead"
+                    "this Browsertrix WACZ can't be stream-indexed (its WARCs are \
+                     compressed); import it in download mode instead"
                 );
             }
             WaczAccess::Stream { url, fetch }
@@ -431,8 +433,12 @@ fn download_into_archive(
 /// its WARC entries Stored (uncompressed). Reads only the ZIP central directory.
 fn remote_warcs_streamable(url: &str, policy: crate::http_range::FetchPolicy) -> Result<bool> {
     let reader = crate::http_range::open_remote(url, policy)?;
-    let mut zip = zip::ZipArchive::new(reader)
-        .with_context(|| format!("reading remote ZIP central directory of {url}"))?;
+    let mut zip = zip::ZipArchive::new(reader).with_context(|| {
+        format!(
+            "reading remote ZIP central directory of {}",
+            crate::http_range::without_secrets(url)
+        )
+    })?;
     crate::wacz::warcs_stored(&mut zip)
 }
 
