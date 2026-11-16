@@ -21,11 +21,13 @@ are revision control ready.
 
 > **Security:** indice has had no independent security review. Its archive
 > parsers, search, HTML text extraction and thumbnail images have been fuzzed,
-> but not its PDF text extraction. Its other testing is its own test suite,
-> CodeQL and a RustSec advisory check on every change, and AI-assisted review.
-> Read [Securing a server] before putting it on the open web. The plan for the
-> rest of the fuzzing, penetration testing and an outside review is in
-> [#223](https://github.com/edsu/indice/issues/223).
+> but not its PDF text extraction. A running server has been scanned with OWASP
+> ZAP and penetration tested, by the project with an AI assistant, and what
+> each found is fixed. Its other testing is its own test suite, CodeQL and a
+> RustSec advisory check on every change, and AI-assisted review. Read
+> [Securing a server] before putting it on the open web. [`security/`](security/)
+> says how it was tested, and the plan for an outside review is in
+> [#229](https://github.com/edsu/indice/issues/229).
 
 > **The web archive replay is entirely [Webrecorder]'s work.** indice bundles and
 > serves [ReplayWeb.page] and [wabac.js] (the browser-side engine that does all
