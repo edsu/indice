@@ -375,8 +375,10 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Outcome of one HTTP attempt.
 enum Attempt<T> {
     Done(T),
-    /// Transient failure; optional server-suggested delay (`Retry-After`).
-    Retry(Option<Duration>),
+    /// Transient failure: an optional server-suggested delay (`Retry-After`),
+    /// and what went wrong, which is what the operator is told if the last
+    /// attempt fails too.
+    Retry(Option<Duration>, String),
     Fatal(io::Error),
 }
 
@@ -388,15 +390,16 @@ fn with_retry<T>(label: &str, mut attempt: impl FnMut() -> Attempt<T>) -> io::Re
         match attempt() {
             Attempt::Done(v) => return Ok(v),
             Attempt::Fatal(e) => return Err(e),
-            Attempt::Retry(after) => {
+            Attempt::Retry(after, why) => {
+                let why = without_secrets(&why);
                 if n == MAX_ATTEMPTS {
                     return Err(io::Error::other(format!(
-                        "{label}: gave up after {MAX_ATTEMPTS} attempts"
+                        "{label}: gave up after {MAX_ATTEMPTS} attempts: {why}"
                     )));
                 }
                 let base = after.unwrap_or(backoff).min(MAX_BACKOFF);
                 let wait = base + jitter(base);
-                tracing::debug!("{label}: transient failure, retry {n}/{MAX_ATTEMPTS} in {wait:?}");
+                tracing::debug!("{label}: {why}, retry {n}/{MAX_ATTEMPTS} in {wait:?}");
                 std::thread::sleep(wait);
                 backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
             }
@@ -417,6 +420,39 @@ fn jitter(base: Duration) -> Duration {
         .map(|d| d.subsec_nanos() as u64)
         .unwrap_or(0);
     Duration::from_millis(n % (span + 1))
+}
+
+/// `text` with each URL in it cut to its scheme, host and path. A URL a
+/// curator gives can carry a password (`user:pass@`) or a presigned
+/// signature in its query, and the log keeps neither: it is read by whoever
+/// runs the server, and kept as long as they keep logs.
+pub(crate) fn without_secrets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let start = rest[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || "+-.".contains(c)))
+            .map_or(0, |i| i + 1);
+        let end = rest[at..]
+            .find(|c: char| c.is_whitespace() || "\"'<>`".contains(c))
+            .map_or(rest.len(), |i| at + i);
+        // Punctuation after a URL is the sentence's, not the URL's.
+        let url = rest[start..end].trim_end_matches([':', ',', '.', ';', ')']);
+        let (scheme, after) = url.split_at(at - start + 3);
+        let after = after.split(['?', '#']).next().unwrap_or("");
+        let (authority, path) = after.split_at(after.find('/').unwrap_or(after.len()));
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        out.push_str(&rest[..start]);
+        out.push_str(scheme);
+        out.push_str(host);
+        out.push_str(path);
+        out.push_str(&rest[start + url.len()..end]);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// HTTP statuses worth retrying: rate-limit and transient server errors.
@@ -609,6 +645,9 @@ static PROXY_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 pub struct HttpFetch {
     agent: ureq::Agent,
     url: String,
+    /// `url` as messages name it, without what could be a secret: a
+    /// Browsertrix URL is presigned, and its signature reads the crawl.
+    shown: String,
     len: u64,
     /// Set by the first fetch that times out, and shared by every clone, so
     /// each later fetch fails at once instead of waiting on the host again.
@@ -627,22 +666,23 @@ impl HttpFetch {
 
     fn open_with(url: &str, policy: FetchPolicy, timeouts: Timeouts) -> Result<Self> {
         let agent = http_agent_with(policy, timeouts);
-        let len = with_retry(&format!("HTTP range probe of {url}"), || {
+        let shown = without_secrets(url);
+        let len = with_retry(&format!("HTTP range probe of {shown}"), || {
             let resp = match agent.get(url).header("Range", "bytes=0-0").call() {
                 Ok(r) => r,
                 Err(e) if policy_refusal(&e).is_some() => {
                     return Attempt::Fatal(policy_refusal(&e).unwrap())
                 }
-                Err(e) if is_timeout(&e) => return Attempt::Fatal(stalled(url, e)),
-                Err(_) => return Attempt::Retry(None),
+                Err(e) if is_timeout(&e) => return Attempt::Fatal(stalled(&shown, e)),
+                Err(e) => return Attempt::Retry(None, e.to_string()),
             };
             let code = resp.status().as_u16();
             if is_transient_status(code) {
-                return Attempt::Retry(retry_after(&resp));
+                return Attempt::Retry(retry_after(&resp), format!("HTTP {code}"));
             }
             if code != 206 {
                 return Attempt::Fatal(io::Error::other(format!(
-                    "{url} did not honor a range request (HTTP {code}); the server must \
+                    "{shown} did not honor a range request (HTTP {code}); the server must \
                      support HTTP range requests to stream-index it — use --download instead"
                 )));
             }
@@ -657,13 +697,14 @@ impl HttpFetch {
             {
                 Some(len) => Attempt::Done(len),
                 None => Attempt::Fatal(io::Error::other(format!(
-                    "no total length in Content-Range from {url}"
+                    "no total length in Content-Range from {shown}"
                 ))),
             }
         })?;
         Ok(Self {
             agent,
             url: url.to_string(),
+            shown,
             len,
             stalled: Default::default(),
         })
@@ -682,25 +723,25 @@ impl RangeFetch for HttpFetch {
     fn fetch(&self, start: u64, end: u64) -> io::Result<Vec<u8>> {
         use std::sync::atomic::Ordering;
         if self.stalled.load(Ordering::Relaxed) {
-            return Err(stalled(&self.url, "an earlier request timed out"));
+            return Err(stalled(&self.shown, "an earlier request timed out"));
         }
         let give_up = |e: &dyn std::fmt::Display| {
             self.stalled.store(true, Ordering::Relaxed);
-            Attempt::Fatal(stalled(&self.url, e))
+            Attempt::Fatal(stalled(&self.shown, e))
         };
         let range = format!("bytes={}-{}", start, end - 1);
-        with_retry(&format!("range GET of {}", self.url), || {
+        with_retry(&format!("range GET of {}", self.shown), || {
             let resp = match self.agent.get(&self.url).header("Range", &range).call() {
                 Ok(r) => r,
                 Err(e) if policy_refusal(&e).is_some() => {
                     return Attempt::Fatal(policy_refusal(&e).unwrap())
                 }
                 Err(e) if is_timeout(&e) => return give_up(&e),
-                Err(_) => return Attempt::Retry(None),
+                Err(e) => return Attempt::Retry(None, e.to_string()),
             };
             let code = resp.status().as_u16();
             if is_transient_status(code) {
-                return Attempt::Retry(retry_after(&resp));
+                return Attempt::Retry(retry_after(&resp), format!("HTTP {code}"));
             }
             // Require 206: `open` confirmed range support and every fetch asks for
             // a sub-file slice, so a 200 means the server ignored the Range and is
@@ -709,7 +750,7 @@ impl RangeFetch for HttpFetch {
             if code != 206 {
                 return Attempt::Fatal(io::Error::other(format!(
                     "range GET of {} returned HTTP {code} (expected 206)",
-                    self.url
+                    self.shown
                 )));
             }
             // At most what was asked for, plus one byte to notice more: a host
@@ -723,14 +764,14 @@ impl RangeFetch for HttpFetch {
             {
                 Ok(_) if v.len() as u64 > want => Attempt::Fatal(io::Error::other(format!(
                     "range GET of {} returned more than the {want} bytes asked for",
-                    self.url
+                    self.shown
                 ))),
                 Ok(_) => Attempt::Done(v),
                 Err(e) if is_timeout_io(&e) => give_up(&e),
                 // Any other mid-stream read failure is usually transient; retry
                 // the range. The policy refusal cannot reach here: it happens
                 // during name resolution, so the connection never opened.
-                Err(_) => Attempt::Retry(None),
+                Err(e) => Attempt::Retry(None, e.to_string()),
             }
         })
     }
@@ -814,22 +855,23 @@ impl<F: RangeFetch> RangeFetch for SubRangeFetch<F> {
 /// is not resumed.
 pub fn get_reader(url: &str, policy: FetchPolicy) -> Result<impl Read> {
     let agent = http_agent(policy);
-    let resp = with_retry(&format!("HTTP GET {url}"), || {
+    let shown = without_secrets(url);
+    let resp = with_retry(&format!("HTTP GET {shown}"), || {
         let resp = match agent.get(url).call() {
             Ok(r) => r,
             Err(e) if policy_refusal(&e).is_some() => {
                 return Attempt::Fatal(policy_refusal(&e).unwrap())
             }
-            Err(e) if is_timeout(&e) => return Attempt::Fatal(stalled(url, e)),
-            Err(_) => return Attempt::Retry(None),
+            Err(e) if is_timeout(&e) => return Attempt::Fatal(stalled(&shown, e)),
+            Err(e) => return Attempt::Retry(None, e.to_string()),
         };
         let code = resp.status().as_u16();
         if is_transient_status(code) {
-            Attempt::Retry(retry_after(&resp))
+            Attempt::Retry(retry_after(&resp), format!("HTTP {code}"))
         } else if (200..300).contains(&code) {
             Attempt::Done(resp)
         } else {
-            Attempt::Fatal(io::Error::other(format!("HTTP {code} for {url}")))
+            Attempt::Fatal(io::Error::other(format!("HTTP {code} for {shown}")))
         }
     })?;
     Ok(MinRate::new(resp.into_body().into_reader()))
@@ -911,11 +953,16 @@ mod timeout_tests {
             response: short,
             read: short,
         };
+        // Presigned, as a Browsertrix URL is: the error names the host
+        // without the signature, which would let whoever reads it read the
+        // crawl.
+        let url = format!("{url}?X-Amz-Signature=secret");
         let fetch = HttpFetch::open_with(&url, FetchPolicy::Unrestricted, timeouts).unwrap();
         let started = std::time::Instant::now();
         let err = fetch.fetch(0, 10).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
         assert!(err.to_string().contains("stopped responding"), "{err}");
+        assert!(!err.to_string().contains("secret"), "{err}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "retried: {:?}",
@@ -1202,6 +1249,27 @@ mod tests {
         );
     }
 
+    /// A URL in a log line keeps its scheme, host and path, and loses what could
+    /// be a password or a presigned signature.
+    #[test]
+    fn a_url_in_the_log_loses_its_secrets() {
+        assert_eq!(
+            without_secrets(
+                "fetching https://who:pw@bucket.s3.test/x.wacz?X-Amz-Signature=abc#f: 403 Forbidden"
+            ),
+            "fetching https://bucket.s3.test/x.wacz: 403 Forbidden"
+        );
+        assert_eq!(
+            without_secrets("an add of /srv/crawls/a.wacz"),
+            "an add of /srv/crawls/a.wacz",
+            "a path is left alone"
+        );
+        assert_eq!(
+            without_secrets("from (s3://k:s@b/w.wacz?v=1), then http://h"),
+            "from (s3://b/w.wacz), then http://h"
+        );
+    }
+
     // Zero-delay retries keep these instant (no real sleeps).
     #[test]
     fn with_retry_succeeds_after_transient_failures() {
@@ -1210,7 +1278,7 @@ mod tests {
             let n = calls.get() + 1;
             calls.set(n);
             if n < 3 {
-                Attempt::Retry(Some(Duration::ZERO))
+                Attempt::Retry(Some(Duration::ZERO), "HTTP 503".into())
             } else {
                 Attempt::Done(n)
             }
@@ -1219,15 +1287,37 @@ mod tests {
         assert_eq!(calls.get(), 3);
     }
 
+    /// Giving up says what the last attempt met, which is what an operator
+    /// needs to tell a host throttling from one dropping connections.
     #[test]
     fn with_retry_gives_up_after_max_attempts() {
         let calls = std::cell::Cell::new(0u32);
         let out: io::Result<u32> = with_retry("t", || {
             calls.set(calls.get() + 1);
-            Attempt::Retry(Some(Duration::ZERO))
+            Attempt::Retry(Some(Duration::ZERO), "HTTP 503".into())
         });
-        assert!(out.is_err());
+        assert_eq!(
+            out.unwrap_err().to_string(),
+            format!("t: gave up after {MAX_ATTEMPTS} attempts: HTTP 503")
+        );
         assert_eq!(calls.get(), MAX_ATTEMPTS);
+    }
+
+    /// The reason an attempt failed can name the URL, as a connection error
+    /// does, and loses its secrets like the URL in the label.
+    #[test]
+    fn a_retry_reason_loses_its_secrets() {
+        let out: io::Result<u32> = with_retry("t", || {
+            Attempt::Retry(
+                Some(Duration::ZERO),
+                "reading https://h.test/a.wacz?X-Amz-Signature=s: reset".into(),
+            )
+        });
+        let err = out.unwrap_err().to_string();
+        assert!(
+            err.ends_with(": reading https://h.test/a.wacz: reset"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -1853,24 +1853,3 @@ async fn a_search_the_index_cannot_run_is_the_readers_mistake() {
         assert_eq!(status, StatusCode::OK, "{path}: {body}");
     }
 }
-
-/// A URL in a log line keeps its scheme, host and path, and loses what could
-/// be a password or a presigned signature.
-#[test]
-fn a_url_in_the_log_loses_its_secrets() {
-    assert_eq!(
-        super::without_secrets(
-            "fetching https://who:pw@bucket.s3.test/x.wacz?X-Amz-Signature=abc#f: 403 Forbidden"
-        ),
-        "fetching https://bucket.s3.test/x.wacz: 403 Forbidden"
-    );
-    assert_eq!(
-        super::without_secrets("an add of /srv/crawls/a.wacz"),
-        "an add of /srv/crawls/a.wacz",
-        "a path is left alone"
-    );
-    assert_eq!(
-        super::without_secrets("from (s3://k:s@b/w.wacz?v=1), then http://h"),
-        "from (s3://b/w.wacz), then http://h"
-    );
-}
