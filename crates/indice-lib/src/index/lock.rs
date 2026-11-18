@@ -506,14 +506,14 @@ fn read_holder(file: &mut File) -> Option<String> {
         return None;
     }
     let (what, since) = line.split_once(HOLDER_SEP)?;
-    let started = chrono::DateTime::parse_from_rfc3339(since.trim()).ok()?;
-    let ago = chrono::Utc::now().signed_duration_since(started);
+    let started = crate::timestamp::parse(since.trim())?;
+    let ago = time::OffsetDateTime::now_utc() - started;
     Some(format!("{what} (started {} ago)", human_duration(ago)))
 }
 
 /// A coarse "7m", "3h", "2d" — enough to tell a stuck job from a working one.
-fn human_duration(d: chrono::TimeDelta) -> String {
-    let secs = d.num_seconds().max(0);
+fn human_duration(d: time::Duration) -> String {
+    let secs = d.whole_seconds().max(0);
     match secs {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m", s / 60),
@@ -534,7 +534,7 @@ fn write_holder(file: &mut File, what: &str) {
     let line = format!(
         "{what} (pid {}){HOLDER_SEP}{}",
         std::process::id(),
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        crate::timestamp::now()
     );
     let _ = file.set_len(0);
     let _ = file.seek(SeekFrom::Start(0));
@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn human_duration_reads_at_a_glance() {
-        let s = |n| human_duration(chrono::TimeDelta::seconds(n));
+        let s = |n| human_duration(time::Duration::seconds(n));
         assert_eq!(s(5), "5s");
         assert_eq!(s(420), "7m");
         assert_eq!(s(7200), "2h");

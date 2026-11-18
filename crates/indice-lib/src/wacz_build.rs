@@ -254,10 +254,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// (`2006-01-02T15:04:05Z`) for `pages.jsonl`. Returns the input unchanged if it
 /// isn't 14 digits.
 fn ts14_to_rfc3339(ts: &str) -> String {
-    match chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%d%H%M%S") {
-        Ok(dt) => dt
-            .and_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    let digits = time::macros::format_description!("[year][month][day][hour][minute][second]");
+    match time::PrimitiveDateTime::parse(ts, digits) {
+        Ok(dt) => crate::timestamp::format(dt.assume_utc()),
         Err(_) => ts.to_string(),
     }
 }
@@ -459,9 +458,7 @@ pub fn build_wacz(
         wacz_version: "1.1.1",
         title: meta.title.clone(),
         description: meta.description.clone(),
-        created: meta.created.clone().unwrap_or_else(|| {
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        }),
+        created: meta.created.clone().unwrap_or_else(crate::timestamp::now),
         modified: meta.modified.clone(),
         software: meta
             .software
@@ -503,6 +500,20 @@ pub fn build_wacz(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_warc_timestamp_becomes_rfc_3339() {
+        assert_eq!(ts14_to_rfc3339("20060102150405"), "2006-01-02T15:04:05Z");
+        // Anything else is kept as it came.
+        for ts in [
+            "2006",
+            "200601021504051",
+            "20061302150405",
+            "2006-01-02T15:04:05Z",
+        ] {
+            assert_eq!(ts14_to_rfc3339(ts), ts);
+        }
+    }
 
     /// A table of URL → expected SURT, hand-derived from `warcio.js`'s `getSurt`
     /// semantics. The dev/CI reference-oracle test (separate) pins these against

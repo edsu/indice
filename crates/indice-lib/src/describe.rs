@@ -447,7 +447,7 @@ pub fn provenance(llm: &Llm, filled: &[&str]) -> Drafted {
         model: llm.settings().model.clone(),
         service: llm.settings().service(),
         fields: filled.iter().map(|f| f.to_string()).collect(),
-        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        at: crate::timestamp::now(),
     }
 }
 
