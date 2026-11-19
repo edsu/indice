@@ -916,7 +916,8 @@ async fn mutations_are_recorded_with_who_did_them() {
     .await;
 
     // Read the month's log back through the library.
-    let month = chrono::Utc::now().format("%Y-%m").to_string();
+    let now = time::OffsetDateTime::now_utc();
+    let month = format!("{}-{:02}", now.year(), u8::from(now.month()));
     let events = indice_lib::events::read_month(&home, &month).unwrap();
     assert_eq!(events.len(), 2, "one record per mutation: {events:?}");
 

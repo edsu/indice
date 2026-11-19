@@ -56,7 +56,7 @@ pub(in crate::index) fn upsert(manifest: &mut Manifest, crawl: Indexed) {
     } = crawl;
     let (collection_id, collection_name) = (&collection.0, collection.1.as_str());
     let (sha, file_size) = fixity;
-    let date_indexed = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let date_indexed = crate::timestamp::now();
 
     // Provenance: collect the software reported by the datapackage and by the
     // warcinfo record (deduped) - we don't label which crawled vs packaged.

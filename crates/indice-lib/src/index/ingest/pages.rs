@@ -1262,9 +1262,11 @@ pub(super) fn last_modified_year(headers: &[(String, String)]) -> Option<u64> {
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("last-modified"))
         .map(|(_, v)| v.as_str())?;
-    // IMF-fixdate is RFC 2822-compatible (chrono accepts the "GMT" zone).
-    let dt = chrono::DateTime::parse_from_rfc2822(value.trim()).ok()?;
-    let year = chrono::Datelike::year(&dt);
+    // IMF-fixdate is RFC 2822-compatible, "GMT" being one of its obsolete zones.
+    let dt =
+        time::OffsetDateTime::parse(value.trim(), &time::format_description::well_known::Rfc2822)
+            .ok()?;
+    let year = dt.year();
     (year > 0).then_some(year as u64)
 }
 

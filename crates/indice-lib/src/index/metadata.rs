@@ -37,7 +37,7 @@ pub fn set_collection(
     // lock creates `index/`. Doing it twice is two syscalls for nothing and a
     // second place that has to agree about where the index dir comes from.
     let id = super::manifest::manifest_write(home, "a collection edit", |manifest| {
-        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let now = crate::timestamp::now();
         Ok(manifest.apply_fields(name, fields, &now, actor))
     })?;
     info!(collection = %id, "collection metadata updated");
@@ -56,7 +56,7 @@ pub fn seed_collection(
     // See `set_collection`: taking the manifest lock creates `index/`.
     let id = checked_id(name)?;
     super::manifest::manifest_write(home, "a collection seed", |manifest| {
-        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let now = crate::timestamp::now();
         manifest.seed_fields(&id, name, fields, &now);
         Ok(())
     })?;

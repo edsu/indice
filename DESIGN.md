@@ -1929,5 +1929,5 @@ the binary's UI dependencies stay out of the library.
 | `anyhow` 1.x | Error propagation |
 | `flate2` 1.x | gzip decompression (WARC, WACZ CDX) |
 | `sha2` 0.10 | Collection file hashing |
-| `chrono` 0.4 | Date formatting |
+| `time` 0.3 | Date formatting and parsing (tantivy depends on it too) |
 | `fluent-bundle` 0.16, `fluent-langneg` 0.13 | Interface translations: Fluent catalogs and `Accept-Language` negotiation (pure Rust, no ICU) |

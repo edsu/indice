@@ -23,7 +23,6 @@ intl_pluralrules = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde-saphyr = { workspace = true }
 tantivy = { workspace = true }
-warc = { workspace = true }
 zip = { workspace = true }
 url = { workspace = true }
 scraper = { workspace = true }
@@ -41,7 +40,7 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 flate2 = { workspace = true }
 sha2 = { workspace = true }
-chrono = { workspace = true }
+time = { workspace = true }
 tokio-util = { workspace = true }
 tokio-stream = { workspace = true }
 

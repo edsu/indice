@@ -46,7 +46,6 @@ clap = { version = "4", features = ["derive"] }
 tantivy = { version = "0.27", features = ["zstd-compression"] }
 
 # WARC / WACZ
-warc = "0.4"
 # Stored and deflate only, which is all a WACZ uses. The other methods are
 # code a hostile WACZ could reach and an honest one never does: a PPMd entry
 # makes the decoder allocate up to 256 MB from a few bytes of header.
@@ -100,8 +99,8 @@ flate2 = "1"
 # Checksums
 sha2 = "0.11"
 
-# Datetime
-chrono = { version = "0.4", features = ["serde"] }
+# Datetime. tantivy depends on time already.
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 
 # Async utilities
 tokio-util = { version = "0.7", features = ["io"] }

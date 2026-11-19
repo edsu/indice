@@ -654,7 +654,8 @@ fn clean(s: Option<String>) -> Option<String> {
 
 /// Convert epoch milliseconds to an RFC 3339 timestamp string.
 fn millis_to_rfc3339(ms: i64) -> Option<String> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms).map(|dt| dt.to_rfc3339())
+    let at = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).ok()?;
+    Some(crate::timestamp::format(at))
 }
 
 /// Search a WACZ file's CDX index for records matching `url` (exact URL match).

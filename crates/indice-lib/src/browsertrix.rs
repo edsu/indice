@@ -270,8 +270,7 @@ pub struct Resource {
 impl Resource {
     /// When `path` stops working, if Browsertrix said and the time parses.
     pub fn expires(&self) -> Option<std::time::SystemTime> {
-        let at = chrono::DateTime::parse_from_rfc3339(self.expire_at.as_deref()?).ok()?;
-        Some(at.with_timezone(&chrono::Utc).into())
+        crate::timestamp::parse(self.expire_at.as_deref()?).map(Into::into)
     }
 }
 
