@@ -256,7 +256,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn ts14_to_rfc3339(ts: &str) -> String {
     let digits = time::macros::format_description!("[year][month][day][hour][minute][second]");
     match time::PrimitiveDateTime::parse(ts, digits) {
-        Ok(dt) => crate::timestamp::format(dt.assume_utc()),
+        Ok(dt) => crate::timestamp::format(dt.assume_utc()).unwrap_or_else(|| ts.to_string()),
         Err(_) => ts.to_string(),
     }
 }

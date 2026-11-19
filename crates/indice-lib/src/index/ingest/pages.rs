@@ -1256,7 +1256,8 @@ fn record_to_raw(
 /// The year from an HTTP `Last-Modified` header, or `None` if the header is
 /// absent or unparseable. Only the modern IMF-fixdate form (RFC 7231, e.g.
 /// `Wed, 21 Oct 2015 07:28:00 GMT`) is parsed — the two obsolete HTTP-date
-/// formats (RFC 850 and asctime) are rare and yield `None`.
+/// formats (RFC 850 and asctime) are rare and yield `None`. So does a year
+/// before 1900, which RFC 2822 doesn't allow and no real page was modified in.
 pub(super) fn last_modified_year(headers: &[(String, String)]) -> Option<u64> {
     let value = headers
         .iter()
@@ -1266,8 +1267,7 @@ pub(super) fn last_modified_year(headers: &[(String, String)]) -> Option<u64> {
     let dt =
         time::OffsetDateTime::parse(value.trim(), &time::format_description::well_known::Rfc2822)
             .ok()?;
-    let year = dt.year();
-    (year > 0).then_some(year as u64)
+    u64::try_from(dt.year()).ok()
 }
 
 /// Derive a page title for a PDF from the last path segment of its URL

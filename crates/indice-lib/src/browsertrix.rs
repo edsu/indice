@@ -585,6 +585,29 @@ fn body_snippet(body: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn a_resource_expires_when_its_expire_at_says() {
+        let resource = |expire_at: Option<&str>| Resource {
+            name: String::new(),
+            path: String::new(),
+            hash: String::new(),
+            size: 0,
+            crawl_id: String::new(),
+            expire_at: expire_at.map(str::to_string),
+        };
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_762_333_974);
+        assert_eq!(resource(Some("2025-11-05T09:12:54Z")).expires(), Some(at));
+        assert_eq!(
+            resource(Some("2025-11-05T04:12:54.25-05:00")).expires(),
+            Some(at + Duration::from_millis(250))
+        );
+        // No offset, or no time at all: no expiry, so the server keeps the URL
+        // for its undated lifetime.
+        assert_eq!(resource(Some("2025-11-05T09:12:54")).expires(), None);
+        assert_eq!(resource(None).expires(), None);
+    }
 
     /// A [`Transport`] that returns canned `(status, body)` for exact URLs.
     #[derive(Default)]

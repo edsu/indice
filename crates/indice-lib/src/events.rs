@@ -90,7 +90,7 @@ pub struct Event {
 impl Event {
     pub fn new(actor: &SubjectId, action: Action, target: impl Into<String>) -> Self {
         Event {
-            time: now_rfc3339(),
+            time: crate::timestamp::now(),
             actor: actor.clone(),
             action,
             target: target.into(),
@@ -194,10 +194,6 @@ pub fn read_month(home: &Path, month: &str) -> Result<Vec<Event>> {
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect())
-}
-
-fn now_rfc3339() -> String {
-    crate::timestamp::now()
 }
 
 #[cfg(test)]

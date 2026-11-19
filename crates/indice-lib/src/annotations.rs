@@ -194,7 +194,7 @@ impl Annotation {
             context: ANNO_CONTEXT.into(),
             id: mint_id(),
             kind: "Annotation".into(),
-            created: now_rfc3339(),
+            created: crate::timestamp::now(),
             modified: None,
             creator,
             target: Target {
@@ -326,7 +326,7 @@ pub fn update(
         return Ok(UpdateResult::Forbidden);
     }
     all[pos].body = Body::markdown(new_note);
-    all[pos].modified = Some(now_rfc3339());
+    all[pos].modified = Some(crate::timestamp::now());
     write_all(home, collection, &all)?;
     Ok(UpdateResult::Updated(Box::new(all[pos].clone())))
 }
@@ -380,10 +380,6 @@ fn mint_id() -> String {
     let digest = h.finalize();
     let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
     format!("{ID_PREFIX}{hex}")
-}
-
-fn now_rfc3339() -> String {
-    crate::timestamp::now()
 }
 
 #[cfg(test)]
