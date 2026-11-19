@@ -110,6 +110,13 @@ fn last_modified_year_parses_http_date() {
         last_modified_year(&[("Last-Modified".to_string(), "not a date".to_string())]),
         None
     );
+    assert_eq!(
+        last_modified_year(&[(
+            "Last-Modified".to_string(),
+            "Wed, 01 Jan 1800 00:00:00 GMT".to_string()
+        )]),
+        None
+    );
 }
 #[test]
 fn index_path_wacz_writes_manifest() {
