@@ -1,6 +1,6 @@
 # Security
 
-indice is alpha software (0.6.4). There is no stable release, no supported
+indice is alpha software (0.6.5). There is no stable release, no supported
 release line, and no deployment I know of. Fixes land on `main`, and there is
 nothing behind it to backport them to.
 
@@ -24,8 +24,10 @@ scripting, and server errors for a few requests, fixed in 0.6.3 (see
 `security/zap/README.md`). A penetration test, run by the project with an
 AI assistant rather than an outside tester, attacked a server behind the
 shipped `Caddyfile`, and replay in Chrome, by hand. It found eight problems,
-none of them injection or cross-site scripting, all fixed in 0.6.4; the log,
-the stack and the attacks are in `security/pentest/`. `security/README.md`
+none of them injection or cross-site scripting, all fixed in 0.6.4. A ninth,
+found since, is fixed in 0.6.5: a record that could not be fetched was logged
+with its whole presigned URL. The log, the stack and the attacks are in
+`security/pentest/`. `security/README.md`
 says what each part of this testing covered and what it did not. The rest of
 its testing is the test suite, which pins each guarantee in the threat model,
 CodeQL and a RustSec advisory check on every change, and AI-assisted review.
