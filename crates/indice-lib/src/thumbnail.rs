@@ -126,8 +126,7 @@ where
     let Some(html) = fetch_payload(&fetch, &cdx, &starts, main_page_url, "html", limit)? else {
         return Ok(false);
     };
-    // Parsing HTML costs about 20 times its size, so read no more of it than
-    // indexing does.
+    // Read no more of the page than indexing does.
     let (og_image, embedded) = candidate_images(crate::search::utf8_prefix(&html, extract));
 
     // 1. The declared og:image / twitter:image, if it was captured.
@@ -196,37 +195,9 @@ fn resolve(base: &str, href: &str) -> Option<String> {
 
 /// The og:image (or twitter:image) plus the `<img>` sources on a page.
 pub(crate) fn candidate_images(html: &[u8]) -> (Option<String>, Vec<String>) {
-    use scraper::{Html, Selector};
-    let doc = Html::parse_document(&String::from_utf8_lossy(html));
-
-    let meta = |sel: &str| -> Option<String> {
-        let s = Selector::parse(sel).ok()?;
-        doc.select(&s)
-            .next()
-            .and_then(|e| e.value().attr("content"))
-            .map(|c| c.trim().to_string())
-            .filter(|c| !c.is_empty())
-    };
-    let og = meta("meta[property=\"og:image\"]").or_else(|| meta("meta[name=\"twitter:image\"]"));
-
-    let mut imgs = Vec::new();
-    if let Ok(sel) = Selector::parse("img") {
-        for el in doc.select(&sel) {
-            if let Some(src) = el.value().attr("src") {
-                imgs.push(src.to_string());
-            } else if let Some(srcset) = el.value().attr("srcset") {
-                // Take the first candidate URL from a srcset (before its descriptor).
-                if let Some(first) = srcset
-                    .split(',')
-                    .next()
-                    .and_then(|c| c.split_whitespace().next())
-                {
-                    imgs.push(first.to_string());
-                }
-            }
-        }
-    }
-    (og, imgs)
+    let page = crate::search::read_html(html, true);
+    let og = Some(page.text.og_image).filter(|og| !og.is_empty());
+    (og, page.images)
 }
 
 /// A captured, decodable (raster) image record — the `image` crate can't decode
@@ -319,6 +290,22 @@ fn fetch_payload<F: RangeFetch>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_images_are_the_social_image_and_each_img() {
+        let html = br#"<meta name="twitter:image" content=" tw.png ">
+            <img src="a.png"><img srcset="b-1x.png 1x, b-2x.png 2x">
+            <img alt="none"><image src="c.png">"#;
+        let (og, imgs) = candidate_images(html);
+        assert_eq!(og.as_deref(), Some("tw.png"));
+        assert_eq!(imgs, ["a.png", "b-1x.png", "c.png"]);
+        let (og, _) = candidate_images(
+            br#"<meta property="og:image" content="og.png">
+            <meta name="twitter:image" content="tw.png">"#,
+        );
+        assert_eq!(og.as_deref(), Some("og.png"));
+        assert_eq!(candidate_images(b"<p>none</p>"), (None, vec![]));
+    }
 
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());

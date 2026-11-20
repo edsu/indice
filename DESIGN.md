@@ -445,6 +445,10 @@ only who may frame it.
   is not parsed. `pages.rs::a_pdf_past_the_extract_limit_is_indexed_by_name_unread`,
   `pages.rs::text_past_the_extract_limit_is_not_read`,
   `integration.rs::text_past_max_extract_mb_is_not_indexed`
+- HTML is read without building its tree, and reading stops past 512 elements
+  held open at once (`search::MAX_OPEN`), which bounds both the memory a page
+  can make the parser hold and the time it spends looking through them.
+  `search::tests::reading_stops_past_max_open_elements`
 - A PDF is read for text in a child process, one at a time, under
   `index.pdf_memory_mb` (Linux) and `index.pdf_timeout_secs`; one stopped at
   either is indexed by name and the ingest carries on.
@@ -491,8 +495,8 @@ record over it, by its CDX length or what it inflates to, is skipped with a warn
 and the crawl is indexed without it, as warcinfo is skipped. Records inflate in
 parallel only up to 2 MiB; past that a worker waits its turn, so one large record
 is in memory, and being read for text, at a time. No more than
-`index.max_extract_mb` (default 16 MiB) of a page is read for text, since that
-costs many times the page's size. The limit applies on a workstation too, because it protects
+`index.max_extract_mb` (default 50 MiB) of a page is read for text, since a PDF's
+text costs many times its size. The limit applies on a workstation too, because it protects
 the indexing machine whoever started the ingest. What a WACZ costs on *disk* in temp files (a URL
 downloaded because it can't be streamed, a remote WACZ's page lists, a
 deflated WARC or inner WACZ inflated to be read) is bounded for a curator's
@@ -1302,10 +1306,16 @@ and for a hostile one is whatever it asks for. Measured on Linux with 4 workers,
 20,000-page, 120 MB crawl indexes in 371 MB; a 12 MB WACZ whose 40 records inflate to
 4 GB of HTML indexes in 733 MB. A page's metadata fields are capped (64 KiB of
 headings, 8 KiB of description, 2 KiB of title) since it may wait in memory, and no
-more than `index.max_extract_mb` (default 16 MiB) of any page is read for text,
-since finding the text costs many times the page's size: parsing HTML builds a DOM
-around 20 times it, and a PDF's cost barely follows its size (a 3.3 MB PDF
-peaked at 750 MB to extract, a 33 MB one at 107 MB). HTML and rendered
+more than `index.max_extract_mb` (default 50 MiB) of any page is read for text.
+HTML is read in one pass without building its tree (`search::read_html`, a
+`TreeSink` that keeps a few flags per open element), so it costs about the
+size of the text it finds: 100 MiB of paragraphs peaked at 100 MiB over the
+page, and 100 MiB of markup at 7 MiB. The parser looks through the open
+elements on many tags, so reading stops at 512 of them (`search::MAX_OPEN`,
+Chrome's nesting limit; the most any of 41,148 real pages held was 196). With
+no limit, 50 MiB of stray `</p>` 4,000 deep took 100 s, and 50 MiB of nested
+`<q>` 2 GB; under it the worst found is 8 s. A PDF's cost barely follows its size (a
+3.3 MB PDF peaked at 750 MB to extract, a 33 MB one at 107 MB). HTML and rendered
 text past the cap are not indexed; a PDF can't be read in part, so a larger one is
 indexed by its file name alone. Below the cap the body is indexed in full.
 
@@ -1921,7 +1931,7 @@ the binary's UI dependencies stay out of the library.
 | `tantivy` 0.26 | Full-text search engine with snippet generation |
 | `zip` 2.x | WACZ ZIP reading |
 | `url` 2.x | URL parsing |
-| `scraper` 0.27 | HTML parsing and text extraction |
+| `html5ever` 0.40 | HTML parsing for text extraction, without building a tree |
 | `serde_json` 1.x | JSON APIs and CDXJ parsing |
 | `rust-embed` 8.x | Embed ReplayWebPage assets at compile time |
 | `rayon` 1.x | Parallel WARC scan + concurrent CDX-guided record fetch |

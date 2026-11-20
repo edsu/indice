@@ -53,8 +53,9 @@ pub fn wacz(data: &[u8]) {
 /// An HTML response as indexing reads it for text, and as thumbnailing reads
 /// the main page for images. Any page in an uploaded WACZ reaches both.
 pub fn html(data: &[u8]) {
-    let _ = crate::search::extract_html_text(data);
-    let _ = crate::thumbnail::candidate_images(data);
+    // One pass serves both: `extract_html_text` and `candidate_images` are
+    // `read_html` without and with the images.
+    let _ = crate::search::read_html(data, true);
 }
 
 /// A captured image as thumbnailing decodes, downscales and re-encodes it.

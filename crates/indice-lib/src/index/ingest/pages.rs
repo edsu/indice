@@ -796,8 +796,8 @@ struct Run<'a> {
 /// extraction as well as its fetch. Nearly every page is far smaller, so
 /// records are read in parallel; one that is not waits its turn.
 ///
-/// It is this low because extraction, not the bytes, is what costs: HTML takes
-/// 23 times its size to read, and a PDF up to 225 times (a 3.3 MB one peaked
+/// It is this low because extraction, not the bytes, is what costs: a PDF
+/// takes up to 225 times its size to read (a 3.3 MB one peaked
 /// at 750 MB, a 12 MB one at 1 GB). At 16 MiB, four workers could each be
 /// extracting a PDF just under it, and PDFs that size took up to 1.2 GB each,
 /// more than a 4 GB server could hold (rustyweb-63jk). At 2 MiB the parallel
@@ -1160,7 +1160,7 @@ fn pdf_body(uri: &str, bytes: usize, outcome: crate::pdf::Extracted) -> Option<S
 /// paths come through here, via [`index_pages`], so both index identically.
 ///
 /// No more than `extract` bytes of a record are read for text, whatever its
-/// type, because reading text costs many times its size (see
+/// type, because reading a PDF's text costs many times its size (see
 /// [`crate::config::DEFAULT_EXTRACT_BYTES`]). Text past it is not searchable.
 /// A PDF can't be read in part, so one larger is indexed by its file name,
 /// and the text read from a smaller one is cut at `extract` too: a
@@ -1484,7 +1484,7 @@ mod tests {
             .is_empty());
     }
 
-    /// A record of a few MiB is read alone, not just one past 16 MiB: PDFs
+    /// A record of a few MiB is read alone, not just one near the extract limit: PDFs
     /// just under 16 MiB took up to 1.2 GB each to extract, and four workers
     /// could be reading them at once, more than a 4 GB server holds
     /// (rustyweb-63jk). The guard
