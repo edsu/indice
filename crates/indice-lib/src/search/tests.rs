@@ -81,6 +81,82 @@ fn author_falls_back_to_article_author() {
 }
 
 #[test]
+fn text_given_in_pieces_is_one_run() {
+    let html = b"<title>AT&amp;T</title><p>AT&amp;T&nbsp;news</p>";
+    let t = extract_html_text(html);
+    assert_eq!(t.title, "AT&T");
+    assert_eq!(t.body, "AT&T\u{a0}news");
+    // The parser is fed READ_CHUNK bytes at a time, and a run, or a
+    // character, can span the boundary.
+    let x = "x".repeat(READ_CHUNK);
+    let long = format!("<p>{x}&amp;{x}</p>");
+    assert_eq!(extract_html_text(long.as_bytes()).body, format!("{x}&{x}"));
+    let x = "x".repeat(READ_CHUNK - "<p>".len() - 1);
+    let split = format!("<p>{x}café</p>");
+    assert_eq!(extract_html_text(split.as_bytes()).body, format!("{x}café"));
+}
+
+#[test]
+fn body_text_is_each_run_trimmed_and_joined() {
+    let html = b"<head><noscript>ns</noscript><style>p{}</style></head>\
+        <p> one </p><!-- c --><p>two<b>three</b></p>\
+        <noscript>no</noscript><script>s()</script>   </body>four";
+    let t = extract_html_text(html);
+    assert_eq!(t.body, "one two three four");
+    // Without any tags, the text is still the body.
+    assert_eq!(extract_html_text(b"just text").body, "just text");
+}
+
+#[test]
+fn text_in_a_table_outside_a_cell_keeps_its_order() {
+    // HTML moves such text before the table.
+    let t = extract_html_text(b"<table>before<tr><td>cell</td></tr>after</table>tail");
+    assert_eq!(t.body, "before cell after tail");
+    // Moved in pieces, it is still one run.
+    let t = extract_html_text(b"<table><tr>caf&eacute; AT&amp;T<td>x</td></tr></table>");
+    assert_eq!(t.body, "caf\u{e9} AT&T x");
+}
+
+#[test]
+fn lang_is_read_from_an_html_tag_after_other_tags() {
+    // The parser makes the page's <html> at the <meta>; the <html> tag that
+    // follows adds its lang to it.
+    let t = extract_html_text(br#"<meta charset="utf-8"><html lang="en"><p>x"#);
+    assert_eq!(t.lang, "en");
+    let t = extract_html_text(br#"<html lang="de"><html lang="fr"><p>x"#);
+    assert_eq!(t.lang, "de");
+}
+
+#[test]
+fn reading_stops_past_max_open_elements() {
+    let deep = format!(
+        "<p>start</p>{}end",
+        "<div>".repeat(2 * READ_CHUNK / "<div>".len())
+    );
+    assert!(deep.matches("<div>").count() > MAX_OPEN);
+    assert_eq!(extract_html_text(deep.as_bytes()).body, "start");
+    // Elements that close don't count.
+    let wide = format!("{}end", "<div>x</div>".repeat(2 * READ_CHUNK));
+    assert!(extract_html_text(wide.as_bytes()).body.ends_with("x end"));
+}
+
+#[test]
+fn headings_are_h1_and_h2_with_their_inner_text() {
+    let html = b"<h1>One <b>bold</b></h1><h2> </h2><h3>three</h3><h2>Two</h2>";
+    assert_eq!(extract_html_text(html).headings, "One bold Two");
+}
+
+#[test]
+fn the_first_matching_meta_is_the_one_read() {
+    // An empty first description falls back to og:description rather than
+    // to a later description.
+    let html = br#"<meta name="description" content=" ">
+        <meta name="description" content="second">
+        <meta property="og:description" content="og">"#;
+    assert_eq!(extract_html_text(html).description, "og");
+}
+
+#[test]
 fn optimize_merges_segments_and_preserves_search() {
     let tmp = TempDir::new().unwrap();
     let mut idx = SearchIndex::open(tmp.path()).unwrap();

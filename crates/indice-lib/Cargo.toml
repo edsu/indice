@@ -25,7 +25,7 @@ serde-saphyr = { workspace = true }
 tantivy = { workspace = true }
 zip = { workspace = true }
 url = { workspace = true }
-scraper = { workspace = true }
+html5ever = { workspace = true }
 image = { workspace = true }
 psl = { workspace = true }
 whatlang = { workspace = true }

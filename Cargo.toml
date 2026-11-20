@@ -53,7 +53,7 @@ zip = { version = "9.2", default-features = false, features = ["deflate-flate2-z
 
 # URL / HTML
 url = "2"
-scraper = "0.29"
+html5ever = "0.40"
 # Thumbnail decode/downscale for representative images (pure Rust; only the
 # formats crawls typically capture for og:image).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }

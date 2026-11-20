@@ -32,11 +32,13 @@ pub const DEFAULT_WRITER_HEAP_BYTES: usize = 50 * 1024 * 1024;
 /// configured value is clamped up to something it accepts.
 const MIN_WRITER_HEAP_BYTES: usize = 15 * 1024 * 1024;
 
-/// Default for the most of one record read for its text. Finding a record's
-/// text costs many times its size (measured: a 100 MiB HTML page took 2.3 GB
-/// to parse, and a 16 MiB PDF 1.2 GB to extract), and real pages are far
-/// smaller, so this bounds the worst record without costing real ones.
-pub const DEFAULT_EXTRACT_BYTES: usize = 16 * 1024 * 1024;
+/// Default for the most of one record read for its text. Reading HTML costs
+/// about the size of the text it finds (measured: 100 MiB of paragraphs took
+/// 100 MiB, and 100 MiB of markup 7 MiB), but a PDF's cost barely follows its
+/// size (a 16 MiB one took 1.2 GB to extract), which is why a PDF is read in
+/// a process of its own. Real pages are far smaller, so this bounds the worst
+/// record without costing real ones.
+pub const DEFAULT_EXTRACT_BYTES: usize = 50 * 1024 * 1024;
 
 /// The default for [`IndexConfig::pdf_memory_mb`]: 1 GiB. Of 805 PDFs in one
 /// CDC crawl, six needed more than this and thirteen more needed over half of
@@ -176,9 +178,9 @@ pub struct IndexConfig {
     /// The most of any one page indice reads for its text, in MiB. HTML and
     /// rendered text past it are not searchable; a PDF larger than it is
     /// indexed by its file name alone, since a PDF can't be read in part.
-    /// Omit for the default (16 MiB); `0` is no limit. Each MiB can cost
-    /// tens of MiB of memory while it's read, so raise it only with memory
-    /// to match.
+    /// Omit for the default (50 MiB); `0` is no limit. HTML costs about the
+    /// size of its text to read; a PDF is read in a process of its own,
+    /// within `pdf_memory_mb` on Linux.
     pub max_extract_mb: Option<u64>,
 
     /// The most memory extracting one PDF's text may use, in MiB. A PDF that
