@@ -6,6 +6,10 @@
 # both is not a handled advisory.
 
 [advisories]
+# Report unmaintained crates anywhere in the dependency tree, not only the ones
+# indice depends on directly (cargo-deny's default from 0.22): an unmaintained
+# crate deep in the tree, like ttf-parser below, is still in the binary.
+unmaintained = "all"
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser (via pdf-extract -> lopdf) is unmaintained; no known vulnerability. Replacing the PDF extractor: https://github.com/edsu/indice/issues/238" },
 ]
